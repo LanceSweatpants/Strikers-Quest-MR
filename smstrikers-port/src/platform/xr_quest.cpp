@@ -317,11 +317,15 @@ struct Passthrough {
 
 // r46, button mapping: the Quest buttons a GameCube button can come from, and the GameCube buttons.
 // The names are the ones in xr_controls.txt (LobbyActivity's Controls page writes it).
+// r47: a Bluetooth pad's buttons are the same sources (its A/B/X/Y, LT/RT, RB for the right grip,
+// Start for the menu button), so one map covers both. And LONG, the long (lob) pass: the game's L + A
+// from one button (players: "L2 + A ... is really awkward"), none by default.
 enum ControlSource { kSrcA, kSrcB, kSrcX, kSrcY, kSrcTrigL, kSrcTrigR, kSrcGripR, kSrcMenu, kSrcCount, kSrcNone = kSrcCount };
-enum ControlAction { kActA, kActB, kActX, kActY, kActZ, kActL, kActR, kActStart, kActCount };
+enum ControlAction { kActA, kActB, kActX, kActY, kActZ, kActL, kActR, kActStart, kActLong, kActCount };
 constexpr const char* kSourceNames[kSrcCount] = {"a", "b", "x", "y", "lt", "rt", "rg", "menu"};
-constexpr const char* kActionNames[kActCount] = {"A", "B", "X", "Y", "Z", "L", "R", "START"};
-constexpr int kDefaultControls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu};
+constexpr const char* kActionNames[kActCount] = {"A", "B", "X", "Y", "Z", "L", "R", "START", "LONG"};
+constexpr int kDefaultControls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu,
+                                             kSrcNone};
 
 struct State {
   bool active = false;
@@ -514,12 +518,18 @@ struct State {
   int settingsStickDirY = 0;          // r44g: the right stick's last up/down push while paused
   int settingsRow = 0;                // r44g: the settings row picked (0 crowd, 1 voice, 2 height)
   // r46: the button map (ControlSource per ControlAction), and when xr_controls.txt was last looked at.
-  int controls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu};
+  int controls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu, kSrcNone};
+  uint64_t longPassSinceNs = 0;       // r47: the long-pass button went down (L first, then A)
   uint64_t controlsCheckNs = 0;
   long long controlsStamp = -1;
   int viewHeightCm = 0;               // r44g: your eye height in the stadium, + higher (xr_view_height.txt)
   bool sliderPlaced = false;
   XrPosef sliderPose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+  Panel netWait;                      // r47: "waiting for your friend" at an online match start
+  int netWaitDrawn = 0;               // the state its picture shows (xrnet::waiting_for_friend)
+  bool netWaitPlaced = false;
+  XrVector3f netWaitPos{0.0f, 0.0f, 0.0f};
+  uint64_t holdBSinceNs = 0;          // B held while waiting (2 s stops the wait)
   Panel raToast;                      // r46: a RetroAchievements pop-up (xr_ra.h)
   uint64_t raToastShownNs = 0, raToastUntilNs = 0;
   bool raToastPlaced = false;
@@ -1354,19 +1364,52 @@ void sync_input() {
       src[kSrcTrigL] = get_float(a.triggerL);
       src[kSrcTrigR] = get_float(a.triggerR);
       src[kSrcGripR] = get_float(a.squeezeR);
-      auto from = [&](int act) { return g.controls[act] < kSrcCount ? src[g.controls[act]] : 0.0f; };
+      // r47 (players: a Bluetooth pad picked its side and the match then went back to the Touch
+      // controllers; online it moved nobody): every paired pad is this headset's player too, through
+      // the same button map (Aurora no longer puts pads in ports of their own, PADSetPhysicalExternal).
+      float pad[kSrcCount] = {};
+      PADStatus phys{};
+      const bool havePad = PADGetPhysicalStatus(&phys);
+      if (havePad) {
+        pad[kSrcA] = (phys.button & PAD_BUTTON_A) ? 1.0f : 0.0f;
+        pad[kSrcB] = (phys.button & PAD_BUTTON_B) ? 1.0f : 0.0f;
+        pad[kSrcX] = (phys.button & PAD_BUTTON_X) ? 1.0f : 0.0f;
+        pad[kSrcY] = (phys.button & PAD_BUTTON_Y) ? 1.0f : 0.0f;
+        pad[kSrcMenu] = (phys.button & PAD_BUTTON_START) ? 1.0f : 0.0f;
+        pad[kSrcGripR] = (phys.button & PAD_TRIGGER_Z) ? 1.0f : 0.0f;  // RB
+        pad[kSrcTrigL] = (phys.button & PAD_TRIGGER_L) ? 1.0f : std::min(1.0f, phys.triggerLeft / 180.0f);
+        pad[kSrcTrigR] = (phys.button & PAD_TRIGGER_R) ? 1.0f : std::min(1.0f, phys.triggerRight / 180.0f);
+        // The D-pad as it is (the menus).
+        status.button |= phys.button & (PAD_BUTTON_UP | PAD_BUTTON_DOWN | PAD_BUTTON_LEFT | PAD_BUTTON_RIGHT);
+      }
+      auto from = [&](int act) {
+        const int s = g.controls[act];
+        return s < kSrcCount ? std::max(src[s], pad[s]) : 0.0f;
+      };
       if (from(kActA) > 0.5f) status.button |= PAD_BUTTON_A;
       if (from(kActB) > 0.5f) status.button |= PAD_BUTTON_B;
       if (from(kActX) > 0.5f) status.button |= PAD_BUTTON_X;
       if (from(kActY) > 0.5f) status.button |= PAD_BUTTON_Y;
       if (from(kActStart) > 0.5f) status.button |= PAD_BUTTON_START;
-      const float tl = from(kActL);
+      float tl = from(kActL);
       const float tr = from(kActR);
+      // r47: the long pass, L held and then A: L alone for its first 50 ms, so the game has L down
+      // before A's press arrives, then both while the button is held.
+      if (from(kActLong) > 0.5f) {
+        const uint64_t tLong = now_ns();
+        if (g.longPassSinceNs == 0) g.longPassSinceNs = tLong;
+        tl = 1.0f;
+        if (tLong - g.longPassSinceNs >= 50000000ull) status.button |= PAD_BUTTON_A;
+      } else {
+        g.longPassSinceNs = 0;
+      }
       status.triggerLeft = trigger_analog(tl);
       status.triggerRight = trigger_analog(tr);
       if (tl > 0.9f) status.button |= PAD_TRIGGER_L;
       if (tr > 0.9f) status.button |= PAD_TRIGGER_R;
       if (g.controls[kActZ] != kSrcGripR && from(kActZ) > 0.5f) status.button |= PAD_TRIGGER_Z;
+      // The pad's RB never grabs the table: Z whenever Z is on the right grip.
+      if (g.controls[kActZ] == kSrcGripR && pad[kSrcGripR] > 0.5f) status.button |= PAD_TRIGGER_Z;
 
       // Tabletop: grabbing the field (Lance, 2026-10-10). The left grip grabs it from anywhere; the
       // right grip grabs it when the hand is on or right next to it, and anywhere else stays the
@@ -1488,6 +1531,13 @@ void sync_input() {
       apply_stick(stickL, &status.stickX, &status.stickY);
       const XrVector2f stickR = get_vec2(a.stickR);
       apply_stick(stickR, &status.substickX, &status.substickY);
+      if (havePad) {  // r47: the pad's sticks, the stronger of the two each way
+        auto stronger = [](s8 a1, s8 b1) { return static_cast<s8>(std::abs(b1) > std::abs(a1) ? b1 : a1); };
+        status.stickX = stronger(status.stickX, phys.stickX);
+        status.stickY = stronger(status.stickY, phys.stickY);
+        status.substickX = stronger(status.substickX, phys.substickX);
+        status.substickY = stronger(status.substickY, phys.substickY);
+      }
       settings_input(stickR);  // r42/r44/r44g: while paused, the settings panel
       update_crowd_mix();
 
@@ -1542,8 +1592,21 @@ void sync_input() {
       apply_rumble();
     }
   }
-  // Every frame, neutral or not: keeps port 0 connected with no Bluetooth pad paired. A paired
-  // pad still works alongside; Aurora merges the two (pad.cpp merge_virtual_status).
+  // r47: waiting at the match start for the online friend, B held 2 s stops the wait (the match
+  // then goes ahead against the computer).
+  if (xrnet::waiting_for_friend() != 0 && (status.button & PAD_BUTTON_B) != 0) {
+    const uint64_t tb = now_ns();
+    if (g.holdBSinceNs == 0) {
+      g.holdBSinceNs = tb;
+    } else if (tb - g.holdBSinceNs >= 2000000000ull) {
+      xrnet::cancel_wait();
+      g.holdBSinceNs = 0;
+    }
+  } else {
+    g.holdBSinceNs = 0;
+  }
+  // Every frame, neutral or not: keeps port 0 connected. r47: a paired Bluetooth pad is already in
+  // here (above); Aurora gives the ports nothing of its own (PADSetPhysicalExternal).
   // Handed to the pads at the end of PortXrBeginFrame, where an online match decides the frame.
   g.localPad = status;
 }
@@ -3224,6 +3287,8 @@ extern "C" int PortXrInit(void) {
   // 2 everything eligible (default). STRIKERS_XR_DECODE, xr_tune "decode <n>".
   const char* decode = std::getenv("STRIKERS_XR_DECODE");
   aurora_xr_set_vertex_decode(decode != nullptr && *decode != '\0' ? std::atoi(decode) : 2);
+  // r47: Bluetooth pads join this headset's player (sync_input) instead of ports of their own.
+  PADSetPhysicalExternal(true);
   g.active = true;
   XLOG("%s ready (session created, waiting for READY)", kBuildTag);
   return 1;
@@ -4320,7 +4385,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad bannerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad sliderQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad raQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r46
-  const XrCompositionLayerBaseHeader* layers[10];
+  XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
+  const XrCompositionLayerBaseHeader* layers[12];
   uint32_t layerCount = 0;
 
   // The celebration effects step every display frame, smooth whatever the game's frame rate, with
@@ -4632,6 +4698,43 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fxLayer);
     }
     g.fxNs += now_ns() - fxStart;
+    // r47: waiting for the online friend at the match start: who we wait for and how to stop, a
+    // little over a metre out at about eye level, following your head lazily.
+    const int waiting = xrnet::waiting_for_friend();
+    if (waiting != 0 && g.headValid) {
+      if (waiting != g.netWaitDrawn || !g.netWait.hasImage) {
+        std::vector<uint8_t> pixels(static_cast<size_t>(xrra::kToastW) * xrra::kToastH * 4);
+        char header[48];
+        std::snprintf(header, sizeof(header), "ONLINE  -  ROOM %s", xrnet::room_code());
+        xrtext::achievement_toast(pixels.data(), xrra::kToastW, xrra::kToastH, header,
+                                  waiting == 1 ? "WAITING FOR YOUR FRIEND TO JOIN" : "YOUR FRIEND IS HERE",
+                                  waiting == 1 ? "STARTS WHEN THEY JOIN AND START A GRUDGE MATCH. HOLD B TO PLAY THE CPU"
+                                               : "STARTS WHEN THEY START A GRUDGE MATCH TOO. HOLD B TO PLAY THE CPU",
+                                  0);
+        panel_upload(g.netWait, pixels.data(), xrra::kToastW, xrra::kToastH);
+        g.netWaitDrawn = waiting;
+      }
+      float fx = 0.0f, fz = -1.0f;
+      floor_forward(g.headPose, &fx, &fz);
+      const XrVector3f want{g.headPose.position.x + fx * 1.3f, g.headPose.position.y - 0.12f,
+                            g.headPose.position.z + fz * 1.3f};
+      if (!g.netWaitPlaced) {
+        g.netWaitPos = want;
+        g.netWaitPlaced = true;
+      } else {
+        const float dt = scene.dt > 0.0f ? std::min(scene.dt, 0.1f) : 1.0f / 72.0f;
+        const float k = std::min(1.0f, dt * 2.0f);
+        g.netWaitPos.x += (want.x - g.netWaitPos.x) * k;
+        g.netWaitPos.y += (want.y - g.netWaitPos.y) * k;
+        g.netWaitPos.z += (want.z - g.netWaitPos.z) * k;
+      }
+      if (g.netWait.hasImage) {
+        place_panel(waitQuad, g.netWait, g.netWaitPos, 0.8f);
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&waitQuad);
+      }
+    } else {
+      g.netWaitPlaced = false;
+    }
     // r46: a RetroAchievements pop-up (xr_ra.h), over everything: five seconds, a metre out and a
     // little below your eyes, following your head lazily, with a short buzz as it appears.
     if (nowNs >= g.raToastUntilNs) {

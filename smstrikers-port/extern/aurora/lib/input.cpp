@@ -342,6 +342,17 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
       SDL_CloseGamepad(ctrl);
       return -1;
     }
+#ifdef __ANDROID__
+    if (controller.m_vid == 0x2833 /* Meta (Oculus) */) {
+      // strikers-quest r47: the headset's own controllers as Android sees them. The game reads them
+      // through OpenXR (src/platform/xr_quest.cpp, with the player's button map); this copy took a
+      // player slot, so a Bluetooth pad paired after it came in as player 2 or 3.
+      Log.info("Ignoring the headset's own controller device '{}' (vid 2833, pid {:04x})",
+               SDL_GetGamepadName(ctrl) != nullptr ? SDL_GetGamepadName(ctrl) : "unknown", controller.m_pid);
+      SDL_CloseGamepad(ctrl);
+      return -1;
+    }
+#endif
     controller.m_isGameCube = controller.m_vid == 0x057E && controller.m_pid == 0x0337;
     if (controller.m_isGameCube ||
         (SDL_GetGamepadType(ctrl) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO && controller.m_pid == 0x2073)) {

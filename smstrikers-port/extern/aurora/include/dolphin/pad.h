@@ -227,6 +227,16 @@ void PADClearVirtualStatus(u32 port);
 void PADClearAllVirtualStatus();
 
 /**
+ * strikers-quest r47: physical pads taken out of the ports. When on, PADRead gives each port only
+ * its virtual status, and PADGetPhysicalStatus reads every connected pad (as the GameCube buttons its
+ * mapping gives) merged into one, for the host to add to its own player's input. A headset's
+ * Bluetooth pad is then the same player as its hand controllers, offline and in an online lockstep.
+ */
+void PADSetPhysicalExternal(bool external);
+/* Every connected physical pad now, merged; false when none is connected. */
+bool PADGetPhysicalStatus(PADStatus* status);
+
+/**
  * Set the default controller mapping used.
  *
  * Must be called before PADInit.

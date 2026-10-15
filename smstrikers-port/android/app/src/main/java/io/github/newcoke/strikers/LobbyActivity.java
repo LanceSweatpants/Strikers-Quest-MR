@@ -619,14 +619,18 @@ public class LobbyActivity extends Activity {
     // (xr_quest.cpp reload_controls), so a change applies even with the game open behind this panel.
     // The sticks, the stick clicks (views) and the left grip (moving the table or the screen) stay.
 
-    private static final String[] ACTIONS = {"A", "B", "X", "Y", "Z", "L", "R", "START"};
+    // r47: LONG, the long pass (the game's L + A from one button; players: "L2 + A ... is really
+    // awkward"), on nothing by default. A Bluetooth controller follows the same map: its A/B/X/Y,
+    // LT/RT, RB for the right grip and Start for the menu button.
+    private static final String[] ACTIONS = {"A", "B", "X", "Y", "Z", "L", "R", "START", "LONG"};
     private static final String[] ACTION_LABELS = {"Pass (GameCube A)", "Shoot (GameCube B)",
             "Use your item (GameCube X)", "Hit (GameCube Y)", "Swap items (GameCube Z)", "GameCube L",
-            "GameCube R", "Pause (Start)"};
+            "GameCube R", "Pause (Start)", "Long pass (GameCube L + A)"};
     private static final String[] SOURCES = {"a", "b", "x", "y", "lt", "rt", "rg", "menu", "none"};
     private static final String[] SOURCE_LABELS = {"A button", "B button", "X button", "Y button",
-            "Left trigger", "Right trigger", "Right grip", "Menu button", "Nothing"};
-    private static final String[] DEFAULT_CONTROLS = {"a", "b", "x", "y", "rg", "lt", "rt", "menu"};
+            "Left trigger (pad: LT)", "Right trigger (pad: RT)", "Right grip (pad: RB)", "Menu button (pad: Start)",
+            "Nothing"};
+    private static final String[] DEFAULT_CONTROLS = {"a", "b", "x", "y", "rg", "lt", "rt", "menu", "none"};
 
     private File controlsFile() {
         return new File(StrikersHome.homeDir(this), "xr_controls.txt");
@@ -667,7 +671,7 @@ public class LobbyActivity extends Activity {
         onHome = false;
         title("Controls", 26);
         note("Tap a game button, then the Quest button you want for it. It changes right away, even with"
-                + " the game open.");
+                + " the game open. A Bluetooth controller follows the same buttons (A/B/X/Y, LT/RT, RB, Start).");
         final String[] map = readControls();
         for (int i = 0; i < ACTIONS.length; i++) {
             final int action = i;

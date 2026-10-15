@@ -35,6 +35,8 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsStandard{{
 
 std::array<PADStatus, PAD_CHANMAX> g_virtualPadStatus{};
 std::array<bool, PAD_CHANMAX> g_virtualPadActive{};
+// strikers-quest r47: physical pads read by the host instead of into the ports (PADSetPhysicalExternal).
+bool g_physicalExternal = false;
 
 std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsXBox360{{
     {SDL_GAMEPAD_BUTTON_SOUTH, PAD_BUTTON_A},
@@ -709,6 +711,141 @@ static void merge_virtual_status(PADStatus& status, const PADStatus& virtualStat
   status.analogB = std::max(status.analogB, virtualStatus.analogB);
 }
 
+// strikers-quest r47: one physical pad's state, as the GameCube buttons its mapping gives (was inline in
+// PADRead; PADGetPhysicalStatus reads the pads this way too). True when it can rumble.
+static bool read_controller_status(aurora::input::GameController* controller, PADStatus& s) {
+  EnsureMappingLoaded(controller);
+  bool leftTriggerSet = false;
+  bool rightTriggerSet = false;
+  std::ranges::for_each(controller->m_buttonMapping, [&controller, &s, &leftTriggerSet,
+                                                      &rightTriggerSet](const auto& mapping) {
+    if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(mapping.nativeButton))) {
+      s.button |= mapping.padButton;
+    }
+
+    if (mapping.padButton == PAD_TRIGGER_L && mapping.nativeButton != PAD_NATIVE_BUTTON_INVALID) {
+      leftTriggerSet = true;
+    }
+    if (mapping.padButton == PAD_TRIGGER_R && mapping.nativeButton != PAD_NATIVE_BUTTON_INVALID) {
+      rightTriggerSet = true;
+    }
+  });
+
+  // TODO: Add serializable mappings for these (probably not necessary)?
+  static constexpr std::array<std::pair<SDL_GamepadButton, PADExtButton>, PAD_EXT_BUTTON_COUNT> kExtButtonMappings{{
+      {SDL_GAMEPAD_BUTTON_BACK, PAD_BUTTON_BACK},
+      {SDL_GAMEPAD_BUTTON_GUIDE, PAD_BUTTON_GUIDE},
+      {SDL_GAMEPAD_BUTTON_MISC1, PAD_BUTTON_MISC1},
+      {SDL_GAMEPAD_BUTTON_MISC2, PAD_BUTTON_MISC2},
+      {SDL_GAMEPAD_BUTTON_MISC3, PAD_BUTTON_MISC3},
+      {SDL_GAMEPAD_BUTTON_MISC4, PAD_BUTTON_MISC4},
+      {SDL_GAMEPAD_BUTTON_MISC5, PAD_BUTTON_MISC5},
+      {SDL_GAMEPAD_BUTTON_MISC6, PAD_BUTTON_MISC6},
+      {SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, PAD_BUTTON_RIGHT_PADDLE1},
+      {SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, PAD_BUTTON_LEFT_PADDLE1},
+      {SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, PAD_BUTTON_RIGHT_PADDLE2},
+      {SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, PAD_BUTTON_LEFT_PADDLE2},
+      {SDL_GAMEPAD_BUTTON_RIGHT_STICK, PAD_BUTTON_RIGHT_STICK},
+      {SDL_GAMEPAD_BUTTON_LEFT_STICK, PAD_BUTTON_LEFT_STICK},
+      {SDL_GAMEPAD_BUTTON_TOUCHPAD, PAD_BUTTON_TOUCHPAD},
+  }};
+
+  for (const auto& [native, button] : kExtButtonMappings) {
+    if (SDL_GetGamepadButton(controller->m_controller, native)) {
+      s.extButton |= button;
+    }
+  }
+
+  const auto xlPos = _get_axis_value(controller, PAD_AXIS_LEFT_X_POS);
+  const auto xlNeg = _get_axis_value(controller, PAD_AXIS_LEFT_X_NEG);
+  const auto ylPos = _get_axis_value(controller, PAD_AXIS_LEFT_Y_POS);
+  const auto ylNeg = _get_axis_value(controller, PAD_AXIS_LEFT_Y_NEG);
+
+  auto xl = static_cast<Sint16>((xlPos + -xlNeg) / 2);
+  // SDL's gamepad y-axis is inverted from GC's
+  auto yl = static_cast<Sint16>((-ylPos + ylNeg) / 2);
+  if (controller->m_deadZones.useDeadzones) {
+    if (std::abs(xl) > controller->m_deadZones.stickDeadZone) {
+      xl /= 256;
+    } else {
+      xl = 0;
+    }
+    if (std::abs(yl) > controller->m_deadZones.stickDeadZone) {
+      yl = static_cast<Sint16>(-(yl + 1u) / 256u);
+    } else {
+      yl = 0;
+    }
+  } else {
+    xl /= 256;
+    yl = static_cast<Sint16>(-(yl + 1u) / 256u);
+  }
+
+  s.stickX = static_cast<int8_t>(xl);
+  s.stickY = static_cast<int8_t>(yl);
+
+  const auto xrPos = _get_axis_value(controller, PAD_AXIS_RIGHT_X_POS);
+  const auto xrNeg = _get_axis_value(controller, PAD_AXIS_RIGHT_X_NEG);
+  const auto yrPos = _get_axis_value(controller, PAD_AXIS_RIGHT_Y_POS);
+  const auto yrNeg = _get_axis_value(controller, PAD_AXIS_RIGHT_Y_NEG);
+
+  auto xr = static_cast<Sint16>((xrPos + -xrNeg) / 2);
+  // SDL's gamepad y-axis is inverted from GC's
+  auto yr = static_cast<Sint16>((-yrPos + yrNeg) / 2);
+  if (controller->m_deadZones.useDeadzones) {
+    if (std::abs(xr) > controller->m_deadZones.substickDeadZone) {
+      xr /= 256;
+    } else {
+      xr = 0;
+    }
+
+    if (std::abs(yr) > controller->m_deadZones.substickDeadZone) {
+      yr = static_cast<Sint16>(-(yr + 1u) / 256u);
+    } else {
+      yr = 0;
+    }
+  } else {
+    xr /= 256;
+    yr = static_cast<Sint16>(-(yr + 1u) / 256u);
+  }
+
+  s.substickX = static_cast<int8_t>(xr);
+  s.substickY = static_cast<int8_t>(yr);
+
+  Sint16 tl = std::max(static_cast<Sint16>(0), _get_axis_value(controller, PAD_AXIS_TRIGGER_L));
+  Sint16 tr = std::max(static_cast<Sint16>(0), _get_axis_value(controller, PAD_AXIS_TRIGGER_R));
+
+  if (controller->m_deadZones.emulateTriggers) {
+    if (!leftTriggerSet && tl > controller->m_deadZones.leftTriggerActivationZone) {
+      s.button |= PAD_TRIGGER_L;
+    }
+    if (!rightTriggerSet && tr > controller->m_deadZones.rightTriggerActivationZone) {
+      s.button |= PAD_TRIGGER_R;
+    }
+  }
+  tl /= 128;
+  tr /= 128;
+
+  s.triggerLeft = static_cast<int8_t>(tl);
+  s.triggerRight = static_cast<int8_t>(tr);
+
+  // If the digital button is activated, set the analog value to max.
+  if (s.button & PAD_TRIGGER_L) {
+    s.triggerLeft = 180;
+  }
+  if (s.button & PAD_TRIGGER_R) {
+    s.triggerRight = 180;
+  }
+
+  // Update the LED colors when they exist and the controller is read (which should happen once per frame in most
+  // games)
+  if (controller->m_hasRgbLed && controller->m_isColorDirty) {
+    SDL_SetGamepadLED(controller->m_controller, controller->m_ledRed, controller->m_ledGreen,
+                      controller->m_ledBlue);
+    controller->m_isColorDirty = false;
+  }
+  return controller->m_hasRumble;
+}
+
 u32 PADRead(PADStatus* status) {
   if (!g_initialized) {
     Log.fatal("PADRead called before PADInit()!");
@@ -727,7 +864,9 @@ u32 PADRead(PADStatus* status) {
       rumbleSupport |= PAD_CHAN0_BIT;
     }
     auto controller = aurora::input::get_controller_for_player(i);
-    if (controller == nullptr && !g_keyboardBindings[i].m_mappingsSet && !g_virtualPadActive[i]) {
+    // r47: with the physical pads external, a port is only its virtual status.
+    if ((g_physicalExternal || (controller == nullptr && !g_keyboardBindings[i].m_mappingsSet)) &&
+        !g_virtualPadActive[i]) {
       status[i].err = PAD_ERR_NO_CONTROLLER;
       g_suppressedButtons[i] = 0;
       g_suppressLeftTrigger[i] = false;
@@ -736,7 +875,7 @@ u32 PADRead(PADStatus* status) {
     }
 
     status[i].err = PAD_ERR_NONE;
-    if (g_keyboardBindings[i].m_mappingsSet) {
+    if (g_keyboardBindings[i].m_mappingsSet && !g_physicalExternal) {
       std::ranges::for_each(
           g_keyboardBindings[i].m_buttonMapping, [&kbState, &i, &status](const PADKeyButtonBinding& mapping) {
             if (mapping.scancode > PAD_KEY_INVALID && kbState[mapping.scancode]) {
@@ -800,139 +939,9 @@ u32 PADRead(PADStatus* status) {
       status[i].triggerRight = static_cast<u8>(std::min(static_cast<int>(status[i].triggerRight) + tr, 255));
     }
 
-    if (controller) {
-      EnsureMappingLoaded(controller);
-      bool leftTriggerSet = false;
-      bool rightTriggerSet = false;
-      std::ranges::for_each(controller->m_buttonMapping, [&controller, &i, &status, &leftTriggerSet,
-                                                          &rightTriggerSet](const auto& mapping) {
-        if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(mapping.nativeButton))) {
-          status[i].button |= mapping.padButton;
-        }
-
-        if (mapping.padButton == PAD_TRIGGER_L && mapping.nativeButton != PAD_NATIVE_BUTTON_INVALID) {
-          leftTriggerSet = true;
-        }
-        if (mapping.padButton == PAD_TRIGGER_R && mapping.nativeButton != PAD_NATIVE_BUTTON_INVALID) {
-          rightTriggerSet = true;
-        }
-      });
-
-      // TODO: Add serializable mappings for these (probably not necessary)?
-      static constexpr std::array<std::pair<SDL_GamepadButton, PADExtButton>, PAD_EXT_BUTTON_COUNT> kExtButtonMappings{{
-          {SDL_GAMEPAD_BUTTON_BACK, PAD_BUTTON_BACK},
-          {SDL_GAMEPAD_BUTTON_GUIDE, PAD_BUTTON_GUIDE},
-          {SDL_GAMEPAD_BUTTON_MISC1, PAD_BUTTON_MISC1},
-          {SDL_GAMEPAD_BUTTON_MISC2, PAD_BUTTON_MISC2},
-          {SDL_GAMEPAD_BUTTON_MISC3, PAD_BUTTON_MISC3},
-          {SDL_GAMEPAD_BUTTON_MISC4, PAD_BUTTON_MISC4},
-          {SDL_GAMEPAD_BUTTON_MISC5, PAD_BUTTON_MISC5},
-          {SDL_GAMEPAD_BUTTON_MISC6, PAD_BUTTON_MISC6},
-          {SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, PAD_BUTTON_RIGHT_PADDLE1},
-          {SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, PAD_BUTTON_LEFT_PADDLE1},
-          {SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, PAD_BUTTON_RIGHT_PADDLE2},
-          {SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, PAD_BUTTON_LEFT_PADDLE2},
-          {SDL_GAMEPAD_BUTTON_RIGHT_STICK, PAD_BUTTON_RIGHT_STICK},
-          {SDL_GAMEPAD_BUTTON_LEFT_STICK, PAD_BUTTON_LEFT_STICK},
-          {SDL_GAMEPAD_BUTTON_TOUCHPAD, PAD_BUTTON_TOUCHPAD},
-      }};
-
-      for (const auto& [native, button] : kExtButtonMappings) {
-        if (SDL_GetGamepadButton(controller->m_controller, native)) {
-          status[i].extButton |= button;
-        }
-      }
-
-      const auto xlPos = _get_axis_value(controller, PAD_AXIS_LEFT_X_POS);
-      const auto xlNeg = _get_axis_value(controller, PAD_AXIS_LEFT_X_NEG);
-      const auto ylPos = _get_axis_value(controller, PAD_AXIS_LEFT_Y_POS);
-      const auto ylNeg = _get_axis_value(controller, PAD_AXIS_LEFT_Y_NEG);
-
-      auto xl = static_cast<Sint16>((xlPos + -xlNeg) / 2);
-      // SDL's gamepad y-axis is inverted from GC's
-      auto yl = static_cast<Sint16>((-ylPos + ylNeg) / 2);
-      if (controller->m_deadZones.useDeadzones) {
-        if (std::abs(xl) > controller->m_deadZones.stickDeadZone) {
-          xl /= 256;
-        } else {
-          xl = 0;
-        }
-        if (std::abs(yl) > controller->m_deadZones.stickDeadZone) {
-          yl = static_cast<Sint16>(-(yl + 1u) / 256u);
-        } else {
-          yl = 0;
-        }
-      } else {
-        xl /= 256;
-        yl = static_cast<Sint16>(-(yl + 1u) / 256u);
-      }
-
-      status[i].stickX = static_cast<int8_t>(xl);
-      status[i].stickY = static_cast<int8_t>(yl);
-
-      const auto xrPos = _get_axis_value(controller, PAD_AXIS_RIGHT_X_POS);
-      const auto xrNeg = _get_axis_value(controller, PAD_AXIS_RIGHT_X_NEG);
-      const auto yrPos = _get_axis_value(controller, PAD_AXIS_RIGHT_Y_POS);
-      const auto yrNeg = _get_axis_value(controller, PAD_AXIS_RIGHT_Y_NEG);
-
-      auto xr = static_cast<Sint16>((xrPos + -xrNeg) / 2);
-      // SDL's gamepad y-axis is inverted from GC's
-      auto yr = static_cast<Sint16>((-yrPos + yrNeg) / 2);
-      if (controller->m_deadZones.useDeadzones) {
-        if (std::abs(xr) > controller->m_deadZones.substickDeadZone) {
-          xr /= 256;
-        } else {
-          xr = 0;
-        }
-
-        if (std::abs(yr) > controller->m_deadZones.substickDeadZone) {
-          yr = static_cast<Sint16>(-(yr + 1u) / 256u);
-        } else {
-          yr = 0;
-        }
-      } else {
-        xr /= 256;
-        yr = static_cast<Sint16>(-(yr + 1u) / 256u);
-      }
-
-      status[i].substickX = static_cast<int8_t>(xr);
-      status[i].substickY = static_cast<int8_t>(yr);
-
-      Sint16 tl = std::max(static_cast<Sint16>(0), _get_axis_value(controller, PAD_AXIS_TRIGGER_L));
-      Sint16 tr = std::max(static_cast<Sint16>(0), _get_axis_value(controller, PAD_AXIS_TRIGGER_R));
-
-      if (controller->m_deadZones.emulateTriggers) {
-        if (!leftTriggerSet && tl > controller->m_deadZones.leftTriggerActivationZone) {
-          status[i].button |= PAD_TRIGGER_L;
-        }
-        if (!rightTriggerSet && tr > controller->m_deadZones.rightTriggerActivationZone) {
-          status[i].button |= PAD_TRIGGER_R;
-        }
-      }
-      tl /= 128;
-      tr /= 128;
-
-      status[i].triggerLeft = static_cast<int8_t>(tl);
-      status[i].triggerRight = static_cast<int8_t>(tr);
-
-      // If the digital button is activated, set the analog value to max.
-      if (status[i].button & PAD_TRIGGER_L) {
-        status[i].triggerLeft = 180;
-      }
-      if (status[i].button & PAD_TRIGGER_R) {
-        status[i].triggerRight = 180;
-      }
-
-      if (controller->m_hasRumble) {
+    if (controller && !g_physicalExternal) {
+      if (read_controller_status(controller, status[i])) {
         rumbleSupport |= PAD_CHAN0_BIT >> i;
-      }
-
-      // Update the LED colors when they exist and the controller is read (which should happen once per frame in most
-      // games)
-      if (controller->m_hasRgbLed && controller->m_isColorDirty) {
-        SDL_SetGamepadLED(controller->m_controller, controller->m_ledRed, controller->m_ledGreen,
-                          controller->m_ledBlue);
-        controller->m_isColorDirty = false;
       }
     }
 
@@ -970,6 +979,36 @@ void PADClearVirtualStatus(const u32 port) {
 void PADClearAllVirtualStatus() {
   g_virtualPadStatus.fill({});
   g_virtualPadActive.fill(false);
+}
+
+void PADSetPhysicalExternal(const bool external) {
+  if (external != g_physicalExternal) {
+    Log.info("physical pads {}", external ? "read by the host, not into the ports" : "back in their ports");
+  }
+  g_physicalExternal = external;
+}
+
+bool PADGetPhysicalStatus(PADStatus* out) {
+  if (out == nullptr) {
+    return false;
+  }
+  *out = {};
+  bool any = false;
+  for (u32 player = 0; player < 8; ++player) {
+    auto* controller = aurora::input::get_controller_for_player(player);
+    if (controller == nullptr) {
+      continue;
+    }
+    any = true;
+    if (g_blockPAD) {
+      continue;
+    }
+    PADStatus s{};
+    read_controller_status(controller, s);
+    merge_virtual_status(*out, s);  // buttons together, the stronger of each stick, the higher trigger
+  }
+  out->err = any ? PAD_ERR_NONE : PAD_ERR_NO_CONTROLLER;
+  return any;
 }
 
 void PADControlMotor(const u32 chan, const u32 cmd) {

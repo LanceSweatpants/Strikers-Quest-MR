@@ -65,8 +65,10 @@ And around the game:
   screen, or in the game's pause settings.
 - **Pause settings**: crowd volume, voice chat, and your eye height in the stadium (for playing seated,
   or if you're shorter or taller).
-- **Button mapping** (alpha 1.6): put pass, shoot, items, hit, swap items, L, R and pause on whichever
-  Quest buttons you like, with **Controls** on the app's first screen.
+- **Button mapping** (alpha 1.6): put pass, shoot, items, hit, swap items, L, R, pause and (alpha 1.8)
+  the long pass on whichever buttons you like, with **Controls** on the app's first screen.
+- **Bluetooth controllers** (alpha 1.8): a paired gamepad is your player too, right alongside the Quest
+  controllers, offline and online, and follows your button map.
 - **RetroAchievements** (alpha 1.6): log in with your [RetroAchievements](https://retroachievements.org)
   account and earn the site's official Super Mario Strikers achievements as you play, with a pop-up in
   the headset for each one.
@@ -182,8 +184,10 @@ So there are four views, and you can mix them any way you like:
 The same grips work on the big screen: hold the **left grip** to move it, hold **both grips** and
 pull apart or twist to resize and turn it. Where you put it is remembered.
 
-A Bluetooth gamepad paired to the headset also works for offline play (it may show up as Player 3;
-in Tabletop the arrow over your player follows it).
+A Bluetooth gamepad paired to the headset works too (alpha 1.8): it's the same player as your Quest
+controllers, so use either, offline or online. Its buttons follow the [Button mapping](#button-mapping)
+(A/B/X/Y as they're labelled, LT/RT for the triggers, RB for the right grip, Start for the menu
+button).
 
 ## Play online with a friend
 
@@ -194,7 +198,9 @@ Plus), and your own game files.
    your friend, then press **Start**.
 2. **The other joins:** press **Join with a code**, type the code, press **Join**.
 3. **Both of you:** pick **Grudge Match** on the main menu, choose your teams and start. Whoever
-   gets there first waits a moment on the loading screen. Then you're playing each other.
+   gets there first waits on the loading screen, with a card showing the room code, for as long as
+   it takes the other one to join and start too (alpha 1.8). Then you're playing each other. Tired
+   of waiting? Hold **B** for 2 seconds to play the computer instead.
 
 **No friend online? Quick match** (alpha 1.4): press **Quick match** and wait. As soon as someone
 else on the same release and Version is searching, you're both put in the same room. Then both of
@@ -226,11 +232,16 @@ Alpha 1.5. Knockout tournaments for 4 or 8 players, on the same release and Vers
 ## Button mapping
 
 Alpha 1.6. Press **Controls** on the app's first screen. Tap an action (Pass, Shoot, Use your item,
-Hit, Swap items, GameCube L, GameCube R, Pause), then the Quest button you want for it: **A, B, X,
-Y, left or right trigger, right grip** or the **menu button** (or **Nothing**). A button that was
-already in use swaps over to the action you took it from. **Back to the default buttons** puts
-everything back. Changes apply even with the game already running. The sticks, the stick clicks and
-the left grip (which moves the table) stay where they are.
+Hit, Swap items, GameCube L, GameCube R, Pause, and from alpha 1.8 **Long pass**), then the Quest
+button you want for it: **A, B, X, Y, left or right trigger, right grip** or the **menu button** (or
+**Nothing**). A button that was already in use swaps over to the action you took it from. **Back to
+the default buttons** puts everything back. Changes apply even with the game already running. The
+sticks, the stick clicks and the left grip (which moves the table) stay where they are.
+
+- **Long pass** does the game's L + A (the lob pass) from one button. It's on nothing until you
+  give it a button.
+- A **Bluetooth gamepad** follows the same map: its A/B/X/Y, LT/RT, RB (as the right grip) and
+  Start (as the menu button).
 
 ## RetroAchievements
 
@@ -317,8 +328,6 @@ More about online play:
   itself always runs at its normal speed.
 - **Online, the slower headset sets the pace for both.** A headset that keeps falling behind in a 3D
   mode redraws its 3D view every other frame until you change view.
-- **Online uses the Touch controllers only.** A Bluetooth gamepad's buttons are not sent to your
-  friend, so don't use one in an online match.
 - **Both players need the same release of the app, and the same version (Classic or Plus).** With
   different ones the two headsets ignore each other and each plays offline. Players on different disc
   regions are untested.

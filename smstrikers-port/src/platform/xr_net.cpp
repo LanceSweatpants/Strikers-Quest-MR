@@ -405,6 +405,7 @@ struct State {
   bool localReady = false;
   uint64_t readySinceMs = 0, lastHoldMs = 0;
   bool gaveUp = false;
+  bool cancelWait = false;  // r47: the player held B to stop waiting for the friend (xr_quest.cpp)
   Choice localChoice;
   // The online match.
   bool startPending = false, online = false, isHost = false;
@@ -518,11 +519,6 @@ void send_inputs() {
 bool peer_heard(uint64_t ms) { return st.peerId != 0 && now_ms() - st.peerSeenMs < ms; }
 bool peer_present() { return peer_heard(5000); }
 
-// strikers-quest r39b: how long a friend may go quiet while this headset already waits for them at
-// the loading screen (their headset off a moment, a long load, their link reconnecting). It was the
-// 5 s above: this match then started offline, and the friend, back a moment later, held its own
-// start for 3 minutes for a headset that was no longer waiting.
-constexpr uint64_t kHoldQuietMs = 20000;
 
 uint32_t frame_seed(uint32_t seed, uint32_t frame) {
   uint32_t x = seed ^ (frame * 0x9E3779B9u);
@@ -981,6 +977,7 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
   const uint64_t now = xrnet::now_ms();
   if (now - st.lastHoldMs > 2000) {  // a new match start
     st.gaveUp = false;
+    st.cancelWait = false;
     st.otherBuildLogged = false;
     st.otherEditionLogged = false;
   }
@@ -988,29 +985,40 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
   if (st.online) return 0;
   if (st.startPending) return 1;
   if (st.gaveUp || !st.threadStarted) return 0;
-  // r39b: once waiting, a friend gone quiet is still waited for up to kHoldQuietMs (was 5 s).
-  if (!(st.localReady ? xrnet::peer_heard(xrnet::kHoldQuietMs) : xrnet::peer_present())) {
-    if (st.localReady) {
+  // strikers-quest r47 (Lance: invited a player, readied up, "and instead of just chillin in that
+  // lobby til someone joined, i got launched into a single player game"): in a room, the match start
+  // waits for the friend however long they take (to join the room, to load, to start their own
+  // Friendly), until the player stops waiting (holds B, xr_quest.cpp: cancel_wait). r39-r46 went
+  // offline at once with no friend in the room yet, after 20 s of a quiet friend, when the friend
+  // backed out of their start, and after 3 minutes. Only a headset in the room on another build or
+  // Version still sends the match offline (with the reason): it can never play this one.
+  if (!xrnet::peer_present()) {
+    if (st.otherBuildMs != 0 && now - st.otherBuildMs < 5000) {
+      if (!st.otherBuildLogged) {
+        // strikers-quest r39b: the reason, where a player would otherwise only see a CPU opponent.
+        st.otherBuildLogged = true;
+        NLOG("net: this match is offline: the other headset in the room runs another version of the game "
+             "(online protocol %u there, %u here), both need the same one",
+             static_cast<unsigned>(st.otherBuildProtocol), static_cast<unsigned>(xrnet::kProtocol));
+        // strikers-quest r43: and the player is told (the launcher panel, which the game goes back to).
+        char line[32];
+        std::snprintf(line, sizeof(line), "protocol=%u", static_cast<unsigned>(st.otherBuildProtocol));
+        xrnet::online_note(line);
+      }
       st.localReady = false;
-      NLOG("net: nothing from the friend for 20 s, this match is offline");
-    } else if (st.otherBuildMs != 0 && now - st.otherBuildMs < 5000 && !st.otherBuildLogged) {
-      // strikers-quest r39b: the reason, where a player would otherwise only see a CPU opponent.
-      st.otherBuildLogged = true;
-      NLOG("net: this match is offline: the other headset in the room runs another version of the game "
-           "(online protocol %u there, %u here), both need the same one",
-           static_cast<unsigned>(st.otherBuildProtocol), static_cast<unsigned>(xrnet::kProtocol));
-      // strikers-quest r43: and the player is told (the launcher panel, which the game goes back to).
-      char line[32];
-      std::snprintf(line, sizeof(line), "protocol=%u", static_cast<unsigned>(st.otherBuildProtocol));
-      xrnet::online_note(line);
-    } else if (st.otherEditionMs != 0 && now - st.otherEditionMs < 5000 && !st.otherEditionLogged) {
-      // strikers-quest r43: the other headset is on the other Version (Classic / Plus).
-      st.otherEditionLogged = true;
-      NLOG("net: this match is offline: the other headset in the room plays %s, this one %s; both need the "
-           "same Version", xrnet::edition_name(st.otherEdition), xrnet::edition_name(xrnet::local_edition()));
-      xrnet::online_note(st.otherEdition != 0 ? "edition=plus" : "edition=classic");
+      return 0;
     }
-    return 0;
+    if (st.otherEditionMs != 0 && now - st.otherEditionMs < 5000) {
+      if (!st.otherEditionLogged) {
+        // strikers-quest r43: the other headset is on the other Version (Classic / Plus).
+        st.otherEditionLogged = true;
+        NLOG("net: this match is offline: the other headset in the room plays %s, this one %s; both need the "
+             "same Version", xrnet::edition_name(st.otherEdition), xrnet::edition_name(xrnet::local_edition()));
+        xrnet::online_note(st.otherEdition != 0 ? "edition=plus" : "edition=classic");
+      }
+      st.localReady = false;
+      return 0;
+    }
   }
   if (!st.localReady) {
     const int side = localSide == 1 ? 1 : 0;
@@ -1024,28 +1032,36 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
     st.readySinceMs = now;
     st.peerLeftHoldMs = 0;
     xrnet::send_hello();
-    NLOG("net: Friendly started with the friend in the room: waiting for them to start one too");
+    if (xrnet::peer_present()) {
+      NLOG("net: Friendly started with the friend in the room: waiting for them to start one too");
+    } else {
+      NLOG("net: Friendly started in room %s: waiting for the friend to join", st.room.c_str());
+    }
   }
-  // strikers-quest r39b: the friend was waiting too and stopped (it gave up, or its game went ahead
-  // offline: an r39a headset does that after 5 s without hearing this one). Its hellos have said "not
-  // ready" for 2 s; the 20 s wait above would otherwise keep this headset here for 3 minutes. A friend
-  // starting the match as host says "not ready" for a frame at most, and its start arrives first.
-  if (st.peerLeftHoldMs != 0 && !st.peerReady && st.peerHelloMs - st.peerLeftHoldMs >= 2000) {
+  if (st.cancelWait) {
+    st.cancelWait = false;
     st.gaveUp = true;
     st.localReady = false;
-    st.peerLeftHoldMs = 0;
-    NLOG("net: the friend stopped waiting for this match, it is offline");
-    return 0;
-  }
-  if (now - st.readySinceMs > 180000) {
-    st.gaveUp = true;
-    st.localReady = false;
-    xrnet::send_hello();
-    NLOG("net: the friend did not start a match within 3 minutes, this one is offline");
+    xrnet::send_hello();  // "not ready": a friend arriving now won't wait on this headset
+    NLOG("net: the player stopped waiting for the friend (held B) after %llu s; this match is offline",
+         static_cast<unsigned long long>((now - st.readySinceMs) / 1000));
     return 0;
   }
   return 1;
 }
+
+namespace xrnet {
+
+int waiting_for_friend() {
+  if (!st.localReady || st.online || st.startPending || st.gaveUp || now_ms() - st.lastHoldMs > 1000) return 0;
+  return peer_present() ? 2 : 1;
+}
+
+void cancel_wait() { st.cancelWait = true; }
+
+const char* room_code() { return st.room.c_str(); }
+
+}  // namespace xrnet
 
 extern "C" int PortNetFrameBegin(unsigned int* seed, PortNetMatch* startMatch, int* isStartFrame) {
   *isStartFrame = 0;
@@ -1157,6 +1173,9 @@ void poll() {}
 bool lockstep() { return false; }
 bool step(const NetPad&, NetPad*, NetPad*) { return false; }
 int local_pad() { return 0; }
+int waiting_for_friend() { return 0; }
+void cancel_wait() {}
+const char* room_code() { return ""; }
 }  // namespace xrnet
 
 extern "C" int PortNetHoldMatchStart(const PortNetMatch*, int) { return 0; }
