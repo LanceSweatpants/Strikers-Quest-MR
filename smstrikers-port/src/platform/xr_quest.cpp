@@ -1120,25 +1120,35 @@ XrVector2f get_vec2(XrAction action) {
   return state.currentState;
 }
 
-int8_t stick_axis(float v) {
-  const float c = std::max(-1.0f, std::min(1.0f, v));
-  return static_cast<int8_t>(std::lround(c * 127.0f));
-}
+// r48 (Lance: "make all analog stick movements easier to pick up on"; a player "could not travel
+// diagonally at one point"): the game reads every stick through PADClampCircle (platpad.cpp), which
+// takes a square deadzone of 15 off EACH axis and then clamps to a circle (radius 56 for the stick,
+// 44 for the C-stick). So a light push read as nothing at all, and a part push near a diagonal lost
+// its smaller axis and ran straight along the other. Each axis now goes out as 15 + exactly what it
+// should be after that clamp: the game gets the stick's own direction at every push, and movement
+// from the first bit of push past our small round deadzone, rising evenly to full at full tilt.
+// (r44 had only lowered our own deadzone, 0.12 -> 0.05, with the game's still on top.)
+constexpr float kTouchDeadzone = 0.05f;  // Touch thumbsticks rest close to centre
+constexpr float kPadDeadzone = 0.12f;    // r48: Bluetooth pads, read raw now (PADGetPhysicalStatus)
+constexpr int kGameStickMin = 15;        // PADClampCircle's per-axis deadzone, both sticks
+constexpr int kGameStickRadius = 56, kGameSubstickRadius = 44;
 
-void apply_stick(XrVector2f v, int8_t* outX, int8_t* outY) {
-  // r44 (players: input lag): 0.05, was 0.12. The game's own PADClampCircle drops another 15/127 on
-  // top, so a push only started to move at about a fifth of the way; now at about a sixth.
-  constexpr float kDeadzone = 0.05f;
+void apply_stick(XrVector2f v, float deadzone, int radius, int8_t* outX, int8_t* outY) {
   const float mag = std::sqrt(v.x * v.x + v.y * v.y);
-  if (mag < kDeadzone) {
+  if (mag <= deadzone) {
     *outX = 0;
     *outY = 0;
     return;
   }
-  // Rescale past the deadzone so a small push still moves, and full push still reaches the rim.
-  const float scaled = std::min(1.0f, (mag - kDeadzone) / (1.0f - kDeadzone)) / mag;
-  *outX = stick_axis(v.x * scaled);
-  *outY = stick_axis(v.y * scaled);  // OpenXR +y is up, as is the GameCube's
+  const float m = std::min(1.0f, (mag - deadzone) / (1.0f - deadzone));
+  auto axis = [&](float u) -> int8_t {
+    const int after = static_cast<int>(std::lround(std::fabs(u) / mag * m * radius));  // what the game should see
+    if (after <= 0) return 0;
+    const int out = std::min(127, kGameStickMin + after);
+    return static_cast<int8_t>(u < 0.0f ? -out : out);
+  };
+  *outX = axis(v.x);
+  *outY = axis(v.y);  // OpenXR +y is up, as is the GameCube's
 }
 
 uint8_t trigger_analog(float v) {
@@ -1528,16 +1538,26 @@ void sync_input() {
           XLOG("item test: X released");
         }
       }
-      apply_stick(stickL, &status.stickX, &status.stickY);
       const XrVector2f stickR = get_vec2(a.stickR);
-      apply_stick(stickR, &status.substickX, &status.substickY);
-      if (havePad) {  // r47: the pad's sticks, the stronger of the two each way
-        auto stronger = [](s8 a1, s8 b1) { return static_cast<s8>(std::abs(b1) > std::abs(a1) ? b1 : a1); };
-        status.stickX = stronger(status.stickX, phys.stickX);
-        status.stickY = stronger(status.stickY, phys.stickY);
-        status.substickX = stronger(status.substickX, phys.substickX);
-        status.substickY = stronger(status.substickY, phys.substickY);
+      // r47/r48: with a Bluetooth pad too, each stick is whichever of the two is pushed further, as a
+      // whole (r47 took the stronger of each axis, which could mix two directions).
+      XrVector2f moveL = stickL, moveR = stickR;
+      float dzL = kTouchDeadzone, dzR = kTouchDeadzone;
+      if (havePad) {
+        auto push = [](XrVector2f v, float dz) { return std::sqrt(v.x * v.x + v.y * v.y) - dz; };
+        const XrVector2f padL{phys.stickX / 127.0f, phys.stickY / 127.0f};
+        const XrVector2f padR{phys.substickX / 127.0f, phys.substickY / 127.0f};
+        if (push(padL, kPadDeadzone) > push(moveL, kTouchDeadzone)) {
+          moveL = padL;
+          dzL = kPadDeadzone;
+        }
+        if (push(padR, kPadDeadzone) > push(moveR, kTouchDeadzone)) {
+          moveR = padR;
+          dzR = kPadDeadzone;
+        }
       }
+      apply_stick(moveL, dzL, kGameStickRadius, &status.stickX, &status.stickY);
+      apply_stick(moveR, dzR, kGameSubstickRadius, &status.substickX, &status.substickY);
       settings_input(stickR);  // r42/r44/r44g: while paused, the settings panel
       update_crowd_mix();
 

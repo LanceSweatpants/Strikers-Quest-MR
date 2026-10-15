@@ -69,6 +69,9 @@ And around the game:
   the long pass on whichever buttons you like, with **Controls** on the app's first screen.
 - **Bluetooth controllers** (alpha 1.8): a paired gamepad is your player too, right alongside the Quest
   controllers, offline and online, and follows your button map.
+- **Responsive sticks** (alpha 1.9): your player moves from the first bit of push and goes exactly the
+  way you point, diagonals included, at any amount of push (the original game snapped part pushes
+  onto straight lines and ignored light ones).
 - **RetroAchievements** (alpha 1.6): log in with your [RetroAchievements](https://retroachievements.org)
   account and earn the site's official Super Mario Strikers achievements as you play, with a pop-up in
   the headset for each one.

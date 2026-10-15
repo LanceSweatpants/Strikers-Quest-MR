@@ -712,8 +712,9 @@ static void merge_virtual_status(PADStatus& status, const PADStatus& virtualStat
 }
 
 // strikers-quest r47: one physical pad's state, as the GameCube buttons its mapping gives (was inline in
-// PADRead; PADGetPhysicalStatus reads the pads this way too). True when it can rumble.
-static bool read_controller_status(aurora::input::GameController* controller, PADStatus& s) {
+// PADRead; PADGetPhysicalStatus reads the pads this way too). True when it can rumble. r48: rawSticks skips the
+// per-axis stick deadzones (a square deadzone snaps part pushes near a diagonal onto an axis).
+static bool read_controller_status(aurora::input::GameController* controller, PADStatus& s, bool rawSticks = false) {
   EnsureMappingLoaded(controller);
   bool leftTriggerSet = false;
   bool rightTriggerSet = false;
@@ -764,7 +765,7 @@ static bool read_controller_status(aurora::input::GameController* controller, PA
   auto xl = static_cast<Sint16>((xlPos + -xlNeg) / 2);
   // SDL's gamepad y-axis is inverted from GC's
   auto yl = static_cast<Sint16>((-ylPos + ylNeg) / 2);
-  if (controller->m_deadZones.useDeadzones) {
+  if (controller->m_deadZones.useDeadzones && !rawSticks) {
     if (std::abs(xl) > controller->m_deadZones.stickDeadZone) {
       xl /= 256;
     } else {
@@ -791,7 +792,7 @@ static bool read_controller_status(aurora::input::GameController* controller, PA
   auto xr = static_cast<Sint16>((xrPos + -xrNeg) / 2);
   // SDL's gamepad y-axis is inverted from GC's
   auto yr = static_cast<Sint16>((-yrPos + yrNeg) / 2);
-  if (controller->m_deadZones.useDeadzones) {
+  if (controller->m_deadZones.useDeadzones && !rawSticks) {
     if (std::abs(xr) > controller->m_deadZones.substickDeadZone) {
       xr /= 256;
     } else {
@@ -1004,7 +1005,7 @@ bool PADGetPhysicalStatus(PADStatus* out) {
       continue;
     }
     PADStatus s{};
-    read_controller_status(controller, s);
+    read_controller_status(controller, s, true);  // the sticks raw: the host takes its own round deadzone
     merge_virtual_status(*out, s);  // buttons together, the stronger of each stick, the higher trigger
   }
   out->err = any ? PAD_ERR_NONE : PAD_ERR_NO_CONTROLLER;
