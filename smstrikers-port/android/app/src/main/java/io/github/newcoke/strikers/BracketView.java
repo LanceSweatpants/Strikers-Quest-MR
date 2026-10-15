@@ -103,8 +103,12 @@ final class BracketView extends View {
         paint.setTextSize(14 * dp);
         for (int r = 0; r <= n; r++) {
             final int fromEnd = n - 1 - r;
-            final String label = r == n ? "Champion" : fromEnd == 0 ? "Final" : fromEnd == 1 ? "Semi-finals"
-                    : fromEnd == 2 ? "Quarter-finals" : "Round " + (r + 1);
+            final Context c = getContext();
+            final String label = r == n ? c.getString(R.string.tourney_champion)
+                    : fromEnd == 0 ? c.getString(R.string.tourney_final)
+                    : fromEnd == 1 ? c.getString(R.string.tourney_semi)
+                    : fromEnd == 2 ? c.getString(R.string.tourney_quarter)
+                    : c.getString(R.string.tourney_round, r + 1);
             paint.setColor(r == n ? GOLD : DIM);
             canvas.drawText(label, columnX(r) + cardW * 0.5f, pad + 14 * dp, paint);
         }
@@ -185,7 +189,8 @@ final class BracketView extends View {
             paint.setTypeface(Typeface.DEFAULT_BOLD);
             paint.setTextSize(10 * dp);
             paint.setColor(GOLD);
-            canvas.drawText(m.optInt("replays", 0) > 0 ? "REPLAY" : "PLAYING", x + cardW * 0.5f, cy - rowH - 4 * dp, paint);
+            canvas.drawText(getContext().getString(m.optInt("replays", 0) > 0 ? R.string.tourney_badge_replay
+                    : R.string.tourney_badge_playing), x + cardW * 0.5f, cy - rowH - 4 * dp, paint);
         }
     }
 
@@ -201,7 +206,8 @@ final class BracketView extends View {
         paint.setTypeface(won || team == you ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         paint.setTextSize(14 * dp);
         paint.setColor(team < 0 ? DIM : won ? GOLD : lost ? DIM : TEXT);
-        final String label = team < 0 ? "Waiting..." : name(team) + (team == you ? "  (you)" : "");
+        final String label = team < 0 ? getContext().getString(R.string.tourney_waiting)
+                : name(team) + (team == you ? "  " + getContext().getString(R.string.tourney_tag_you) : "");
         canvas.drawText(fit(label, cardW - rowH * 1.3f - 36 * dp, 14 * dp), x + rowH * 1.15f, cy + 5 * dp, paint);
         if (done && goals >= 0) {
             paint.setTextAlign(Paint.Align.RIGHT);

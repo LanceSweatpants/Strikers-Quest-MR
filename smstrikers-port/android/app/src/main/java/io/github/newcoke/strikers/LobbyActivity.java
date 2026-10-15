@@ -132,32 +132,41 @@ public class LobbyActivity extends Activity {
         checkForUpdate();
     }
 
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // The panel's texts (res/values*/strings_lobby.xml) in the headset's language, or the one
+        // picked for the app (Idiomas.envolver), before any getString.
+        super.attachBaseContext(Idiomas.envolver(base));
+    }
+
     private void showHome() {
         leaveTourneyPage();
         page.removeAllViews();
         onHome = true;
         title("Quest 3 Strikers", 30);
         if (update != null) {
-            note(shortName(update) + " is out.").setTextColor(ACCENT);
-            page.addView(button("Update now", true, v -> startUpdate()));
+            note(getString(R.string.lobby_update_out, shortName(update))).setTextColor(ACCENT);
+            page.addView(button(getString(R.string.lobby_update_now), true, v -> startUpdate()));
         }
         showLastError();
         showOnlineNote();
-        note("Quest alpha. Online: both players pick Grudge Match in the same room, on the same Version.");
-        page.addView(button("Play offline", true, v -> start("")));
-        page.addView(button("Quick match", true, v -> showQuick()));  // r44
-        page.addView(button("Tournaments", true, v -> showTourneys()));  // r45
+        note(getString(R.string.lobby_home_note));
+        page.addView(button(getString(R.string.lobby_play_offline), true, v -> start("")));
+        page.addView(button(getString(R.string.lobby_quick_match), true, v -> showQuick()));  // r44
+        page.addView(button(getString(R.string.lobby_tournaments), true, v -> showTourneys()));  // r45
         // r44d (Lance: "make sure everyones codes randomize"): a fresh code every time, not the last one.
-        page.addView(button("Host an online match", false, v -> showHost(newCode())));
-        page.addView(button("Join with a code", false, v -> showJoin()));
-        page.addView(button("Voice chat: " + (voiceOn() ? "On" : "Off"), false, v -> toggleVoice()));  // r44
-        page.addView(button("Controls", false, v -> showControls()));  // r46
+        page.addView(button(getString(R.string.lobby_host), false, v -> showHost(newCode())));
+        page.addView(button(getString(R.string.lobby_join_with_code), false, v -> showJoin()));
+        page.addView(button(getString(R.string.lobby_voice_chat,
+                getString(voiceOn() ? R.string.lobby_on : R.string.lobby_off)), false, v -> toggleVoice()));  // r44
+        page.addView(button(getString(R.string.lobby_controls), false, v -> showControls()));  // r46
         page.addView(button("RetroAchievements", false, v -> showRetroAch()));  // r46
-        page.addView(button("Choose game file", false, v -> showChooser(null, null)));
+        page.addView(button(getString(R.string.lobby_choose_game_file), false, v -> showChooser(null, null)));
         TextView game = note(gameStatus());
         game.setTextSize(14);
         // strikers-quest r43: Classic or Plus, by the app's own version below.
-        page.addView(button("Version: " + editionName(StrikersHome.edition(this)), false, v -> showVersions()));
+        page.addView(button(getString(R.string.lobby_version_button, editionName(StrikersHome.edition(this))), false,
+                v -> showVersions()));
         TextView version = note(versionText());
         version.setTextSize(12);
         version.setTextColor(MUTED);
@@ -187,8 +196,7 @@ public class LobbyActivity extends Activity {
                 startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.parse("package:" + getPackageName())));
                 showHome();
-                note("Allow this app to install its update, then come back here and press Update now"
-                        + " again.").setTextColor(WARN);
+                note(getString(R.string.lobby_allow_install)).setTextColor(WARN);
                 return;
             } catch (Exception e) {
                 // fall through to the installer
@@ -196,19 +204,17 @@ public class LobbyActivity extends Activity {
         }
         onHome = false;
         page.removeAllViews();
-        title("Updating to " + shortName(r), 24);
-        final TextView status = note("Downloading... 0%");
-        page.addView(button("Back", false, v -> showHome()));
+        title(getString(R.string.lobby_updating_to, shortName(r)), 24);
+        final TextView status = note(getString(R.string.lobby_downloading, 0));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
         new Thread(() -> {
             try {
                 File apk = Updater.download(r, new File(getCacheDir(), "update"),
-                        pct -> runOnUiThread(() -> status.setText("Downloading... " + pct + "%")));
-                runOnUiThread(() -> status.setText("Installing. Confirm on the next screen: the app closes,"
-                        + " updates, and you open it again."));
+                        pct -> runOnUiThread(() -> status.setText(getString(R.string.lobby_downloading, pct))));
+                runOnUiThread(() -> status.setText(getString(R.string.lobby_installing)));
                 Updater.install(this, apk);
             } catch (IOException | RuntimeException e) {
-                runOnUiThread(() -> status.setText("The update didn't work (" + e.getMessage() + ").\nCheck"
-                        + " the Quest's internet connection and try again, or get it from the GitHub page."));
+                runOnUiThread(() -> status.setText(getString(R.string.lobby_update_failed, e.getMessage())));
             }
         }, "strikers-update").start();
     }
@@ -229,7 +235,8 @@ public class LobbyActivity extends Activity {
         } else if (status != PackageInstaller.STATUS_SUCCESS) {
             String msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
             showHome();
-            note("The update wasn't installed" + (msg != null ? ": " + msg : ".")).setTextColor(WARN);
+            note(msg != null ? getString(R.string.lobby_update_not_installed_why, msg)
+                    : getString(R.string.lobby_update_not_installed)).setTextColor(WARN);
         }
     }
 
@@ -250,10 +257,10 @@ public class LobbyActivity extends Activity {
         String[] lines = text.split("\n");
         StringBuilder shown = new StringBuilder();
         for (int i = 0; i < lines.length && i < 12; i++) shown.append(i > 0 ? "\n" : "").append(lines[i]);
-        TextView t = note("The game closed last time with this message:\n\n" + shown);
+        TextView t = note(getString(R.string.lobby_last_error, shown.toString()));
         t.setTextColor(WARN);
         t.setTextSize(14);
-        page.addView(button("OK", false, v -> {
+        page.addView(button(getString(R.string.lobby_ok), false, v -> {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
             showHome();
@@ -279,18 +286,15 @@ public class LobbyActivity extends Activity {
                 f.delete();
                 return;
             }
-            text = "Your friend is playing " + editionName(theirs) + ". You are on " + editionName(mine)
-                    + ".\nOne of you: switch Version to match, then start the match again.";
+            text = getString(R.string.lobby_note_edition, editionName(theirs), editionName(mine));
         } else if (why.startsWith(NOTE_VERSION_CHANGED)) {
-            text = "The game was still open on the other Version, so it closed. Press the same button"
-                    + " again to play " + editionName(mine) + ".";
+            text = getString(R.string.lobby_note_version_changed, editionName(mine));
         } else {
-            text = "Your friend has a different release of Quest 3 Strikers, so you can't play online"
-                    + " together. Both of you need the same one (Update now, or the GitHub page).";
+            text = getString(R.string.lobby_note_release);
         }
         TextView t = note(text);
         t.setTextColor(WARN);
-        page.addView(button("OK", false, v -> {
+        page.addView(button(getString(R.string.lobby_ok), false, v -> {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
             showHome();
@@ -330,26 +334,26 @@ public class LobbyActivity extends Activity {
         leaveTourneyPage();  // r45
         page.removeAllViews();
         onHome = false;
-        title("Choose your version", 24);
-        note("To play online, you and your friend need the same one.");
+        title(getString(R.string.lobby_choose_version), 24);
+        note(getString(R.string.lobby_version_same));
         final String current = StrikersHome.edition(this);
-        page.addView(versionRow(StrikersHome.CLASSIC, "Mario Strikers as you know it", current));
+        page.addView(versionRow(StrikersHome.CLASSIC, getString(R.string.lobby_classic_about), current));
         // The line: everything under it adds to the game.
-        TextView label = note("Below this line: not Strikers as you know it");
+        TextView label = note(getString(R.string.lobby_below_line));
         label.setTextColor(ACCENT);
         label.setTextSize(15);
         label.setPadding(0, dp(18), 0, dp(6));
         View line = new View(this);
         line.setBackgroundColor(ACCENT);
         page.addView(line, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
-        page.addView(versionRow(StrikersHome.PLUS, "New: life-size goal scorer, GOAL SCORED BY banner,"
-                + " longer goal replay, living crowd", current));
-        page.addView(button("Back", false, v -> showHome()));
+        page.addView(versionRow(StrikersHome.PLUS, getString(R.string.lobby_plus_about), current));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
     }
 
     /** strikers-quest r43: one Version in the picker, its name large over what it is. */
     private Button versionRow(String edition, String about, String current) {
-        String name = editionName(edition) + (edition.equals(current) ? "   (chosen)" : "");
+        String name = editionName(edition)
+                + (edition.equals(current) ? "   " + getString(R.string.lobby_tag_chosen) : "");
         Button b = row(name + "\n" + about, true, v -> {
             if (!edition.equals(StrikersHome.edition(this))) {
                 StrikersHome.chooseEdition(this, edition);
@@ -389,24 +393,25 @@ public class LobbyActivity extends Activity {
     /** strikers-quest r41: which game file a match would start with, for the home page. */
     private String gameStatus() {
         if (!StrikersHome.hasAllFilesAccess()) {
-            return "Game file: the app needs file access to look for it.";
+            return getString(R.string.lobby_game_needs_access);
         }
         String path = StrikersHome.describeGameData(this);
-        if (path == null) return "No game file found yet. Press \"Choose game file\".";
+        if (path == null) return getString(R.string.lobby_game_none);
         File f = new File(path);
-        if (f.isDirectory()) return "Game: the extracted disc in " + GameFile.shortPath(f);
-        GameFile.Found found = GameFile.check(f);
-        return (found.usable ? "Game: " + found.label : "Game file problem: " + found.problem)
+        if (f.isDirectory()) return getString(R.string.lobby_game_extracted, GameFile.shortPath(f));
+        GameFile.Found found = GameFile.check(this, f);
+        return (found.usable ? getString(R.string.lobby_game_ok, found.label)
+                : getString(R.string.lobby_game_problem, found.problem))
                 + "\n" + GameFile.shortPath(f);
     }
 
     /** Null when the game has a file it can read; otherwise what is wrong, in one sentence. */
     private String gameProblem() {
         String path = StrikersHome.describeGameData(this);
-        if (path == null) return "Your game file wasn't found on this Quest.";
+        if (path == null) return getString(R.string.lobby_game_not_found);
         File f = new File(path);
         if (f.isDirectory()) return null;
-        GameFile.Found found = GameFile.check(f);
+        GameFile.Found found = GameFile.check(this, f);
         return found.usable ? null : GameFile.shortPath(f) + ": " + found.problem;
     }
 
@@ -417,39 +422,36 @@ public class LobbyActivity extends Activity {
     private void showChooser(String code, String reason) {
         if (!StrikersHome.hasAllFilesAccess() && askForFileAccess(this)) {
             showHome();
-            accessNote = note("Turn on \"Allow access to manage all files\" so the game can find your"
-                    + " game file, then come back here and press the same button again.");
+            accessNote = note(getString(R.string.lobby_access_find));
             return;
         }
         leaveTourneyPage();  // r45
         page.removeAllViews();
         onHome = false;
-        title("Choose your game file", 24);
+        title(getString(R.string.lobby_choose_file_title), 24);
         if (reason != null) note(reason).setTextColor(WARN);
-        final TextView status = note("Looking for game files on this Quest...");
+        final TextView status = note(getString(R.string.lobby_looking_files));
         final LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.setGravity(Gravity.CENTER_HORIZONTAL);
         page.addView(list, wrap());
-        page.addView(button("Look again", false, v -> showChooser(code, null)));
-        page.addView(button("Back", false, v -> showHome()));
+        page.addView(button(getString(R.string.lobby_look_again), false, v -> showChooser(code, null)));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
         final int token = ++chooserToken;
         new Thread(() -> {
-            final List<GameFile.Found> found = GameFile.scan();
+            final List<GameFile.Found> found = GameFile.scan(this);
             runOnUiThread(() -> {
                 if (token != chooserToken || list.getParent() != page) return;  // left this page
                 if (found.isEmpty()) {
-                    status.setText("No .iso, .rvz or .wia file found on this Quest.\n\nOn your PC, open"
-                            + " SideQuest, click the folder icon, open Download, and drag your game file"
-                            + " in. Then press Look again.");
+                    status.setText(getString(R.string.lobby_no_files));
                     return;
                 }
-                status.setText("Tap your game file:");
+                status.setText(getString(R.string.lobby_tap_file));
                 String chosen = GameFile.chosen(this);
                 for (GameFile.Found f : found) {
                     String where = GameFile.shortPath(f.file) + " · " + GameFile.size(f.file.length());
                     boolean isChosen = f.file.getAbsolutePath().equals(chosen);
-                    String text = f.file.getName() + (isChosen ? "   (chosen)" : "") + "\n"
+                    String text = f.file.getName() + (isChosen ? "   " + getString(R.string.lobby_tag_chosen) : "") + "\n"
                             + (f.usable ? f.label : f.label + ": " + f.problem) + "\n" + where;
                     list.addView(row(text, f.usable, f.usable ? v -> {
                         GameFile.choose(this, f.file.getAbsolutePath());
@@ -464,7 +466,7 @@ public class LobbyActivity extends Activity {
         leaveTourneyPage();  // r45
         page.removeAllViews();
         onHome = false;
-        title("Your room code", 24);
+        title(getString(R.string.lobby_room_code), 24);
         TextView big = new TextView(this);
         big.setText(spaced(code));
         big.setTextColor(ACCENT);
@@ -473,18 +475,18 @@ public class LobbyActivity extends Activity {
         big.setGravity(Gravity.CENTER);
         big.setPadding(0, dp(8), 0, dp(8));
         page.addView(big, wrap());
-        note("Tell your friend this code. Both of you: Grudge Match, pick your team, start.");
-        page.addView(button("Start", true, v -> start(code)));
-        page.addView(button("New code", false, v -> showHost(newCode())));
-        page.addView(button("Back", false, v -> showHome()));
+        note(getString(R.string.lobby_host_note));
+        page.addView(button(getString(R.string.lobby_start), true, v -> start(code)));
+        page.addView(button(getString(R.string.lobby_new_code), false, v -> showHost(newCode())));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
     }
 
     private void showJoin() {
         leaveTourneyPage();  // r45
         page.removeAllViews();
         onHome = false;
-        title("Join a room", 24);
-        note("Type the code your friend sees.");
+        title(getString(R.string.lobby_join_title), 24);
+        note(getString(R.string.lobby_join_note));
         EditText field = new EditText(this);
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -493,7 +495,7 @@ public class LobbyActivity extends Activity {
         field.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         field.setTextColor(Color.WHITE);
         field.setHintTextColor(Color.GRAY);
-        field.setHint("CODE");
+        field.setHint(R.string.lobby_code_hint);
         field.setGravity(Gravity.CENTER);
         field.setImeOptions(EditorInfo.IME_ACTION_GO);
         field.setSingleLine(true);
@@ -505,7 +507,7 @@ public class LobbyActivity extends Activity {
         Runnable join = () -> {
             String code = clean(field.getText().toString());
             if (code.length() < 3) {
-                problem.setText("A code is at least 3 letters or numbers.");
+                problem.setText(R.string.lobby_code_short);
                 return;
             }
             start(code);
@@ -514,8 +516,8 @@ public class LobbyActivity extends Activity {
             join.run();
             return true;
         });
-        page.addView(button("Join", true, v -> join.run()));
-        page.addView(button("Back", false, v -> showHome()));
+        page.addView(button(getString(R.string.lobby_join), true, v -> join.run()));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
         field.requestFocus();
     }
 
@@ -531,14 +533,13 @@ public class LobbyActivity extends Activity {
         page.removeAllViews();
         onHome = false;
         searching = true;
-        title("Quick match", 24);
-        final TextView status = note("Looking for another player...");
+        title(getString(R.string.lobby_quick_match), 24);
+        final TextView status = note(getString(R.string.lobby_looking_player));
         status.setTextColor(ACCENT);
         String edition = StrikersHome.edition(this);
-        note("You'll be matched with someone playing " + editionName(edition) + " right now. Then both of"
-                + " you: Grudge Match, pick your team, start." + (voiceOn() ? "" : "\nVoice chat is off"
-                + " (the button on the first page)."));
-        page.addView(button("Cancel", false, v -> {
+        note(getString(R.string.lobby_quick_note, editionName(edition))
+                + (voiceOn() ? "" : "\n" + getString(R.string.lobby_quick_voice_off)));
+        page.addView(button(getString(R.string.lobby_cancel), false, v -> {
             ++quickToken;
             searching = false;
             showHome();
@@ -556,8 +557,7 @@ public class LobbyActivity extends Activity {
             final int h = NetWs.open(SERVER_HOST, 443, "/quick/" + key, 6000);
             if (h < 0) {
                 failures++;
-                runOnUiThread(() -> status.setText("Can't reach the online server. Trying again...\n(Check the"
-                        + " Quest's internet connection.)"));
+                runOnUiThread(() -> status.setText(R.string.lobby_server_retry));
                 android.os.SystemClock.sleep(Math.min(10000, 2000L * failures));
                 continue;
             }
@@ -582,8 +582,8 @@ public class LobbyActivity extends Activity {
                     final String count = msg.substring(8).trim();
                     runOnUiThread(() -> {
                         if (token == quickToken) {
-                            status.setText("Looking for another player..." + ("1".equals(count) ? ""
-                                    : "\n" + count + " players searching"));
+                            status.setText(getString(R.string.lobby_looking_player) + ("1".equals(count) ? ""
+                                    : "\n" + getString(R.string.lobby_players_searching, count)));
                         }
                     });
                 }
@@ -603,9 +603,8 @@ public class LobbyActivity extends Activity {
     private void matched(String code) {
         searching = false;
         page.removeAllViews();
-        title("Player found!", 28);
-        TextView t = note("In the game: Grudge Match, pick your team, start. The match begins when you both"
-                + " have.\n\n(Your room: " + spaced(code) + ")");
+        title(getString(R.string.lobby_player_found), 28);
+        TextView t = note(getString(R.string.lobby_matched_note, spaced(code)));
         t.setTextSize(18);
         final int token = ++quickToken;
         page.postDelayed(() -> {
@@ -619,13 +618,10 @@ public class LobbyActivity extends Activity {
     // (xr_quest.cpp reload_controls), so a change applies even with the game open behind this panel.
     // The sticks, the stick clicks (views) and the left grip (moving the table or the screen) stay.
 
+    // Their names on the page are R.array.lobby_action_labels and R.array.lobby_source_labels, in
+    // this order.
     private static final String[] ACTIONS = {"A", "B", "X", "Y", "Z", "L", "R", "START"};
-    private static final String[] ACTION_LABELS = {"Pass (GameCube A)", "Shoot (GameCube B)",
-            "Use your item (GameCube X)", "Hit (GameCube Y)", "Swap items (GameCube Z)", "GameCube L",
-            "GameCube R", "Pause (Start)"};
     private static final String[] SOURCES = {"a", "b", "x", "y", "lt", "rt", "rg", "menu", "none"};
-    private static final String[] SOURCE_LABELS = {"A button", "B button", "X button", "Y button",
-            "Left trigger", "Right trigger", "Right grip", "Menu button", "Nothing"};
     private static final String[] DEFAULT_CONTROLS = {"a", "b", "x", "y", "rg", "lt", "rt", "menu"};
 
     private File controlsFile() {
@@ -656,8 +652,13 @@ public class LobbyActivity extends Activity {
         }
     }
 
-    private static String sourceLabel(String source) {
-        for (int i = 0; i < SOURCES.length; i++) if (SOURCES[i].equals(source)) return SOURCE_LABELS[i];
+    private String[] actionLabels() {
+        return getResources().getStringArray(R.array.lobby_action_labels);
+    }
+
+    private String sourceLabel(String source) {
+        final String[] labels = getResources().getStringArray(R.array.lobby_source_labels);
+        for (int i = 0; i < SOURCES.length; i++) if (SOURCES[i].equals(source)) return labels[i];
         return source;
     }
 
@@ -665,46 +666,50 @@ public class LobbyActivity extends Activity {
         leaveTourneyPage();
         page.removeAllViews();
         onHome = false;
-        title("Controls", 26);
-        note("Tap a game button, then the Quest button you want for it. It changes right away, even with"
-                + " the game open.");
+        title(getString(R.string.lobby_controls), 26);
+        note(getString(R.string.lobby_controls_note));
         final String[] map = readControls();
+        final String[] actionLabels = actionLabels();
         for (int i = 0; i < ACTIONS.length; i++) {
             final int action = i;
-            final String head = ACTION_LABELS[i];
+            final String head = actionLabels[i];
             final boolean changed = !map[i].equals(DEFAULT_CONTROLS[i]);
-            Button b = row(head + "\n" + sourceLabel(map[i]) + (changed ? "   (changed)" : ""), true,
+            Button b = row(head + "\n" + sourceLabel(map[i]) + (changed ? "   " + getString(R.string.lobby_tag_changed) : ""), true,
                     v -> showControlPick(action));
             SpannableString text = new SpannableString(b.getText());
             text.setSpan(new StyleSpan(Typeface.BOLD), 0, head.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             b.setText(text);
             page.addView(b);
         }
-        TextView fixed = note("Always: left stick moves, right stick is the GameCube C-stick, clicking a stick"
-                + " twice switches the view, and the left grip moves the table or the big screen.");
+        TextView fixed = note(getString(R.string.lobby_controls_fixed));
         fixed.setTextSize(14);
         fixed.setTextColor(MUTED);
-        page.addView(button("Back to the default buttons", false, v -> {
+        page.addView(button(getString(R.string.lobby_controls_reset), false, v -> {
             writeControls(DEFAULT_CONTROLS.clone());
             showControls();
         }));
-        page.addView(button("Back", false, v -> showHome()));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
     }
 
     /** One game button: the Quest buttons to pick from. One already taken swaps with it. */
     private void showControlPick(final int action) {
         page.removeAllViews();
         onHome = false;
-        title(ACTION_LABELS[action], 24);
+        final String[] actionLabels = actionLabels();
+        final String[] sourceLabels = getResources().getStringArray(R.array.lobby_source_labels);
+        title(actionLabels[action], 24);
         final String[] map = readControls();
-        note("Pick the Quest button for it. Now: " + sourceLabel(map[action]) + ".");
+        note(getString(R.string.lobby_pick_note, sourceLabel(map[action])));
         for (int s = 0; s < SOURCES.length; s++) {
             final String source = SOURCES[s];
             String owner = "";
             for (int i = 0; i < ACTIONS.length; i++) {
-                if (i != action && map[i].equals(source) && !source.equals("none")) owner = "   (now " + ACTION_LABELS[i] + ": they swap)";
+                if (i != action && map[i].equals(source) && !source.equals("none")) {
+                    owner = "   " + getString(R.string.lobby_tag_swap, actionLabels[i]);
+                }
             }
-            page.addView(row(SOURCE_LABELS[s] + (source.equals(map[action]) ? "   (current)" : owner), true, v -> {
+            final String tag = source.equals(map[action]) ? "   " + getString(R.string.lobby_tag_current) : owner;
+            page.addView(row(sourceLabels[s] + tag, true, v -> {
                 final String old = map[action];
                 if (!source.equals("none")) {
                     for (int i = 0; i < ACTIONS.length; i++) {
@@ -716,7 +721,7 @@ public class LobbyActivity extends Activity {
                 showControls();
             }));
         }
-        page.addView(button("Back", false, v -> showControls()));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showControls()));
     }
 
     // --- strikers-quest r46: RetroAchievements (Lance: "its allowed to use THEIR strikers achievement
@@ -733,15 +738,13 @@ public class LobbyActivity extends Activity {
         title("RetroAchievements", 26);
         final RetroAch.Login login = RetroAch.saved(this);
         if (login == null) {
-            note("Log in with your RetroAchievements account (retroachievements.org) to get Super Mario"
-                    + " Strikers' achievements. Only a login token is kept on this Quest, never your password."
-                    + " Achievements count in casual mode.");
+            note(getString(R.string.lobby_ra_login_note));
             final EditText user = new EditText(this);
             user.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            user.setHint("Username");
+            user.setHint(R.string.lobby_ra_username);
             final EditText pass = new EditText(this);
             pass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-            pass.setHint("Password");
+            pass.setHint(R.string.lobby_ra_password);
             for (EditText f : new EditText[] {user, pass}) {
                 f.setTextSize(22);
                 f.setTextColor(Color.WHITE);
@@ -751,14 +754,14 @@ public class LobbyActivity extends Activity {
                 page.addView(f, new LinearLayout.LayoutParams(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT));
             }
             final TextView status = note("");
-            page.addView(button("Log in", true, v -> {
+            page.addView(button(getString(R.string.lobby_ra_login), true, v -> {
                 final String u = user.getText().toString().trim(), p = pass.getText().toString();
                 if (u.isEmpty() || p.isEmpty()) {
-                    status.setText("Type your username and password.");
+                    status.setText(R.string.lobby_ra_need_both);
                     status.setTextColor(WARN);
                     return;
                 }
-                status.setText("Logging in...");
+                status.setText(R.string.lobby_ra_logging_in);
                 status.setTextColor(MUTED);
                 new Thread(() -> {
                     String error = null;
@@ -773,30 +776,30 @@ public class LobbyActivity extends Activity {
                         if (why == null) {
                             showRetroAch();
                         } else {
-                            status.setText("Couldn't log in: " + why);
+                            status.setText(getString(R.string.lobby_ra_login_failed, why));
                             status.setTextColor(WARN);
                         }
                     });
                 }, "strikers-ra-login").start();
             }));
-            page.addView(button("Back", false, v -> {
+            page.addView(button(getString(R.string.lobby_back), false, v -> {
                 ++raToken;
                 showHome();
             }));
             return;
         }
-        note("Logged in as " + login.user + ".");
-        final TextView status = note("Loading Super Mario Strikers' achievements...");
+        note(getString(R.string.lobby_ra_logged_in_as, login.user));
+        final TextView status = note(getString(R.string.lobby_ra_loading));
         final LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         page.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        page.addView(button("Log out", false, v -> {
+        page.addView(button(getString(R.string.lobby_ra_logout), false, v -> {
             ++raToken;
             RetroAch.logout(this);
             showRetroAch();
         }));
-        page.addView(button("Back", false, v -> {
+        page.addView(button(getString(R.string.lobby_back), false, v -> {
             ++raToken;
             showHome();
         }));
@@ -813,7 +816,7 @@ public class LobbyActivity extends Activity {
             runOnUiThread(() -> {
                 if (token != raToken || list.getParent() != page) return;
                 if (got == null) {
-                    status.setText("Couldn't load the achievements: " + why);
+                    status.setText(getString(R.string.lobby_ra_load_failed, why));
                     status.setTextColor(WARN);
                     return;
                 }
@@ -825,12 +828,11 @@ public class LobbyActivity extends Activity {
                         points += a.points;
                     }
                 }
-                status.setText(have + " of " + got.size() + " unlocked, " + points + " of " + all
-                        + " points.\nThey unlock as you play, with a pop-up in the headset. (Logged in"
-                        + " while the game was already running? Close it and start it again.)");
+                status.setText(getString(R.string.lobby_ra_summary, have, got.size(), points, all));
                 status.setTextColor(Color.rgb(190, 200, 215));
                 for (RetroAch.Achievement a : got) {
-                    final String head = (a.unlocked ? "✓ " : "") + a.title + "   (" + a.points + " points)";
+                    final String head = (a.unlocked ? "✓ " : "") + a.title + "   "
+                            + getResources().getQuantityString(R.plurals.lobby_ra_points, a.points, a.points);
                     Button b = row(head + "\n" + a.description, a.unlocked, null);
                     b.setEnabled(false);
                     b.setTextColor(a.unlocked ? Color.WHITE : MUTED);
@@ -884,8 +886,7 @@ public class LobbyActivity extends Activity {
         android.util.Log.i("strikers", "voice chat on; echo canceller "
                 + (android.media.audiofx.AcousticEchoCanceler.isAvailable() ? "available" : "NOT available"));
         showHome();
-        note("Voice chat is on: in online matches you hear each other. Turn it off here, or in the game's"
-                + " pause screen (right stick down).");
+        note(getString(R.string.lobby_voice_on_note));
     }
 
     @Override
@@ -897,7 +898,7 @@ public class LobbyActivity extends Activity {
         } else {
             writeVoice(false);
             showHome();
-            note("Voice chat needs the microphone. Press Voice chat again and choose Allow.").setTextColor(WARN);
+            note(getString(R.string.lobby_voice_needs_mic)).setTextColor(WARN);
         }
     }
 
@@ -931,7 +932,7 @@ public class LobbyActivity extends Activity {
 
     /** r45: the row of star players under the team name; the picked one is ringed in gold. */
     private void addStarPicker(final EditText name) {
-        final TextView label = note("Your star player (your team's logo): " + StarLogo.name(teamStar()));
+        final TextView label = note(getString(R.string.lobby_star_label, StarLogo.name(this, teamStar())));
         label.setPadding(0, dp(8), 0, dp(2));
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -945,14 +946,14 @@ public class LobbyActivity extends Activity {
                 if (i == teamStar()) bg.setStroke(dp(3), ACCENT);
                 icons[i].setBackground(bg);
             }
-            label.setText("Your star player (your team's logo): " + StarLogo.name(teamStar()));
+            label.setText(getString(R.string.lobby_star_label, StarLogo.name(this, teamStar())));
         };
         for (int i = 0; i < StarLogo.COUNT; i++) {
             final int star = i;
             android.widget.ImageView icon = new android.widget.ImageView(this);
             icon.setImageDrawable(new StarLogo(star));
             icon.setPadding(dp(5), dp(5), dp(5), dp(5));
-            icon.setContentDescription(StarLogo.name(star));
+            icon.setContentDescription(StarLogo.name(this, star));
             icon.setOnClickListener(v -> {
                 prefs.edit().putInt(TEAM_STAR, star).apply();
                 ring.run();
@@ -1001,11 +1002,10 @@ public class LobbyActivity extends Activity {
         onHome = false;
         searching = false;
         ++quickToken;
-        title("Tournaments", 26);
-        note("4 or 8 players, knockout. It starts when it's full; each match is a Grudge Match, and you"
-                + " come back here between rounds.");
+        title(getString(R.string.lobby_tournaments), 26);
+        note(getString(R.string.lobby_tourney_note));
         // The team name, kept as typed; the hub tidies it.
-        TextView label = note("Your team name");
+        TextView label = note(getString(R.string.lobby_team_name_label));
         label.setPadding(0, dp(4), 0, dp(2));
         final EditText name = new EditText(this);
         name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
@@ -1013,7 +1013,7 @@ public class LobbyActivity extends Activity {
         name.setTextSize(24);
         name.setTextColor(Color.WHITE);
         name.setHintTextColor(Color.GRAY);
-        name.setHint("Team name");
+        name.setHint(R.string.lobby_team_name_hint);
         name.setGravity(Gravity.CENTER);
         name.setSingleLine(true);
         name.setImeOptions(EditorInfo.IME_ACTION_DONE);
@@ -1043,7 +1043,7 @@ public class LobbyActivity extends Activity {
         tourneyNameField = name;
         page.addView(name, new LinearLayout.LayoutParams(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT));
         addStarPicker(name);
-        tourneyLink = note("Connecting...");
+        tourneyLink = note(getString(R.string.lobby_connecting));
         tourneyLink.setTextSize(14);
         tourneyLink.setTextColor(MUTED);
         tourneyBody = new LinearLayout(this);
@@ -1051,9 +1051,9 @@ public class LobbyActivity extends Activity {
         tourneyBody.setGravity(Gravity.CENTER_HORIZONTAL);
         page.addView(tourneyBody, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        page.addView(button("Back", false, v -> showHome()));
+        page.addView(button(getString(R.string.lobby_back), false, v -> showHome()));
         final String key = (StrikersHome.CLASSIC.equals(StrikersHome.edition(this)) ? "C" : "P") + ONLINE_PROTOCOL;
-        tourney = new TourneyClient(SERVER_HOST, key, playerId(), teamName(), teamStar(), new TourneyClient.Listener() {
+        tourney = new TourneyClient(this, SERVER_HOST, key, playerId(), teamName(), teamStar(), new TourneyClient.Listener() {
             @Override public void onState(org.json.JSONObject state) {
                 tourneyState = state;
                 if (tourneyLink != null && tourneyLink.getCurrentTextColor() != WARN) tourneyLink.setText("");
@@ -1134,17 +1134,17 @@ public class LobbyActivity extends Activity {
             org.json.JSONObject m = new org.json.JSONObject();
             m.put("t", type);
             if (field != null) m.put(field, value);
-            if (!tourney.send(m) && tourneyLink != null) tourneyLink.setText("Not connected yet, try again in a moment.");
+            if (!tourney.send(m) && tourneyLink != null) tourneyLink.setText(R.string.lobby_not_connected);
         } catch (org.json.JSONException e) {
             // cannot happen with these values
         }
     }
 
     /** "Final", "Semi-finals", "Quarter-finals", from the end. */
-    private static String roundName(int round, int rounds) {
+    private String roundName(int round, int rounds) {
         final int fromEnd = rounds - 1 - round;
-        return fromEnd == 0 ? "Final" : fromEnd == 1 ? "Semi-finals" : fromEnd == 2 ? "Quarter-finals"
-                : "Round " + (round + 1);
+        return fromEnd == 0 ? getString(R.string.tourney_final) : fromEnd == 1 ? getString(R.string.tourney_semi)
+                : fromEnd == 2 ? getString(R.string.tourney_quarter) : getString(R.string.tourney_round, round + 1);
     }
 
     private void renderTourney() {
@@ -1162,21 +1162,21 @@ public class LobbyActivity extends Activity {
         final org.json.JSONObject lobbies = tourneyState.optJSONObject("lobbies");
         final org.json.JSONObject me = tourneyState.optJSONObject("me");
         final int myLobby = me != null && !me.isNull("lobby") ? me.optInt("lobby", 0) : 0;
-        if (teamName().isEmpty()) bodyNote("Pick a team name first (it shows in the lists and the bracket).", WARN);
+        if (teamName().isEmpty()) bodyNote(getString(R.string.lobby_pick_team_first), WARN);
         for (int size : new int[] {4, 8}) {
             final org.json.JSONObject l = lobbies != null ? lobbies.optJSONObject(String.valueOf(size)) : null;
             final org.json.JSONArray names = l != null ? l.optJSONArray("names") : null;
             final int count = names != null ? names.length() : 0;
-            final String head = size + "-player tournament   " + count + "/" + size + " joined";
-            final String sub = count == 0 ? "Nobody yet: be the first." : "Tap to join";
+            final String head = getString(R.string.lobby_lobby_head, size, count);
+            final String sub = count == 0 ? getString(R.string.lobby_nobody_yet) : getString(R.string.lobby_tap_to_join);
             final boolean in = myLobby == size;
-            Button b = rowIn(tourneyBody, head + "\n" + (in ? "" : sub) + (in ? "You're in! Waiting for " + (size - count)
-                    + " more..." : ""), true, v -> {
+            final String line2 = in ? getString(R.string.lobby_youre_in, size - count) : sub;
+            Button b = rowIn(tourneyBody, head + "\n" + line2, true, v -> {
                 if (in) return;
                 if (teamName().isEmpty()) {
                     // r45b: said where it is seen (under the name), and the name box takes the typing.
                     if (tourneyLink != null) {
-                        tourneyLink.setText("Type your team name above first, then tap the tournament again.");
+                        tourneyLink.setText(R.string.lobby_type_team_first);
                         tourneyLink.setTextColor(WARN);
                     }
                     if (tourneyNameField != null) tourneyNameField.requestFocus();
@@ -1185,7 +1185,7 @@ public class LobbyActivity extends Activity {
                 if (tourney != null) tourney.identity(teamName(), teamStar());  // the name as typed
                 tourneyRequest("join", "size", size);
                 if (tourneyLink != null) {
-                    tourneyLink.setText("Joining the " + size + "-player tournament...");
+                    tourneyLink.setText(getString(R.string.lobby_joining, size));
                     tourneyLink.setTextColor(MUTED);
                 }
             });
@@ -1195,12 +1195,13 @@ public class LobbyActivity extends Activity {
             b.setText(text);
             addTeamChips(tourneyBody, names, l != null ? l.optJSONArray("stars") : null);  // who's in
             if (in) {
-                Button leave = button("Leave the " + size + "-player tournament", false, v -> tourneyRequest("leave", null, null));
+                Button leave = button(getString(R.string.lobby_leave, size), false,
+                        v -> tourneyRequest("leave", null, null));
                 tourneyBody.addView(leave);
             }
         }
-        if (myLobby == 0) bodyNote("Tap one to join. It starts by itself when it's full.", MUTED);
-        else bodyNote("Stay on this page: when it fills up, your first match starts from here.", MUTED);
+        if (myLobby == 0) bodyNote(getString(R.string.lobby_tap_one), MUTED);
+        else bodyNote(getString(R.string.lobby_stay), MUTED);
     }
 
     private void renderBracket(org.json.JSONObject t, int you) {
@@ -1211,8 +1212,8 @@ public class LobbyActivity extends Activity {
         final int champion = t.isNull("champion") ? -1 : t.optInt("champion", -1);
         java.util.function.IntFunction<String> nameOf = i -> i >= 0 && i < names.length() ? names.optString(i) : "?";
         if (champion >= 0) {
-            TextView c = bodyNote((champion == you ? "YOU WON THE TOURNAMENT!\n" : "Champions: ")
-                    + nameOf.apply(champion), ACCENT);
+            TextView c = bodyNote(getString(champion == you ? R.string.lobby_you_won_tourney : R.string.lobby_champions,
+                    nameOf.apply(champion)), ACCENT);
             c.setTextSize(26);
             c.setTypeface(Typeface.DEFAULT_BOLD);
         }
@@ -1242,51 +1243,51 @@ public class LobbyActivity extends Activity {
             final String mid = m.optString("mid"), code = m.optString("code");
             final org.json.JSONObject reports = m.optJSONObject("reports");
             final boolean reported = reports != null && !reports.isNull(amA ? "a" : "b");
-            final String what = roundName(mineRound, rounds.length()) + ": you vs " + nameOf.apply(opp)
-                    + (m.optInt("replays", 0) > 0 ? " (replay)" : "");
+            final String what = getString(R.string.lobby_your_match, roundName(mineRound, rounds.length()), nameOf.apply(opp))
+                    + (m.optInt("replays", 0) > 0 ? " " + getString(R.string.lobby_tag_replay) : "");
             TextView h = bodyNote(what, ACCENT);
             h.setTextSize(22);
             if (reported) {
                 ++countdownToken;  // r45d: a countdown still running for it stops
-                bodyNote("Your result is in. Waiting for " + nameOf.apply(opp) + "'s.", MUTED);
+                bodyNote(getString(R.string.lobby_result_in, nameOf.apply(opp)), MUTED);
             } else {
-                tourneyBody.addView(button("Play your match", true, v -> {
+                tourneyBody.addView(button(getString(R.string.lobby_play_your_match), true, v -> {
                     ++countdownToken;
                     start(code, mid);
                 }));
-                bodyNote("Then both of you: Grudge Match, pick your team, start.", MUTED);
+                bodyNote(getString(R.string.lobby_then_both), MUTED);
                 // A short countdown the first time this match shows up, so a match starts without a
                 // tap, but a player who just came back can still wait.
                 if (!(mid + "/" + code).equals(autoStartedMid)) {  // r45d: a replay (new code) counts down again
                     autoStartedMid = mid + "/" + code;
-                    final TextView count = bodyNote("Starting in 10...", Color.WHITE);
+                    final TextView count = bodyNote(getString(R.string.lobby_starting_in, 10), Color.WHITE);
                     final int token = ++countdownToken;
                     for (int s = 9; s >= 0; s--) {
                         final int left = s;
                         page.postDelayed(() -> {
                             if (token != countdownToken || tourneyBody == null) return;
                             if (left > 0) {
-                                count.setText("Starting in " + left + "...");
+                                count.setText(getString(R.string.lobby_starting_in, left));
                             } else {
                                 start(code, mid);
                             }
                         }, (10 - s) * 1000L);
                     }
-                    tourneyBody.addView(button("Wait", false, v -> {
+                    tourneyBody.addView(button(getString(R.string.lobby_wait), false, v -> {
                         ++countdownToken;
-                        count.setText("Press Play your match when you're ready.");
+                        count.setText(R.string.lobby_press_play_when_ready);
                     }));
                 }
                 final long readyAt = m.optLong("readyAt", 0);
                 if (readyAt > 0 && System.currentTimeMillis() - readyAt > 5 * 60 * 1000L) {
-                    tourneyBody.addView(button("Opponent never came? Claim the win", false,
+                    tourneyBody.addView(button(getString(R.string.lobby_claim_win), false,
                             v -> tourneyRequest("noshow", "mid", mid)));
                 }
             }
         } else if (champion < 0 && last != null) {
             ++countdownToken;  // r45d: nothing to count down to
             final boolean won = !last.isNull("winner") && last.optInt("winner") == you;
-            bodyNote(won ? "You won! Waiting for your next opponent..." : "You're out. Thanks for playing!",
+            bodyNote(getString(won ? R.string.lobby_won_wait_next : R.string.lobby_out),
                     won ? ACCENT : MUTED);
         }
         // The whole tree (Lance: "a playoff tree ... with the star player ... being the logo and the team
@@ -1300,7 +1301,7 @@ public class LobbyActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(10);
         tourneyBody.addView(sideways, lp);
-        bodyNote(size + "-player tournament", MUTED);
+        bodyNote(getString(R.string.lobby_tourney_size, size), MUTED);
     }
 
     private TextView bodyNote(String text, int colour) {
@@ -1367,8 +1368,7 @@ public class LobbyActivity extends Activity {
                 && !StrikersHome.hasGameDataInHome(StrikersHome.homeDir(this))
                 && askForFileAccess(this)) {
             if (accessNote == null || accessNote.getParent() != page) accessNote = note("");
-            accessNote.setText("Turn on \"Allow access to manage all files\" so the game can read your"
-                    + " disc file, then come back here and press the same button again.");
+            accessNote.setText(getString(R.string.lobby_access_read));
             return false;
         }
         // r41: no game file, or one the game cannot read: say so and show the list, rather than
@@ -1516,7 +1516,7 @@ public class LobbyActivity extends Activity {
 
     private String versionText() {
         String v = versionName();
-        return v.isEmpty() ? "" : "Version " + v;
+        return v.isEmpty() ? "" : getString(R.string.lobby_version_text, v);
     }
 
     private static String readText(File f, int max) {

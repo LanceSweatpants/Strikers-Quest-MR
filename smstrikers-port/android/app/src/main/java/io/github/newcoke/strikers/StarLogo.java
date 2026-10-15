@@ -1,5 +1,6 @@
 package io.github.newcoke.strikers;
 
+import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
@@ -34,8 +35,9 @@ final class StarLogo extends Drawable {
         this.star = star >= 0 && star < COUNT ? star : -1;
     }
 
-    static String name(int star) {
-        return star >= 0 && star < COUNT ? NAMES[star] : "No star yet";
+    /** The character's name (the same in every language), or "No star yet" in the panel's. */
+    static String name(Context context, int star) {
+        return star >= 0 && star < COUNT ? NAMES[star] : context.getString(R.string.star_none);
     }
 
     @Override

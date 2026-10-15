@@ -1,5 +1,6 @@
 package io.github.newcoke.strikers;
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -27,6 +28,7 @@ final class TourneyClient {
 
     private static final String TAG = "strikers_tourney";
 
+    private final Context context;  // the panel: its words for onLink
     private final String host;
     private final String key;
     private final String pid;
@@ -39,7 +41,8 @@ final class TourneyClient {
     private final java.util.concurrent.LinkedBlockingQueue<String> outbox = new java.util.concurrent.LinkedBlockingQueue<>();
     private Thread thread;
 
-    TourneyClient(String host, String key, String pid, String name, int star, Listener listener) {
+    TourneyClient(Context context, String host, String key, String pid, String name, int star, Listener listener) {
+        this.context = context;
         this.host = host;
         this.key = key;
         this.pid = pid;
@@ -101,7 +104,7 @@ final class TourneyClient {
             final int h = NetWs.open(host, 443, "/tourney/" + key, 6000);
             if (h < 0) {
                 failures++;
-                ui.post(() -> listener.onLink(false, "Can't reach the online server. Trying again..."));
+                ui.post(() -> listener.onLink(false, context.getString(R.string.tourney_unreachable)));
                 SystemClock.sleep(Math.min(10000, 2000L * failures));
                 continue;
             }
@@ -150,7 +153,7 @@ final class TourneyClient {
             handle = -1;
             NetWs.close(h);
             if (running) {
-                ui.post(() -> listener.onLink(false, "Reconnecting..."));
+                ui.post(() -> listener.onLink(false, context.getString(R.string.tourney_reconnecting)));
                 SystemClock.sleep(1000);
             }
         }

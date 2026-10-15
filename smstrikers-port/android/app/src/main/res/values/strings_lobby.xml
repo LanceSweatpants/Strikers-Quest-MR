@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  strikers-quest: the Quest launcher panel (LobbyActivity) and what it shows from GameFile,
+  StarLogo, TourneyClient and BracketView. Kept apart from strings.xml, which is the phone
+  launcher's: a language with no translation here falls back to this English, which is why
+  MissingTranslation is ignored for this file.
+
+  Left in English on purpose, in every language: "Grudge Match" (the game's own mode, as the
+  English disc names it), "Classic" / "Plus" (the Version names), RetroAchievements, and
+  "GOAL SCORED BY" (drawn by the game itself).
+-->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+
+    <!-- Home -->
+    <string name="lobby_update_out">%1$s is out.</string>
+    <string name="lobby_update_now">Update now</string>
+    <string name="lobby_home_note">Quest alpha. Online: both players pick Grudge Match in the same room, on the same Version.</string>
+    <string name="lobby_play_offline">Play offline</string>
+    <string name="lobby_quick_match">Quick match</string>
+    <string name="lobby_tournaments">Tournaments</string>
+    <string name="lobby_host">Host an online match</string>
+    <string name="lobby_join_with_code">Join with a code</string>
+    <string name="lobby_voice_chat">Voice chat: %1$s</string>
+    <string name="lobby_on">On</string>
+    <string name="lobby_off">Off</string>
+    <string name="lobby_controls">Controls</string>
+    <string name="lobby_choose_game_file">Choose game file</string>
+    <string name="lobby_version_button">Version: %1$s</string>
+    <string name="lobby_version_text">Version %1$s</string>
+    <string name="lobby_back">Back</string>
+    <string name="lobby_ok">OK</string>
+
+    <!-- Update -->
+    <string name="lobby_allow_install">Allow this app to install its update, then come back here and press Update now again.</string>
+    <string name="lobby_updating_to">Updating to %1$s</string>
+    <string name="lobby_downloading">Downloading... %1$d%%</string>
+    <string name="lobby_installing">Installing. Confirm on the next screen: the app closes, updates, and you open it again.</string>
+    <string name="lobby_update_failed">The update didn\'t work (%1$s).\nCheck the Quest\'s internet connection and try again, or get it from the GitHub page.</string>
+    <string name="lobby_update_not_installed">The update wasn\'t installed.</string>
+    <string name="lobby_update_not_installed_why">The update wasn\'t installed: %1$s</string>
+
+    <!-- What happened last time -->
+    <string name="lobby_last_error">The game closed last time with this message:\n\n%1$s</string>
+    <string name="lobby_note_edition">Your friend is playing %1$s. You are on %2$s.\nOne of you: switch Version to match, then start the match again.</string>
+    <string name="lobby_note_version_changed">The game was still open on the other Version, so it closed. Press the same button again to play %1$s.</string>
+    <string name="lobby_note_release">Your friend has a different release of Quest 3 Strikers, so you can\'t play online together. Both of you need the same one (Update now, or the GitHub page).</string>
+
+    <!-- Version -->
+    <string name="lobby_choose_version">Choose your version</string>
+    <string name="lobby_version_same">To play online, you and your friend need the same one.</string>
+    <string name="lobby_classic_about">Mario Strikers as you know it</string>
+    <string name="lobby_below_line">Below this line: not Strikers as you know it</string>
+    <string name="lobby_plus_about">New: life-size goal scorer, GOAL SCORED BY banner, longer goal replay, living crowd</string>
+    <string name="lobby_tag_chosen">(chosen)</string>
+
+    <!-- Game file -->
+    <string name="lobby_game_needs_access">Game file: the app needs file access to look for it.</string>
+    <string name="lobby_game_none">No game file found yet. Press \"Choose game file\".</string>
+    <string name="lobby_game_extracted">Game: the extracted disc in %1$s</string>
+    <string name="lobby_game_ok">Game: %1$s</string>
+    <string name="lobby_game_problem">Game file problem: %1$s</string>
+    <string name="lobby_game_not_found">Your game file wasn\'t found on this Quest.</string>
+    <string name="lobby_access_find">Turn on \"Allow access to manage all files\" so the game can find your game file, then come back here and press the same button again.</string>
+    <string name="lobby_access_read">Turn on \"Allow access to manage all files\" so the game can read your disc file, then come back here and press the same button again.</string>
+    <string name="lobby_choose_file_title">Choose your game file</string>
+    <string name="lobby_looking_files">Looking for game files on this Quest...</string>
+    <string name="lobby_look_again">Look again</string>
+    <string name="lobby_no_files">No .iso, .rvz or .wia file found on this Quest.\n\nOn your PC, open SideQuest, click the folder icon, open Download, and drag your game file in. Then press Look again.</string>
+    <string name="lobby_tap_file">Tap your game file:</string>
+
+    <!-- Host, join -->
+    <string name="lobby_room_code">Your room code</string>
+    <string name="lobby_host_note">Tell your friend this code. Both of you: Grudge Match, pick your team, start.</string>
+    <string name="lobby_start">Start</string>
+    <string name="lobby_new_code">New code</string>
+    <string name="lobby_join_title">Join a room</string>
+    <string name="lobby_join_note">Type the code your friend sees.</string>
+    <string name="lobby_code_hint">CODE</string>
+    <string name="lobby_code_short">A code is at least 3 letters or numbers.</string>
+    <string name="lobby_join">Join</string>
+
+    <!-- Quick match -->
+    <string name="lobby_looking_player">Looking for another player...</string>
+    <string name="lobby_quick_note">You\'ll be matched with someone playing %1$s right now. Then both of you: Grudge Match, pick your team, start.</string>
+    <string name="lobby_quick_voice_off">Voice chat is off (the button on the first page).</string>
+    <string name="lobby_cancel">Cancel</string>
+    <string name="lobby_server_retry">Can\'t reach the online server. Trying again...\n(Check the Quest\'s internet connection.)</string>
+    <string name="lobby_players_searching">%1$s players searching</string>
+    <string name="lobby_player_found">Player found!</string>
+    <string name="lobby_matched_note">In the game: Grudge Match, pick your team, start. The match begins when you both have.\n\n(Your room: %1$s)</string>
+
+    <!-- Controls. The order of both lists is LobbyActivity.ACTIONS and LobbyActivity.SOURCES. -->
+    <string-array name="lobby_action_labels">
+        <item>Pass (GameCube A)</item>
+        <item>Shoot (GameCube B)</item>
+        <item>Use your item (GameCube X)</item>
+        <item>Hit (GameCube Y)</item>
+        <item>Swap items (GameCube Z)</item>
+        <item>GameCube L</item>
+        <item>GameCube R</item>
+        <item>Pause (Start)</item>
+    </string-array>
+    <string-array name="lobby_source_labels">
+        <item>A button</item>
+        <item>B button</item>
+        <item>X button</item>
+        <item>Y button</item>
+        <item>Left trigger</item>
+        <item>Right trigger</item>
+        <item>Right grip</item>
+        <item>Menu button</item>
+        <item>Nothing</item>
+    </string-array>
+    <string name="lobby_controls_note">Tap a game button, then the Quest button you want for it. It changes right away, even with the game open.</string>
+    <string name="lobby_tag_changed">(changed)</string>
+    <string name="lobby_controls_fixed">Always: left stick moves, right stick is the GameCube C-stick, clicking a stick twice switches the view, and the left grip moves the table or the big screen.</string>
+    <string name="lobby_controls_reset">Back to the default buttons</string>
+    <string name="lobby_pick_note">Pick the Quest button for it. Now: %1$s.</string>
+    <string name="lobby_tag_swap">(now %1$s: they swap)</string>
+    <string name="lobby_tag_current">(current)</string>
+
+    <!-- RetroAchievements -->
+    <string name="lobby_ra_login_note">Log in with your RetroAchievements account (retroachievements.org) to get Super Mario Strikers\' achievements. Only a login token is kept on this Quest, never your password. Achievements count in casual mode.</string>
+    <string name="lobby_ra_username">Username</string>
+    <string name="lobby_ra_password">Password</string>
+    <string name="lobby_ra_login">Log in</string>
+    <string name="lobby_ra_need_both">Type your username and password.</string>
+    <string name="lobby_ra_logging_in">Logging in...</string>
+    <string name="lobby_ra_login_failed">Couldn\'t log in: %1$s</string>
+    <string name="lobby_ra_logged_in_as">Logged in as %1$s.</string>
+    <string name="lobby_ra_loading">Loading Super Mario Strikers\' achievements...</string>
+    <string name="lobby_ra_logout">Log out</string>
+    <string name="lobby_ra_load_failed">Couldn\'t load the achievements: %1$s</string>
+    <string name="lobby_ra_summary">%1$d of %2$d unlocked, %3$d of %4$d points.\nThey unlock as you play, with a pop-up in the headset. (Logged in while the game was already running? Close it and start it again.)</string>
+    <plurals name="lobby_ra_points">
+        <item quantity="one">(%1$d point)</item>
+        <item quantity="other">(%1$d points)</item>
+    </plurals>
+
+    <!-- Voice chat -->
+    <string name="lobby_voice_on_note">Voice chat is on: in online matches you hear each other. Turn it off here, or in the game\'s pause screen (right stick down).</string>
+    <string name="lobby_voice_needs_mic">Voice chat needs the microphone. Press Voice chat again and choose Allow.</string>
+
+    <!-- Tournaments -->
+    <string name="lobby_tourney_note">4 or 8 players, knockout. It starts when it\'s full; each match is a Grudge Match, and you come back here between rounds.</string>
+    <string name="lobby_team_name_label">Your team name</string>
+    <string name="lobby_team_name_hint">Team name</string>
+    <string name="lobby_star_label">Your star player (your team\'s logo): %1$s</string>
+    <string name="lobby_connecting">Connecting...</string>
+    <string name="lobby_not_connected">Not connected yet, try again in a moment.</string>
+    <string name="lobby_pick_team_first">Pick a team name first (it shows in the lists and the bracket).</string>
+    <string name="lobby_lobby_head">"%1$d-player tournament   %2$d/%1$d joined"</string>
+    <string name="lobby_nobody_yet">Nobody yet: be the first.</string>
+    <string name="lobby_tap_to_join">Tap to join</string>
+    <string name="lobby_youre_in">You\'re in! Waiting for %1$d more...</string>
+    <string name="lobby_type_team_first">Type your team name above first, then tap the tournament again.</string>
+    <string name="lobby_joining">Joining the %1$d-player tournament...</string>
+    <string name="lobby_leave">Leave the %1$d-player tournament</string>
+    <string name="lobby_tap_one">Tap one to join. It starts by itself when it\'s full.</string>
+    <string name="lobby_stay">Stay on this page: when it fills up, your first match starts from here.</string>
+    <string name="lobby_you_won_tourney">YOU WON THE TOURNAMENT!\n%1$s</string>
+    <string name="lobby_champions">Champions: %1$s</string>
+    <string name="lobby_your_match">%1$s: you vs %2$s</string>
+    <string name="lobby_tag_replay">(replay)</string>
+    <string name="lobby_result_in">Your result is in. Waiting for %1$s\'s.</string>
+    <string name="lobby_play_your_match">Play your match</string>
+    <string name="lobby_then_both">Then both of you: Grudge Match, pick your team, start.</string>
+    <string name="lobby_starting_in">Starting in %1$d...</string>
+    <string name="lobby_wait">Wait</string>
+    <string name="lobby_press_play_when_ready">Press Play your match when you\'re ready.</string>
+    <string name="lobby_claim_win">Opponent never came? Claim the win</string>
+    <string name="lobby_won_wait_next">You won! Waiting for your next opponent...</string>
+    <string name="lobby_out">You\'re out. Thanks for playing!</string>
+    <string name="lobby_tourney_size">%1$d-player tournament</string>
+
+    <!-- The tournament hub's connection (TourneyClient) and tree (BracketView) -->
+    <string name="tourney_unreachable">Can\'t reach the online server. Trying again...</string>
+    <string name="tourney_reconnecting">Reconnecting...</string>
+    <string name="tourney_final">Final</string>
+    <string name="tourney_semi">Semi-finals</string>
+    <string name="tourney_quarter">Quarter-finals</string>
+    <string name="tourney_round">Round %1$d</string>
+    <string name="tourney_champion">Champion</string>
+    <string name="tourney_badge_replay">REPLAY</string>
+    <string name="tourney_badge_playing">PLAYING</string>
+    <string name="tourney_waiting">Waiting...</string>
+    <string name="tourney_tag_you">(you)</string>
+
+    <!-- The star players (StarLogo); the names themselves are the characters' and stay as they are -->
+    <string name="star_none">No star yet</string>
+
+    <!-- What GameFile makes of a file -->
+    <string name="game_zipped">Zipped file</string>
+    <string name="game_zipped_why">Unzip it on your PC first, then copy the .iso or .rvz that comes out.</string>
+    <string name="game_not_image">Not a disc image</string>
+    <string name="game_too_small">The file is too small to be a game.</string>
+    <string name="game_not_gamecube">Not a GameCube game</string>
+    <string name="game_wii_or_other">This is a Wii or other disc. Strikers is a GameCube game.</string>
+    <string name="game_unreadable">Can\'t be read</string>
+    <string name="game_unknown_compression">It uses a compression the game doesn\'t know. In Dolphin, convert it to .iso and copy that over.</string>
+    <string name="game_wii">This is a Wii disc. Strikers is a GameCube game.</string>
+    <string name="game_file">Game file</string>
+    <string name="game_wrong_format">This isn\'t a game file the game can read. Use an .iso, .rvz or .wia.</string>
+    <string name="game_not_allowed">The game isn\'t allowed to read this file, or it is damaged.</string>
+    <string name="game_different">A different game (%1$s)</string>
+    <string name="game_code_g4q">Super Mario Strikers\' code starts with G4Q.</string>
+    <string name="game_strikers">Super Mario Strikers (%1$s)</string>
+    <string name="region_usa">USA</string>
+    <string name="region_europe">Europe</string>
+    <string name="region_japan">Japan</string>
+    <string name="region_other">region %1$s</string>
+</resources>

@@ -70,18 +70,19 @@ final class GameFile {
 
     /**
      * Every disc image (and large archive) on shared storage, usable ones first. Needs all files
-     * access; a slow walk on a full headset, so off the UI thread.
+     * access; a slow walk on a full headset, so off the UI thread. `context` gives the labels and
+     * problems their words, in the panel's language.
      */
-    static List<Found> scan() {
+    static List<Found> scan(Context context) {
         List<Found> found = new ArrayList<>();
-        walk(Environment.getExternalStorageDirectory(), 0, found);
+        walk(context, Environment.getExternalStorageDirectory(), 0, found);
         List<Found> sorted = new ArrayList<>();
         for (Found f : found) if (f.usable) sorted.add(f);
         for (Found f : found) if (!f.usable) sorted.add(f);
         return sorted;
     }
 
-    private static void walk(File dir, int depth, List<Found> out) {
+    private static void walk(Context context, File dir, int depth, List<Found> out) {
         File[] entries = dir.listFiles();
         if (entries == null) return;
         List<File> sorted = new ArrayList<>();
@@ -93,27 +94,28 @@ final class GameFile {
             if (entry.isDirectory()) {
                 // Android/data and obb are other apps' and unreadable anyway.
                 if (depth == 0 && name.equalsIgnoreCase("Android")) continue;
-                if (depth < MAX_DEPTH) walk(entry, depth + 1, out);
+                if (depth < MAX_DEPTH) walk(context, entry, depth + 1, out);
                 continue;
             }
             String lower = name.toLowerCase(Locale.ROOT);
             if (endsWithAny(lower, IMAGE_EXT)) {
-                out.add(check(entry));
+                out.add(check(context, entry));
             } else if (endsWithAny(lower, ARCHIVE_EXT) && entry.length() >= ARCHIVE_MIN) {
-                out.add(new Found(entry, false, "Zipped file",
-                        "Unzip it on your PC first, then copy the .iso or .rvz that comes out."));
+                out.add(new Found(entry, false, context.getString(R.string.game_zipped),
+                        context.getString(R.string.game_zipped_why)));
             }
         }
     }
 
     /** What a disc image is, from its header. Mirrors port_disc_open in src/platform/disc.c. */
-    static Found check(File file) {
+    static Found check(Context context, File file) {
         byte[] h = new byte[0x220];
         String id;
         try (RandomAccessFile r = new RandomAccessFile(file, "r")) {
             int n = r.read(h);
             if (n < 0x80) {
-                return new Found(file, false, "Not a disc image", "The file is too small to be a game.");
+                return new Found(file, false, context.getString(R.string.game_not_image),
+                        context.getString(R.string.game_too_small));
             }
             boolean rvz = startsWith(h, "RVZ\u0001");
             if (rvz || startsWith(h, "WIA\u0001")) {
@@ -124,46 +126,45 @@ final class GameFile {
                 int discType = be32(h, 0x48);
                 int compression = be32(h, 0x4C);
                 if (discType != 1 || be32(h, 0x58 + 0x1C) != GC_MAGIC) {
-                    return new Found(file, false, "Not a GameCube game",
-                            "This is a Wii or other disc. Strikers is a GameCube game.");
+                    return new Found(file, false, context.getString(R.string.game_not_gamecube),
+                            context.getString(R.string.game_wii_or_other));
                 }
                 boolean known = compression >= 0 && compression <= 5 && compression != (rvz ? 1 : 5);
                 if (!known) {
-                    return new Found(file, false, "Can't be read",
-                            "It uses a compression the game doesn't know. In Dolphin, convert it to"
-                                    + " .iso and copy that over.");
+                    return new Found(file, false, context.getString(R.string.game_unreadable),
+                            context.getString(R.string.game_unknown_compression));
                 }
                 id = ascii(h, 0x58, 6);
             } else if (be32(h, 0x1C) == GC_MAGIC) {
                 id = ascii(h, 0, 6);
             } else if (be32(h, 0x18) == WII_MAGIC) {
-                return new Found(file, false, "Not a GameCube game",
-                        "This is a Wii disc. Strikers is a GameCube game.");
+                return new Found(file, false, context.getString(R.string.game_not_gamecube),
+                        context.getString(R.string.game_wii));
             } else if (file.getName().toLowerCase(Locale.ROOT).matches(".*\\.(ciso|gcz)")) {
                 // Still read when found in Download (StrikersHome), though the list no longer
                 // offers them; compressed, so the game checks them itself when it opens.
-                return new Found(file, true, "Game file", null);
+                return new Found(file, true, context.getString(R.string.game_file), null);
             } else {
-                return new Found(file, false, "Not a disc image",
-                        "This isn't a game file the game can read. Use an .iso, .rvz or .wia.");
+                return new Found(file, false, context.getString(R.string.game_not_image),
+                        context.getString(R.string.game_wrong_format));
             }
         } catch (IOException | SecurityException e) {
-            return new Found(file, false, "Can't be read",
-                    "The game isn't allowed to read this file, or it is damaged.");
+            return new Found(file, false, context.getString(R.string.game_unreadable),
+                    context.getString(R.string.game_not_allowed));
         }
         if (!id.startsWith("G4Q")) {
-            return new Found(file, false, "A different game (" + id + ")",
-                    "Super Mario Strikers' code starts with G4Q.");
+            return new Found(file, false, context.getString(R.string.game_different, id),
+                    context.getString(R.string.game_code_g4q));
         }
-        return new Found(file, true, "Super Mario Strikers (" + region(id.charAt(3)) + ")", null);
+        return new Found(file, true, context.getString(R.string.game_strikers, region(context, id.charAt(3))), null);
     }
 
-    static String region(char c) {
+    static String region(Context context, char c) {
         switch (c) {
-            case 'E': return "USA";
-            case 'P': return "Europe";
-            case 'J': return "Japan";
-            default: return "region " + c;
+            case 'E': return context.getString(R.string.region_usa);
+            case 'P': return context.getString(R.string.region_europe);
+            case 'J': return context.getString(R.string.region_japan);
+            default: return context.getString(R.string.region_other, String.valueOf(c));
         }
     }
 
