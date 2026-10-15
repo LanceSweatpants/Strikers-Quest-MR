@@ -40,7 +40,8 @@ And around the game:
   first screen. **Classic** is the game as alpha 1.2 had it. **Plus** adds things that aren't in the
   original game:
   - **A life-size goal scorer**: whoever scores runs out into your room (or onto the stadium pitch),
-    stops out in front of you, and waves and dances while the replay screen rises above them.
+    stops out in front of you (in Tabletop, right beside the table), and waves and dances while the
+    replay screen rises above them.
   - **A "GOAL SCORED BY" banner** over their head with their goals and assists in this game.
   - **Hat tricks**: three regular goals by one player in one game and hats rain down all over the
     field. (A Super Strike worth two counts towards the stats but not towards a hat trick.)
@@ -50,8 +51,8 @@ And around the game:
 - **Goal celebrations in 3D**: confetti in the scorer's colours plus their own piece (coins for
   Mario, hearts for Peach, bananas for Donkey Kong, and so on), streamers, foil, pyro and fireworks,
   raining down from the sky and fading where they land (no heaps). In the Tabletop modes the goal
-  replay plays on a jumbotron that drops from the ceiling (or the sky, in the stadium), and the table
-  floats up out of the way while the scorer celebrates. Skip the replay and it all stops.
+  replay plays on a jumbotron that drops from the ceiling (or the sky, in the stadium), and the scorer
+  celebrates standing right beside the table. Skip the replay and it all stops.
 - **The game's own white flashes** (replay wipes, the Super Strike flash) light up your whole view,
   not just the picture.
 - **Controller rumble**: the game's rumble reaches the Touch controllers, with an extra buzz on your
@@ -244,8 +245,10 @@ set (40 achievements) as you play.
 
 - Achievements count in **casual** mode. RetroAchievements only allows hardcore on apps it has
   approved, so the page and your profile show a warning about that; casual unlocks still count.
-- Your game file has to be a disc image (`.iso`, `.rvz` or `.wia`) that RetroAchievements knows.
-  The pop-up tells you if it isn't.
+- RetroAchievements supports one copy of the game: **Super Mario Strikers (USA)**, the standard
+  (Redump) dump, as `.iso`, `.rvz` or `.wia`. NKit files of it work too (alpha 1.7). Other regions
+  (Mario Smash Football) and other dumps aren't on RetroAchievements. If yours isn't recognised, the
+  pop-up and the app's RetroAchievements page say why and show your file's ID.
 - Logged in while the game was already running? Close the game and start it again.
 
 ## If something goes wrong

@@ -2140,8 +2140,10 @@ float turn_toward(float from, float to, float u) {
   return from + d * std::max(0.0f, std::min(1.0f, u));
 }
 
-// A show's path, from where you are when it starts: the spot is out in front (below the big screen,
-// or beyond the table), and the scorer comes from farther out, running in at PORT_SCORER_SPEED, and
+XrVector3f table_point(float gx, float gy, float gz);
+
+// A show's path, from where you are when it starts: the spot is out in front (below the big screen)
+// or beside the table, and the scorer comes from farther out, running in at PORT_SCORER_SPEED, and
 // leaves the same way.
 void plan_scorer() {
   const XrPosef& head = g.headPose;
@@ -2168,9 +2170,51 @@ void plan_scorer() {
     // A little in front of the screen, so it stands below it rather than inside it.
     want = std::max(2.5f, std::min(g.mrMode ? 4.0f : 8.0f, std::sqrt(tx * tx + tz * tz) - 0.4f));
   } else {
-    tx = g.table.position.x - head.position.x;
-    tz = g.table.position.z - head.position.z;
-    want = std::max(2.0f, std::min(4.5f, std::sqrt(tx * tx + tz * tz) + 0.9f));
+    // r46e (players: the field floating up out of the way for the show; Lance: "the goal scorer
+    // stands next to the tabletop field"): the field stays where you put it, and the scorer stands
+    // beside it, life-size, level with its middle, turned to you. On your left without colour
+    // passthrough (Quest 2: the game's picture is on the right, beside_table), otherwise a side per
+    // goal, alternating. It runs in from that side and a little beyond, and leaves the same way.
+    // r43b-r46d stood it beyond the field, which floated up above your view meanwhile (tableLift).
+    const XrVector3f t = g.table.position;
+    float ux = t.x - head.position.x, uz = t.z - head.position.z;
+    float ulen = std::sqrt(ux * ux + uz * uz);
+    if (ulen < 0.2f) {
+      ux = fx;
+      uz = fz;
+      ulen = 1.0f;
+    }
+    ux /= ulen;
+    uz /= ulen;
+    const float flip = (g.scorer.shows++ & 1) != 0 ? -1.0f : 1.0f;
+    const float side = g.colorPassthrough ? flip : -1.0f;
+    const float sx = -uz * side, sz = ux * side;  // the side it stands on (+1 = your right)
+    float reach = 0.0f;                           // how far the field reaches that way
+    for (int i = 0; i < 4; ++i) {
+      const XrVector3f c = table_point((i & 1) ? 20.6f : -20.6f, (i & 2) ? 12.1f : -12.1f, 0.0f);
+      reach = std::max(reach, (c.x - t.x) * sx + (c.z - t.z) * sz);
+    }
+    const float out = reach + 0.45f;
+    XrVector3f spot{t.x + sx * out, mode_floor_y(), t.z + sz * out};
+    // Not right on top of you with the field close by.
+    const float hx = spot.x - head.position.x, hz = spot.z - head.position.z;
+    const float fromHead = std::sqrt(hx * hx + hz * hz);
+    if (fromHead < 1.4f) {
+      spot.x += ux * (1.4f - fromHead);
+      spot.z += uz * (1.4f - fromHead);
+    }
+    g.scorer.spot = spot;
+    float ax = sx + 0.6f * ux, az = sz + 0.6f * uz;
+    const float alen = std::max(1e-3f, std::sqrt(ax * ax + az * az));
+    ax /= alen;
+    az /= alen;
+    g.scorer.away = {ax, 0.0f, az};
+    const float run = PORT_SCORER_SPEED * (PORT_SCORER_ARRIVE - PORT_SCORER_APPEAR);
+    g.scorer.spawn = {spot.x + ax * run, spot.y, spot.z + az * run};
+    g.scorer.planned = true;
+    XLOG("scorer: beside the field on your %s, spot (%.2f, %.2f, %.2f), field reach %.2f m, from (%.2f, %.2f)",
+         side > 0.0f ? "right" : "left", spot.x, spot.y, spot.z, reach, g.scorer.spawn.x, g.scorer.spawn.z);
+    return;
   }
   const float tlen = std::sqrt(tx * tx + tz * tz);
   float dx = fx, dz = fz;
@@ -4306,22 +4350,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     scene.floorY = mode_floor_y();  // r44g: the stadium's ground in the stadium
     scene.mr = g.mrMode;
     scene.tabletop = g.tabletop && !g.stereoFailed;
-    {
-      // r44 (Lance: "if in tabletop mode, the tabletop gets lifted for a second so the player could
-      // celebrate in front of them", he had to move it out of the way himself): while the scorer is
-      // out the field floats up above your view, and comes back down once the show is over. The
-      // scorer's spot is beyond the field, so the field was right in the way.
-      const bool show = scene.tabletop && scorer_shown() && g.scorer.planned;
-      if (!show) g.tableLiftOff = false;
-      float target = 0.0f;
-      if (show && !g.tableLiftOff && g.table.grabHands == 0) {
-        const float headY = g.headValid ? g.headPose.position.y : g.table.position.y + 0.6f;
-        target = std::max(0.0f, headY + 1.2f - g.table.position.y);
-      }
-      const float dt = scene.dt > 0.0f ? std::min(scene.dt, 0.1f) : 1.0f / 72.0f;
-      g.tableLift += (target - g.tableLift) * std::min(1.0f, dt * (target > g.tableLift ? 4.0f : 2.5f));
-      if (g.tableLift < 0.003f && target == 0.0f) g.tableLift = 0.0f;
-    }
+    // r46e (players): the field no longer floats up while the scorer celebrates (r44-r46d); the
+    // scorer stands beside it instead (plan_scorer).
+    g.tableLift = 0.0f;
+    g.tableLiftOff = false;
     scene.tablePos = table_shown_pos();
     // r45d: your eyes under the field (raised for the scorer, or you crouched): its underside solid.
     scene.tableUnderside = scene.tabletop && g.headValid && g.headPose.position.y < scene.tablePos.y - 0.02f;

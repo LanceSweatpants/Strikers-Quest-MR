@@ -18,6 +18,7 @@
 #include <rc_consoles.h>
 #include <rc_hash.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -32,6 +33,7 @@
 
 #include "../../include/port/disc.h"
 #include "../../include/port/ra_memory.h"
+#include "../../include/port/region.h"
 #include "xr_text.h"
 
 namespace xrra {
@@ -117,7 +119,20 @@ bool jni_init() {
 struct DiscFile {
   PortDisc* disc = nullptr;
   int64_t pos = 0;
+  bool nkit = false;
 };
+
+// r46d: an NKit-processed image (players' "ROM" downloads often are) carries NKit's own header at
+// 0x200, inside what the hash reads, where the disc itself has zeros (the end of the game name
+// field, 0x020-0x3FF). The disc's data before main.dol's end is otherwise as pressed, so with that
+// field read as the disc had it the image hashes as the disc it came from.
+constexpr uint64_t kNkitFrom = 0x200, kNkitTo = 0x400;
+
+// What the hash found, for the pop-up and the panel (ra-status.txt). Worker thread, then read once
+// hashDone is set.
+std::string g_format;
+bool g_nkit = false;
+
 void* RC_CCONV disc_open(const char* path) {
   char err[1024];
   PortDisc* d = port_disc_open(path, err, sizeof err);
@@ -127,6 +142,10 @@ void* RC_CCONV disc_open(const char* path) {
   }
   auto* f = new DiscFile;
   f->disc = d;
+  char magic[4] = {};
+  f->nkit = port_disc_read(d, magic, sizeof magic, kNkitFrom) == 4 && std::memcmp(magic, "NKIT", 4) == 0;
+  g_format = port_disc_format(d);
+  g_nkit = f->nkit;
   return f;
 }
 void RC_CCONV disc_seek(void* handle, int64_t offset, int origin) {
@@ -140,6 +159,11 @@ size_t RC_CCONV disc_read(void* handle, void* buffer, size_t bytes) {
   if (f->pos < 0) return 0;
   const long n = port_disc_read(f->disc, buffer, bytes, static_cast<unsigned long long>(f->pos));
   if (n <= 0) return 0;
+  if (f->nkit) {
+    const uint64_t from = static_cast<uint64_t>(f->pos), to = from + static_cast<uint64_t>(n);
+    const uint64_t a = std::max(from, kNkitFrom), b = std::min(to, kNkitTo);
+    if (a < b) std::memset(static_cast<uint8_t*>(buffer) + (a - from), 0, static_cast<size_t>(b - a));
+  }
   f->pos += n;
   return static_cast<size_t>(n);
 }
@@ -171,7 +195,8 @@ void worker() {
     std::string hash = hash_disc(sh.imagePath);
     const long ms = static_cast<long>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
-    RLOG("ra: game file hash %s (%ld ms)", hash.empty() ? "failed" : hash.c_str(), ms);
+    RLOG("ra: game file hash %s (%ld ms, %s%s, disc %s)", hash.empty() ? "failed" : hash.c_str(), ms,
+         g_format.empty() ? "?" : g_format.c_str(), g_nkit ? ", NKit" : "", port_disc_game_code());
     std::lock_guard<std::mutex> lock(sh.m);
     sh.hash = std::move(hash);
     sh.hashDone = true;
@@ -259,6 +284,7 @@ struct State {
   rc_client_t* client = nullptr;
   bool loggedIn = false;
   bool loadAsked = false;
+  std::string hash;        // the game file's RA hash, once the worker has it
   bool tampered = false;   // a test setting changed the game this run (PortRaSetupTampered)
   uint32_t tamperCheck = 0;
   uint32_t dumpFrames = 0;
@@ -331,15 +357,49 @@ void RC_CCONV on_event(const rc_client_event_t* e, rc_client_t*) {
   }
 }
 
+// The one copy RA lists for the set: Super Mario Strikers (USA), the Redump disc.
+constexpr const char* kUsaDiscHash = "ea02ff3bdb24aa6ff6f13d5483e3f6c6";
+
+// r46d: what this run found, for the launcher panel's RetroAchievements page (RetroAch.java reads
+// ra-status.txt beside the log): on / unknown / unreadable, the file's format, NKit or not, the disc
+// code and its RA hash.
+void write_status(const char* state) {
+  const char* home = std::getenv("STRIKERS_HOME");
+  if (home == nullptr || *home == '\0') return;
+  if (FILE* f = std::fopen((std::string(home) + "/ra-status.txt").c_str(), "w")) {
+    std::fprintf(f, "state=%s\nformat=%s\nnkit=%d\ndisc=%s\nhash=%s\nwant=%s\n", state, g_format.c_str(),
+                 g_nkit ? 1 : 0, port_disc_game_code(), s.hash.c_str(), kUsaDiscHash);
+    std::fclose(f);
+  }
+}
+
+// Why RA turned the file down, in the pop-up's words.
+std::string unknown_reason() {
+  const char* code = port_disc_game_code();
+  char line[160];
+  if (std::strcmp(code, "G4QE") != 0) {
+    std::snprintf(line, sizeof(line), "RETROACHIEVEMENTS ONLY HAS THE USA DISC (G4QE); THIS IS %s, ANOTHER REGION",
+                  code);
+  } else {
+    std::snprintf(line, sizeof(line), "THIS USA COPY ISN'T THE DUMP RETROACHIEVEMENTS KNOWS (ITS ID %.8s, NEEDS %.8s)",
+                  s.hash.c_str(), kUsaDiscHash);
+  }
+  return line;
+}
+
 void RC_CCONV on_loaded(int result, const char* error, rc_client_t*, void*) {
   if (result != RC_OK) {
     RLOG("ra: the game did not load on RetroAchievements (%d): %s", result, error != nullptr ? error : "");
-    toast("RETROACHIEVEMENTS", "OFF FOR THIS GAME FILE",
-          result == RC_NO_GAME_LOADED ? "RETROACHIEVEMENTS DOES NOT KNOW THIS COPY OF THE GAME"
-                                      : (error != nullptr ? error : "IT DID NOT ANSWER"),
-          0);
+    if (result == RC_NO_GAME_LOADED) {
+      write_status("unknown");
+      toast("RETROACHIEVEMENTS", "OFF FOR THIS GAME FILE", unknown_reason().c_str(), 0);
+    } else {
+      write_status("error");
+      toast("RETROACHIEVEMENTS", "OFF FOR NOW", error != nullptr ? error : "RETROACHIEVEMENTS DID NOT ANSWER", 0);
+    }
     return;
   }
+  write_status("on");
   const rc_client_game_t* game = rc_client_get_game_info(s.client);
   uint32_t unlocked = 0, total = 0;
   summary_counts(&unlocked, &total);
@@ -398,6 +458,9 @@ void start() {
   const char* image = port_dvd_image_path();
   if (image == nullptr || *image == '\0') {
     RLOG("ra: the game is read from an extracted folder, which RetroAchievements cannot identify; off");
+    write_status("folder");
+    toast("RETROACHIEVEMENTS", "OFF FOR THIS GAME FILE",
+          "THE GAME IS AN UNPACKED FOLDER; RETROACHIEVEMENTS NEEDS THE DISC IMAGE (.ISO, .RVZ OR .WIA)", 0);
     return;
   }
   if (!jni_init()) {
@@ -446,15 +509,15 @@ void frame(bool ranGameFrame) {
 
   if (!s.loadAsked && s.loggedIn && sh.hashDone.load()) {
     s.loadAsked = true;
-    std::string hash;
     {
       std::lock_guard<std::mutex> lock(sh.m);
-      hash = sh.hash;
+      s.hash = sh.hash;
     }
-    if (hash.empty()) {
+    if (s.hash.empty()) {
+      write_status("unreadable");
       toast("RETROACHIEVEMENTS", "OFF FOR THIS GAME FILE", "THE GAME FILE COULD NOT BE READ FOR ITS ID", 0);
     } else {
-      rc_client_begin_load_game(s.client, hash.c_str(), on_loaded, nullptr);
+      rc_client_begin_load_game(s.client, s.hash.c_str(), on_loaded, nullptr);
     }
   }
 

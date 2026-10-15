@@ -786,6 +786,11 @@ public class LobbyActivity extends Activity {
             return;
         }
         note("Logged in as " + login.user + ".");
+        final String fileCheck = RetroAch.fileCheck(this);  // r46d: the game's last word on the file
+        if (fileCheck != null) {
+            TextView t = note(fileCheck);
+            t.setTextColor(fileCheck.startsWith("✓") ? Color.rgb(140, 220, 140) : WARN);
+        }
         final TextView status = note("Loading Super Mario Strikers' achievements...");
         final LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);

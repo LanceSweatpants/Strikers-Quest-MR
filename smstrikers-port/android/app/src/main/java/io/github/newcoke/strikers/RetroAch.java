@@ -146,6 +146,54 @@ final class RetroAch {
         return user.isEmpty() || token.isEmpty() ? null : new Login(user, token);
     }
 
+    /**
+     * r46d: what the game found when it last started (src/platform/xr_ra.cpp writes ra-status.txt in
+     * the game's folder): whether RetroAchievements knows this game file and, when it doesn't, why,
+     * in words. Null before the game has run with a login.
+     */
+    static String fileCheck(Context context) {
+        File f = file(context, "ra-status.txt");
+        if (!f.isFile()) return null;
+        java.util.Map<String, String> kv = new java.util.HashMap<>();
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[2048];
+            int n = in.read(b);
+            for (String line : new String(b, 0, Math.max(0, n), StandardCharsets.UTF_8).split("\n")) {
+                int eq = line.indexOf('=');
+                if (eq > 0) kv.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+            }
+        } catch (IOException e) {
+            return null;
+        }
+        final String state = kv.getOrDefault("state", "");
+        final String disc = kv.getOrDefault("disc", "");
+        final String format = kv.getOrDefault("format", "");
+        final boolean nkit = "1".equals(kv.get("nkit"));
+        final String hash = kv.getOrDefault("hash", "");
+        final String what = "This file: " + (disc.isEmpty() ? "?" : disc) + ", " + (format.isEmpty() ? "?" : format)
+                + (nkit ? " (NKit)" : "") + (hash.isEmpty() ? "" : ", RetroAchievements ID " + hash) + ".";
+        switch (state) {
+            case "on":
+                return "✓ RetroAchievements recognises your game file.";
+            case "unknown":
+                if (!disc.isEmpty() && !"G4QE".equals(disc)) {
+                    return "✗ Achievements are off: RetroAchievements only supports the USA disc (G4QE), and"
+                            + " your game file is another region's. " + what;
+                }
+                return "✗ Achievements are off: RetroAchievements doesn't know this copy of the game. It"
+                        + " supports one: Super Mario Strikers (USA), the Redump dump (ID "
+                        + kv.getOrDefault("want", "ea02ff3bdb24aa6ff6f13d5483e3f6c6") + "), as .iso, .rvz or"
+                        + " .wia. A different, modified or damaged dump has another ID. " + what;
+            case "unreadable":
+                return "✗ Achievements are off: the game file couldn't be read for its ID. " + what;
+            case "folder":
+                return "✗ Achievements are off: the game is an unpacked folder. RetroAchievements needs the"
+                        + " disc image file (.iso, .rvz or .wia).";
+            default:
+                return null;
+        }
+    }
+
     static void logout(Context context) {
         //noinspection ResultOfMethodCallIgnored
         loginFile(context).delete();
