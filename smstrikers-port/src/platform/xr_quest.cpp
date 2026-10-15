@@ -472,6 +472,10 @@ struct State {
   bool fxReady = false;               // the celebration renderer is up (started at the first goal)
   bool dropLogged = false;            // the jumbotron's down position was logged for this replay
   float screenLift = 0.0f;            // r43c: meters the screen is raised over the scorer (eases)
+  // r49: the Tabletop screen's "your right" (beside_table), fixed where the field was put down.
+  bool besideSet = false;
+  float besideFx = 0.0f, besideFz = -1.0f, besideYaw = 0.0f;
+  XrVector3f besideTable{0.0f, 0.0f, 0.0f};
   // r44: meters the Tabletop field is raised out of the way while the scorer is out (eases), and
   // whether you took hold of it during this show (then it stays where you put it).
   float tableLift = 0.0f;
@@ -1579,13 +1583,11 @@ void sync_input() {
           g.pendingTapL = t;
         }
       }
+      // r49 (Lance: "one click should do nothing at all, keep the grips as the only thing that moves
+      // that"): a single left click is nothing. r24-r48 brought the table (or the big screen) in front
+      // of you, and a hard push on the stick mid-play clicked it, so the field and its screen jumped.
       if (g.pendingTapL != 0 && t - g.pendingTapL >= kDoubleTapNs) {
         g.pendingTapL = 0;
-        if (g.tabletop && !g.stereoFailed) {
-          g.bringTable = true;  // single left tap: the table comes to you
-        } else {
-          g.bringScreen = true;  // r42: or the big screen does
-        }
       }
       if (clickR && !g.prevStickClickR) {
         if (g.pendingTapR != 0 && t - g.pendingTapR < kDoubleTapNs) {
@@ -2282,9 +2284,9 @@ void plan_scorer() {
     // Not right on top of you with the field close by.
     const float hx = spot.x - head.position.x, hz = spot.z - head.position.z;
     const float fromHead = std::sqrt(hx * hx + hz * hz);
-    if (fromHead < 1.4f) {
-      spot.x += ux * (1.4f - fromHead);
-      spot.z += uz * (1.4f - fromHead);
+    if (fromHead < 2.5f) {  // r49c: 2.5 m, as scorer_place keeps it (r49 1.5, r46e 1.4)
+      spot.x += ux * (2.5f - fromHead);
+      spot.z += uz * (2.5f - fromHead);
     }
     g.scorer.spot = spot;
     float ax = sx + 0.6f * ux, az = sz + 0.6f * uz;
@@ -2341,6 +2343,26 @@ void scorer_place(XrVector3f* pos, float* yaw) {
             sc.leaveFrom.z + sc.away.z * PORT_SCORER_SPEED * t};
     // A quick turn away first.
     *yaw = turn_toward(toward_head(sc.leaveFrom), yaw_facing(sc.away.x, sc.away.z), t / 0.3f);
+  }
+  // r49 (a player: "sometimes the characters get way too close during the highlight. Koopa and Peach
+  // nearly got within an inch of my face"): never nearer than kScorerPersonalSpace to your head, along
+  // the floor, wherever you have moved since its path was planned (it is planned once, from where you
+  // stood at the goal), and on the way in and out too. It slides round you instead of through you.
+  constexpr float kScorerPersonalSpace = 2.5f;  // r49c (Lance: 1.5 m "was still close af"): 2.5 m
+  if (g.headValid) {
+    const float hx = pos->x - g.headPose.position.x, hz = pos->z - g.headPose.position.z;
+    const float d = std::sqrt(hx * hx + hz * hz);
+    if (d < kScorerPersonalSpace) {
+      float ux = hx, uz = hz;
+      if (d < 1e-3f) {  // right on top of you: back off the way it faces
+        ux = std::cos(*yaw);
+        uz = -std::sin(*yaw);
+      }
+      const float ul = std::max(1e-3f, std::sqrt(ux * ux + uz * uz));
+      pos->x = g.headPose.position.x + ux / ul * kScorerPersonalSpace;
+      pos->z = g.headPose.position.z + uz / ul * kScorerPersonalSpace;
+      if (sc.phase == 2) *yaw = toward_head(*pos);
+    }
   }
   sc.lastPos = *pos;
   sc.lastYaw = *yaw;
@@ -4406,7 +4428,9 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad sliderQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad raQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r46
   XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
-  const XrCompositionLayerBaseHeader* layers[12];
+  XrCompositionLayerQuad stsQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r49: Quest 2's meter over the captain
+  bool stsExtra = false;
+  const XrCompositionLayerBaseHeader* layers[13];
   uint32_t layerCount = 0;
 
   // The celebration effects step every display frame, smooth whatever the game's frame rate, with
@@ -4497,7 +4521,11 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       quad.subImage.imageArrayIndex = 0;
       const float aspect = static_cast<float>(g.swapchainHeight) / static_cast<float>(g.swapchainWidth);
       const float drop = g.fxReady ? xrfx::jumbotron_drop() : 0.0f;
-      if (g.tabletop && !g.stereoFailed && drop > 0.0f) {
+      // r49d (Lance, for a player: she "doesnt want it getting risen during a goal celebration"): in
+      // Tabletop · Living Room the replay plays on the screen where it always is, over the field (or
+      // beside it on a Quest 2), instead of a jumbotron hanging from the ceiling (r43c). Tabletop ·
+      // Stadium keeps the stadium's own big screen coming down out of the sky.
+      if (g.tabletop && !g.stereoFailed && drop > 0.0f && !g.mrMode) {
         // The replay jumbotron comes down from the top, beyond the field and facing you: from the
         // ceiling in the room, from the sky in the stadium (VISION.md).
         XrVector3f head = g.views[0].pose.position;
@@ -4540,14 +4568,35 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       } else if (g.tabletop && !g.stereoFailed) {
         g.dropLogged = false;
         // The scoreboard: the broadcast view (score, time, replays) hanging over the field.
-        const float half = 0.5f * g.table.yaw;
-        quad.pose.orientation = {0.0f, std::sin(half), 0.0f, std::cos(half)};
         XrVector3f eyes = g.views[0].pose.position;
         if (sceneViews) {
           eyes = XrVector3f{0.5f * (scene.views[0].pose.position.x + scene.views[1].pose.position.x),
                             0.5f * (scene.views[0].pose.position.y + scene.views[1].pose.position.y),
                             0.5f * (scene.views[0].pose.position.z + scene.views[1].pose.position.z)};
         }
+        // r49 (a player: "it would be cool if the scoreboard stayed still when you rotate the
+        // camera"): turned to you, not to the table, so turning the field leaves it as it is.
+        // r42-r48 turned it with the table.
+        auto face_eyes = [&](XrCompositionLayerQuad& q) {
+          const float yaw = std::atan2(eyes.x - q.pose.position.x, eyes.z - q.pose.position.z);
+          q.pose.orientation = {0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw)};
+        };
+        // The Super Strike meter, the middle of the game's picture (ShootToScoreMeter.cpp draws it
+        // there), hanging over the captain turned to you, its bottom edge above the "that's you" arrow.
+        auto meter_over_captain = [&](XrCompositionLayerQuad& q, float width, int32_t hw, int32_t hh) {
+          q.subImage.imageRect.offset = {static_cast<int32_t>(g.swapchainWidth / 2) - hw,
+                                         static_cast<int32_t>(g.swapchainHeight / 2) - hh};
+          q.subImage.imageRect.extent = {2 * hw, 2 * hh};
+          const float height = width * static_cast<float>(hh) / static_cast<float>(hw);
+          XrVector3f anchor =
+              table_point(g.sts.game[0], g.sts.game[1], g.sts.game[2] + 4.5f * PortXrCharacterScale());
+          anchor.y += 0.5f * height;
+          q.pose.position = anchor;
+          face_eyes(q);
+          q.size.width = width;
+          q.size.height = height;
+          return anchor;
+        };
         // r44e (Lance: the Super Strike's screen "off to the side not right in the middle of where the
         // superstrike animation is occuring especially on tabletop mode"): beside the field on your
         // right, its bottom a little above the field, turned to you. r40-r44 hung the meter over the
@@ -4555,10 +4604,20 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         // r44f: on headsets without colour passthrough only (Quest 2); with it, as before.
         auto beside_table = [&](float width, float height) {
           const XrVector3f t = table_shown_pos();
-          float fx = t.x - eyes.x, fz = t.z - eyes.z;
-          const float len = std::max(0.1f, std::sqrt(fx * fx + fz * fz));
-          fx /= len;
-          fz /= len;
+          // r49 (a player: the screen "seems to jump"): which side is "your right" is fixed when the
+          // field is put down (or first shown), not re-aimed at your eyes every frame, which slid the
+          // screen round the field whenever you moved your head.
+          if (!g.besideSet || g.table.grabHands != 0 || std::fabs(t.x - g.besideTable.x) > 0.02f ||
+              std::fabs(t.z - g.besideTable.z) > 0.02f || std::fabs(g.table.yaw - g.besideYaw) > 0.02f) {
+            float dx = t.x - eyes.x, dz = t.z - eyes.z;
+            const float dlen = std::max(0.1f, std::sqrt(dx * dx + dz * dz));
+            g.besideFx = dx / dlen;
+            g.besideFz = dz / dlen;
+            g.besideTable = t;
+            g.besideYaw = g.table.yaw;
+            g.besideSet = true;
+          }
+          const float fx = g.besideFx, fz = g.besideFz;
           const float rx = -fz, rz = fx;  // your right, looking at the field
           float reach = 0.0f;              // how far the field reaches that way
           for (int i = 0; i < 4; ++i) {
@@ -4574,36 +4633,20 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
           quad.size.height = height;
           return at;
         };
+        // The meter square: readable at any table size; 8 game units (about a fifth of the field's
+        // width) by default. ShootToScoreMeter.cpp's bars fit a 96-unit half square at the centre.
+        const float meterWidth = std::min(0.5f, std::max(0.2f, 8.0f * g.table.scale));
+        const int32_t meterHw = std::max(1, static_cast<int32_t>(g.swapchainWidth * g.sts.halfU));
+        const int32_t meterHh = std::max(1, static_cast<int32_t>(g.swapchainHeight * g.sts.halfV));
         if (PortXrHudOnlyNormalView() && g.sts.shown) {
           // The Super Strike meter (Lance, alpha 1: the score-bar crop below cut it off, so the
-          // timing presses had nothing to aim at). ShootToScoreMeter.cpp draws it in the middle of
-          // the HUD-only picture; that square hangs over the captain, turned to you, while it is up.
-          const int32_t hw = std::max(1, static_cast<int32_t>(g.swapchainWidth * g.sts.halfU));
-          const int32_t hh = std::max(1, static_cast<int32_t>(g.swapchainHeight * g.sts.halfV));
-          quad.subImage.imageRect.offset = {static_cast<int32_t>(g.swapchainWidth / 2) - hw,
-                                            static_cast<int32_t>(g.swapchainHeight / 2) - hh};
-          quad.subImage.imageRect.extent = {2 * hw, 2 * hh};
-          // Readable at any table size; 8 game units (about a fifth of the field's width) by default.
-          const float width = std::min(0.5f, std::max(0.2f, 8.0f * g.table.scale));
-          const float height = width * static_cast<float>(hh) / static_cast<float>(hw);
-          XrVector3f anchor;
-          if (!g.colorPassthrough) {
-            anchor = beside_table(width, height);  // r44f: beside the field (no colour passthrough)
-          } else {
-            // Its bottom edge above the "that's you" arrow over the captain's head.
-            anchor = table_point(g.sts.game[0], g.sts.game[1], g.sts.game[2] + 4.5f * PortXrCharacterScale());
-            anchor.y += 0.5f * height;
-            const float yaw = std::atan2(eyes.x - anchor.x, eyes.z - anchor.z);  // +Z of the quad toward you
-            quad.pose.orientation = {0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw)};
-            quad.pose.position = anchor;
-            quad.size.width = width;
-            quad.size.height = height;
-          }
+          // timing presses had nothing to aim at): the HUD-only picture's middle, over the captain.
+          const XrVector3f anchor = meter_over_captain(quad, meterWidth, meterHw, meterHh);
           if (!g.sts.logged) {
             g.sts.logged = true;
-            XLOG("super strike meter: panel (%.2f, %.2f, %.2f), %.2f x %.2f m, picture %dx%d at (%d, %d)",
-                 anchor.x, anchor.y, anchor.z, width, height, 2 * hw, 2 * hh,
-                 quad.subImage.imageRect.offset.x, quad.subImage.imageRect.offset.y);
+            XLOG("super strike meter: panel (%.2f, %.2f, %.2f), %.2f m wide, picture %dx%d at (%d, %d)", anchor.x,
+                 anchor.y, anchor.z, meterWidth, 2 * meterHw, 2 * meterHh, quad.subImage.imageRect.offset.x,
+                 quad.subImage.imageRect.offset.y);
           }
         } else if (PortXrHudOnlyNormalView()) {
           // Live play draws the HUD alone (glPlat.cpp): show just its score bar (names, score,
@@ -4614,19 +4657,37 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
           const int32_t h = std::max(1, static_cast<int32_t>(g.swapchainHeight * 0.11f));
           quad.subImage.imageRect.offset = {x0, y0};
           quad.subImage.imageRect.extent = {w, h};
-          const float width = 0.9f;
-          const float height = width * static_cast<float>(h) / static_cast<float>(w);
-          quad.pose.position = {g.table.position.x, table_shown_pos().y + 0.4f + 0.5f * height, g.table.position.z};
-          quad.size.width = width;
-          quad.size.height = height;
+          if (!g.colorPassthrough) {
+            // r49 (a player: the screen "seems to jump between the right side and the middle"): on
+            // headsets without colour passthrough the score bar sits where their screen is, beside
+            // the field, so the screen's place never changes.
+            beside_table(0.75f, 0.75f * static_cast<float>(h) / static_cast<float>(w));
+          } else {
+            const float width = 0.9f;
+            const float height = width * static_cast<float>(h) / static_cast<float>(w);
+            quad.pose.position = {g.table.position.x, table_shown_pos().y + 0.4f + 0.5f * height,
+                                  g.table.position.z};
+            face_eyes(quad);
+            quad.size.width = width;
+            quad.size.height = height;
+          }
         } else if (!g.colorPassthrough) {
           // The game's whole picture (r44f, without colour passthrough: the Super Strike's shot too,
           // super_strike_shown): beside the field.
           beside_table(0.75f, 0.75f * aspect);
+          // r49 (a Quest 2 player: "still not seeing the super strike meter aside from on-screen"):
+          // and while the meter is up, the meter itself over the captain too, as on a Quest 3, cut
+          // from the same picture.
+          if (g.sts.shown && g.gameplayLive) {
+            stsQuad = quad;
+            meter_over_captain(stsQuad, meterWidth, meterHw, meterHh);
+            stsExtra = true;
+          }
         } else {
           const float width = 0.75f;
           quad.pose.position = {g.table.position.x, table_shown_pos().y + 0.42f + 0.5f * width * aspect,
                                 g.table.position.z};
+          face_eyes(quad);
           quad.size.width = width;
           quad.size.height = width * aspect;
         }
@@ -4636,7 +4697,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       {
         // r43c: while the scorer is out, the screen rises to hang above its head and banner, and
         // comes back down after (eased over about half a second).
-        const float target = scorer_shown() && g.scorer.planned
+        // r49 (a player: "sometimes its in a good spot in the middle but sometimes its too high"): not
+        // in Tabletop, where the scorer stands beside the field (r46e) and the screen stays put.
+        const bool tableScreen = g.tabletop && !g.stereoFailed;
+        const float target = scorer_shown() && g.scorer.planned && !tableScreen
                                  ? screen_lift_over_scorer(quad.pose.position, quad.size.width, quad.size.height)
                                  : 0.0f;
         const float dt = scene.dt > 0.0f ? std::min(scene.dt, 0.1f) : 1.0f / 72.0f;
@@ -4645,6 +4709,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         quad.pose.position.y += g.screenLift;
       }
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+      if (stsExtra) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&stsQuad);
       scene.screenValid = true;
       scene.screenPose = quad.pose;
       scene.screenWidth = quad.size.width;
@@ -4676,11 +4741,12 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       }
       if (pop > 0.01f) {
         // r43b: the scorer stops out in front now (up to 8 m); the banner keeps its size to the eye.
-        const float sdx = g.scorer.spot.x - g.headPose.position.x, sdz = g.scorer.spot.z - g.headPose.position.z;
+        // r49: over where the scorer really stands (kept out of your face, scorer_place).
+        const XrVector3f& feet = g.scorer.lastPos;
+        const float sdx = feet.x - g.headPose.position.x, sdz = feet.z - g.headPose.position.z;
         const float width = 1.1f * pop * std::max(1.0f, std::sqrt(sdx * sdx + sdz * sdz) / 2.5f);
         const float height = width * static_cast<float>(kBannerH) / static_cast<float>(kBannerW);
-        const XrVector3f at{g.scorer.spot.x, g.scorer.spot.y + scorer_height_m() + 0.18f + 0.5f * height,
-                            g.scorer.spot.z};
+        const XrVector3f at{feet.x, g.scorer.spot.y + scorer_height_m() + 0.18f + 0.5f * height, feet.z};
         place_panel(bannerQuad, g.banner, at, width);
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&bannerQuad);
         // r44e: a solid for the celebration pieces (they land on it, bounce off it, hide behind it).

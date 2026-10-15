@@ -50,9 +50,9 @@ And around the game:
     stadium the crowd sounds come from where the stands are.
 - **Goal celebrations in 3D**: confetti in the scorer's colours plus their own piece (coins for
   Mario, hearts for Peach, bananas for Donkey Kong, and so on), streamers, foil, pyro and fireworks,
-  raining down from the sky and fading where they land (no heaps). In the Tabletop modes the goal
-  replay plays on a jumbotron that drops from the ceiling (or the sky, in the stadium), and the scorer
-  celebrates standing right beside the table. Skip the replay and it all stops.
+  raining down from the sky and fading where they land (no heaps). In Tabletop the goal replay plays
+  on the screen over the table (in the stadium, on a jumbotron that drops from the sky), and the
+  scorer celebrates standing right beside the table. Skip the replay and it all stops.
 - **The game's own white flashes** (replay wipes, the Super Strike flash) light up your whole view,
   not just the picture.
 - **Controller rumble**: the game's rumble reaches the Touch controllers, with an extra buzz on your
@@ -159,7 +159,6 @@ clicks**, so you can't do it by accident mid-match.
 | **Left stick: click twice fast** | Swap between **your room** (mixed reality, you see your real room) and **the stadium** (full VR, you're standing on the pitch) |
 | **Right stick: click twice fast** | Swap between the **big screen** and the **tabletop** (a mini 3D pitch you can walk around) |
 | **Right stick: click once** | Big screen: change its size (3 sizes) |
-| **Left stick: click once** | Bring the table or the big screen back in front of you |
 | **Right stick, while paused** | The settings panel: **up/down** picks crowd volume, voice chat or stadium height, **left/right** changes it |
 
 So there are four views, and you can mix them any way you like:
@@ -180,7 +179,9 @@ So there are four views, and you can mix them any way you like:
   **right grip** too. Pull your hands apart or together to resize it, and twist them to turn it.
 - **Right hand only:** squeeze the right grip with your hand on the table to grab it. Anywhere
   else, the right grip swaps items as usual.
-- Lost the table? **Click the left stick once** and it comes back in front of you.
+- Lost the table? Hold the **left grip** anywhere: it grabs the table wherever it is, so bring it over
+  and let go. (Since alpha 1.10 a single click of the left stick does nothing, so a hard push on the
+  stick mid-match can't make the table jump.)
 
 ### Moving the big screen (Jumbotron)
 
