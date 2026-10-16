@@ -5,6 +5,17 @@
 
 unsigned int nlDefaultSeed = 0x12345678;
 
+// strikers-quest r50 (Lance: online "the lag was ATROCIOUS"; both of that night's matches went out
+// of step right after a goal, as the crowd chanted or heckled): every random pick that only chooses a
+// sound (which crowd chant or heckle and when, its volume and pan, a character's voice line, a
+// commentary take, the Bowser and stadium effects, menu sounds; and the electric fence's sparks,
+// ElectricFence.cpp) draws from this, not nlDefaultSeed.
+// Whether those fire depends on each headset's own audio playback (a stream still busy, a voice
+// not free), so on the game's stream one headset drew a number the other didn't, and every later
+// pick of the match differed: the online lockstep reseeds nlDefaultSeed every frame
+// (PortNetGameFrameBegin) and keeps both games equal only while they draw the same numbers.
+unsigned int nlAudioSeed = 0x2545F491;
+
 struct coeffs
 {
     float values[8];

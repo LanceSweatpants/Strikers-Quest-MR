@@ -411,6 +411,8 @@ inline void ConvertNLMat4ToDMat3_Transposed(const nlMatrix4& src, float* dest)
 }
 
 extern unsigned int nlDefaultSeed;
+// strikers-quest r50: the sounds' own random numbers (src/Game/Audio, FEAudio.cpp); see nlMath.cpp.
+extern unsigned int nlAudioSeed;
 
 #include "NL/platvmath.h"
 #include "NL/platqmath.h"

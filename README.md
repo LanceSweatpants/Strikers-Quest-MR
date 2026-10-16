@@ -333,10 +333,11 @@ More about online play:
 - **Online, the slower headset sets the pace for both.** A headset that keeps falling behind in a 3D
   mode redraws its 3D view every other frame until you change view.
 - **Both players need the same release of the app, and the same version (Classic or Plus).** With
-  different ones the two headsets ignore each other and each plays offline. Players on different disc
-  regions are untested.
-- **Quest 2:** its passthrough is grey, so in Tabletop the Super Strike shows on a screen beside the
-  table. On a Quest 3 you watch it happen on the table itself.
+  different ones the two headsets ignore each other and each plays offline. Alpha 1.11 plays only alpha
+  1.11 and newer online (it fixed online matches drifting apart after goals, which changed how the game
+  draws its random numbers). Players on different disc regions are untested.
+- **Quest 2:** its passthrough is grey; Tabletop otherwise works the same as on a Quest 3 (the screen
+  and scoreboard over the field, the Super Strike meter over your captain).
 - **The game's video clips don't play** (the intro and attract movies): this build has no video
   decoder. Everything else runs without them.
 - **Don't open the app from the Library during a match.** The panel comes up in front of the game

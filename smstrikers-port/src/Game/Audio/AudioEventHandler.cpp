@@ -617,7 +617,7 @@ void Audio::AudioEventHandler(Event* pEvent, void* data)
             (Audio::eCharSFX)0x57, (Audio::eCharSFX)0x58, (Audio::eCharSFX)0x59
         };
         pBowser->PlaySFX(
-            bowserHowlSFX[nlRandom(3, &nlDefaultSeed)],
+            bowserHowlSFX[nlRandom(3, &nlAudioSeed)],
             (PosUpdateMethod)1,
             -1.0f,
             true);
@@ -635,7 +635,7 @@ void Audio::AudioEventHandler(Event* pEvent, void* data)
 
         Audio::eCharSFX bowserChargeSFX[2] = { (Audio::eCharSFX)0x5A, (Audio::eCharSFX)0x5B };
         pBowser->PlaySFX(
-            bowserChargeSFX[nlRandom(2, &nlDefaultSeed)],
+            bowserChargeSFX[nlRandom(2, &nlAudioSeed)],
             (PosUpdateMethod)1,
             -1.0f,
             true);

@@ -58,7 +58,7 @@ public class LobbyActivity extends Activity {
     // strikers-quest r44: the room server (src/platform/xr_net.cpp kServerHost) and the online protocol
     // (kProtocol there): quick match only pairs headsets that can play each other.
     private static final String SERVER_HOST = "strikers-rooms.strikers-rooms.workers.dev";
-    private static final int ONLINE_PROTOCOL = 5;
+    private static final int ONLINE_PROTOCOL = 6;  // r50: xr_net.cpp kProtocol
     private static final int REQUEST_MIC = 44;
     private int quickToken;          // r44: the search running (a newer one, or Cancel, ends it)
     private boolean searching;       // r44: the quick match page is up

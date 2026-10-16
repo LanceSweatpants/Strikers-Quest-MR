@@ -611,11 +611,13 @@ void UpdateElectricFence(float fDeltaT)
         timeSinceLastEffect = 0.0f;
         init2 = 1;
     }
+    // strikers-quest r50: the sparks along the fence are for show; their random picks are the show's own
+    // (nlAudioSeed, NL/nlMath.cpp), so they cannot move the online game's numbers.
     while (timeSinceLastEffect > sfTimeBetweenEffects)
     {
         float goalLineX = cField::GetGoalLineX(1U);
         float sideLineY = cField::GetSidelineY(1U);
-        float randomAngleOffset = nlRandomf(-sfAngleRandomOffset, sfAngleRandomOffset, &nlDefaultSeed);
+        float randomAngleOffset = nlRandomf(-sfAngleRandomOffset, sfAngleRandomOffset, &nlAudioSeed);
         nlVector3 pos = { 0.0f, 0.0f, 0.0f };
         nlVector3 normal;
         u16 sinArg = (u16)(s32)(10430.378f * (3.1415927f * (sfElectricFenceDisplayAngle + randomAngleOffset) / 180.0f));
@@ -657,7 +659,7 @@ void UpdateElectricFence(float fDeltaT)
             }
         }
         nlVec3Scale(pos, pos, scale);
-        pos.z = nlRandomf(0.0f, 5.0f, &nlDefaultSeed);
+        pos.z = nlRandomf(0.0f, 5.0f, &nlAudioSeed);
         if ((counter & 1) == 0)
         {
             pos.x = -pos.x;
@@ -668,7 +670,7 @@ void UpdateElectricFence(float fDeltaT)
         {
             if ((float)__fabs(pos.y) < netWidth)
             {
-                pos.z = nlRandomf(netHeight, 5.0f, &nlDefaultSeed);
+                pos.z = nlRandomf(netHeight, 5.0f, &nlAudioSeed);
             }
         }
         EmitElectricFenceBallEffect(pos, normal, counter++, !sbUseSparksDuringElectricFenceFlyBy);

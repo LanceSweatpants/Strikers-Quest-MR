@@ -70,7 +70,9 @@ constexpr int kServerPort = 443;
 // strikers-quest r43: 4, the hello and the start carry the Version (Classic / Plus, edition.h).
 // strikers-quest r44: 5, the input message ends with the voice frames (xr_voice.h), and quick match
 // pairs players by Version and protocol (LobbyActivity, the server's /quick/<KEY>).
-constexpr uint8_t kProtocol = 5;
+// strikers-quest r50: 6, the sounds draw their own random numbers now (nlAudioSeed, NL/nlMath.cpp), so
+// the game's own numbers differ from an r49 headset's whenever a crowd chant or voice line picks one.
+constexpr uint8_t kProtocol = 6;
 
 uint64_t now_ms() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -175,8 +177,32 @@ struct Shared {
   std::string tourney;
   std::atomic<bool> connected{false};
   std::atomic<bool> running{false};
+  // strikers-quest r50: the round trips the network thread measured (under m), for the game thread's
+  // median, and whether it should be measuring (not during an online match; the poll sets it).
+  std::deque<uint32_t> rtts;
+  std::atomic<bool> pinging{true};
 };
 Shared sh;
+
+// r50: the ping and pong messages (header: [type][protocol][sender id], little-endian) built here,
+// on the network thread: kPing [time ms u32], kPong [to id u64][time ms u32]. The type numbers are
+// the game's (Type, below).
+constexpr uint8_t kPingType = 5, kPongType = 6;
+uint32_t rd32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
+}
+uint64_t rd64(const uint8_t* p) {
+  uint64_t x = 0;
+  for (int i = 0; i < 8; ++i) x |= static_cast<uint64_t>(p[i]) << (8 * i);
+  return x;
+}
+void wr32(std::vector<uint8_t>& v, uint32_t x) {
+  for (int i = 0; i < 4; ++i) v.push_back(static_cast<uint8_t>(x >> (8 * i)));
+}
+void wr64(std::vector<uint8_t>& v, uint64_t x) {
+  for (int i = 0; i < 8; ++i) v.push_back(static_cast<uint8_t>(x >> (8 * i)));
+}
 
 void net_thread(uint64_t myId) {
   auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
@@ -202,6 +228,25 @@ void net_thread(uint64_t myId) {
     handle = -1;
     sh.connected = false;
   };
+  // strikers-quest r50 (Lance: online in Tabletop "the lag was ATROCIOUS"): pings go out and are
+  // answered right here, not from the game thread's once-a-frame poll. The round trip used to include
+  // up to a headset frame on each side, longer in Tabletop's heavier frames, and the host sets the
+  // whole match's input delay from it: a friend in the same house measured ~220 ms and played 9 frames
+  // (150 ms) behind. A message straight onto the link; false if it did not go.
+  auto send_now = [&](const std::vector<uint8_t>& msg) {
+    jbyteArray arr = env->NewByteArray(static_cast<jsize>(msg.size()));
+    if (arr == nullptr) {
+      jni_ok(env, "send");
+      return false;
+    }
+    env->SetByteArrayRegion(arr, 0, static_cast<jsize>(msg.size()), reinterpret_cast<const jbyte*>(msg.data()));
+    const jboolean ok = env->CallStaticBooleanMethod(g_jni.cls, g_jni.send, handle, arr);
+    const bool sent = jni_ok(env, "send") && ok;
+    env->DeleteLocalRef(arr);
+    if (sent && unechoedSince == 0) unechoedSince = now_ms();
+    return sent;
+  };
+  uint64_t lastPingMs = 0;
   while (sh.running.load()) {
     std::string want;
     {
@@ -287,14 +332,39 @@ void net_thread(uint64_t myId) {
       // header handle() reads): the link carries ours both ways. The friend's messages don't count;
       // they say nothing about whether ours get out.
       if (n >= 10) {
-        uint64_t sender = 0;
-        for (int i = 0; i < 8; ++i) sender |= static_cast<uint64_t>(rx[2 + i]) << (8 * i);
+        const uint64_t sender = rd64(rx.data() + 2);
         if (sender == myId) unechoedSince = 0;
+        // r50: a ping answered at once; a pong for this headset timed at once (any build's).
+        if (sender != myId && rx[1] == kProtocol) {
+          if (rx[0] == kPingType && n >= 14) {
+            std::vector<uint8_t> pong{kPongType, kProtocol};
+            wr64(pong, myId);
+            wr64(pong, sender);
+            wr32(pong, rd32(rx.data() + 10));
+            send_now(pong);
+          } else if (rx[0] == kPongType && n >= 22 && rd64(rx.data() + 10) == myId) {
+            const uint32_t rtt = static_cast<uint32_t>(now_ms()) - rd32(rx.data() + 18);
+            if (rtt < 5000) {
+              std::lock_guard<std::mutex> lock(sh.m);
+              sh.rtts.push_back(rtt);
+              if (sh.rtts.size() > 32) sh.rtts.pop_front();
+            }
+          }
+        }
       }
       std::lock_guard<std::mutex> lock(sh.m);
       if (sh.activeRoom != room) continue;  // r39b: the old room's, after the game moved on
       sh.in.emplace_back(rx.begin(), rx.begin() + n);
       if (sh.in.size() > 8192) sh.in.pop_front();
+    }
+
+    // r50: a ping a second while no online match runs (the start's input delay comes from these).
+    if (handle >= 0 && sh.pinging.load() && now_ms() - lastPingMs >= 1000) {
+      std::vector<uint8_t> ping{kPingType, kProtocol};
+      wr64(ping, myId);
+      lastPingMs = now_ms();
+      wr32(ping, static_cast<uint32_t>(lastPingMs));
+      send_now(ping);
     }
 
     // The server echoes everything we send: none of ours back for 5 s is a dead link.
@@ -676,33 +746,9 @@ void handle(const std::vector<uint8_t>& msg) {
     if (ready) st.peerChoice = c;
     break;
   }
-  case kPing: {
-    const uint32_t t = r.u32();
-    Writer w = header(kPong);
-    w.u64(sender);
-    w.u32(t);
-    send(std::move(w.v));
+  case kPing:  // r50: answered by the network thread the moment it arrives (net_thread)
+  case kPong:  // r50: timed there too; the round trips come in through sh.rtts (poll)
     break;
-  }
-  case kPong: {
-    const uint64_t to = r.u64();
-    const uint32_t t = r.u32();
-    if (!r.ok || to != st.myId) return;
-    const uint32_t rtt = static_cast<uint32_t>(now) - t;
-    if (rtt >= 5000) break;
-    // strikers-quest r39b: the median of the last few round trips, not a running average. A ping is
-    // sent and answered between game frames, so one that waited out a load or a pause on either
-    // headset measured that too, and that one sample could set the whole match's input delay to 20
-    // frames. Only the host's delay goes out (in the start), so either build still takes the other's.
-    st.rttSamples[st.rttNext] = rtt;
-    st.rttNext = (st.rttNext + 1) % kRttSamples;
-    st.rttCount = std::min(st.rttCount + 1, kRttSamples);
-    uint32_t sorted[kRttSamples];
-    std::copy(st.rttSamples, st.rttSamples + st.rttCount, sorted);
-    std::sort(sorted, sorted + st.rttCount);
-    st.rttMs = sorted[(st.rttCount - 1) / 2];
-    break;
-  }
   case kStart: {
     const uint64_t host = r.u64();
     const uint64_t guest = r.u64();
@@ -879,14 +925,30 @@ void poll() {
       end_online(matchLoad ? "no game frame for 30 s at the match start" : "no game frame for 10 s");
     }
   }
+  // r50: the round trips the network thread timed, into the median. strikers-quest r39b: the median
+  // of the last few, not a running average: one sample that waited out a load or a pause could set the
+  // whole match's input delay to 20 frames. Only the host's delay goes out (in the start).
+  {
+    std::deque<uint32_t> rtts;
+    {
+      std::lock_guard<std::mutex> lock(sh.m);
+      rtts.swap(sh.rtts);
+    }
+    for (const uint32_t rtt : rtts) {
+      st.rttSamples[st.rttNext] = rtt;
+      st.rttNext = (st.rttNext + 1) % kRttSamples;
+      st.rttCount = std::min(st.rttCount + 1, kRttSamples);
+    }
+    if (!rtts.empty()) {
+      uint32_t sorted[kRttSamples];
+      std::copy(st.rttSamples, st.rttSamples + st.rttCount, sorted);
+      std::sort(sorted, sorted + st.rttCount);
+      st.rttMs = sorted[(st.rttCount - 1) / 2];
+    }
+  }
+  sh.pinging = !st.online;
   if (!connected) return;
   if (!st.online && now - st.lastHelloMs > 500) send_hello();
-  if (!st.online && now - st.lastPingMs > 1000) {
-    Writer w = header(kPing);
-    w.u32(static_cast<uint32_t>(now));
-    send(std::move(w.v));
-    st.lastPingMs = now;
-  }
   // Both at the loading screen: the lower id hosts (home side). r39b: on a recent hello (they come
   // every 0.5 s); the hold now waits out a quiet friend, whose last ready bit may be an old one.
   if (st.localReady && st.peerReady && peer_present() && now - st.peerHelloMs < 2000 && !st.online &&

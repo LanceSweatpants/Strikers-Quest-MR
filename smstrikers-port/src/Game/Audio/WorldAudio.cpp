@@ -1,6 +1,6 @@
 #include "Game/Audio/WorldAudio.h"
 
-extern unsigned int nlDefaultSeed;
+extern unsigned int nlAudioSeed;  // strikers-quest r50: the sounds' own (NL/nlMath.cpp)
 
 const Audio::eWorldSFX ohBigSFX[3] = { Audio::CROWDSFX_EVENT_OH_SMALL4, Audio::CROWDSFX_EVENT_CLAP_BIG, Audio::CROWDSFX_EVENT_CLAP_SMALL };
 const Audio::eWorldSFX ohSmallSFX[4] = { Audio::CROWDSFX_EVENT_JEER_BIG, Audio::CROWDSFX_EVENT_JEER_SMALL, Audio::CROWDSFX_EVENT_BOO_SMALL1, Audio::CROWDSFX_EVENT_BOO_SMALL2 };
@@ -329,7 +329,7 @@ unsigned long cWorldSFX::PlayRandomReaction(Audio::cWorldSFX::CrowdReactionType 
     Audio::SoundAttributes attributes;
     attributes.Init();
 
-    attributes.SetSoundType(pSFXArray[nlRandom(tableSize, &nlDefaultSeed)], false);
+    attributes.SetSoundType(pSFXArray[nlRandom(tableSize, &nlAudioSeed)], false);
     attributes.mi_GroupPriority = groupPriority;
     attributes.mf_Volume = volume;
     attributes.mf_VolAdjustment = fDefaultVolAdjustment;

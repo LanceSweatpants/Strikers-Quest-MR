@@ -8,6 +8,7 @@
 #include "Game/Game.h"
 #include "Game/Physics/CollisionSpace.h"
 #include "Game/WorldManager.h"
+#include "port/xr_net.h"  // strikers-quest r50: PortNetOnline
 #include "NL/glx/glxTexture.h"
 #include "NL/nlFunction.h"
 #include "NL/nlMath.h"
@@ -334,7 +335,11 @@ void SidelineExplodable::Explode()
     nlMatrix4 worldMatrix;
     worldMatrix.SetIdentity();
     worldMatrix.SetTranslation(GetWorldMatrix().GetTranslation());
-    if (!WorldManager::s_World->IsSphereInFrustum(worldMatrix, 1.0f))
+    // strikers-quest r50: online, a prop explodes whatever this headset's camera sees. The test is
+    // against the game camera's frustum, which the headset's 3D views skip (always "in view",
+    // world.cpp), and an explosion draws the game's random numbers and sends an event: a Tabletop
+    // headset and a Jumbotron one in the same match would play different games from then on.
+    if (!PortNetOnline() && !WorldManager::s_World->IsSphereInFrustum(worldMatrix, 1.0f))
         return;
 
     mbIsMainModelVisible = false;

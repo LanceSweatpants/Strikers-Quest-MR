@@ -241,7 +241,7 @@ void FEAudio::PlayRandomVoiceToggleSFX()
         gameInfo.GetSidekick(0);
 
         Audio::eCharSFX newSound;
-        unsigned int randomElementIndex = nlRandom(26, &nlDefaultSeed);
+        unsigned int randomElementIndex = nlRandom(26, &nlAudioSeed);
 
         if (lastSoundPlayedType != Audio::CHARSFX_NONE)
         {

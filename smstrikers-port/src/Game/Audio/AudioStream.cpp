@@ -17,7 +17,7 @@
 #include "Game/FE/feHelpFuncs.h"
 
 extern cTeam* g_pTeams[2];
-extern unsigned int nlDefaultSeed;
+extern unsigned int nlAudioSeed;  // strikers-quest r50: the sounds' own (NL/nlMath.cpp)
 
 AudioStreamTrack::TrackManagerBase* g_pTrackManager;
 PriorityStream* g_pPriorityStream;
@@ -160,7 +160,7 @@ bool Audio::TrackMgrFileNameParamLookup(const char* param, char* out, unsigned l
         {
             u32 num = atoi(param + 4);
             const char* format = num < 10 ? "%d" : "%02d";
-            nlSNPrintf(out, size, format, nlRandom(num, &nlDefaultSeed) + 1);
+            nlSNPrintf(out, size, format, nlRandom(num, &nlAudioSeed) + 1);
             break;
         }
 

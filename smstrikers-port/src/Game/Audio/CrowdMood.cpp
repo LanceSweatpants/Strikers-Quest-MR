@@ -106,7 +106,7 @@ static void WarmRandomStream(const RANDOM_STREAMS& RandomStreams, T* pStream)
         pStream->Purge();
     }
 
-    unsigned long randomIndex = nlRandom(RandomStreams.Count, &nlDefaultSeed);
+    unsigned long randomIndex = nlRandom(RandomStreams.Count, &nlAudioSeed);
     const char* filename = RandomStreams.Files[randomIndex];
 
     pStream->Open(filename);
@@ -370,7 +370,7 @@ static bool PlayVocal(const CROWD_VOCAL_DEFINITION& VocalDef, CROWD_STATE::VOCAL
             fprintf(stderr, "[port] crowd: %s (vol %.2f)\n", pStream == g_CrowdAudio.pChantStream ? "chant" : "heckle",
                     VocalDef.Volume);
 
-            float randVol = nlRandomf(VocalDef.VolumeRange, &nlDefaultSeed);
+            float randVol = nlRandomf(VocalDef.VolumeRange, &nlAudioSeed);
             float scalar = 127.0f;
             float vocalVol = VocalDef.Volume;
             vocalVol = vocalVol + randVol;
@@ -385,7 +385,7 @@ static bool PlayVocal(const CROWD_VOCAL_DEFINITION& VocalDef, CROWD_STATE::VOCAL
 
             VocalState.Ready = false;
             VocalState.SinceLast = -1.0f;
-            VocalState.NextAt = nlRandomf(1.0f, &nlDefaultSeed);
+            VocalState.NextAt = nlRandomf(1.0f, &nlAudioSeed);
             return true;
         }
     }
@@ -448,12 +448,12 @@ void PlayMoodDef(MOOD_DEFINITION& MoodDef)
             unsigned char pan;
             GCAudioStreaming::AudioStreamBuffer* pBuf;
 
-            pan = (unsigned char)nlRandom(0x7F, &nlDefaultSeed);
+            pan = (unsigned char)nlRandom(0x7F, &nlAudioSeed);
             pBuf = g_CrowdAudio.pHeckleStream->m_Buffers[0];
             pBuf->m_Pan = pan;
             sndStreamMixParameterEx(pBuf->m_StreamId, pBuf->m_Volume, pBuf->m_Pan, pBuf->m_SurroundPan, 0, 0);
 
-            pan = (unsigned char)nlRandom(0x7F, &nlDefaultSeed);
+            pan = (unsigned char)nlRandom(0x7F, &nlAudioSeed);
             pBuf = g_CrowdAudio.pHeckleStream->m_Buffers[0];
             pBuf->m_SurroundPan = pan;
             sndStreamMixParameterEx(pBuf->m_StreamId, pBuf->m_Volume, pBuf->m_Pan, pBuf->m_SurroundPan, 0, 0);
@@ -832,8 +832,8 @@ void CrowdMood::Init()
     g_CrowdState.DestMood = CM_Neutral;
     g_CrowdState.AtDestination = true;
 
-    g_CrowdState.ChantState.NextAt = (float)nlRandom(1, &nlDefaultSeed);
-    g_CrowdState.HeckleState.NextAt = (float)nlRandom(1, &nlDefaultSeed);
+    g_CrowdState.ChantState.NextAt = (float)nlRandom(1, &nlAudioSeed);
+    g_CrowdState.HeckleState.NextAt = (float)nlRandom(1, &nlAudioSeed);
     g_CrowdState.ChantState.Ready = g_CrowdState.HeckleState.Ready = 0;
 
     RestartLoops();

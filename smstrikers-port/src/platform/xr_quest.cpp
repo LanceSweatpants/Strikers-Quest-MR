@@ -472,10 +472,6 @@ struct State {
   bool fxReady = false;               // the celebration renderer is up (started at the first goal)
   bool dropLogged = false;            // the jumbotron's down position was logged for this replay
   float screenLift = 0.0f;            // r43c: meters the screen is raised over the scorer (eases)
-  // r49: the Tabletop screen's "your right" (beside_table), fixed where the field was put down.
-  bool besideSet = false;
-  float besideFx = 0.0f, besideFz = -1.0f, besideYaw = 0.0f;
-  XrVector3f besideTable{0.0f, 0.0f, 0.0f};
   // r44: meters the Tabletop field is raised out of the way while the scorer is out (eases), and
   // whether you took hold of it during this show (then it stays where you put it).
   float tableLift = 0.0f;
@@ -2257,9 +2253,9 @@ void plan_scorer() {
   } else {
     // r46e (players: the field floating up out of the way for the show; Lance: "the goal scorer
     // stands next to the tabletop field"): the field stays where you put it, and the scorer stands
-    // beside it, life-size, level with its middle, turned to you. On your left without colour
-    // passthrough (Quest 2: the game's picture is on the right, beside_table), otherwise a side per
-    // goal, alternating. It runs in from that side and a little beyond, and leaves the same way.
+    // beside it, life-size, level with its middle, turned to you, a side per goal, alternating (r50:
+    // on a Quest 2 too, its screen is over the field again). It runs in from that side and a little
+    // beyond, and leaves the same way.
     // r43b-r46d stood it beyond the field, which floated up above your view meanwhile (tableLift).
     const XrVector3f t = g.table.position;
     float ux = t.x - head.position.x, uz = t.z - head.position.z;
@@ -2272,7 +2268,7 @@ void plan_scorer() {
     ux /= ulen;
     uz /= ulen;
     const float flip = (g.scorer.shows++ & 1) != 0 ? -1.0f : 1.0f;
-    const float side = g.colorPassthrough ? flip : -1.0f;
+    const float side = flip;
     const float sx = -uz * side, sz = ux * side;  // the side it stands on (+1 = your right)
     float reach = 0.0f;                           // how far the field reaches that way
     for (int i = 0; i < 4; ++i) {
@@ -4087,20 +4083,15 @@ extern "C" int PortXrEyeViewAllowed(int view, int tableLayer) {
   return (view >= 0 && view < 32 && ((mask >> view) & 1u) != 0) ? 1 : 0;
 }
 
-// r44e (Lance: "can we bring back the one screen for the superstrike??", and a Quest 2 player's video
-// where nothing showed during one): a Super Strike is live play, so the Tabletop screen had only the
-// HUD, which the game hides for the shot: nothing at all. While one is under way (and a moment after)
-// the screen gets the game's whole picture again, the shot and its meter, beside the field.
+// r44e-r49 showed a Quest 2 (no colour passthrough) the Super Strike's whole picture on a screen
+// beside the field while one ran. r50 (Lance, for a Quest 2 player whose meter came out "oddly
+// cropped" from that picture: "make sure that superstrike bar is appearing above the character"):
+// every headset gets the meter alone over the captain, cut from the HUD-only picture, as r40-r44d
+// did; the Super Strike itself is watched on the table. Game.cpp still reports one (kept for logs).
 extern "C" void PortXrSetSuperStrike(int on) {
-  if (!g.active || on == 0 || g.colorPassthrough) return;
-  if (now_ns() - g.superStrikeNs > 2000000000ull) XLOG("super strike: the screen shows it, beside the field");
+  if (!g.active || on == 0) return;
+  if (now_ns() - g.superStrikeNs > 2000000000ull) XLOG("super strike under way");
   g.superStrikeNs = now_ns();
-}
-
-// r44f (Lance: "just do that for the quest 2 folks ... non passthrough headsets though this is what
-// they need"): with colour passthrough the shot is watched on the table, the captain in the air.
-static bool super_strike_shown() {
-  return !g.colorPassthrough && g.superStrikeNs != 0 && now_ns() - g.superStrikeNs < 600000000ull;
 }
 
 extern "C" int PortXrHudOnlyNormalView(void) {
@@ -4110,7 +4101,7 @@ extern "C" int PortXrHudOnlyNormalView(void) {
     s_enabled = (e != nullptr && e[0] == '0') ? 0 : 1;
   }
   return (s_enabled && g.active && g.tabletop && stereo_mode() && !g.stereoFailed && g.gameplayLive &&
-          g.hasProjection && !super_strike_shown())
+          g.hasProjection)
              ? 1
              : 0;
 }
@@ -4428,8 +4419,6 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad sliderQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad raQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r46
   XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
-  XrCompositionLayerQuad stsQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r49: Quest 2's meter over the captain
-  bool stsExtra = false;
   const XrCompositionLayerBaseHeader* layers[13];
   uint32_t layerCount = 0;
 
@@ -4522,8 +4511,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       const float aspect = static_cast<float>(g.swapchainHeight) / static_cast<float>(g.swapchainWidth);
       const float drop = g.fxReady ? xrfx::jumbotron_drop() : 0.0f;
       // r49d (Lance, for a player: she "doesnt want it getting risen during a goal celebration"): in
-      // Tabletop · Living Room the replay plays on the screen where it always is, over the field (or
-      // beside it on a Quest 2), instead of a jumbotron hanging from the ceiling (r43c). Tabletop ·
+      // Tabletop · Living Room the replay plays on the screen where it always is, over the field,
+      // instead of a jumbotron hanging from the ceiling (r43c). Tabletop ·
       // Stadium keeps the stadium's own big screen coming down out of the sky.
       if (g.tabletop && !g.stereoFailed && drop > 0.0f && !g.mrMode) {
         // The replay jumbotron comes down from the top, beyond the field and facing you: from the
@@ -4597,42 +4586,6 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
           q.size.height = height;
           return anchor;
         };
-        // r44e (Lance: the Super Strike's screen "off to the side not right in the middle of where the
-        // superstrike animation is occuring especially on tabletop mode"): beside the field on your
-        // right, its bottom a little above the field, turned to you. r40-r44 hung the meter over the
-        // captain and the game's picture over the middle of the field, both in front of the 3D play.
-        // r44f: on headsets without colour passthrough only (Quest 2); with it, as before.
-        auto beside_table = [&](float width, float height) {
-          const XrVector3f t = table_shown_pos();
-          // r49 (a player: the screen "seems to jump"): which side is "your right" is fixed when the
-          // field is put down (or first shown), not re-aimed at your eyes every frame, which slid the
-          // screen round the field whenever you moved your head.
-          if (!g.besideSet || g.table.grabHands != 0 || std::fabs(t.x - g.besideTable.x) > 0.02f ||
-              std::fabs(t.z - g.besideTable.z) > 0.02f || std::fabs(g.table.yaw - g.besideYaw) > 0.02f) {
-            float dx = t.x - eyes.x, dz = t.z - eyes.z;
-            const float dlen = std::max(0.1f, std::sqrt(dx * dx + dz * dz));
-            g.besideFx = dx / dlen;
-            g.besideFz = dz / dlen;
-            g.besideTable = t;
-            g.besideYaw = g.table.yaw;
-            g.besideSet = true;
-          }
-          const float fx = g.besideFx, fz = g.besideFz;
-          const float rx = -fz, rz = fx;  // your right, looking at the field
-          float reach = 0.0f;              // how far the field reaches that way
-          for (int i = 0; i < 4; ++i) {
-            const XrVector3f c = table_point((i & 1) ? 20.6f : -20.6f, (i & 2) ? 12.1f : -12.1f, 0.0f);
-            reach = std::max(reach, (c.x - t.x) * rx + (c.z - t.z) * rz);
-          }
-          const float out = reach + 0.08f + 0.5f * width;
-          const XrVector3f at{t.x + rx * out, t.y + 0.12f + 0.5f * height, t.z + rz * out};
-          const float yaw = std::atan2(eyes.x - at.x, eyes.z - at.z);  // +Z of the quad toward you
-          quad.pose.orientation = {0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw)};
-          quad.pose.position = at;
-          quad.size.width = width;
-          quad.size.height = height;
-          return at;
-        };
         // The meter square: readable at any table size; 8 game units (about a fifth of the field's
         // width) by default. ShootToScoreMeter.cpp's bars fit a 96-unit half square at the centre.
         const float meterWidth = std::min(0.5f, std::max(0.2f, 8.0f * g.table.scale));
@@ -4657,33 +4610,17 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
           const int32_t h = std::max(1, static_cast<int32_t>(g.swapchainHeight * 0.11f));
           quad.subImage.imageRect.offset = {x0, y0};
           quad.subImage.imageRect.extent = {w, h};
-          if (!g.colorPassthrough) {
-            // r49 (a player: the screen "seems to jump between the right side and the middle"): on
-            // headsets without colour passthrough the score bar sits where their screen is, beside
-            // the field, so the screen's place never changes.
-            beside_table(0.75f, 0.75f * static_cast<float>(h) / static_cast<float>(w));
-          } else {
-            const float width = 0.9f;
-            const float height = width * static_cast<float>(h) / static_cast<float>(w);
-            quad.pose.position = {g.table.position.x, table_shown_pos().y + 0.4f + 0.5f * height,
-                                  g.table.position.z};
-            face_eyes(quad);
-            quad.size.width = width;
-            quad.size.height = height;
-          }
-        } else if (!g.colorPassthrough) {
-          // The game's whole picture (r44f, without colour passthrough: the Super Strike's shot too,
-          // super_strike_shown): beside the field.
-          beside_table(0.75f, 0.75f * aspect);
-          // r49 (a Quest 2 player: "still not seeing the super strike meter aside from on-screen"):
-          // and while the meter is up, the meter itself over the captain too, as on a Quest 3, cut
-          // from the same picture.
-          if (g.sts.shown && g.gameplayLive) {
-            stsQuad = quad;
-            meter_over_captain(stsQuad, meterWidth, meterHw, meterHh);
-            stsExtra = true;
-          }
+          const float width = 0.9f;
+          const float height = width * static_cast<float>(h) / static_cast<float>(w);
+          quad.pose.position = {g.table.position.x, table_shown_pos().y + 0.4f + 0.5f * height,
+                                g.table.position.z};
+          face_eyes(quad);
+          quad.size.width = width;
+          quad.size.height = height;
         } else {
+          // r50 (Lance, for a Quest 2 player: "make sure the scoreboard and screen back on in the
+          // center"): the same over the field on every headset. r44f-r49 put a Quest 2's screen beside
+          // the field and showed it the Super Strike's whole picture there.
           const float width = 0.75f;
           quad.pose.position = {g.table.position.x, table_shown_pos().y + 0.42f + 0.5f * width * aspect,
                                 g.table.position.z};
@@ -4709,7 +4646,6 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         quad.pose.position.y += g.screenLift;
       }
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
-      if (stsExtra) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&stsQuad);
       scene.screenValid = true;
       scene.screenPose = quad.pose;
       scene.screenWidth = quad.size.width;

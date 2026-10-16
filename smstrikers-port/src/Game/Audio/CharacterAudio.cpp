@@ -447,7 +447,7 @@ unsigned long cCharacterSFX::PlayRandomCharDialogue(CharDialogueType dType, PosU
         walkAtr.Init();
         walkAtr.me_ClassType = 1;
 
-        s32 randomIndex = nlRandom(5, &nlDefaultSeed);
+        s32 randomIndex = nlRandom(5, &nlAudioSeed);
         Audio::eCharSFX* walkSFX = charFootstepSFX[1];
         Audio::eCharSFX sfxType = walkSFX[randomIndex];
 
@@ -474,7 +474,7 @@ unsigned long cCharacterSFX::PlayRandomCharDialogue(CharDialogueType dType, PosU
         runAtr.Init();
         runAtr.me_ClassType = 1;
 
-        s32 randomIndex = nlRandom(5, &nlDefaultSeed);
+        s32 randomIndex = nlRandom(5, &nlAudioSeed);
         Audio::eCharSFX* runSFX = charFootstepSFX[0];
         Audio::eCharSFX sfxType = runSFX[randomIndex];
 
@@ -521,7 +521,7 @@ unsigned long cCharacterSFX::PlayRandomCharDialogue(CharDialogueType dType, PosU
 
     s32 baseIndex = charDialogueSFXInfo[dType].charDialogueSFXIndex;
     s32 numRandom = charDialogueSFXInfo[dType].numRandomSFX;
-    s32 randomOffset = nlRandom(numRandom, &nlDefaultSeed);
+    s32 randomOffset = nlRandom(numRandom, &nlAudioSeed);
 
     Audio::eCharSFX sfxType = charDialogueSFX[baseIndex + randomOffset];
 
@@ -577,7 +577,7 @@ uintptr_t cCharacterSFX::PlayRandomCharDialogue(CharDialogueType dType, Audio::S
             return -1;
 
         sndAttributes.me_ClassType = 1;
-        s32 randomIndex = nlRandom(5, &nlDefaultSeed);
+        s32 randomIndex = nlRandom(5, &nlAudioSeed);
         eCharSFX* pSFX = charFootstepSFX[1];
         eCharSFX sfxType = pSFX[randomIndex];
 
@@ -606,7 +606,7 @@ uintptr_t cCharacterSFX::PlayRandomCharDialogue(CharDialogueType dType, Audio::S
             return -1;
 
         sndAttributes.me_ClassType = 1;
-        s32 randomIndex = nlRandom(5, &nlDefaultSeed);
+        s32 randomIndex = nlRandom(5, &nlAudioSeed);
         eCharSFX* pSFX = charFootstepSFX[0];
         eCharSFX sfxType = pSFX[randomIndex];
 
@@ -647,7 +647,7 @@ uintptr_t cCharacterSFX::PlayRandomCharDialogue(CharDialogueType dType, Audio::S
 
     s32 baseIndex = charDialogueSFXInfo[dType].charDialogueSFXIndex;
     s32 numRandom = charDialogueSFXInfo[dType].numRandomSFX;
-    s32 randomIndex = nlRandom(numRandom, &nlDefaultSeed);
+    s32 randomIndex = nlRandom(numRandom, &nlAudioSeed);
     eCharSFX sfxType = charDialogueSFX[baseIndex + randomIndex];
 
     if (bAvoidCurrent)
@@ -745,7 +745,7 @@ int cCharacterSFX::PlayRandomWalkFootstep(float fVol, bool bNoRepeat)
     attrs.Init();
     attrs.me_ClassType = 1;
 
-    s32 randomIndex = nlRandom(5, &nlDefaultSeed);
+    s32 randomIndex = nlRandom(5, &nlAudioSeed);
     Audio::eCharSFX* walkSFX = charFootstepSFX[1];
     Audio::eCharSFX sfxType = walkSFX[randomIndex];
 
