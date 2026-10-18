@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -289,6 +290,8 @@ struct State {
   uint32_t tamperCheck = 0;
   uint32_t dumpFrames = 0;
   std::thread worker;
+  // r51: why there is no list to show (the pause screen's achievements, achievement_rows), "" = none.
+  std::string offReason;
 };
 State s;
 
@@ -393,9 +396,11 @@ void RC_CCONV on_loaded(int result, const char* error, rc_client_t*, void*) {
     if (result == RC_NO_GAME_LOADED) {
       write_status("unknown");
       toast("RETROACHIEVEMENTS", "OFF FOR THIS GAME FILE", unknown_reason().c_str(), 0);
+      s.offReason = "OFF FOR THIS GAME FILE: " + unknown_reason();
     } else {
       write_status("error");
       toast("RETROACHIEVEMENTS", "OFF FOR NOW", error != nullptr ? error : "RETROACHIEVEMENTS DID NOT ANSWER", 0);
+      s.offReason = "OFF FOR NOW: RETROACHIEVEMENTS DID NOT ANSWER";
     }
     return;
   }
@@ -444,15 +449,18 @@ void start() {
   const char* off = std::getenv("STRIKERS_RA");
   if (off != nullptr && std::strcmp(off, "0") == 0) {
     RLOG("ra: off (STRIKERS_RA=0)");
+    s.offReason = "RETROACHIEVEMENTS IS OFF ON THIS HEADSET";
     return;
   }
   std::string user, token;
   if (!read_login(&user, &token)) {
     RLOG("ra: not logged in (the launcher panel's RetroAchievements page); achievements off");
+    s.offReason = "NOT LOGGED IN: LOG IN ON THE APP'S RETROACHIEVEMENTS PAGE, THEN START THE GAME AGAIN";
     return;
   }
   if (const char* why = PortRaSetupTampered()) {
     RLOG("ra: off for this run, a test setting changes the game: %s", why);
+    s.offReason = "OFF FOR THIS RUN: A TEST SETTING CHANGES THE GAME";
     return;
   }
   const char* image = port_dvd_image_path();
@@ -461,10 +469,12 @@ void start() {
     write_status("folder");
     toast("RETROACHIEVEMENTS", "OFF FOR THIS GAME FILE",
           "THE GAME IS AN UNPACKED FOLDER; RETROACHIEVEMENTS NEEDS THE DISC IMAGE (.ISO, .RVZ OR .WIA)", 0);
+    s.offReason = "OFF: THE GAME IS AN UNPACKED FOLDER; RETROACHIEVEMENTS NEEDS THE DISC IMAGE FILE";
     return;
   }
   if (!jni_init()) {
     RLOG("ra: RaHttp is missing; achievements off");
+    s.offReason = "RETROACHIEVEMENTS COULD NOT START";
     return;
   }
   s.client = rc_client_create(read_memory, server_call);
@@ -575,6 +585,50 @@ bool take_toast(std::vector<uint8_t>& rgba) {
   return false;
 }
 
+void achievement_rows(std::vector<AchievementRow>* rows, uint32_t* unlocked, uint32_t* total, std::string* why) {
+  rows->clear();
+  *unlocked = *total = 0;
+  why->clear();
+  if (s.client == nullptr) {
+    *why = !s.offReason.empty() ? s.offReason : "RETROACHIEVEMENTS IS STARTING...";
+    return;
+  }
+  if (s.tampered) {
+    *why = "OFF FOR THIS RUN: A TEST SETTING CHANGED THE GAME";
+    return;
+  }
+  if (!rc_client_is_game_loaded(s.client)) {
+    *why = !s.offReason.empty() ? s.offReason : "STILL LOADING THE ACHIEVEMENTS FROM RETROACHIEVEMENTS...";
+    return;
+  }
+  // Grouped unlocked / locked by rcheevos, in the set's own order within each group.
+  rc_client_achievement_list_t* list = rc_client_create_achievement_list(
+      s.client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+  if (list == nullptr) {
+    *why = "THE ACHIEVEMENTS COULD NOT BE LISTED";
+    return;
+  }
+  std::vector<AchievementRow> locked;
+  for (uint32_t b = 0; b < list->num_buckets; ++b) {
+    const rc_client_achievement_bucket_t& bucket = list->buckets[b];
+    for (uint32_t i = 0; i < bucket.num_achievements; ++i) {
+      const rc_client_achievement_t* a = bucket.achievements[i];
+      if (a == nullptr || a->id == kWarningAchievementId) continue;
+      AchievementRow r;
+      r.title = a->title != nullptr ? a->title : "";
+      r.description = a->description != nullptr ? a->description : "";
+      r.points = static_cast<int>(a->points);
+      r.unlocked = a->unlocked != 0;
+      if (!r.unlocked) r.progress = a->measured_progress;
+      (r.unlocked ? *rows : locked).push_back(std::move(r));
+    }
+  }
+  rc_client_destroy_achievement_list(list);
+  *unlocked = static_cast<uint32_t>(rows->size());
+  rows->insert(rows->end(), std::make_move_iterator(locked.begin()), std::make_move_iterator(locked.end()));
+  *total = static_cast<uint32_t>(rows->size());
+}
+
 void shutdown() {
   if (s.client == nullptr) return;
   sh.stop = true;
@@ -590,6 +644,11 @@ void shutdown() {
 namespace xrra {
 void frame(bool) {}
 bool take_toast(std::vector<uint8_t>&) { return false; }
+void achievement_rows(std::vector<AchievementRow>* rows, uint32_t* unlocked, uint32_t* total, std::string* why) {
+  rows->clear();
+  *unlocked = *total = 0;
+  *why = "RETROACHIEVEMENTS IS NOT IN THIS BUILD";
+}
 void shutdown() {}
 }  // namespace xrra
 

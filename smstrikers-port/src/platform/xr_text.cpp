@@ -428,4 +428,142 @@ void achievement_toast(uint8_t* rgba, int w, int h, const char* header, const ch
   cv.write(rgba);
 }
 
+namespace {
+
+std::string caps(const char* s) {
+  std::string r = s != nullptr ? s : "";
+  for (char& c : r) {
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    else if (static_cast<unsigned char>(c) >= 0x80) c = ' ';  // outside the font
+  }
+  return r;
+}
+
+// `text` split at the word gap nearest its middle ("" second half when it has none).
+void split_middle(const std::string& text, std::string* a, std::string* b) {
+  size_t cut = std::string::npos;
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == ' ' && (cut == std::string::npos ||
+                           std::abs(static_cast<long>(i) - static_cast<long>(text.size() / 2)) <
+                               std::abs(static_cast<long>(cut) - static_cast<long>(text.size() / 2)))) {
+      cut = i;
+    }
+  }
+  *a = cut != std::string::npos ? text.substr(0, cut) : text;
+  *b = cut != std::string::npos ? text.substr(cut + 1) : std::string();
+}
+
+// `text` with its left edge at x (draw_text centres): centred at x + half its width.
+void draw_left(Canvas& cv, const std::string& text, float x, float cy, const TextStyle& s) {
+  draw_text(cv, text.c_str(), x + 0.5f * text_width(text.c_str(), s.px), cy, s);
+}
+
+}  // namespace
+
+// r51b (Lance: the list "kills fps ... sound was skipping when i would scroll down": r51 redrew a
+// whole page on the game thread at every scroll step): the list is drawn once, as one tall picture,
+// on a thread of its own when it opens, and the headset scrolls a window over it.
+void achievements_list(uint8_t* rgba, int w, int h, const AchievementLine* rows, int count, int rowH,
+                       const char* message) {
+  Canvas cv(w, h);
+  panel(cv, 8.0f, 8.0f, w - 8.0f, h - 8.0f, 36.0f, 6.0f, rgb(0x000000, 0.92f), rgb(0xFFD23F),
+        rgb(0x1E2A44, 0.95f), rgb(0x0B1020, 0.95f));
+  const float margin = 0.05f * w;
+  auto fitted = [&](const std::string& text, float px, float room) {
+    const float wide = text_width(text.c_str(), px);
+    return wide > room ? px * room / wide : px;
+  };
+  auto plain = [&](float px, uint32_t top, uint32_t bottom, float outline) {
+    return TextStyle{px, rgb(top), rgb(bottom), rgb(0x05070C), outline, rgb(0x000000, 0.0f), 0.0f, 0.0f};
+  };
+  if (count <= 0) {
+    std::string a, b;
+    const std::string m = caps(message);
+    const float px = 34.0f, room = w - 2.0f * margin, cy = 0.5f * h;
+    if (text_width(m.c_str(), px) <= room) {
+      draw_text(cv, m.c_str(), 0.5f * w, cy, plain(px, 0xFFFFFF, 0xDDE4F0, 2.5f));
+    } else {
+      split_middle(m, &a, &b);
+      const float p2 = std::min(fitted(a, px, room), fitted(b, px, room));
+      draw_text(cv, a.c_str(), 0.5f * w, cy - 0.65f * p2, plain(p2, 0xFFFFFF, 0xDDE4F0, 2.5f));
+      draw_text(cv, b.c_str(), 0.5f * w, cy + 0.65f * p2, plain(p2, 0xFFFFFF, 0xDDE4F0, 2.5f));
+    }
+    cv.write(rgba);
+    return;
+  }
+  const float top = 0.5f * (h - count * rowH);  // the rows centred, the panel's edge round them
+  const float starR = 0.22f * rowH;
+  const float textX = margin + 2.6f * starR;
+  const float pointsRoom = 0.16f * w;
+  for (int i = 0; i < count; ++i) {
+    const AchievementLine& r = rows[i];
+    const float y0 = top + i * rowH;
+    // A faint band behind every other row, so a row's lines read as one.
+    if (i % 2 == 0) {
+      for (int y = static_cast<int>(y0); y < static_cast<int>(y0 + rowH); ++y) {
+        for (int x = static_cast<int>(margin * 0.6f); x < static_cast<int>(w - margin * 0.6f); ++x) {
+          cv.over(x, y, rgb(0xFFFFFF, 0.05f), 1.0f);
+        }
+      }
+    }
+    const float cy = y0 + 0.5f * rowH;
+    if (r.unlocked) {
+      star(cv, margin + starR, cy, starR, rgb(0xFFD23F), rgb(0x3A1800));
+    } else {
+      star(cv, margin + starR, cy, starR, rgb(0x4A5468), rgb(0x10141E));
+    }
+    const std::string t = caps(r.title);
+    const float titleRoom = w - textX - pointsRoom - margin;
+    const TextStyle ts = r.unlocked ? plain(fitted(t, 30.0f, titleRoom), 0xFFF7B0, 0xFFC21F, 2.5f)
+                                    : plain(fitted(t, 30.0f, titleRoom), 0xE8ECF4, 0xB8C2D6, 2.5f);
+    draw_left(cv, t, textX, y0 + 0.27f * rowH, ts);
+    // Points (and a locked one's progress) at the right.
+    char pts[32];
+    std::snprintf(pts, sizeof(pts), "%d PT%s", r.points, r.points == 1 ? "" : "S");
+    const std::string p = pts;
+    draw_text(cv, p.c_str(), w - margin - 0.5f * pointsRoom, y0 + 0.27f * rowH,
+              plain(fitted(p, 24.0f, pointsRoom), r.unlocked ? 0xFFF7B0 : 0xB8C2D6, r.unlocked ? 0xFFC21F : 0x9AA6BE,
+                    2.0f));
+    if (!r.unlocked && r.progress != nullptr && r.progress[0] != '\0') {
+      const std::string g = caps(r.progress);
+      draw_text(cv, g.c_str(), w - margin - 0.5f * pointsRoom, y0 + 0.66f * rowH,
+                plain(fitted(g, 22.0f, pointsRoom), 0x9CFF8A, 0x3CC23C, 2.0f));
+    }
+    // The description, on one line or two.
+    const std::string d = caps(r.description);
+    const float descRoom = w - textX - pointsRoom - margin;
+    const float dpx = 19.0f;
+    const uint32_t dTop = r.unlocked ? 0xD8DEEA : 0x9AA6BE, dBottom = r.unlocked ? 0xC0C8D8 : 0x8490A8;
+    if (text_width(d.c_str(), dpx) <= descRoom) {
+      draw_left(cv, d, textX, y0 + 0.66f * rowH, plain(dpx, dTop, dBottom, 1.5f));
+    } else {
+      std::string a, b;
+      split_middle(d, &a, &b);
+      const float p2 = std::min(fitted(a, dpx, descRoom), b.empty() ? dpx : fitted(b, dpx, descRoom));
+      draw_left(cv, a, textX, y0 + 0.58f * rowH, plain(p2, dTop, dBottom, 1.5f));
+      if (!b.empty()) draw_left(cv, b, textX, y0 + 0.58f * rowH + 1.05f * p2, plain(p2, dTop, dBottom, 1.5f));
+    }
+  }
+  cv.write(rgba);
+}
+
+void achievements_header(uint8_t* rgba, int w, int h, const char* title, const char* hint) {
+  Canvas cv(w, h);
+  panel(cv, 8.0f, 8.0f, w - 8.0f, h - 8.0f, 30.0f, 6.0f, rgb(0x000000, 0.92f), rgb(0xFFD23F), rgb(0x22305A, 0.95f),
+        rgb(0x0B1020, 0.95f));
+  const float room = 0.9f * w;
+  auto fit = [&](const std::string& text, float px) {
+    const float wide = text_width(text.c_str(), px);
+    return wide > room ? px * room / wide : px;
+  };
+  const std::string t = caps(title), k = caps(hint);
+  draw_text(cv, t.c_str(), 0.5f * w, 0.4f * h,
+            TextStyle{fit(t, 0.3f * h), rgb(0xFFF7B0), rgb(0xFFC21F), rgb(0x05070C), 3.0f, rgb(0x000000, 0.0f), 0.0f,
+                      0.0f});
+  draw_text(cv, k.c_str(), 0.5f * w, 0.76f * h,
+            TextStyle{fit(k, 0.16f * h), rgb(0xB8C2D6), rgb(0x9AA6BE), rgb(0x05070C), 2.0f, rgb(0x000000, 0.0f), 0.0f,
+                      0.0f});
+  cv.write(rgba);
+}
+
 }  // namespace xrtext

@@ -26,4 +26,21 @@ void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice
 void achievement_toast(uint8_t* rgba, int w, int h, const char* header, const char* title, const char* description,
                        int points);
 
+// r51: the pause screen's achievements list. r51b: the whole list as one tall picture the headset
+// scrolls through, `count` rows of `rowH` (title, description wrapped onto two lines if it must,
+// points, and for a locked one its progress; unlocked ones in gold with a star, locked ones grey),
+// h at least count * rowH + 24. With count 0, `message` in the middle instead.
+struct AchievementLine {
+  const char* title;
+  const char* description;
+  const char* progress;  // "" for none
+  int points;
+  bool unlocked;
+};
+void achievements_list(uint8_t* rgba, int w, int h, const AchievementLine* rows, int count, int rowH,
+                       const char* message);
+
+// r51b: the list's title bar, `title` over `hint`; w : h about 1000 : 150.
+void achievements_header(uint8_t* rgba, int w, int h, const char* title, const char* hint);
+
 }  // namespace xrtext

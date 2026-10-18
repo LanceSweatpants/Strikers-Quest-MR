@@ -525,6 +525,17 @@ struct State {
   int viewHeightCm = 0;               // r44g: your eye height in the stadium, + higher (xr_view_height.txt)
   bool sliderPlaced = false;
   XrPosef sliderPose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+  // r51: the pause screen's RetroAchievements list (a right-stick click while paused), the left stick
+  // scrolling it a row at a time.
+  bool achOpen = false, achPlaced = false;
+  int achGen = 0;                     // r51b: the drawing this opening of the list wants
+  bool achShown = false;              // its pictures are uploaded
+  float achScroll = 0.0f;             // r51b: pixels of the tall picture scrolled past
+  float achStickY = 0.0f;             // the left stick (or D-pad) up/down while the list is open
+  uint32_t achListH = 0;              // the tall picture's height
+  bool achPrevB = false;
+  Panel achPanel, achHead;
+  XrVector3f achPos{0.0f, 0.0f, 0.0f};
   Panel netWait;                      // r47: "waiting for your friend" at an online match start
   int netWaitDrawn = 0;               // the state its picture shows (xrnet::waiting_for_friend)
   bool netWaitPlaced = false;
@@ -584,6 +595,16 @@ std::vector<uint8_t> g_bannerPixels;
 std::atomic<bool> g_bannerReady{false};
 constexpr uint32_t kBannerW = 1024, kBannerH = 560;  // r43d: 420 + the stats line
 constexpr uint32_t kSliderW = 640, kSliderH = 380;  // r44g: the settings panel's three rows
+// r51b: the achievements list: one tall picture of every row (xrtext::achievements_list), 8 rows of
+// it in view at a time, under a title bar (xrtext::achievements_header).
+constexpr uint32_t kAchW = 1000, kAchRowH = 94, kAchShownRows = 8, kAchHeadH = 150;
+constexpr uint32_t kAchViewH = kAchShownRows * kAchRowH + 24;
+// The list's pictures, drawn on a thread of their own (xrtext takes tens of ms a row block) and
+// uploaded on the game thread once ready; achGen tells a stale drawing from the one wanted.
+std::mutex g_achMutex;
+std::vector<uint8_t> g_achListPixels, g_achHeadPixels;  // under g_achMutex
+uint32_t g_achListH = 0;                                // under g_achMutex
+std::atomic<int> g_achReadyGen{0};
 constexpr int kViewHeightMinCm = -60, kViewHeightMaxCm = 100;  // r44g
 
 // xr_quest.cpp is built without include/ on its path: the mixer's crowd controls (port/audio.h).
@@ -1266,6 +1287,22 @@ void load_screens() {
       s.position = {x, y, z};
       s.yaw = yaw;
       s.width = std::max(0.5f, std::min(40.0f, width));
+      // r52 (Lance: his friend "couldnt join my game ... you can hear the menu but you cant see it"; his
+      // headset had kept the room screen 3 m ahead but turned 135 degrees away, its back to him, and a
+      // quad's back isn't drawn; since r49 a left stick click no longer brings it back): every start,
+      // the screen faces where you start (LOCAL's origin), and one left behind or off to the side of
+      // where you face comes back in front (placed again at the first frame, place_free_screen).
+      const float ahead = -z, side = std::fabs(x);
+      if (ahead < 0.5f || side > 1.2f * ahead) {
+        s.placed = false;
+        XLOG("screens: the %s screen was behind or beside you, it comes back in front", room ? "stadium" : "room");
+      } else {
+        s.yaw = std::atan2(-x, -z);  // turned to the origin, as place_screen_ahead turns it to you
+        if (std::fabs(std::remainder(yaw - s.yaw, 6.2831853f)) > 0.3f) {
+          XLOG("screens: the %s screen was turned %.0f degrees away, it faces you again", room ? "stadium" : "room",
+               std::fabs(std::remainder(yaw - s.yaw, 6.2831853f)) * 57.29578f);
+        }
+      }
     }
     std::fclose(f);
     XLOG("screens: room (%.1f, %.1f, %.1f) %.1f m, stadium (%.1f, %.1f, %.1f) %.1f m", g.screens[0].position.x,
@@ -1558,7 +1595,32 @@ void sync_input() {
       }
       apply_stick(moveL, dzL, kGameStickRadius, &status.stickX, &status.stickY);
       apply_stick(moveR, dzR, kGameSubstickRadius, &status.substickX, &status.substickY);
-      settings_input(stickR);  // r42/r44/r44g: while paused, the settings panel
+      // r51: the achievements list, while it is open: the left stick (or the pad's D-pad) scrolls it a
+      // row a push, held: on and on; B closes it. Neither those nor A reach the game's pause menu,
+      // which would otherwise move its own pick, or take one, underneath the list.
+      if (g.achOpen && !g.paused) g.achOpen = false;
+      if (g.achOpen) {
+        // r51b: the scroll itself runs every display frame, smoothly (PortXrEndFrame); here only the
+        // stick (or the pad's D-pad) is taken, up = toward the top of the list.
+        g.achStickY = moveL.y;
+        if ((status.button & PAD_BUTTON_UP) != 0) g.achStickY = 1.0f;
+        if ((status.button & PAD_BUTTON_DOWN) != 0) g.achStickY = -1.0f;
+        const bool b = (status.button & PAD_BUTTON_B) != 0;
+        if (b && !g.achPrevB) g.achOpen = false;
+        g.achPrevB = b;
+        status.stickX = status.stickY = 0;
+        status.button &= static_cast<u16>(~(PAD_BUTTON_A | PAD_BUTTON_B | PAD_BUTTON_UP | PAD_BUTTON_DOWN |
+                                            PAD_BUTTON_LEFT | PAD_BUTTON_RIGHT));
+      } else {
+        g.achStickY = 0.0f;
+        // B still held from closing the list: kept from the game until it is let go.
+        if (g.achPrevB) {
+          if ((status.button & PAD_BUTTON_B) != 0) status.button &= static_cast<u16>(~PAD_BUTTON_B);
+          else g.achPrevB = false;
+        }
+      }
+      // r42/r44/r44g: while paused, the settings panel (r51: not while the achievements list covers it).
+      settings_input(g.achOpen ? XrVector2f{0.0f, 0.0f} : stickR);
       update_crowd_mix();
 
       // Stick clicks, the two buttons a GameCube pad never had. Double taps switch modes, so a
@@ -1585,7 +1647,52 @@ void sync_input() {
       if (g.pendingTapL != 0 && t - g.pendingTapL >= kDoubleTapNs) {
         g.pendingTapL = 0;
       }
-      if (clickR && !g.prevStickClickR) {
+      if (clickR && !g.prevStickClickR && g.paused) {
+        // r51 (a player: "a button combination to open the achievements menu in-game"; Lance: click
+        // the right stick once while paused, "then you scroll down like you would any other thing, by
+        // moving the left thumbstick down"): each click while paused opens the RetroAchievements list
+        // or closes it, at once. Lance: a quick second click there must not turn Tabletop / Jumbotron,
+        // so no double-tap is looked for while paused.
+        g.pendingTapR = 0;
+        if (!g.achOpen) {
+          std::vector<xrra::AchievementRow> rows;
+          uint32_t unlocked = 0, total = 0;
+          std::string why;
+          xrra::achievement_rows(&rows, &unlocked, &total, &why);
+          XLOG("achievements list: %u of %u unlocked%s%s", unlocked, total, why.empty() ? "" : ", ", why.c_str());
+          g.achOpen = true;
+          g.achShown = false;
+          g.achScroll = 0.0f;
+          const int gen = ++g.achGen;
+          // r51b: both pictures drawn off the game thread, once; PortXrEndFrame uploads them.
+          std::thread([rows = std::move(rows), unlocked, total, why = std::move(why), gen] {
+            const uint32_t listH =
+                rows.empty() ? 3 * kAchRowH : static_cast<uint32_t>(rows.size()) * kAchRowH + 24;
+            std::vector<uint8_t> list(static_cast<size_t>(kAchW) * listH * 4);
+            std::vector<xrtext::AchievementLine> lines;
+            lines.reserve(rows.size());
+            for (const xrra::AchievementRow& r : rows) {
+              lines.push_back({r.title.c_str(), r.description.c_str(), r.progress.c_str(), r.points, r.unlocked});
+            }
+            xrtext::achievements_list(list.data(), kAchW, listH, lines.data(), static_cast<int>(lines.size()),
+                                      kAchRowH, why.c_str());
+            char title[64];
+            std::snprintf(title, sizeof(title), rows.empty() ? "ACHIEVEMENTS" : "ACHIEVEMENTS  -  %u OF %u UNLOCKED",
+                          unlocked, total);
+            std::vector<uint8_t> head(static_cast<size_t>(kAchW) * kAchHeadH * 4);
+            xrtext::achievements_header(head.data(), kAchW, kAchHeadH, title,
+                                        rows.empty() ? "RIGHT STICK CLICK OR B: CLOSE"
+                                                     : "LEFT STICK: SCROLL   -   RIGHT STICK CLICK OR B: CLOSE");
+            std::lock_guard<std::mutex> lock(g_achMutex);
+            g_achListPixels = std::move(list);
+            g_achHeadPixels = std::move(head);
+            g_achListH = listH;
+            g_achReadyGen = gen;
+          }).detach();
+        } else {
+          g.achOpen = false;
+        }
+      } else if (clickR && !g.prevStickClickR) {
         if (g.pendingTapR != 0 && t - g.pendingTapR < kDoubleTapNs) {
           g.pendingTapR = 0;
           g.tabletop = !g.tabletop;
@@ -1596,7 +1703,9 @@ void sync_input() {
       }
       if (g.pendingTapR != 0 && t - g.pendingTapR >= kDoubleTapNs) {
         g.pendingTapR = 0;
-        if (!g.tabletop || g.stereoFailed) {
+        if (g.paused) {
+          // A click from just before the pause: nothing.
+        } else if (!g.tabletop || g.stereoFailed) {
           // r42: the next size, in front of you.
           g.screenPreset = (g.screenPreset + 1) % kScreenPresetCount;
           g.bringScreen = true;
@@ -4418,6 +4527,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad bannerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad sliderQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad raQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r46
+  XrCompositionLayerQuad achQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r51
+  XrCompositionLayerQuad achHeadQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r51b: its title bar
   XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
   const XrCompositionLayerBaseHeader* layers[13];
   uint32_t layerCount = 0;
@@ -4694,7 +4805,51 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     }
     // r42: the crowd volume while paused (and two seconds after a change), in front of you.
     const uint64_t nowNs = now_ns();
-    if (g.paused || nowNs < g.sliderShownUntilNs) {
+    // r51 / r51b: or, while open, the achievements list in its place, 0.8 m wide, about a metre out
+    // at eye height: a window of eight rows over the tall picture, scrolled smoothly with the left
+    // stick every display frame (r51 redrew a page per step on the game thread: frame drops and
+    // skipping sound), under its title bar.
+    if (g.achOpen && g.headValid) {
+      if (!g.achShown && g_achReadyGen.load() == g.achGen) {
+        std::lock_guard<std::mutex> lock(g_achMutex);
+        panel_upload(g.achPanel, g_achListPixels.data(), kAchW, g_achListH);
+        panel_upload(g.achHead, g_achHeadPixels.data(), kAchW, kAchHeadH);
+        g.achListH = g_achListH;
+        g.achShown = true;
+      }
+      if (!g.achPlaced) {
+        float fx = 0.0f, fz = -1.0f;
+        floor_forward(g.headPose, &fx, &fz);
+        g.achPos = {g.headPose.position.x + fx * 1.1f, g.headPose.position.y - 0.12f,
+                    g.headPose.position.z + fz * 1.1f};
+        g.achPlaced = true;
+      }
+      if (g.achShown && g.achPanel.hasImage && g.achHead.hasImage) {
+        const uint32_t viewH = std::min(kAchViewH, g.achListH);
+        const float maxScroll = static_cast<float>(g.achListH - viewH);
+        // Faster the further the stick is pushed, gentle near the middle: up to 7 rows a second.
+        const float dt = scene.dt > 0.0f ? std::min(scene.dt, 0.1f) : 1.0f / 72.0f;
+        const float push = std::fabs(g.achStickY);
+        if (push > 0.15f) {
+          const float v = (push - 0.15f) / 0.85f;
+          g.achScroll -= (g.achStickY > 0.0f ? 1.0f : -1.0f) * v * v * 7.0f * kAchRowH * dt;
+        }
+        g.achScroll = std::max(0.0f, std::min(maxScroll, g.achScroll));
+        const float width = 0.8f;
+        place_panel(achQuad, g.achPanel, g.achPos, width);
+        achQuad.subImage.imageRect.offset = {0, static_cast<int32_t>(std::lround(g.achScroll))};
+        achQuad.subImage.imageRect.extent = {static_cast<int32_t>(kAchW), static_cast<int32_t>(viewH)};
+        achQuad.size.height = width * static_cast<float>(viewH) / static_cast<float>(kAchW);
+        const float headH = width * static_cast<float>(kAchHeadH) / static_cast<float>(kAchW);
+        XrVector3f headAt = g.achPos;
+        headAt.y += 0.5f * achQuad.size.height + 0.5f * headH + 0.01f;
+        place_panel(achHeadQuad, g.achHead, headAt, width);
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&achHeadQuad);
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&achQuad);
+      }
+    } else {
+      g.achPlaced = false;
+    }    if (!g.achOpen && (g.paused || nowNs < g.sliderShownUntilNs)) {
       if (!g.slider.hasImage) {
         std::vector<uint8_t> pixels(static_cast<size_t>(kSliderW) * kSliderH * 4);
         const int voice = !xrvoice::enabled() ? 0 : (xrvoice::mic_allowed() ? 1 : 2);  // r44

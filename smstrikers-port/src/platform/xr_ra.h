@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace xrra {
@@ -23,5 +24,16 @@ void frame(bool ranGameFrame);
 bool take_toast(std::vector<uint8_t>& rgba);
 
 void shutdown();
+
+// r51 (a player: "a button combination to open the achievements menu in-game"): the set as this run
+// knows it, for the pause screen's list (xr_quest.cpp). Unlocked ones first, the server's notice to
+// unapproved clients left out. When the list can't be shown, `rows` stays empty and `why` says why
+// in the panel's words.
+struct AchievementRow {
+  std::string title, description, progress;  // progress: "12/25" for a locked one that counts
+  int points = 0;
+  bool unlocked = false;
+};
+void achievement_rows(std::vector<AchievementRow>* rows, uint32_t* unlocked, uint32_t* total, std::string* why);
 
 }  // namespace xrra

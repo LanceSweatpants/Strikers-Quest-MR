@@ -160,6 +160,7 @@ clicks**, so you can't do it by accident mid-match.
 | **Right stick: click twice fast** | Swap between the **big screen** and the **tabletop** (a mini 3D pitch you can walk around) |
 | **Right stick: click once** | Big screen: change its size (3 sizes) |
 | **Right stick, while paused** | The settings panel: **up/down** picks crowd volume, voice chat or stadium height, **left/right** changes it |
+| **Right stick: click once, while paused** | Your RetroAchievements list (alpha 1.12): **left stick** scrolls it, click again or press **B** to close |
 
 So there are four views, and you can mix them any way you like:
 
@@ -186,7 +187,8 @@ So there are four views, and you can mix them any way you like:
 ### Moving the big screen (Jumbotron)
 
 The same grips work on the big screen: hold the **left grip** to move it, hold **both grips** and
-pull apart or twist to resize and turn it. Where you put it is remembered.
+pull apart or twist to resize and turn it. Where you put it is remembered, and every time the game
+starts it turns to face you (one left behind you or off to the side comes back in front).
 
 A Bluetooth gamepad paired to the headset works too (alpha 1.8): it's the same player as your Quest
 controllers, so use either, offline or online. Its buttons follow the [Button mapping](#button-mapping)
@@ -257,6 +259,8 @@ set (40 achievements) as you play.
    your Quest, never your password. The page lists the whole set and what you've unlocked.
 3. Start the game. A pop-up shows how many you have, and each new one pops up as you earn it and
    goes to your RetroAchievements profile.
+4. In a match (alpha 1.12): pause and **click the right stick** to see the whole list, unlocked ones
+   first. **Left stick** scrolls it; click again or press **B** to close.
 
 - Achievements count in **casual** mode. RetroAchievements only allows hardcore on apps it has
   approved, so the page and your profile show a warning about that; casual unlocks still count.
