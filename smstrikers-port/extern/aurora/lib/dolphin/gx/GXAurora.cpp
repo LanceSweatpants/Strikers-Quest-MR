@@ -129,6 +129,18 @@ void GXAuroraXrCoverage(u8 mode) {
   GX_WRITE_U8(mode);
 }
 
+void GXAuroraSetXrClip(u8 on, const f32* planes16) {
+  const bool enable = on != 0 && planes16 != nullptr;
+  GX_WRITE_AURORA(GX_AURORA_SET_XR_CLIP);
+  GX_WRITE_U8(enable ? 1 : 0);
+  if (!enable) {
+    return;
+  }
+  for (int i = 0; i < 16; ++i) {
+    GX_WRITE_F32(planes16[i]);
+  }
+}
+
 void GXAuroraXrEyePass(u8 begin, u8 slot, u8 samples, u8 coverage) {
   GX_WRITE_AURORA(GX_AURORA_XR_EYE_PASS);
   GX_WRITE_U8(begin != 0 ? 1 : 0);

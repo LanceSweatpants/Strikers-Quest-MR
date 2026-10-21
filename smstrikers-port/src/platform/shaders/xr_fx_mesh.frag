@@ -27,6 +27,85 @@ bool inEllipse(vec2 p, vec2 c, vec2 r) {
 
 bool spotAt(vec3 d, vec3 s, float size) { return dot(d, normalize(s)) > size; }
 
+// r54: the controllers' etched artwork. 2D distance shapes (inside < 0), cells about a unit across.
+float dot2(vec2 v) { return dot(v, v); }
+float sdStar5(vec2 p, float r, float rf) {
+    const vec2 k1 = vec2(0.809016994375, -0.587785252292);
+    const vec2 k2 = vec2(-k1.x, k1.y);
+    p.x = abs(p.x);
+    p -= 2.0 * max(dot(k1, p), 0.0) * k1;
+    p -= 2.0 * max(dot(k2, p), 0.0) * k2;
+    p.x = abs(p.x);
+    p.y -= r;
+    vec2 ba = rf * vec2(-k1.y, k1.x) - vec2(0.0, 1.0);
+    float h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
+    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+}
+float sdHeart(vec2 p) {
+    p.x = abs(p.x);
+    if (p.y + p.x > 1.0) return sqrt(dot2(p - vec2(0.25, 0.75))) - sqrt(2.0) / 4.0;
+    return sqrt(min(dot2(p - vec2(0.0, 1.0)), dot2(p - 0.5 * max(p.x + p.y, 0.0)))) * sign(p.x - p.y);
+}
+float sdHexagon(vec2 p, float r) {
+    const vec3 k = vec3(-0.866025404, 0.5, 0.577350269);
+    p = abs(p);
+    p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+float sdFlower(vec2 p, float r) {
+    float d = length(p) - r * 0.55;
+    for (int i = 0; i < 5; ++i) {
+        float a = 6.2831853 * float(i) / 5.0;
+        d = min(d, length(p - r * vec2(sin(a), cos(a))) - r * 0.62);
+    }
+    return d;
+}
+// The captain's motif (theme = eCharacterClass + 1; 0 = no team yet).
+float motif(int theme, vec2 p) {
+    int c = theme - 1;
+    if (c == 0 || c == 7) return sdHeart((p + vec2(0.0, 0.32)) * 1.6) / 1.6;      // Birdo, Peach
+    if (c == 1) return sdFlower(p, 0.2);                                            // Daisy
+    if (c == 2) return (abs(fract((p.x + p.y) * 1.5) - 0.5) - 0.13) / 1.5;          // Donkey Kong: his tie's stripes
+    if (c == 4) return sdHexagon(p, 0.3);                                           // Koopa: shell plates
+    if (c == 8 || c == 11) return length(p) - (c == 11 ? 0.27 : 0.22);              // Toad, Yoshi: spots
+    if (c == 9) return (abs(p.x) + abs(p.y) - 0.34) * 0.7071;                       // Waluigi: diamonds
+    if (c == 10) return abs(p.y - 0.2 * (abs(fract(p.x * 1.5) - 0.5) * 4.0 - 1.0)) - 0.07; // Wario: zigzag
+    return sdStar5(p, 0.36, 0.45);                                                  // Mario, Luigi, Hammer Bro, no team
+}
+// Etched into the body: the motif in small staggered cells over the surface, and one large inlay of
+// it on each side of the handle (where the grip's origin is). `lp` = the local position (meters, grip
+// space), the plane picked by the surface's own facing (from the position's screen derivatives).
+vec3 etch(vec3 base, vec3 detail, vec3 lp, int theme) {
+    vec3 fn = abs(cross(dFdx(lp), dFdy(lp)));
+    vec2 q = fn.x >= fn.y && fn.x >= fn.z ? lp.yz : (fn.y >= fn.z ? lp.xz : lp.xy);
+    bool side = fn.x >= fn.y && fn.x >= fn.z;
+    // The large inlay: 3.4 cm across, in the detail colour with a dark etched outline.
+    float dh = side ? motif(theme, q / 0.034) * 0.034 : 1.0;
+    float aa = max(fwidth(dh), 1e-5);
+    vec3 col = base;
+    if (side && dh < 0.0012) {
+        float inlay = 1.0 - smoothstep(-aa, aa, dh);
+        float rim = 1.0 - smoothstep(0.0003, 0.0003 + aa, abs(dh - 0.0004));
+        col = mix(col, detail, inlay * 0.9);
+        col *= 1.0 - 0.55 * rim;
+        return col;
+    }
+    // The small ones: 9 mm cells, every other one, rows staggered; a thin dark groove with a lighter
+    // lip, kept clear of the inlay.
+    vec2 uv = q / 0.009;
+    uv.x += 0.5 * mod(floor(uv.y), 2.0);
+    vec2 id = floor(uv);
+    if (mod(id.x + id.y, 2.0) > 0.5) return col;
+    float d = motif(theme, fract(uv) - 0.5) * 0.009;
+    float a2 = max(fwidth(d), 1e-5);
+    float groove = 1.0 - smoothstep(0.00025, 0.00025 + a2, abs(d));
+    float lip = 1.0 - smoothstep(0.00025, 0.00025 + a2, abs(d + 0.0005));
+    col *= 1.0 - 0.32 * groove;
+    col += 0.06 * lip * (1.0 - groove);
+    return col;
+}
+
 void main() {
     int shape = int(vParams.x + 0.5);
     int mat = int(vMatAux.x + 0.5);
@@ -136,6 +215,121 @@ void main() {
     } else if (shape == 12) {        // bow: satin
         spec = 0.45;
         shine = 25.0;
+    } else if (shape == 21) {        // r53: the controllers in your hands, glossy plastic, pressed parts lit
+        spec = mat == 3 ? 0.25 : 0.6;
+        shine = mat == 3 ? 24.0 : 64.0;
+        glow = 1.1 * vParams.w;
+        // r54: the team's artwork etched into the body (vParams.y = the captain's class + 1).
+        if (mat == 0) base = etch(base, c2, p, int(vParams.y + 0.5));
+    } else if (shape == 22) {        // r57: a trophy: a polished cup on a glossy base; not won yet = dull
+        bool ghost = vParams.y > 0.5;
+        if (mat == 0 && !ghost) metal = true;
+        spec = ghost ? 0.15 : 0.6;
+        shine = ghost ? 12.0 : 70.0;
+        glow = vParams.w;
+    } else if (shape == 25 || shape == 26) {
+        // r61: the home ground's banner (25) and pennant (26): cloth in the team's main colour with
+        // stripes of the second, and the captain's emblem (vParams.y = class + 1; 20 = the comeback
+        // arrow) in white on a disc of the second colour; gold rods and knobs.
+        if (mat == 3 || mat == 1) {
+            base = mat == 3 ? vec3(0.95, 0.68, 0.16) : vec3(1.0, 0.8, 0.25);
+            metal = true;
+        } else {
+            int theme = int(vParams.y + 0.5);
+            bool banner = shape == 25;
+            vec2 c = banner ? vec2(0.0, 0.12) : vec2(0.17, 0.31);
+            float r = banner ? 0.13 : 0.07;
+            if (banner ? abs(p.x) > 0.155 : p.x < 0.07) base = c2;
+            float disc = length(p.xy - c) - r;
+            vec2 q = (p.xy - c) / (1.9 * r);
+            float d;
+            if (theme == 20) {
+                // An arrow pointing up: a triangle over a shaft.
+                vec2 a = vec2(abs(q.x), q.y);
+                float head = max(a.x * 0.9 + (a.y - 0.38) * 0.6, -(a.y - 0.02));
+                float shaft = max(a.x - 0.11, abs(a.y + 0.2) - 0.24);
+                d = min(head, shaft) * 0.8;
+            } else {
+                d = motif(theme, q);
+            }
+            float aa = max(fwidth(d), 1e-4);
+            float aad = max(fwidth(disc), 1e-5);
+            float inDisc = 1.0 - smoothstep(-aad, aad, disc);
+            float ring = 1.0 - smoothstep(0.0, 2.0 * aad, abs(disc + 0.006));
+            vec3 emb = mix(c2, vec3(1.0), 1.0 - smoothstep(-aa, aa, d));
+            emb *= 1.0 - 0.6 * (1.0 - smoothstep(0.0, 2.0 * aa, abs(d)));
+            base = mix(base, emb, inDisc);
+            base = mix(base, vec3(1.0, 0.82, 0.3), ring * 0.9);
+            // The weave.
+            base *= 0.93 + 0.07 * sin(p.x * 700.0) * sin(p.y * 700.0);
+            if (dot(N, V) < 0.0) N = -N;  // cloth: lit on the side you see
+            spec = 0.12;
+            shine = 14.0;
+        }
+        glow = vParams.w;
+    } else if (shape == 27) {
+        // r61: the Super Strike ball: white with dark panels, glossy, glowing in the second colour.
+        vec3 d = normalize(p);
+        bool panel = false;
+        const vec3 ico[12] = vec3[12](vec3(0.0, 0.526, 0.851), vec3(0.0, 0.526, -0.851), vec3(0.0, -0.526, 0.851),
+                                      vec3(0.0, -0.526, -0.851), vec3(0.526, 0.851, 0.0), vec3(0.526, -0.851, 0.0),
+                                      vec3(-0.526, 0.851, 0.0), vec3(-0.526, -0.851, 0.0), vec3(0.851, 0.0, 0.526),
+                                      vec3(-0.851, 0.0, 0.526), vec3(0.851, 0.0, -0.526), vec3(-0.851, 0.0, -0.526));
+        for (int i = 0; i < 12; ++i) panel = panel || dot(d, ico[i]) > 0.93;
+        base = panel ? vec3(0.04) : vec3(0.95);
+        spec = 0.8;
+        shine = 80.0;
+        glow = 0.0;
+        float rimGlow = pow(1.0 - max(dot(N, V), 0.0), 2.0);
+        base += c2 * vParams.w * (0.25 + 1.4 * rimGlow);
+    } else if (shape == 28) {
+        // r61: a Boo (Luigi's suite): white, glowing faintly, his face on +Z: two tall eyes and a wide
+        // open mouth with its tongue, or, shy (vParams.y), his hands over his eyes and a blush.
+        vec3 d = normalize(p);
+        base = vec3(0.96, 0.97, 1.0);
+        spec = 0.3;
+        shine = 28.0;
+        glow = 0.22;
+        if (d.z > 0.35) {
+            vec2 f = d.xy;
+            bool shy = vParams.y > 0.5;
+            if (shy) {
+                bool handL = inEllipse(f, vec2(-0.2, 0.13), vec2(0.17, 0.14));
+                bool handR = inEllipse(f, vec2(0.2, 0.13), vec2(0.17, 0.14));
+                bool edge = (handL && !inEllipse(f, vec2(-0.2, 0.13), vec2(0.15, 0.12))) ||
+                            (handR && !inEllipse(f, vec2(0.2, 0.13), vec2(0.15, 0.12)));
+                if (edge) base = vec3(0.7, 0.72, 0.8);
+                else if (!handL && !handR && (inEllipse(f, vec2(-0.34, -0.06), vec2(0.08, 0.05)) ||
+                                              inEllipse(f, vec2(0.34, -0.06), vec2(0.08, 0.05)))) {
+                    base = vec3(1.0, 0.45, 0.55);  // the blush
+                } else if (inEllipse(f, vec2(0.0, -0.2), vec2(0.07, 0.05))) {
+                    base = vec3(0.3, 0.03, 0.06);
+                }
+            } else {
+                if (inEllipse(f, vec2(-0.17, 0.16), vec2(0.06, 0.13)) || inEllipse(f, vec2(0.17, 0.16), vec2(0.06, 0.13))) {
+                    base = vec3(0.02);
+                    glow = 0.0;
+                } else if (inEllipse(f, vec2(0.0, -0.13), vec2(0.3, 0.2)) && f.y < -0.07) {
+                    base = inEllipse(f, vec2(0.0, -0.3), vec2(0.13, 0.07)) ? vec3(1.0, 0.35, 0.5) : vec3(0.28, 0.02, 0.05);
+                    // Two little fangs at the top of the mouth.
+                    vec2 t = vec2(abs(f.x) - 0.12, f.y + 0.07);
+                    if (t.y > -0.06 && abs(t.x) < 0.03 * (1.0 + t.y / 0.06)) base = vec3(1.0);
+                    glow = 0.0;
+                }
+            }
+        }
+    } else if (shape == 23) {        // r57: the shelf: wood with its grain, a gold trim, dark brackets
+        if (mat == 0) {
+            float grain = sin(p.x * 160.0 + sin(p.z * 45.0 + p.x * 9.0) * 2.5);
+            base *= 0.86 + 0.14 * grain;
+            spec = 0.18;
+            shine = 18.0;
+        } else if (mat == 1) {
+            metal = true;
+        } else {
+            spec = 0.35;
+            shine = 30.0;
+        }
     }
 
     float key = max(dot(N, kKey), 0.0);

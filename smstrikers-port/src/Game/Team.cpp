@@ -447,6 +447,27 @@ void cTeam::UpdatePlays(float fDeltaT)
         m_pAIOrderedFielders[i]->UpdatePlay(fDeltaT);
 }
 
+// strikers-quest r63: see Team.h. The captain is m_pPlayers[0] (GetCaptain), the sidekicks 1-3, the
+// goalie 4.
+bool PortPadMayControl(cTeam* team, int pad, cPlayer* player)
+{
+    GameInfoManager* info = nlSingleton<GameInfoManager>::Instance();
+    if (team == NULL || player == NULL || info == NULL || pad < 0 || pad > 1)
+        return true;
+    const short side0 = info->GetPlayingSide(0), side1 = info->GetPlayingSide(1);
+    if (side0 != team->m_nSide || side1 != team->m_nSide)
+        return true;  // one person (or none) on this team
+    int index = -1;
+    for (int i = 0; i < 5; i++)
+    {
+        if (team->m_pPlayers[i] == player)
+            index = i;
+    }
+    if (index < 0 || index == 4)
+        return true;  // the goalie: whoever's turn it is
+    return (index < 2 ? 0 : 1) == pad;
+}
+
 /**
  * Offset/Address/Size: 0x1100 | 0x800654AC | size: 0x22C
  */
@@ -478,11 +499,18 @@ void cTeam::UpdateControllers()
                 }
             }
 
+            // strikers-quest r63: a pad on a player that isn't its (co-op) comes off it first.
+            if (playerIdx < 5 && !PortPadMayControl(this, i, m_pPlayers[playerIdx]))
+            {
+                m_pPlayers[playerIdx]->SetAIPad(NULL);
+                playerIdx = 5;
+            }
+
             if (playerIdx == 5)
             {
                 for (int j = 0; j < 5; j++)
                 {
-                    if (m_pPlayers[j]->m_pController == NULL)
+                    if (m_pPlayers[j]->m_pController == NULL && PortPadMayControl(this, i, m_pPlayers[j]))  // r63
                     {
                         m_pPlayers[j]->SetAIPad(&pAIPads[i]);
                         break;
@@ -517,7 +545,9 @@ void cTeam::UpdateControllers()
 
         for (int j = 0; j < 5; j++)
         {
-            if (m_pPlayers[j]->m_pController != NULL)
+            // strikers-quest r63: the pad the ball carrier belongs to (co-op), the first one otherwise.
+            if (m_pPlayers[j]->m_pController != NULL &&
+                PortPadMayControl(this, (int)(m_pPlayers[j]->m_pController - pAIPads), pOwner))
             {
                 cAIPad* pPad = m_pPlayers[j]->m_pController;
                 m_pPlayers[j]->SetAIPad(NULL);

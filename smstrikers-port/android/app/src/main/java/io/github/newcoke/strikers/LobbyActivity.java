@@ -58,7 +58,7 @@ public class LobbyActivity extends Activity {
     // strikers-quest r44: the room server (src/platform/xr_net.cpp kServerHost) and the online protocol
     // (kProtocol there): quick match only pairs headsets that can play each other.
     private static final String SERVER_HOST = "strikers-rooms.strikers-rooms.workers.dev";
-    private static final int ONLINE_PROTOCOL = 6;  // r50: xr_net.cpp kProtocol
+    private static final int ONLINE_PROTOCOL = 7;  // r63: xr_net.cpp kProtocol (co-op Cup)
     private static final int REQUEST_MIC = 44;
     private int quickToken;          // r44: the search running (a newer one, or Cancel, ends it)
     private boolean searching;       // r44: the quick match page is up
@@ -83,6 +83,10 @@ public class LobbyActivity extends Activity {
     private boolean wasOnTourneys;        // the page was up when the panel went out of sight
 
     static final String EXTRA_ROOM = "room";
+    // strikers-quest r64: true when this headset made the room (Host an online match): in co-op Cup
+    // the maker's cup is played and the maker plays the captain. hostedCode = the code shown by Host.
+    static final String EXTRA_ROOM_MAKER = "roomMaker";
+    private String hostedCode = "";
     // strikers-quest r43: the Version the panel shows (StrikersHome.CLASSIC / PLUS), so a game already
     // running on the other one can tell (StrikersActivity.onNewIntent).
     static final String EXTRA_EDITION = "edition";
@@ -130,6 +134,25 @@ public class LobbyActivity extends Activity {
             showHome();
         }
         checkForUpdate();
+        fetchBadgesQuietly();
+    }
+
+    /**
+     * strikers-quest r57: with a RetroAchievements login, the set (when not yet saved) and its badge
+     * pictures, for the trophy shelf's board in the game; once per panel start, off the UI thread,
+     * silently (only pictures not yet saved are downloaded).
+     */
+    private void fetchBadgesQuietly() {
+        final RetroAch.Login login = RetroAch.saved(this);
+        if (login == null) return;
+        new Thread(() -> {
+            try {
+                if (!RetroAch.file(this, RetroAch.SET_FILE).isFile()) RetroAch.fetchSet(this, login);
+                RetroAch.fetchBadges(this);
+            } catch (Exception e) {
+                // no network now: the next panel start tries again
+            }
+        }, "strikers-ra-badges").start();
     }
 
     private void showHome() {
@@ -143,7 +166,8 @@ public class LobbyActivity extends Activity {
         }
         showLastError();
         showOnlineNote();
-        note("Quest alpha. Online: both players pick Grudge Match in the same room, on the same Version.");
+        note("Quest alpha. Online: both players pick Grudge Match in the same room, on the same Version."
+                + " Co-op Cup: the host picks a cup, the friend any cup; both start its next match.");
         page.addView(button("Play offline", true, v -> start("")));
         page.addView(button("Quick match", true, v -> showQuick()));  // r44
         page.addView(button("Tournaments", true, v -> showTourneys()));  // r45
@@ -151,6 +175,7 @@ public class LobbyActivity extends Activity {
         page.addView(button("Host an online match", false, v -> showHost(newCode())));
         page.addView(button("Join with a code", false, v -> showJoin()));
         page.addView(button("Voice chat: " + (voiceOn() ? "On" : "Off"), false, v -> toggleVoice()));  // r44
+        page.addView(button("Home ground", false, v -> showHomeGround()));  // r61
         page.addView(button("Controls", false, v -> showControls()));  // r46
         page.addView(button("RetroAchievements", false, v -> showRetroAch()));  // r46
         page.addView(button("Choose game file", false, v -> showChooser(null, null)));
@@ -473,7 +498,11 @@ public class LobbyActivity extends Activity {
         big.setGravity(Gravity.CENTER);
         big.setPadding(0, dp(8), 0, dp(8));
         page.addView(big, wrap());
-        note("Tell your friend this code. Both of you: Grudge Match, pick your team, start.");
+        hostedCode = code;  // r64
+        note("Tell your friend this code. Both of you: Grudge Match, pick your team, start.\n"
+                + "Co-op Cup (same team, vs the computer): you go into your cup and start its next match; "
+                + "your friend goes into any cup and starts its next match too. Your cup is the one you play: "
+                + "you're the captain and one sidekick, your friend the other two sidekicks.");
         page.addView(button("Start", true, v -> start(code)));
         page.addView(button("New code", false, v -> showHost(newCode())));
         page.addView(button("Back", false, v -> showHome()));
@@ -685,13 +714,129 @@ public class LobbyActivity extends Activity {
             page.addView(b);
         }
         TextView fixed = note("Always: left stick moves, right stick is the GameCube C-stick, clicking a stick"
-                + " twice switches the view, and the left grip moves the table or the big screen.");
+                + " twice switches the view, and the left grip moves the table, or the big screen while you"
+                + " point at its edge (it lights up).");
         fixed.setTextSize(14);
         fixed.setTextColor(MUTED);
         page.addView(button("Back to the default buttons", false, v -> {
             writeControls(DEFAULT_CONTROLS.clone());
             showControls();
         }));
+        page.addView(button("Back", false, v -> showHome()));
+    }
+
+    // --- strikers-quest r61: the home ground (Lance + GPT: "give people their own Strikers home ground
+    // that grows with them"; src/platform/xr_home.cpp). The home captain is picked here (or follows the
+    // captain played most); the game reads home-captain.txt, even while it is open, and keeps the
+    // records in xr_home.txt, summed up here.
+
+    private static final int[] HOME_CAPTAINS = {6, 5, 7, 1, 11, 10, 9, 2};  // eCharacterClass
+    private static final String[] CLASS_NAMES = {"Birdo", "Daisy", "Donkey Kong", "Hammer Bro", "Koopa", "Luigi",
+            "Mario", "Peach", "Toad", "Waluigi", "Wario", "Yoshi"};
+
+    private static String className(int c) {
+        return c >= 0 && c < CLASS_NAMES.length ? CLASS_NAMES[c] : "?";
+    }
+
+    private int readHomePick() {
+        String t = readText(new File(StrikersHome.homeDir(this), "home-captain.txt"), 16).trim();
+        try {
+            return t.isEmpty() ? -1 : Integer.parseInt(t);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    private void writeHomePick(int captain) {
+        try (java.io.OutputStream out = new java.io.FileOutputStream(
+                new File(StrikersHome.homeDir(this), "home-captain.txt"))) {
+            out.write((captain + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // the pick is lost; the page shows the old one
+        }
+    }
+
+    /** The words from `from` on, as one string (a name saved last on a line). */
+    private static String joinFrom(String[] f, int from) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = from; i < f.length; i++) {
+            if (f[i].isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(f[i]);
+        }
+        return sb.toString();
+    }
+
+    /** What xr_home.txt says, in a few lines. */
+    private String homeSummary() {
+        String text = readText(new File(StrikersHome.homeDir(this), "xr_home.txt"), 8000);
+        StringBuilder out = new StringBuilder();
+        String cpuRival = null;
+        int cpuGames = 1;  // two at least
+        String onlineRival = null;
+        int onlineGames = 0;
+        for (String line : text.split("\n")) {
+            String[] f = line.trim().split(" ");
+            if (f.length < 2) continue;
+            try {
+                if (f[0].equals("last") && f.length >= 10) {
+                    int mine = Integer.parseInt(f[3]), theirs = Integer.parseInt(f[4]);
+                    boolean online = f[6].equals("1");
+                    String them = online ? joinFrom(f, 10) : className(Integer.parseInt(f[2]));
+                    out.append("Last match: ").append(className(Integer.parseInt(f[1]))).append(" ").append(mine)
+                            .append(" - ").append(theirs).append(" ").append(them.isEmpty() ? "online friend" : them)
+                            .append(f[5].equals("1") ? " (overtime)" : "").append("\n");
+                } else if (f[0].equals("cpu") && f.length >= 5) {
+                    int w = Integer.parseInt(f[2]), l = Integer.parseInt(f[3]), d = Integer.parseInt(f[4]);
+                    if (w + l + d > cpuGames) {
+                        cpuGames = w + l + d;
+                        cpuRival = className(Integer.parseInt(f[1])) + " (you " + w + " - " + l + " them"
+                                + (d > 0 ? ", " + d + " draws" : "") + ")";
+                    }
+                } else if (f[0].equals("online") && f.length >= 5) {
+                    int w = Integer.parseInt(f[2]), l = Integer.parseInt(f[3]), d = Integer.parseInt(f[4]);
+                    if (w + l + d > onlineGames) {
+                        onlineGames = w + l + d;
+                        String name = joinFrom(f, 6);
+                        onlineRival = (name.isEmpty() ? "a friend" : name) + " (you " + w + " - " + l + " them)";
+                    }
+                } else if (f[0].equals("honors") && f.length >= 5) {
+                    out.append("Comebacks: ").append(f[1]).append("   Super Strike goals: ").append(f[3])
+                            .append("   Matches: ").append(f[4]).append("\n");
+                } else if (f[0].equals("ticket") && f.length >= 5) {
+                    out.append("First win: ").append(className(Integer.parseInt(f[1]))).append(" ").append(f[3])
+                            .append(" - ").append(f[4]).append(" ").append(className(Integer.parseInt(f[2]))).append("\n");
+                }
+            } catch (RuntimeException e) {
+                // a line from another version: skipped
+            }
+        }
+        if (cpuRival != null) out.append("CPU rival: ").append(cpuRival).append("\n");
+        if (onlineRival != null) out.append("Online rival: ").append(onlineRival).append("\n");
+        return out.length() == 0 ? "Play a match and your home ground starts filling up." : out.toString().trim();
+    }
+
+    private void showHomeGround() {
+        leaveTourneyPage();
+        page.removeAllViews();
+        onHome = false;
+        title("Home ground", 26);
+        note("Your home team's colours, your trophies, your rivals and what you earn show up around you: by"
+                + " the trophy shelf, beside the big screen, on the Tabletop, and in your suite when you"
+                + " enter a cup.");
+        final int pick = readHomePick();
+        page.addView(row("Automatic: the captain you play most" + (pick < 0 ? "   (current)" : ""), true, v -> {
+            writeHomePick(-1);
+            showHomeGround();
+        }));
+        for (final int c : HOME_CAPTAINS) {
+            page.addView(row(className(c) + (pick == c ? "   (current)" : ""), true, v -> {
+                writeHomePick(c);
+                showHomeGround();
+            }));
+        }
+        TextView summary = note(homeSummary());
+        summary.setTextSize(14);
         page.addView(button("Back", false, v -> showHome()));
     }
 
@@ -814,6 +959,8 @@ public class LobbyActivity extends Activity {
             String error = null;
             try {
                 set = RetroAch.fetchSet(this, login);
+                // r57: the trophy shelf's badge board, without holding up this list.
+                new Thread(() -> RetroAch.fetchBadges(this), "strikers-ra-badges").start();
             } catch (Exception e) {
                 error = e.getMessage() != null ? e.getMessage() : e.toString();
             }
@@ -1400,6 +1547,8 @@ public class LobbyActivity extends Activity {
         if (!readyToStart(code)) return;
         Intent game = new Intent(this, StrikersActivity.class);
         game.putExtra(EXTRA_ROOM, code);
+        // r64: made here = the code Host showed (not a tournament's or Quick match's room).
+        game.putExtra(EXTRA_ROOM_MAKER, !code.isEmpty() && tourneyMid.isEmpty() && code.equals(hostedCode));
         game.putExtra(EXTRA_EDITION, StrikersHome.edition(this));  // strikers-quest r43
         game.putExtra(EXTRA_TOURNEY, tourneyMid);  // r45
         leaveTourneyPage();

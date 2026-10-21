@@ -110,6 +110,42 @@ void PortXrRumblePreset(int pad, int preset);
 void PortXrRumbleStart(int pad, float seconds);
 void PortXrRumbleStop(int pad);
 
+/* r55, "explosive MR" (Lance: "Item effects that hit your room"): big item moments, reported by the
+ * game where they happen (read only: nothing here touches the match, so online is unaffected).
+ * Positions in game units (x along the pitch, z up). ndcX/ndcY: where the point is in the broadcast
+ * picture (-1..1, y up), valid when ndcValid, for the big screen in your room.
+ * A Bob-omb (or any exploding item) going off: size 0 small .. 2 giant, radius in game units,
+ * type ePowerUpType, the thrower's pad (-1 none). */
+void PortXrItemBlast(float x, float y, float z, int size, float radius, int type, int throwerPad, float ndcX,
+                     float ndcY, int ndcValid);
+/* The Chain Chomp landing on its target (ChainChomp.cpp), and biting a player, lunging along (vx, vy). */
+void PortXrChompSlam(float x, float y, float z, float ndcX, float ndcY, int ndcValid);
+void PortXrChompBite(float x, float y, float z, float vx, float vy);
+/* glPlat.cpp: a game point in the broadcast picture (-1..1, y up); 0 = behind or off it. */
+int PortBroadcastNdc(float x, float y, float z, float* ndcX, float* ndcY);
+
+/* r57, the trophy shelf in your room: the cups you have won (the save's trophy bits, eTrophyType 0-7:
+ * Mushroom, Flower, Star, Bowser, then the Super ones) and how many times each, from Game.cpp
+ * whenever they change; and a cup just won (StatsTracker::AwardCup), first time or not. */
+void PortXrSetTrophies(unsigned bits, const unsigned short* wins8);
+void PortXrCupWon(int trophyType, int firstTime);
+
+/* r61, the home ground (src/platform/xr_home.cpp; read only, nothing here changes the match):
+ * a match is being set up; which side you play (Game.cpp's poll, the side of the player you
+ * control; -1 none seen); a goal (side, a Super Strike); the match over (StatsTracker::TrackWinner:
+ * the final scores as the game counts them, overtime, the side that forfeited or -1, a cup or
+ * tournament game, both teams' captains as eCharacterClass). */
+void PortHomeMatchBegin(void);
+void PortHomeHumanSide(int side);
+void PortHomeGoal(int side, int superStrike);
+void PortHomeMatchEnd(int scoreLeft, int scoreRight, int overtime, int forfeitSide, int cup, int captainLeft,
+                      int captainRight);
+/* r61, the cup suite (VR when you enter a cup): Game.cpp's poll, twice a second: in a cup or
+ * tournament between its games (its hub and screens), the cup being played for (eTrophyType, -1
+ * none), the round, and the table's lines (team captain, wins, losses, points), yours marked. */
+void PortHomeCupState(int inCupHub, int trophy, int round, int rounds, int teams, const int* captains,
+                      const int* wins, const int* losses, const int* points, int userTeamIndex, int nextOpponent);
+
 #ifdef __cplusplus
 }
 #endif

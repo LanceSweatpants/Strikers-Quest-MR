@@ -407,9 +407,22 @@ void reset_slots() {
   }
 }
 
-void record(const wgpu::CommandEncoder& encoder) {
+// r53: frames (number + 1, 0 = empty) whose readback is skipped (aurora_xr_skip_readback).
+std::atomic<uint32_t> g_skipFrames[4] = {};
+std::atomic<uint32_t> g_skipNext{0};
+
+bool skip_frame(uint32_t frame) {
+  for (auto& f : g_skipFrames) {
+    if (f.load(std::memory_order_acquire) == frame + 1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void record(const wgpu::CommandEncoder& encoder, uint32_t frame) {
   g_recordedSlot = -1;
-  if (g_callback.load(std::memory_order_acquire) == nullptr) {
+  if (g_callback.load(std::memory_order_acquire) == nullptr || skip_frame(frame)) {
     return;
   }
   const auto& src = webgpu::present_source();
@@ -678,7 +691,7 @@ void end_frame() noexcept {
     } else if (!surfaceSuppressed) {
       Log.info("Skipping present; window not presentable");
     }
-    xr_present::record(encoder); // strikers-quest
+    xr_present::record(encoder, xrFrame); // strikers-quest
     capture::record(encoder);   // smstrikers-port
     webgpu::gpu_prof::frame_end(encoder);
     const wgpu::CommandBufferDescriptor cmdBufDescriptor{.label = "Redraw command buffer"};
@@ -833,6 +846,10 @@ void aurora_xr_set_submit_callback(AuroraXrSubmitCallback callback, void* user) 
   aurora::xr_present::g_submitCallback.store(callback, std::memory_order_release);
 }
 uint32_t aurora_xr_current_frame(void) { return aurora::gfx::current_frame(); }
+void aurora_xr_skip_readback(uint32_t frame) {
+  const uint32_t i = aurora::xr_present::g_skipNext.fetch_add(1, std::memory_order_relaxed) & 3u;
+  aurora::xr_present::g_skipFrames[i].store(frame + 1, std::memory_order_release);
+}
 AuroraBackend aurora_get_backend() { return aurora::g_config.desiredBackend; }
 const AuroraBackend* aurora_get_available_backends(size_t* count) {
   if (count != nullptr) {

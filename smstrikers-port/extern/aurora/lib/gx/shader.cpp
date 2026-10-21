@@ -1172,6 +1172,14 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "\n    out.pos = vec4f(centre_clip.x * stereo_fix.x + centre_clip.w * stereo_fix.y,"
         "\n                    centre_clip.y * stereo_fix.z + centre_clip.w * stereo_fix.w, centre_clip.zw);",
         vtx_attr(config, GX_VA_POS));
+    if (config.xrClip) {
+      // strikers-quest r59: distances to the four clip planes (centre-view eye space), cut per fragment.
+      vtxOutAttrs += fmt::format("\n    @location({}) xr_clipd: vec4f,", vtxOutIdx++);
+      vtxXfrAttrsPre +=
+          "\n    let xr_p = vec4f(mv_pos, 1.0);"
+          "\n    out.xr_clipd = vec4f(dot(ubuf.xr_clip[0], xr_p), dot(ubuf.xr_clip[1], xr_p),"
+          "\n                         dot(ubuf.xr_clip[2], xr_p), dot(ubuf.xr_clip[3], xr_p));";
+    }
   } else if (config.lineMode == 0) {
     vtxXfrAttrsPre += fmt::format(
         "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
@@ -1754,6 +1762,10 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     uniBufAttrs +=
         "\n    stereo_t: array<mat3x4f, 2>,"
         "\n    stereo_clip: array<vec4f, 2>,";
+    if (config.xrClip) {
+      uniBufAttrs += "\n    xr_clip: array<vec4f, 4>,";  // strikers-quest r59
+      fragmentFn += "\n    if (any(in.xr_clipd < vec4f(0.0))) { discard; }";
+    }
   }
   if (!prevColorNormalized && !prevAlphaNormalized) {
     fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";

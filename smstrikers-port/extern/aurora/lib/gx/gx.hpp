@@ -407,6 +407,14 @@ struct GXState {
     std::array<Mat3x4<float>, 2> t;
     std::array<Vec4<float>, 2> clip;
   } stereo;
+  // strikers-quest r59: GX_AURORA_SET_XR_CLIP. While on, stereo triangle draws keep only what lies on
+  // the inner side of four planes (dot(plane, (centre-view eye-space position, 1)) >= 0): the Tabletop
+  // field's floor pieces that reach past the field. A draw that cannot be clipped (no stereo twin yet)
+  // is left out.
+  struct XrClipState {
+    bool enabled = false;
+    std::array<Vec4<float>, 4> planes;
+  } xrClip;
 
   // View state
   AuroraViewportPolicy viewportPolicy = AURORA_VIEWPORT_FIT;
@@ -529,7 +537,10 @@ struct ShaderConfig {
   // strikers-quest r43: positions go through GXState::stereo for the eye being encoded (the instance
   // index). 0 keeps every existing config.
   u8 stereo : 1 = false;
-  u8 pad1 : 3 = 0;
+  // strikers-quest r59: a stereo draw cut to GXState::xrClip's four planes (fragments outside are
+  // discarded). 0 keeps every existing config.
+  u8 xrClip : 1 = false;
+  u8 pad1 : 2 = 0;
   u8 pad2 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;
@@ -570,9 +581,13 @@ struct ShaderInfo {
   // strikers-quest r43: the uniform block ends with the stereo tail (StereoUniformSize). A stereo
   // shader reads it; its mono twin has the same layout before it, so one block serves both.
   bool stereo : 1 = false;
+  // strikers-quest r59: the stereo tail is followed by the four clip planes (XrClipUniformSize).
+  bool xrClip : 1 = false;
 };
 // strikers-quest r43: t[2] (3x4) + clip[2] (vec4), appended after every other uniform field.
 constexpr u32 StereoUniformSize = 2 * 48 + 2 * 16;
+// strikers-quest r59: four eye-space planes (vec4), after the stereo tail.
+constexpr u32 XrClipUniformSize = 4 * 16;
 struct BindGroupRanges {
   std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 };

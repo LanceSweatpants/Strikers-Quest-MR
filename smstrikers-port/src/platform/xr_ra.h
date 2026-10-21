@@ -31,6 +31,7 @@ void shutdown();
 // in the panel's words.
 struct AchievementRow {
   std::string title, description, progress;  // progress: "12/25" for a locked one that counts
+  std::string badge;                         // r57: its badge's name (RA's picture "<badge>.png")
   int points = 0;
   bool unlocked = false;
 };

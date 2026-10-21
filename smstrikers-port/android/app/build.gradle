@@ -20,8 +20,8 @@ android {
         targetSdk 35
         // strikers-quest: the Quest alpha's own numbers (the phone port was 1 / 1.2.0). Raise
         // versionCode with every public build so an update installs over the last one.
-        versionCode 5201
-        versionName '0.1.12-alpha1 (r52)'
+        versionCode 6401
+        versionName '0.1.13-alpha1 (r64b)'
         ndk {
             // The only ABI the prebuilt Dawn package exists for, and the only one worth shipping:
             // a 32-bit build would not address the game's heap comfortably, and x86 Android is
@@ -77,7 +77,7 @@ android {
         // The disc image is data, not a resource, but the input prompt artwork under assets/ must
         // not be compressed either: SDL reads it through the asset manager and a compressed asset
         // cannot be mapped.
-        noCompress += ['png', 'txt']
+        noCompress += ['png', 'txt', 'jpg']
     }
 }
 
@@ -86,6 +86,11 @@ android {
 def stageAssets = tasks.register('stageStrikersAssets', Sync) {
     from('../../assets/input-prompts') {
         into 'input-prompts'
+    }
+    // strikers-quest r61: the cup suites' baked rooms, one per home captain (tools/suites in the
+    // workspace bakes them).
+    from('../../assets/suites') {
+        into 'suites'
     }
     into layout.buildDirectory.dir('strikers-assets')
 }

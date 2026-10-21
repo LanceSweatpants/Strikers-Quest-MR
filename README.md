@@ -40,8 +40,9 @@ And around the game:
   first screen. **Classic** is the game as alpha 1.2 had it. **Plus** adds things that aren't in the
   original game:
   - **A life-size goal scorer**: whoever scores runs out into your room (or onto the stadium pitch),
-    stops out in front of you (in Tabletop, right beside the table), and waves and dances while the
-    replay screen rises above them.
+    stops out in front of you (in Tabletop, right beside the table), and celebrates while the replay
+    screen rises above them. Alpha 1.13: one of six famous celebrations, picked at random each goal
+    (SIU, 6-7, Zen, Griddy, Robot, Rock the Baby).
   - **A "GOAL SCORED BY" banner** over their head with their goals and assists in this game.
   - **Hat tricks**: three regular goals by one player in one game and hats rain down all over the
     field. (A Super Strike worth two counts towards the stats but not towards a hat trick.)
@@ -59,6 +60,24 @@ And around the game:
   goals.
 - **Online 1v1**: **Quick match** pairs you with anyone else searching, or one player hosts and reads
   out a four-letter code and the other types it in. Each player keeps their own view mode.
+- **Online co-op Cup** (alpha 1.13): you and a friend on the same team through a cup, against the
+  computer. The host plays the captain and one sidekick, the friend the other two sidekicks. See
+  [Co-op Cup](#co-op-cup-play-a-cup-together-online).
+- **Cup suites** (alpha 1.13): between the games of a cup you stand in your captain's own 3D suite
+  (VR), with the game on a screen in the wall. It stays fixed in your room, so you can walk around in
+  it. Each suite has the captain's name in big 3D letters, shiny floors, LED lights, and things that
+  move (coins, Boos, petals, fireworks over the stadium, and so on).
+- **Quest controllers in the game** (alpha 1.13): your controllers are drawn in your hands, sticks and
+  buttons moving with yours, in your captain's colours with their pattern etched in.
+- **Items hit your room** (alpha 1.13): Bob-omb blasts shake the table or the screen, flash orange and
+  throw embers into your room; a Chain Chomp's slam and bite jolt it too.
+- **Trophy shelf** (alpha 1.13): the cups you've won stand on a shelf in your room (in the room
+  views). Pick a trophy up with a grip, and squeeze the other grip to make it bigger or smaller. A cup
+  you just won spins and sparkles. Over the shelf, your RetroAchievements badges: point a controller
+  at one to see whether you've earned it.
+- **Home ground** (alpha 1.13): pick your home captain with **Home ground** on the app's first screen.
+  Your room gets their banner, a board with your record against the computer and against each online
+  friend, comebacks, your best win and Super Strikes, and a gloat banner when a rival is ahead of you.
 - **Tournaments** (alpha 1.5): 4- or 8-player knockouts with your own team name and star player as
   your logo, a playoff tree, and results that report themselves. They start when they're full.
 - **Voice chat** in online matches (alpha 1.4): turn it on with **Voice chat** on the app's first
@@ -190,6 +209,23 @@ The same grips work on the big screen: hold the **left grip** to move it, hold *
 pull apart or twist to resize and turn it. Where you put it is remembered, and every time the game
 starts it turns to face you (one left behind you or off to the side comes back in front).
 
+Alpha 1.13: the left grip takes the screen only at its **edge**, so a grip mid-match doesn't move
+it. Point your left controller at the edge (or put your hand near it): the edge glows white, then
+squeeze the left grip (it turns gold while you hold it).
+
+### The trophy shelf
+
+- **Move the shelf:** squeeze a grip with your hand on the shelf and carry it. Both hands turn it.
+- **Hold a trophy:** squeeze a grip with your hand on the trophy. Squeeze the **other** grip and move
+  your hands apart or together to resize it. Let go and it flies back to its place.
+- **Badges:** point either controller at a badge over the shelf to see if you've earned it.
+
+### The cup suite
+
+Between the games of a cup the view goes to your captain's suite by itself. It's fixed where you
+stand when it opens, so walk around in it. Click **either stick twice fast** to leave it and go back
+to your own view; it stays off until you leave that cup's screen.
+
 A Bluetooth gamepad paired to the headset works too (alpha 1.8): it's the same player as your Quest
 controllers, so use either, offline or online. Its buttons follow the [Button mapping](#button-mapping)
 (A/B/X/Y as they're labelled, LT/RT for the triggers, RB for the right grip, Start for the menu
@@ -216,6 +252,41 @@ you: **Grudge Match**, pick your team, start.
 time, allow the microphone). In an online match you hear each other; it's off until you turn it on,
 and you can turn it off again in the game's pause settings (right stick down to **Voice chat**, then
 left). If only one of you has it on, neither hears the other.
+
+## Co-op Cup (play a cup together online)
+
+Alpha 1.13. You and a friend on the **same team**, playing a cup against the computer. Both of you
+need **alpha 1.13** and the **same Version** (both Classic or both Plus).
+
+**Who plays who:** the one who **hosts** is the **captain** and **one sidekick**. The friend is the
+**other two sidekicks**. The cup you play is the **host's** cup.
+
+1. **Host:** on the app's first screen press **Host an online match**. Tell your friend the code,
+   then press **Start**.
+2. **Friend:** press **Join with a code**, type the code, press **Join**.
+3. **Host:** in the game, pick **Cup Battles** (or **Super Cup Battles**) on the main menu, not Grudge
+   Match, and choose your cup: a new one, or the one you already have going. Start its next match, the
+   way you always do.
+4. **Friend:** also pick **Cup Battles** and choose **any** cup (the Mushroom Cup is fine). Start its
+   next match too.
+5. Whoever gets there first waits on the loading screen, with a **CO-OP CUP** card. As soon as you're
+   both there, the match starts and you're both on the host's team.
+6. **After each match** you're both back on the cup screen. For the next match, both of you start it
+   again, like in step 3 and 4. The cup carries on from the host's cup every time.
+
+Good to know:
+
+- **Passing:** pass to one of your friend's players and your friend gets the ball. Switching player
+  only switches between your own two.
+- **Saves:** both headsets save the cup. On the friend's headset, the shared cup is saved over the
+  friend's own save of that same cup (if the host plays the Flower Cup, the friend's Flower Cup is
+  replaced by this one).
+- **Each of you picks your own view:** one can play on the table, the other on the big screen.
+- **One of you started a Grudge Match?** The card says so. A Grudge Match only pairs with a Grudge
+  Match, and a cup match only with a cup match. Back out and start the same kind.
+- **Tired of waiting?** Hold **B** for 2 seconds and you play the match on your own.
+- **Quick match** works too. Nobody hosted there, so the cup that's further along is the one played,
+  and its player is the captain.
 
 ## Tournaments
 
@@ -283,7 +354,7 @@ set (40 achievements) as you play.
 - **The game closed:** open it again from Unknown Sources. If the game stopped because of a problem,
   the first screen shows its message.
 - **Online, you ended up playing the computer:** back out to the main menu. Make sure you both
-  used the same code, then both start Grudge Match again.
+  used the same code, then both start Grudge Match again (or, for co-op, both a Cup Battles match).
 - **Still stuck?** [Report a bug](../../issues/new?template=bug_report.yml).
 
 <details>
@@ -337,9 +408,10 @@ More about online play:
 - **Online, the slower headset sets the pace for both.** A headset that keeps falling behind in a 3D
   mode redraws its 3D view every other frame until you change view.
 - **Both players need the same release of the app, and the same version (Classic or Plus).** With
-  different ones the two headsets ignore each other and each plays offline. Alpha 1.11 plays only alpha
-  1.11 and newer online (it fixed online matches drifting apart after goals, which changed how the game
-  draws its random numbers). Players on different disc regions are untested.
+  different ones the two headsets ignore each other and each plays offline. Alpha 1.13 plays only alpha
+  1.13 online (co-op Cup changed the online messages). Players on different disc regions are untested.
+- **Co-op Cup is brand new** (alpha 1.13) and hasn't been played on two headsets yet. If something
+  goes wrong, send the game's log from both headsets (see below).
 - **Quest 2:** its passthrough is grey; Tabletop otherwise works the same as on a Quest 3 (the screen
   and scoreboard over the field, the Super Strike meter over your captain).
 - **The game's video clips don't play** (the intro and attract movies): this build has no video

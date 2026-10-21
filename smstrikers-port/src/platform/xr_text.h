@@ -43,4 +43,40 @@ void achievements_list(uint8_t* rgba, int w, int h, const AchievementLine* rows,
 // r51b: the list's title bar, `title` over `hint`; w : h about 1000 : 150.
 void achievements_header(uint8_t* rgba, int w, int h, const char* title, const char* hint);
 
+// r57: the RetroAchievements badge board over the trophy shelf. Each tile: a 64 x 64 RGBA badge
+// picture (straight alpha; null = none, a star instead) and whether it is unlocked (else grey).
+struct BadgeTile {
+  const uint8_t* rgba64;
+  bool unlocked;
+};
+void badge_board(uint8_t* rgba, int w, int h, const BadgeTile* tiles, int count, int columns, const char* title);
+
+// r61: the home ground's board: a title band in the team's colours (0xRRGGBB), then lines of a small
+// label over a value, a coloured tag at the right (null = none) and a note under it in its own colour
+// (null = none). Laid out for w : h about 640 : 440 with four lines.
+struct HomeLine {
+  const char* label;
+  const char* value;
+  const char* tag;
+  uint32_t tagRgb;
+  const char* note;
+  uint32_t noteRgb;
+};
+void home_board(uint8_t* rgba, int w, int h, const char* title, uint32_t teamRgb, uint32_t teamRgb2,
+                const HomeLine* lines, int count);
+
+// r61: a framed match ticket (the first win): `header` over the score line, the date under it, in the
+// team's colours. w : h = 2 : 1.
+void match_ticket(uint8_t* rgba, int w, int h, const char* header, const char* score, const char* date,
+                  uint32_t teamRgb, uint32_t teamRgb2);
+
+// r61: the cup suite's table: `title` (the cup and round), then a line per team (rank, name, wins,
+// losses, points; `mine` in gold), then `footer` (the next opponent). w : h about 3 : 2.
+struct CupLine {
+  const char* name;
+  int wins, losses, points;
+  bool mine;
+};
+void cup_board(uint8_t* rgba, int w, int h, const char* title, const CupLine* lines, int count, const char* footer);
+
 }  // namespace xrtext

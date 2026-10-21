@@ -105,6 +105,7 @@ extern "C" int  PortXrStereoEyeLayer(int eye, int layer, float view[16], float p
 extern "C" void PortXrStereoEyeEnd(int eye);
 extern "C" void PortXrStereoFrameEnd(void);
 extern "C" int  PortXrHudOnlyNormalView(void);
+extern "C" int  PortXrNormalViewWorldless(void);
 extern "C" int  PortXrEyeViewAllowed(int view, int tableLayer);
 // Aurora (dolphin/gx/GXAurora.h): marks draws Aurora may decode once per frame and reuse per send.
 extern "C" void GXAuroraSetDecodeScope(unsigned char on);
@@ -259,6 +260,22 @@ void glplatViewProjectPoint(eGLView view, const nlVector3& v3world, nlVector3& v
     v3NDC.x = v3NDC.x * wc;
     v3NDC.y = -v3NDC.y * wc;
     v3NDC.z = v3NDC.z * wc;
+}
+
+// strikers-quest r55: where a game point is in the broadcast picture (the game camera of the world
+// view): -1..1, y up. 0 when it is behind the camera or well off the picture. For the big screen in
+// your room, so item blasts can burst out of it where they happen (port/xr_quest.h).
+extern "C" int PortBroadcastNdc(float x, float y, float z, float* ndcX, float* ndcY)
+{
+    nlVector3 w = { x, y, z };
+    nlVector3 v, c;
+    nlMultPosVectorMatrix(v, w, *glViewGetViewMatrix(GLV_Shadowed));
+    if (-v.z <= 0.05f)
+        return 0;
+    nlMultPosVectorMatrix(c, v, *glViewGetProjectionMatrix(GLV_Shadowed));
+    *ndcX = c.x / -v.z;
+    *ndcY = c.y / -v.z;
+    return (*ndcX > -1.1f && *ndcX < 1.1f && *ndcY > -1.1f && *ndcY < 1.1f) ? 1 : 0;
 }
 
 /**
@@ -493,7 +510,10 @@ static void glx_SendViews()
 
     dofRange = glConstantGet("dof/range");
 
-    const bool xrHudOnly = !s_xrEyeSend && PortXrHudOnlyNormalView() != 0; // strikers-quest
+    // strikers-quest: r53 adds Tabletop replays (PortXrNormalViewWorldless, xr_quest.cpp), asked every
+    // normal send so its per-frame decision is never left over from a replay.
+    const bool xrWorldless = !s_xrEyeSend && PortXrNormalViewWorldless() != 0;
+    const bool xrHudOnly = !s_xrEyeSend && (PortXrHudOnlyNormalView() != 0 || xrWorldless);
 
     for (view = 0; view < 0x22; view++)
     {

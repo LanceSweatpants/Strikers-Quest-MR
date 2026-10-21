@@ -31,10 +31,20 @@
 #include <unistd.h>
 
 #include "xr_fx.h"  // goal celebration effects
+#include "xr_ctrl_model.h"  // r54: the headset's own controller models
 #include "xr_net.hpp" // online 1v1 (include/port/xr_net.h)
 #include "xr_text.h"  // r42: the goal banner and the crowd volume panel
 #include "xr_voice.h" // r44: voice chat, its switch on the pause panel
 #include "xr_ra.h"    // r46: RetroAchievements, its pop-ups
+#include "xr_home.h"  // r61: the home ground
+#include <cctype>
+#include <ctime>
+// r61: stb_image (public domain / MIT), JPEG only, its functions private to this file: the cup suite's
+// 360 pictures.
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#include "third_party/stb_image.h"
 #include "../../include/port/xr_net.h"
 
 #include <algorithm>
@@ -93,6 +103,7 @@ extern "C" void aurora_xr_set_texture_anisotropy(unsigned int n);
 // and the self-test switches that leave categories out of the eye sends.
 unsigned long PortXrLayersTakeCulled();
 void PortXrTuneSkip(int crowd, int stands, int stadiumField);
+void PortXrTakeDrawCensus(char* out, unsigned long size, unsigned long frames);  // r53
 void PortXrProbe();
 void PortXrSetStadiumEconomy(float minPx, float eyeHalfWidthPx, int skipTallField, int bothLayers);
 // Below: starts the celebration renderer when first needed.
@@ -108,7 +119,7 @@ namespace {
 
 constexpr const char* kTag = "strikers_xr";
 // Bumped every headset round; the first log line of a session says which build is running.
-constexpr const char* kBuildTag = "STRIKERS_XR build=r39b";
+constexpr const char* kBuildTag = "STRIKERS_XR build=r53";
 
 // r39: every line also goes to the game log (stderr -> /sdcard/Strikers/strikers-log.txt): the
 // headset's system log turns over within minutes, so a session's stats and errors were lost.
@@ -209,6 +220,8 @@ struct Actions {
   XrSpace gripSpaceL = XR_NULL_HANDLE;
   XrAction gripPoseR = XR_NULL_HANDLE;
   XrSpace gripSpaceR = XR_NULL_HANDLE;
+  XrAction aimPoseL = XR_NULL_HANDLE, aimPoseR = XR_NULL_HANDLE;  // r60: pointing (screen edge, badges)
+  XrSpace aimSpaceL = XR_NULL_HANDLE, aimSpaceR = XR_NULL_HANDLE;
   XrAction haptic = XR_NULL_HANDLE;     // both controllers: the game's pad rumble
 };
 
@@ -308,8 +321,10 @@ struct Passthrough {
   XrPassthroughFB handle = XR_NULL_HANDLE;
   XrPassthroughLayerFB layer = XR_NULL_HANDLE;
   bool layerRunning = false;
+  bool running = false;  // r60: the passthrough itself (paused in the Stadium modes)
   PFN_xrCreatePassthroughFB create = nullptr;
   PFN_xrPassthroughStartFB start = nullptr;
+  PFN_xrPassthroughPauseFB pause = nullptr;
   PFN_xrCreatePassthroughLayerFB createLayer = nullptr;
   PFN_xrPassthroughLayerPauseFB pauseLayer = nullptr;
   PFN_xrPassthroughLayerResumeFB resumeLayer = nullptr;
@@ -345,6 +360,8 @@ struct State {
   bool hasPassthroughExt = false;
   bool colorPassthrough = true;  // r44f: the room in colour (Quest 3/3S/Pro); false on a Quest 2
   bool hasRefreshRateExt = false;
+  bool hasRenderModelExt = false;      // r54: XR_FB_render_model (xr_ctrl_model.h)
+  bool renderModelsSupported = false;
   bool hasPerfSettingsExt = false;
   bool hasThreadSettingsExt = false;
 
@@ -357,6 +374,8 @@ struct State {
   VkCommandBuffer cmd = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   VkPhysicalDeviceMemoryProperties memProps{};
+  float maxAnisotropy = 0.0f;  // r61: samplerAnisotropy's limit when the device has it on
+  uint32_t roomSamples = 1;    // r62: the cup suite room's multisampling
 
   VkBuffer staging = VK_NULL_HANDLE;  // the eye dump's
   VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
@@ -566,6 +585,108 @@ struct State {
   // "handoffwait <0|1>"), and how often that landed since the last stats line.
   bool handoffWait = true;
   uint32_t handoffSame = 0, handoffLate = 0;
+  // r53: the wait is cut to what the next game frame can spare: when this display frame's
+  // xrWaitFrame returned, a game frame's usual cost before PortXrEndFrame, cuts since the stats line.
+  uint64_t lastWaitReturnNs = 0;
+  double gameFrameEmaNs = 0.0;
+  uint32_t handoffCut = 0;
+  // r53: a goal replay draws the game twice in Tabletop, the table and the broadcast picture for the
+  // screen (Lance's cups log: 928 draws a game frame in Tabletop · Living Room replays against 365 in
+  // play, 1153 against 703 in Tabletop · Stadium; 42-46 fps for the ~10 s of every replay, the
+  // scorer's walk-up included). While one runs (replayRunning, since replayStartNs): Living Room
+  // leaves the broadcast picture out (the replay plays on the table; the screen is hidden), Stadium
+  // draws it every other game frame and the split stadium on the frames between (showParity).
+  // worldlessFrame / worldless: the decision for the Aurora frame being built; stadiumRest: this
+  // frame's stadium is left as it was (the broadcast's turn).
+  // r53: the controllers in your hands (xr_fx), in the skin of your team's captain (eCharacterClass,
+  // the last one seen in live play; -1 before the first match).
+  bool showControllers = true;
+  int skinCaptain = -1;
+  // r55: item blasts shake things: the Tabletop field (and, a little, the life-size stadium) on a
+  // stiff damped spring, offset and velocity in meters (LOCAL), stepped every display frame.
+  XrVector3f joltPos{0.0f, 0.0f, 0.0f}, joltVel{0.0f, 0.0f, 0.0f};
+  uint64_t lastJoltNs = 0;
+  uint32_t blastsLogged = 0;
+  // r57: the trophy shelf in your room (xr_shelf.txt): where it is, which hands hold it, and the
+  // cups won (the save's trophy bits and win counts, from Game.cpp), the last one won and when.
+  struct ShelfState {
+    bool placed = false;
+    XrVector3f position{0.0f, 0.0f, 0.0f};
+    float yaw = 0.0f;
+    bool handL = false, handR = false;  // a grip that closed on it holds it
+    int grabHands = 0;
+    XrVector3f grabOffset{0.0f, 0.0f, 0.0f};
+    float twoAngle = 0.0f, twoYaw = 0.0f;
+    XrVector3f twoPos{0.0f, 0.0f, 0.0f}, twoMid{0.0f, 0.0f, 0.0f};
+    bool prevGripL = false, prevGripR = false;
+    // r57b (Lance: "i want those to be able to be picked up"): a trophy in a hand (-1 none), held
+    // where it was taken (its middle and turn in the hand's grip frame); a trophy off its spot (held,
+    // or gliding back to it after it is let go), where it is.
+    int heldCup[2] = {-1, -1};
+    XrVector3f heldOff[2] = {};
+    XrQuaternionf heldTurn[2] = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
+    bool cupFree[8] = {};
+    XrPosef cupPose[8] = {};
+    bool cupBack[8] = {};
+    XrPosef cupFrom[8] = {};
+    uint64_t cupBackNs[8] = {};
+    // r60 (Lance: "make the trophy bigger when its in hand same way we make the screen bigger"): the
+    // other grip closing while one hand holds a trophy resizes it by how far apart the hands go; its
+    // size (1 = on the shelf), and what it was when it started gliding back (it shrinks on the way).
+    float cupScale[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    float cupFromScale[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    int resizeHand = -1;  // the hand resizing (the other one holds the trophy)
+    float resizeDist0 = 0.1f, resizeScale0 = 1.0f;
+    bool spent[2] = {};   // a grip still closed after its resize ended: carries nothing
+  } shelf;
+  // r60: the controllers' pointing rays (OpenXR aim poses), this input sync's.
+  bool aimValid[2] = {};
+  XrPosef aim[2] = {};
+  // r60 (Lance: the grip should take the screen "only ... when we touch the border of the screen"):
+  // the big screen as last shown (for the pointer test), and whether the left hand's pointer (or the
+  // hand itself) is on its edge now.
+  bool shownScreenValid = false;
+  XrPosef shownScreenPose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+  float shownScreenW = 0.0f, shownScreenH = 0.0f;
+  bool screenEdgeHover = false;
+  XrVector3f screenEdgePoint{0.0f, 0.0f, 0.0f};
+  // r60 (Lance: "hover over the achievements youve earned in that trophy room area, so that you can
+  // see the ones you earned and have yet to earn"): the board's rows as drawn, the badge under a
+  // pointer (-1 none) and the card shown for it.
+  std::vector<xrra::AchievementRow> boardRows, boardRowsPending;
+  uint32_t boardH = 0, boardHPending = 0;
+  int boardHover = -1, tipFor = -1, tipShownFor = -1, tipGen = 0, tipShownGen = 0;
+  Panel tip;
+  // r61: the home ground's boards (xr_home.cpp; g_homeBoard / g_ticket / g_cupBoard draw them).
+  Panel homePanel, ticketPanel, cupPanel;
+  uint64_t homePollNs = 0;
+  // r61, the cup suite: on while a cup is between its games (unless you switched view there), and the
+  // view you had, which comes back for the matches.
+  bool inSuite = false, suiteDismissed = false, suiteSavedMr = true, suiteSavedTabletop = false;
+  // r61 (Lance: "let me walk within my environment ... dont move the game if i move in real life"):
+  // the suite is a room fixed in your room, set where you stand and the way you face as it opens
+  // (its middle on the floor under you, its window ahead); its baked room (the home captain's,
+  // suites/suite_<name>.*) is loaded on a thread.
+  int suiteCaptain = -2;  // the one loaded or loading
+  XrVector3f suiteOrigin{0.0f, 0.0f, 0.0f};
+  float suiteYaw = 0.0f;
+  unsigned trophyBits = 0;
+  unsigned short trophyWins[8] = {};
+  int newCup = -1;
+  uint64_t newCupNs = 0;
+  // r57: the badge board's panel and what it was last drawn from.
+  Panel board;
+  int boardGen = 0, boardShownGen = 0;
+  uint64_t boardCheckNs = 0;
+  uint32_t boardUnlocked = 0xFFFFFFFFu;
+  int boardFiles = -1;
+  bool replayRunning = false;
+  uint64_t replayStartNs = 0;
+  uint32_t worldlessFrame = 0xFFFFFFFFu;
+  bool worldless = false;
+  bool stadiumRest = false;
+  bool splitSkipStadium = false;
+  uint32_t showParity = 0;
   uint32_t stadiumParity = 0;
   uint32_t prevItemButtons = 0;       // X / Y / Z last input sync, for the press log
   int buzzWave = 0;                   // cannon waves already buzzed
@@ -605,6 +726,30 @@ std::mutex g_achMutex;
 std::vector<uint8_t> g_achListPixels, g_achHeadPixels;  // under g_achMutex
 uint32_t g_achListH = 0;                                // under g_achMutex
 std::atomic<int> g_achReadyGen{0};
+// r57: the RetroAchievements badge board over the trophy shelf, drawn on a thread
+// (xrtext::badge_board) whenever the unlocks or the saved badge pictures change.
+std::mutex g_boardMutex;
+std::vector<uint8_t> g_boardPixels;  // under g_boardMutex
+uint32_t g_boardH = 0;               // under g_boardMutex
+std::atomic<int> g_boardReadyGen{0};
+constexpr uint32_t kBoardW = 640;
+constexpr int kBoardColumns = 8;
+constexpr int kBoardHeader = 110;  // the board's height = this + rows * 76 + 40 (pixels)
+// r60: the card for the badge under a pointer (achievement_toast), drawn on a thread.
+std::mutex g_tipMutex;
+std::vector<uint8_t> g_tipPixels;  // under g_tipMutex
+std::atomic<int> g_tipReadyGen{0};
+constexpr uint32_t kTipW = 768, kTipH = 225;
+// r61: a text panel drawn on a thread and shown once it is ready (the home ground's boards).
+struct AsyncPanel {
+  std::mutex mutex;
+  std::vector<uint8_t> pixels;  // under mutex
+  uint32_t width = 0, height = 0;
+  std::atomic<int> ready{0};
+  int requested = 0, shown = 0;
+  int forGeneration = -1;  // what it was last asked to show (the caller's numbering)
+};
+AsyncPanel g_homeBoard, g_ticket, g_cupBoard;
 constexpr int kViewHeightMinCm = -60, kViewHeightMaxCm = 100;  // r44g
 
 // xr_quest.cpp is built without include/ on its path: the mixer's crowd controls (port/audio.h).
@@ -705,8 +850,14 @@ bool create_instance() {
   if (g.hasThreadSettingsExt) {
     exts.push_back(XR_KHR_ANDROID_THREAD_SETTINGS_EXTENSION_NAME);
   }
-  XLOG("extensions: passthrough=%d refresh_rate=%d perf_settings=%d thread_settings=%d", g.hasPassthroughExt ? 1 : 0,
-       g.hasRefreshRateExt ? 1 : 0, g.hasPerfSettingsExt ? 1 : 0, g.hasThreadSettingsExt ? 1 : 0);
+  // r54: the headset's own controller models, for the controllers in your hands (xr_ctrl_model.h).
+  g.hasRenderModelExt = has(xrctrl::extension_name());
+  if (g.hasRenderModelExt) {
+    exts.push_back(xrctrl::extension_name());
+  }
+  XLOG("extensions: passthrough=%d refresh_rate=%d perf_settings=%d thread_settings=%d render_model=%d",
+       g.hasPassthroughExt ? 1 : 0, g.hasRefreshRateExt ? 1 : 0, g.hasPerfSettingsExt ? 1 : 0,
+       g.hasThreadSettingsExt ? 1 : 0, g.hasRenderModelExt ? 1 : 0);
 
   XrInstanceCreateInfoAndroidKHR android{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
   android.applicationVM = g.vm;
@@ -734,11 +885,18 @@ bool create_instance() {
   // and its recordings show black there). Lance: the Super Strike screen is for the latter only; with
   // colour passthrough it was taken away on purpose, so the captain is seen in the air on the table.
   XrSystemPassthroughProperties2FB pt2{XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES2_FB};
+  XrSystemRenderModelPropertiesFB rm{XR_TYPE_SYSTEM_RENDER_MODEL_PROPERTIES_FB};  // r54
   XrSystemProperties sysProps{XR_TYPE_SYSTEM_PROPERTIES};
-  if (g.hasPassthroughExt) sysProps.next = &pt2;
+  if (g.hasRenderModelExt) sysProps.next = &rm;
+  if (g.hasPassthroughExt) {
+    pt2.next = sysProps.next;
+    sysProps.next = &pt2;
+  }
   if (xr_ok(xrGetSystemProperties(g.instance, g.system, &sysProps), "xrGetSystemProperties")) {
     g.colorPassthrough = g.hasPassthroughExt && (pt2.capabilities & XR_PASSTHROUGH_CAPABILITY_COLOR_BIT_FB) != 0;
-    XLOG("headset: %s, %s passthrough", sysProps.systemName, g.colorPassthrough ? "colour" : "no colour");
+    g.renderModelsSupported = g.hasRenderModelExt && rm.supportsRenderModelLoading == XR_TRUE;
+    XLOG("headset: %s, %s passthrough, render models %s", sysProps.systemName,
+         g.colorPassthrough ? "colour" : "no colour", g.renderModelsSupported ? "yes" : "no");
   }
   return true;
 }
@@ -847,11 +1005,26 @@ bool create_vulkan_device() {
   g.hasExtSemFd = hasExt(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
   XLOG("XR device: external memory fd=%d, semaphore fd=%d", g.hasExtMemFd ? 1 : 0, g.hasExtSemFd ? 1 : 0);
 
+  // r61: anisotropic filtering where the GPU has it (the cup suite's floor seen at a slant).
+  VkPhysicalDeviceFeatures supported{};
+  vkGetPhysicalDeviceFeatures(g.physical, &supported);
+  VkPhysicalDeviceFeatures features{};
+  features.samplerAnisotropy = supported.samplerAnisotropy;
+  {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(g.physical, &props);
+    if (supported.samplerAnisotropy) g.maxAnisotropy = props.limits.maxSamplerAnisotropy;
+    // r62: 4x multisampling for the cup suite's room where colour and depth both have it.
+    const VkSampleCountFlags both = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
+    g.roomSamples = (both & VK_SAMPLE_COUNT_4_BIT) ? 4u : 1u;
+  }
+
   VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   deviceInfo.queueCreateInfoCount = 1;
   deviceInfo.pQueueCreateInfos = &queueInfo;
   deviceInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExts.size());
   deviceInfo.ppEnabledExtensionNames = deviceExts.data();
+  deviceInfo.pEnabledFeatures = &features;
 
   XrVulkanDeviceCreateInfoKHR xrVkDevice{XR_TYPE_VULKAN_DEVICE_CREATE_INFO_KHR};
   xrVkDevice.systemId = g.system;
@@ -947,6 +1120,7 @@ void create_passthrough() {
   Passthrough& pt = g.pt;
   if (!get_proc(g.instance, "xrCreatePassthroughFB", &pt.create) ||
       !get_proc(g.instance, "xrPassthroughStartFB", &pt.start) ||
+      !get_proc(g.instance, "xrPassthroughPauseFB", &pt.pause) ||
       !get_proc(g.instance, "xrCreatePassthroughLayerFB", &pt.createLayer) ||
       !get_proc(g.instance, "xrPassthroughLayerPauseFB", &pt.pauseLayer) ||
       !get_proc(g.instance, "xrPassthroughLayerResumeFB", &pt.resumeLayer)) {
@@ -967,6 +1141,7 @@ void create_passthrough() {
   }
   pt.available = true;
   pt.layerRunning = true;
+  pt.running = true;
   XLOG("passthrough ready");
 }
 
@@ -983,6 +1158,13 @@ void set_mr_mode(bool mr) {
   if (!pt.available) {
     return;
   }
+  // r60 (Lance on Konga: "running horrendously"): pausing only the layer left the passthrough running,
+  // and the headset kept treating the app as mixed reality in the Stadium modes too (his r57 logcat:
+  // "Switching MainState: from_state: ImmersiveAppMr" only when he quit, from Tabletop · Stadium, GPU
+  // level 2 -> 3 right after), which holds the GPU clock down. The Stadium modes now stop it.
+  if (mr && !pt.running) {
+    pt.running = xr_ok(pt.start(pt.handle), "xrPassthroughStartFB");
+  }
   if (mr && !pt.layerRunning) {
     pt.layerRunning = xr_ok(pt.resumeLayer(pt.layer), "xrPassthroughLayerResumeFB");
   } else if (!mr && pt.layerRunning) {
@@ -990,7 +1172,10 @@ void set_mr_mode(bool mr) {
       pt.layerRunning = false;
     }
   }
-  XLOG("mode: %s", mode_name());
+  if (!mr && pt.running && xr_ok(pt.pause(pt.handle), "xrPassthroughPauseFB")) {
+    pt.running = false;
+  }
+  XLOG("mode: %s (passthrough %s)", mode_name(), pt.running ? "running" : "stopped");
 }
 
 void init_refresh_rate() {
@@ -1061,6 +1246,8 @@ bool create_actions() {
   ok &= make_action(XR_ACTION_TYPE_BOOLEAN_INPUT, "stick_click_r", "Screen size", &a.stickClickR);
   ok &= make_action(XR_ACTION_TYPE_POSE_INPUT, "grip_pose_l", "Left hand", &a.gripPoseL);
   ok &= make_action(XR_ACTION_TYPE_POSE_INPUT, "grip_pose_r", "Right hand", &a.gripPoseR);
+  ok &= make_action(XR_ACTION_TYPE_POSE_INPUT, "aim_pose_l", "Left pointer", &a.aimPoseL);
+  ok &= make_action(XR_ACTION_TYPE_POSE_INPUT, "aim_pose_r", "Right pointer", &a.aimPoseR);
   ok &= make_action(XR_ACTION_TYPE_VIBRATION_OUTPUT, "rumble", "Rumble", &a.haptic);
   if (!ok) {
     return false;
@@ -1082,6 +1269,8 @@ bool create_actions() {
       {a.stickClickR, path("/user/hand/right/input/thumbstick/click")},
       {a.gripPoseL, path("/user/hand/left/input/grip/pose")},
       {a.gripPoseR, path("/user/hand/right/input/grip/pose")},
+      {a.aimPoseL, path("/user/hand/left/input/aim/pose")},
+      {a.aimPoseR, path("/user/hand/right/input/aim/pose")},
       {a.haptic, path("/user/hand/left/output/haptic")},
       {a.haptic, path("/user/hand/right/output/haptic")},
   };
@@ -1107,6 +1296,14 @@ bool create_actions() {
   spaceInfo.action = a.gripPoseR;
   if (XR_FAILED(xrCreateActionSpace(g.session, &spaceInfo, &a.gripSpaceR))) {
     a.gripSpaceR = XR_NULL_HANDLE;
+  }
+  spaceInfo.action = a.aimPoseL;
+  if (XR_FAILED(xrCreateActionSpace(g.session, &spaceInfo, &a.aimSpaceL))) {
+    a.aimSpaceL = XR_NULL_HANDLE;
+  }
+  spaceInfo.action = a.aimPoseR;
+  if (XR_FAILED(xrCreateActionSpace(g.session, &spaceInfo, &a.aimSpaceR))) {
+    a.aimSpaceR = XR_NULL_HANDLE;
   }
   return true;
 }
@@ -1311,8 +1508,11 @@ void load_screens() {
   }
 }
 
-// Lance's grab rule: the left grip moves the screen (from anywhere), both grips turn and resize it.
-// Returns true while the right grip is part of a two-hand grab.
+// Lance's grab rule: the left grip moves the screen, both grips turn and resize it. r60 (Lance: "the
+// grips button to only activate when we touch the border of the screen, not just press the buttons
+// randomly away from the screen and it move the screen"): the left grip takes it only while its
+// pointer or hand is on the screen's edge (g.screenEdgeHover; the edge lights up); the right grip
+// then joins from anywhere. Returns true while the right grip is part of a two-hand grab.
 bool update_screen(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL,
                    const XrVector3f& handR) {
   const int room = screen_room();
@@ -1325,7 +1525,7 @@ bool update_screen(bool gripL, bool gripR, bool haveL, bool haveR, const XrVecto
   }
   if (!s.placed) place_screen_ahead(s, room, nullptr);
   int hands = 0;
-  if (gripL && haveL && (s.grabHands != 0 || !g.prevGripL)) {
+  if (gripL && haveL && (s.grabHands != 0 || (!g.prevGripL && g.screenEdgeHover))) {
     hands = 1;
     if (gripR && haveR) hands |= 2;
   }
@@ -1381,9 +1581,278 @@ void place_free_screen(XrCompositionLayerQuad& quad, float aspect) {
   if (!s.placed) place_screen_ahead(s, room, nullptr);
   const float half = 0.5f * s.yaw;
   quad.pose.orientation = {0.0f, std::sin(half), 0.0f, std::cos(half)};
-  quad.pose.position = s.position;
+  // r55: shaken by item blasts like the field is.
+  quad.pose.position = XrVector3f{s.position.x + g.joltPos.x, s.position.y + g.joltPos.y, s.position.z + g.joltPos.z};
   quad.size.width = s.width;
   quad.size.height = s.width * aspect;
+}
+
+// --- r57: the trophy shelf in your room (Lance: "a shelf you place in MR") ---
+
+std::string shelf_path() {
+  const char* home = std::getenv("STRIKERS_HOME");
+  return std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/xr_shelf.txt";
+}
+
+void save_shelf() {
+  if (FILE* f = std::fopen(shelf_path().c_str(), "w")) {
+    std::fprintf(f, "%.3f %.3f %.3f %.4f\n", g.shelf.position.x, g.shelf.position.y, g.shelf.position.z, g.shelf.yaw);
+    std::fclose(f);
+  }
+}
+
+// Where you left it; one left far from where you start (over 5 m) is put next to you again.
+void load_shelf() {
+  if (FILE* f = std::fopen(shelf_path().c_str(), "r")) {
+    float x = 0, y = 0, z = 0, yaw = 0;
+    if (std::fscanf(f, "%f %f %f %f", &x, &y, &z, &yaw) == 4 && std::isfinite(x + y + z + yaw) &&
+        x * x + z * z < 25.0f) {
+      g.shelf.placed = true;
+      g.shelf.position = {x, y, z};
+      g.shelf.yaw = yaw;
+      XLOG("shelf: at (%.2f, %.2f, %.2f)", x, y, z);
+    }
+    std::fclose(f);
+  }
+}
+
+// The first time: off to your left, a little ahead, at about chest height, its front to you.
+void place_shelf(const XrPosef& head) {
+  const XrQuaternionf& o = head.orientation;
+  float fx = -(2 * (o.x * o.z + o.w * o.y)), fz = -(1 - 2 * (o.x * o.x + o.y * o.y));
+  const float len = std::max(1e-3f, std::sqrt(fx * fx + fz * fz));
+  fx /= len;
+  fz /= len;
+  const float lx = fz, lz = -fx;  // your left, along the floor
+  XrVector3f& p = g.shelf.position;
+  p = {head.position.x + fx * 0.9f + lx * 0.8f, head.position.y - 0.3f, head.position.z + fz * 0.9f + lz * 0.8f};
+  g.shelf.yaw = std::atan2(head.position.x - p.x, head.position.z - p.z);
+  g.shelf.placed = true;
+  save_shelf();
+  XLOG("shelf: placed at (%.2f, %.2f, %.2f), grab it with a grip to move it", p.x, p.y, p.z);
+}
+
+// r62 (Lance: "you also took away the ability for me to grab and resize the cup trophies"): the shelf
+// the trophies stand on now: in the cup suite its own (beside the pedestal, fixed), else the one you
+// placed in your room.
+XrVector3f suite_point(float x, float y, float z);  // below
+XrVector3f shelf_at() { return g.inSuite ? suite_point(1.3f, 1.0f, -1.4f) : g.shelf.position; }
+float shelf_turn() { return g.inSuite ? g.suiteYaw + std::atan2(-1.3f, 1.4f) : g.shelf.yaw; }
+
+// A hand on or right by the shelf (its board, the trophies on it, a few centimeters round).
+bool near_shelf(const XrVector3f& p) {
+  const XrVector3f at = shelf_at();
+  const float dx = p.x - at.x, dz = p.z - at.z;
+  const float c = std::cos(shelf_turn()), s = std::sin(shelf_turn());
+  const float lx = dx * c - dz * s, lz = dx * s + dz * c, ly = p.y - at.y;
+  return std::fabs(lx) < 0.52f && std::fabs(lz) < 0.2f && ly > -0.12f && ly < 0.26f;
+}
+
+// r57b: quaternion helpers for the trophies in your hands (x, y, z, w).
+XrQuaternionf q_mul(const XrQuaternionf& a, const XrQuaternionf& b) {
+  return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+XrQuaternionf q_conj(const XrQuaternionf& q) { return {-q.x, -q.y, -q.z, q.w}; }
+XrVector3f q_rot(const XrQuaternionf& q, const XrVector3f& v) {
+  const XrQuaternionf p{v.x, v.y, v.z, 0.0f};
+  const XrQuaternionf r = q_mul(q_mul(q, p), q_conj(q));
+  return {r.x, r.y, r.z};
+}
+
+// r60: where a pointer (its pose; it points along -Z) meets a quad (its pose; the quad lies in its
+// x/y plane): the hit in the quad's own x / y from its middle (meters) and how far along the ray.
+// False when it points along the plane or away from it.
+bool ray_quad(const XrPosef& ray, const XrPosef& quad, float* qx, float* qy, float* dist) {
+  const XrVector3f dir = q_rot(ray.orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+  const XrVector3f n = q_rot(quad.orientation, XrVector3f{0.0f, 0.0f, 1.0f});
+  const float denom = dir.x * n.x + dir.y * n.y + dir.z * n.z;
+  if (std::fabs(denom) < 1e-4f) return false;
+  const XrVector3f d{quad.position.x - ray.position.x, quad.position.y - ray.position.y,
+                     quad.position.z - ray.position.z};
+  const float t = (d.x * n.x + d.y * n.y + d.z * n.z) / denom;
+  if (t < 0.0f || t > 40.0f) return false;
+  const XrVector3f rel{ray.position.x + dir.x * t - quad.position.x, ray.position.y + dir.y * t - quad.position.y,
+                       ray.position.z + dir.z * t - quad.position.z};
+  const XrVector3f local = q_rot(q_conj(quad.orientation), rel);
+  *qx = local.x;
+  *qy = local.y;
+  *dist = t;
+  return true;
+}
+
+// r60: a point in a w x h quad's own x / y on its edge: within a band along each side (8% of its
+// width, 8 cm to 60 cm) or a little past it (5%, up to 40 cm).
+bool on_quad_edge(float qx, float qy, float w, float h) {
+  const float band = std::max(0.08f, std::min(0.6f, 0.08f * w));
+  const float out = std::min(0.4f, 0.05f * w);
+  const bool inOuter = std::fabs(qx) <= 0.5f * w + out && std::fabs(qy) <= 0.5f * h + out;
+  const bool inInner = std::fabs(qx) < 0.5f * w - band && std::fabs(qy) < 0.5f * h - band;
+  return inOuter && !inInner;
+}
+
+// A trophy's spot on the shelf (LOCAL): xr_fx.cpp shelf_slot, turned with the shelf.
+XrPosef cup_slot_pose(int i) {
+  const float x = -0.405f + static_cast<float>(i) * 0.1157f, y = 0.016f + 0.06f;
+  const XrVector3f at = shelf_at();
+  const float yaw = shelf_turn();
+  const float c = std::cos(yaw), s = std::sin(yaw);
+  XrPosef p;
+  p.position = {at.x + x * c, at.y + y, at.z - x * s};
+  p.orientation = {0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw)};
+  return p;
+}
+
+// Where a trophy is shown now: off its spot (held, gliding back) or on it.
+XrPosef cup_pose(int i) { return g.shelf.cupFree[i] ? g.shelf.cupPose[i] : cup_slot_pose(i); }
+
+// The trophy nearest a hand, within 9 cm of its middle; -1 none (or held by the other hand).
+int cup_near(const XrVector3f& p) {
+  int best = -1;
+  float bestD = 0.09f * 0.09f;
+  for (int i = 0; i < 8; ++i) {
+    if (g.shelf.heldCup[0] == i || g.shelf.heldCup[1] == i) continue;
+    const XrVector3f c = cup_pose(i).position;
+    const float d = (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) + (p.z - c.z) * (p.z - c.z);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// Lance's grab rule, for the shelf: one grip carries it, both turn it. A grip takes it only when it
+// closes on the shelf, and then the table / screen / item swap leave that grip alone until it opens.
+// r57b: a grip closing on a trophy takes the trophy instead, and it goes where the hand goes (turning
+// with it); let go, it glides back to its spot in half a second.
+void update_shelf(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL, const XrVector3f& handR,
+                  const XrPosef* poseL, const XrPosef* poseR) {
+  auto& sh = g.shelf;
+  const bool here = (g.mrMode && sh.placed) || g.inSuite;  // r62: the suite's trophies too
+  const bool grip[2] = {gripL, gripR}, have[2] = {haveL, haveR}, prev[2] = {sh.prevGripL, sh.prevGripR};
+  const XrVector3f hand[2] = {handL, handR};
+  const XrPosef* pose[2] = {poseL, poseR};
+  bool* takes[2] = {&sh.handL, &sh.handR};
+  const uint64_t now = now_ns();
+  for (int h = 0; h < 2; ++h) {
+    if (here && grip[h] && !prev[h] && have[h]) {
+      const int cup = pose[h] != nullptr ? cup_near(hand[h]) : -1;
+      const int other = 1 - h;
+      if (cup < 0 && sh.heldCup[other] >= 0 && sh.heldCup[h] < 0 && have[other]) {
+        // r60: the other hand holds a trophy: this grip resizes it (pull apart = bigger).
+        const XrVector3f& a = hand[h];
+        const XrVector3f& b = hand[other];
+        sh.resizeHand = h;
+        sh.resizeDist0 = std::max(0.05f, std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
+                                                   (a.z - b.z) * (a.z - b.z)));
+        sh.resizeScale0 = sh.cupScale[sh.heldCup[other]];
+        *takes[h] = true;
+        XLOG("shelf: resizing trophy %d", sh.heldCup[other]);
+      } else if (cup >= 0) {
+        const XrPosef cp = cup_pose(cup);
+        const XrQuaternionf inv = q_conj(pose[h]->orientation);
+        sh.heldCup[h] = cup;
+        sh.heldOff[h] = q_rot(inv, XrVector3f{cp.position.x - pose[h]->position.x, cp.position.y - pose[h]->position.y,
+                                             cp.position.z - pose[h]->position.z});
+        sh.heldTurn[h] = q_mul(inv, cp.orientation);
+        sh.cupFree[cup] = true;
+        sh.cupBack[cup] = false;
+        sh.cupPose[cup] = cp;
+        *takes[h] = true;
+        XLOG("shelf: trophy %d picked up", cup);
+      } else if (!g.inSuite && near_shelf(hand[h])) {  // the suite's shelf is part of the room
+        *takes[h] = true;
+      }
+    }
+    if (!grip[h] || !have[h] || !here) {
+      *takes[h] = false;
+      sh.spent[h] = false;
+      if (sh.resizeHand == h) sh.resizeHand = -1;
+      if (sh.heldCup[h] >= 0) {
+        // Let go: back to its spot (and its shelf size).
+        const int cup = sh.heldCup[h];
+        sh.cupBack[cup] = true;
+        sh.cupFrom[cup] = sh.cupPose[cup];
+        sh.cupFromScale[cup] = sh.cupScale[cup];
+        sh.cupBackNs[cup] = now;
+        sh.heldCup[h] = -1;
+        if (sh.resizeHand == 1 - h) {
+          // The resizing hand stays taken (no table, screen or item swap) but never carries the
+          // shelf, until it opens.
+          sh.resizeHand = -1;
+          sh.spent[1 - h] = true;
+        }
+      }
+    }
+    if (sh.resizeHand == h && sh.heldCup[1 - h] >= 0) {
+      const XrVector3f& a = hand[h];
+      const XrVector3f& b = hand[1 - h];
+      const float d = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+      sh.cupScale[sh.heldCup[1 - h]] = std::max(0.6f, std::min(8.0f, sh.resizeScale0 * d / sh.resizeDist0));
+    }
+    if (sh.heldCup[h] >= 0 && pose[h] != nullptr) {
+      const int cup = sh.heldCup[h];
+      const XrVector3f off = q_rot(pose[h]->orientation, sh.heldOff[h]);
+      sh.cupPose[cup].position = {pose[h]->position.x + off.x, pose[h]->position.y + off.y, pose[h]->position.z + off.z};
+      sh.cupPose[cup].orientation = q_mul(pose[h]->orientation, sh.heldTurn[h]);
+    }
+  }
+  // Trophies on their way back.
+  for (int i = 0; i < 8; ++i) {
+    if (!sh.cupBack[i]) continue;
+    const float t = static_cast<float>(now - sh.cupBackNs[i]) / 450e6f;
+    if (t >= 1.0f) {
+      sh.cupBack[i] = false;
+      sh.cupFree[i] = false;
+      sh.cupScale[i] = 1.0f;
+      continue;
+    }
+    const float e = t * t * (3.0f - 2.0f * t);
+    sh.cupScale[i] = sh.cupFromScale[i] + (1.0f - sh.cupFromScale[i]) * e;
+    const XrPosef to = cup_slot_pose(i);
+    const XrPosef& from = sh.cupFrom[i];
+    sh.cupPose[i].position = {from.position.x + (to.position.x - from.position.x) * e,
+                              from.position.y + (to.position.y - from.position.y) * e,
+                              from.position.z + (to.position.z - from.position.z) * e};
+    XrQuaternionf a = from.orientation, b = to.orientation;
+    if (a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0.0f) b = {-b.x, -b.y, -b.z, -b.w};
+    XrQuaternionf q{a.x + (b.x - a.x) * e, a.y + (b.y - a.y) * e, a.z + (b.z - a.z) * e, a.w + (b.w - a.w) * e};
+    const float l = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (l > 1e-6f) q = {q.x / l, q.y / l, q.z / l, q.w / l};
+    sh.cupPose[i].orientation = q;
+  }
+  sh.prevGripL = gripL;
+  sh.prevGripR = gripR;
+  // The shelf itself moves only with the hands that took it (not ones holding or resizing a trophy).
+  const int hands = (sh.handL && sh.heldCup[0] < 0 && sh.resizeHand != 0 && !sh.spent[0] ? 1 : 0) |
+                    (sh.handR && sh.heldCup[1] < 0 && sh.resizeHand != 1 && !sh.spent[1] ? 2 : 0);
+  if (hands != sh.grabHands) {
+    if (hands == 3) {
+      sh.twoAngle = std::atan2(handR.x - handL.x, handR.z - handL.z);
+      sh.twoYaw = sh.yaw;
+      sh.twoPos = sh.position;
+      sh.twoMid = {0.5f * (handL.x + handR.x), 0.5f * (handL.y + handR.y), 0.5f * (handL.z + handR.z)};
+    } else if (hands != 0) {
+      const XrVector3f& h = hands == 1 ? handL : handR;
+      sh.grabOffset = {sh.position.x - h.x, sh.position.y - h.y, sh.position.z - h.z};
+    } else {
+      save_shelf();
+      XLOG("shelf: left at (%.2f, %.2f, %.2f)", sh.position.x, sh.position.y, sh.position.z);
+    }
+    sh.grabHands = hands;
+  }
+  if (hands == 3) {
+    float turn = std::atan2(handR.x - handL.x, handR.z - handL.z) - sh.twoAngle;
+    while (turn > 3.14159265f) turn -= 6.2831853f;
+    while (turn < -3.14159265f) turn += 6.2831853f;
+    sh.yaw = sh.twoYaw + turn;
+    const XrVector3f mid{0.5f * (handL.x + handR.x), 0.5f * (handL.y + handR.y), 0.5f * (handL.z + handR.z)};
+    sh.position = {sh.twoPos.x + mid.x - sh.twoMid.x, sh.twoPos.y + mid.y - sh.twoMid.y, sh.twoPos.z + mid.z - sh.twoMid.z};
+  } else if (hands != 0) {
+    const XrVector3f& h = hands == 1 ? handL : handR;
+    sh.position = {h.x + sh.grabOffset.x, h.y + sh.grabOffset.y, h.z + sh.grabOffset.z};
+  }
 }
 
 void sync_input() {
@@ -1478,28 +1947,80 @@ void sync_input() {
         }
       }
       const bool gripR = get_float(a.squeezeR) > 0.5f;
+      const bool gripL = get_float(a.squeezeL) > 0.6f;
+      // r60: the pointers, and whether the left one (or the left hand itself) is on the big screen's
+      // edge, where its grip takes the screen.
+      {
+        const XrSpace aims[2] = {a.aimSpaceL, a.aimSpaceR};
+        for (int h = 0; h < 2; ++h) {
+          XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+          const XrSpaceLocationFlags need = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+          g.aimValid[h] = aims[h] != XR_NULL_HANDLE &&
+                          XR_SUCCEEDED(xrLocateSpace(aims[h], g.local, g.frameState.predictedDisplayTime, &loc)) &&
+                          (loc.locationFlags & need) == need;
+          if (g.aimValid[h]) g.aim[h] = loc.pose;
+        }
+        g.screenEdgeHover = false;
+        if (g.shownScreenValid && (!g.tabletop || g.stereoFailed)) {
+          float qx = 0, qy = 0, dist = 0;
+          if (g.aimValid[0] && ray_quad(g.aim[0], g.shownScreenPose, &qx, &qy, &dist) &&
+              on_quad_edge(qx, qy, g.shownScreenW, g.shownScreenH)) {
+            g.screenEdgeHover = true;
+            const XrVector3f dir = q_rot(g.aim[0].orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+            g.screenEdgePoint = {g.aim[0].position.x + dir.x * dist, g.aim[0].position.y + dir.y * dist,
+                                 g.aim[0].position.z + dir.z * dist};
+          } else if (haveL) {
+            // The hand itself on the edge (a screen pulled within reach).
+            const XrPosef& sp = g.shownScreenPose;
+            const XrVector3f local = q_rot(q_conj(sp.orientation), XrVector3f{handL.x - sp.position.x,
+                                                                              handL.y - sp.position.y,
+                                                                              handL.z - sp.position.z});
+            if (std::fabs(local.z) < 0.12f && on_quad_edge(local.x, local.y, g.shownScreenW, g.shownScreenH)) {
+              g.screenEdgeHover = true;
+              g.screenEdgePoint = handL;
+            }
+          }
+        }
+      }
+      // r57: the trophy shelf first: a grip that closes on it takes it from the table and screen.
+      if (g.mrMode && !g.shelf.placed && g.headValid) place_shelf(g.headPose);
+      {
+        // r57b: the hands' whole poses, for a trophy picked up (it turns with the hand).
+        XrPosef poseL{}, poseR{};
+        auto full = [&](XrSpace space, XrPosef* out) {
+          XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+          if (space == XR_NULL_HANDLE || XR_FAILED(xrLocateSpace(space, g.local, g.frameState.predictedDisplayTime, &loc)))
+            return false;
+          const XrSpaceLocationFlags need = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+          if ((loc.locationFlags & need) != need) return false;
+          *out = loc.pose;
+          return true;
+        };
+        const bool fullL = full(a.gripSpaceL, &poseL), fullR = full(a.gripSpaceR, &poseR);
+        update_shelf(gripL, gripR, haveL, haveR, handL, handR, fullL ? &poseL : nullptr, fullR ? &poseR : nullptr);
+      }
       if (gripR && !g.prevGripR) {
-        g.table.rightGrab = g.tabletop && !g.stereoFailed && haveR && near_table(handR);
+        g.table.rightGrab = g.tabletop && !g.stereoFailed && haveR && !g.shelf.handR && near_table(handR);
       }
       if (!gripR) g.table.rightGrab = false;
       // r42: the Jumbotron screen (the big screen modes, and Tabletop when 3D failed).
       const bool screenMode = !g.tabletop || g.stereoFailed;
-      const bool gripL = get_float(a.squeezeL) > 0.6f;
       if (screenMode) {
-        update_screen(gripL, gripR, haveL, haveR, handL, handR);
+        update_screen(gripL && !g.shelf.handL, gripR && !g.shelf.handR, haveL, haveR, handL, handR);
         // The left grip is busy with the screen: the right grip is not Z until it is let go.
         if (g.screens[screen_room()].grabHands != 0) g.holdRightGrip = true;
       } else {
         g.prevGripL = gripL;
         g.screens[screen_room()].grabHands = 0;
       }
+      if (g.shelf.handR) g.holdRightGrip = true;  // r57: carrying the shelf is no item swap
       if (!gripR) g.holdRightGrip = false;
       // r46: Z from the right grip only while it is mapped there; it still grabs the table either way.
       if (g.controls[kActZ] == kSrcGripR && gripR && !g.table.rightGrab && !g.holdRightGrip) {
         status.button |= PAD_TRIGGER_Z;
       }
       g.prevGripR = gripR;
-      const bool holdL = g.tabletop && get_float(a.squeezeL) > 0.6f;
+      const bool holdL = g.tabletop && get_float(a.squeezeL) > 0.6f && !g.shelf.handL;  // r57: not while it carries the shelf
       const int hands = (holdL && haveL ? 1 : 0) | (g.table.rightGrab && haveR ? 2 : 0);
       if (hands != g.table.grabHands) {
         // r44: taken hold of while it is raised for the scorer: it stays up there, in your hand.
@@ -1636,6 +2157,10 @@ void sync_input() {
       if (clickL && !g.prevStickClickL) {
         if (g.pendingTapL != 0 && t - g.pendingTapL < kDoubleTapNs) {
           g.pendingTapL = 0;
+          if (g.inSuite) {  // r61: your own choice ends the cup suite until the cup's hub is left
+            g.inSuite = false;
+            g.suiteDismissed = true;
+          }
           set_mr_mode(!g.mrMode);
         } else {
           g.pendingTapL = t;
@@ -1695,6 +2220,10 @@ void sync_input() {
       } else if (clickR && !g.prevStickClickR) {
         if (g.pendingTapR != 0 && t - g.pendingTapR < kDoubleTapNs) {
           g.pendingTapR = 0;
+          if (g.inSuite) {  // r61: as above
+            g.inSuite = false;
+            g.suiteDismissed = true;
+          }
           g.tabletop = !g.tabletop;
           XLOG("mode: %s", mode_name());
         } else {
@@ -2126,6 +2655,579 @@ void place_panel(XrCompositionLayerQuad& quad, const Panel& p, const XrVector3f&
   quad.size.height = std::max(0.001f, width * static_cast<float>(p.height) / static_cast<float>(p.width));
 }
 
+// --- r61: the home ground (xr_home.cpp) on show ---
+
+XrVector3f table_point(float gx, float gy, float gz);  // below
+
+// Asks for a panel to be drawn on a thread, when `generation` is not what it was last asked for.
+template <class Draw>
+void request_panel(AsyncPanel& a, int generation, uint32_t w, uint32_t h, Draw draw) {
+  if (a.forGeneration == generation) return;
+  a.forGeneration = generation;
+  const int gen = ++a.requested;
+  std::thread([&a, w, h, gen, draw]() {
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+    draw(px.data(), static_cast<int>(w), static_cast<int>(h));
+    std::lock_guard<std::mutex> lock(a.mutex);
+    if (gen < a.ready.load()) return;  // a newer one got there first
+    a.pixels = std::move(px);
+    a.width = w;
+    a.height = h;
+    a.ready = gen;
+  }).detach();
+}
+
+// Uploads the newest drawing; true once there is one to show.
+bool show_panel(AsyncPanel& a, Panel& p) {
+  if (a.requested > 0 && a.ready.load() == a.requested && a.shown != a.requested) {
+    std::lock_guard<std::mutex> lock(a.mutex);
+    panel_upload(p, a.pixels.data(), a.width, a.height);
+    a.shown = a.requested;
+  }
+  return p.hasImage;
+}
+
+std::string upper(const std::string& s) {
+  std::string r = s;
+  for (char& c : r) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return r;
+}
+
+std::string date_text(int64_t when) {
+  if (when <= 0) return "";
+  const std::time_t t = static_cast<std::time_t>(when);
+  std::tm tm {};
+  localtime_r(&t, &tm);
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%b %d %Y", &tm);
+  return upper(buf);
+}
+
+// The home board's text, from the home ground's state.
+void request_home_board(const xrhome::View& v) {
+  uint32_t c1 = 0, c2 = 0;
+  xrfx::team_colours(v.captain, &c1, &c2);
+  struct Text {
+    std::string title, label[4], value[4], tag[4], note[4];
+    uint32_t tagRgb[4] = {0x5A6680, 0x5A6680, 0x5A6680, 0x5A6680};
+    uint32_t noteRgb[4] = {0x9AA6BE, 0x9AA6BE, 0x9AA6BE, 0x9AA6BE};
+  } t;
+  t.title = upper(xrhome::captain_name(v.captain)) + "'S HOME GROUND";
+  auto record = [](const xrhome::Record& r, std::string* tag, uint32_t* rgb) {
+    *tag = std::to_string(r.wins) + " - " + std::to_string(r.losses) + (r.draws > 0 ? " - " + std::to_string(r.draws) : "");
+    *rgb = r.wins > r.losses ? 0x2FA84A : (r.wins < r.losses ? 0xD8303A : 0x5A6680);
+  };
+  t.label[0] = "LAST MATCH";
+  if (v.last.valid) {
+    const std::string them = v.last.online ? (v.last.theirName.empty() ? "A FRIEND" : upper(v.last.theirName))
+                                           : upper(xrhome::captain_name(v.last.theirCaptain));
+    t.value[0] = upper(xrhome::captain_name(v.last.myCaptain)) + " " + std::to_string(v.last.mine) + " - " +
+                 std::to_string(v.last.theirs) + " " + them;
+    const bool won = v.last.mine > v.last.theirs, lost = v.last.mine < v.last.theirs;
+    t.tag[0] = won ? "WIN" : (lost ? "LOSS" : "DRAW");
+    t.tagRgb[0] = won ? 0x2FA84A : (lost ? 0xD8303A : 0x5A6680);
+    t.note[0] = date_text(v.last.when) + (v.last.overtime ? "  -  IN OVERTIME" : "") + (v.last.cup ? "  -  CUP GAME" : "") +
+                (v.last.online ? "  -  ONLINE" : "");
+  } else {
+    t.value[0] = "NONE YET";
+    t.note[0] = "PLAY A MATCH TO START YOUR RECORD";
+  }
+  t.label[1] = "CPU RIVAL";
+  if (v.cpu.valid) {
+    t.value[1] = upper(xrhome::captain_name(v.cpu.captain));
+    record(v.cpu.record, &t.tag[1], &t.tagRgb[1]);
+    if (v.cpu.record.lastLost) {
+      t.note[1] = t.value[1] + " RUNS YOUR HOUSE UNTIL YOU BEAT THEM";
+      t.noteRgb[1] = 0xFF6A6A;
+    } else {
+      t.note[1] = v.cpu.record.wins > v.cpu.record.losses ? "YOU OWN THIS ONE" : "YOUR WINS - THEIR WINS";
+    }
+  } else {
+    t.value[1] = "NONE YET";
+    t.note[1] = "PLAY THE SAME CPU TEAM TWICE";
+  }
+  t.label[2] = "ONLINE RIVAL";
+  if (v.online.valid) {
+    t.value[2] = v.online.name.empty() ? "A FRIEND" : upper(v.online.name);
+    record(v.online.record, &t.tag[2], &t.tagRgb[2]);
+    if (v.online.record.lastLost) {
+      t.note[2] = "THEY GLOAT UNTIL YOUR NEXT WIN";
+      t.noteRgb[2] = 0xFF6A6A;
+    } else {
+      t.note[2] = v.online.record.wins > v.online.record.losses ? "YOU OWN THIS ONE" : "YOUR WINS - THEIR WINS";
+    }
+  } else {
+    t.value[2] = "NONE YET";
+    t.note[2] = "PLAY A FRIEND ONLINE";
+  }
+  t.label[3] = "HONORS";
+  t.value[3] = std::to_string(v.comebacks) + " COMEBACK" + (v.comebacks == 1 ? "" : "S") + "  /  " +
+               std::to_string(v.superStrikes) + " SUPER STRIKE GOAL" + (v.superStrikes == 1 ? "" : "S");
+  t.tag[3] = std::to_string(v.matches) + " GAME" + (v.matches == 1 ? "" : "S");
+  if (v.ticket.valid) {
+    t.note[3] = "FIRST WIN: " + upper(xrhome::captain_name(v.ticket.myCaptain)) + " " + std::to_string(v.ticket.mine) +
+                " - " + std::to_string(v.ticket.theirs) + " " +
+                (v.ticket.online ? (v.ticket.theirName.empty() ? std::string("A FRIEND") : upper(v.ticket.theirName))
+                                 : upper(xrhome::captain_name(v.ticket.theirCaptain)));
+  }
+  request_panel(g_homeBoard, v.generation, 640, 440, [t, c1, c2](uint8_t* px, int w, int h) {
+    xrtext::HomeLine lines[4];
+    for (int i = 0; i < 4; ++i) {
+      lines[i] = {t.label[i].c_str(), t.value[i].c_str(), t.tag[i].c_str(), t.tagRgb[i], t.note[i].c_str(), t.noteRgb[i]};
+    }
+    xrtext::home_board(px, w, h, t.title.c_str(), c1, c2, lines, 4);
+  });
+  if (v.ticket.valid) {
+    uint32_t t1 = 0, t2 = 0;
+    xrfx::team_colours(v.ticket.myCaptain, &t1, &t2);
+    const std::string score =
+        upper(xrhome::captain_name(v.ticket.myCaptain)) + "  " + std::to_string(v.ticket.mine) + " - " +
+        std::to_string(v.ticket.theirs) + "  " +
+        (v.ticket.online ? (v.ticket.theirName.empty() ? std::string("A FRIEND") : upper(v.ticket.theirName))
+                         : upper(xrhome::captain_name(v.ticket.theirCaptain)));
+    const std::string date = date_text(v.ticket.when);
+    request_panel(g_ticket, static_cast<int>(v.ticket.when & 0x7FFFFFFF), 512, 256,
+                  [score, date, t1, t2](uint8_t* px, int w, int h) {
+                    xrtext::match_ticket(px, w, h, "FIRST WIN", score.c_str(), date.c_str(), t1, t2);
+                  });
+  }
+}
+
+// A home piece for the scene (up to its 24).
+xrfx::Scene::HomePiece* add_piece(xrfx::Scene& scene, int kind, const XrVector3f& at, const XrQuaternionf& q, float size,
+                                  uint32_t rgb1, uint32_t rgb2, int theme, float glow) {
+  if (scene.homeCount >= 24) return nullptr;
+  xrfx::Scene::HomePiece& p = scene.homePieces[scene.homeCount++];
+  p.kind = kind;
+  p.pose.position = at;
+  p.pose.orientation = q;
+  p.size = size;
+  p.rgb1 = rgb1;
+  p.rgb2 = rgb2;
+  p.theme = theme;
+  p.glow = glow;
+  return &p;
+}
+
+XrQuaternionf yaw_quat(float yaw) { return {0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw)}; }
+
+// A gentle sway (or a lively one) about the banner's rod.
+XrQuaternionf sway(const XrQuaternionf& base, float t, float amount, float speed) {
+  const float a = amount * std::sin(t * speed);
+  const XrQuaternionf tilt{std::sin(0.5f * a), 0.0f, 0.0f, std::cos(0.5f * a)};
+  return q_mul(base, tilt);
+}
+
+// The rival who gloats in your space after beating you (their captain), -1 none.
+int gloating_rival(const xrhome::View& v) {
+  if (v.cpu.valid && v.cpu.record.lastLost) return v.cpu.captain;
+  if (v.online.valid && v.online.record.lastLost && v.last.valid && v.last.online) return v.last.theirCaptain;
+  return -1;
+}
+
+void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount,
+                 XrCompositionLayerQuad* quads) {
+  const xrhome::View v = xrhome::view();
+  request_home_board(v);
+  const bool board = show_panel(g_homeBoard, g.homePanel);
+  const bool ticket = v.ticket.valid && show_panel(g_ticket, g.ticketPanel);
+  uint32_t c1 = 0, c2 = 0;
+  xrfx::team_colours(v.captain, &c1, &c2);
+  const int rival = gloating_rival(v);
+  uint32_t r1 = 0, r2 = 0;
+  if (rival >= 0) xrfx::team_colours(rival, &r1, &r2);
+  const float t = static_cast<float>(now_ns() % 1000000000000ull) / 1e9f;
+  auto push_quad = [&](XrCompositionLayerQuad& q) {
+    if (*layerCount < 24) layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
+  };
+
+  // The home corner by your trophy shelf (your room): your banner, the board, a ledge for what you
+  // have earned, and the rival's banner while they gloat.
+  if (g.mrMode && g.shelf.placed && !g.inSuite) {
+    const float yaw = g.shelf.yaw, cs = std::cos(yaw), sn = std::sin(yaw);
+    auto at = [&](float x, float y, float z) {
+      return XrVector3f{g.shelf.position.x + x * cs + z * sn, g.shelf.position.y + y, g.shelf.position.z - x * sn + z * cs};
+    };
+    const XrQuaternionf q = yaw_quat(yaw);
+    add_piece(scene, 0, at(-0.66f, 0.62f, -0.06f), sway(q, t, 0.03f, 1.1f), 0.62f, c1, c2, v.captain + 1, 0.0f);
+    if (rival >= 0) {
+      add_piece(scene, 0, at(-0.98f, 0.66f, -0.06f), sway(q, t, 0.12f, 4.0f), 0.62f, r1, r2, rival + 1,
+                0.12f + 0.08f * std::sin(t * 6.0f));
+    }
+    if (board) {
+      place_panel(quads[0], g.homePanel, at(0.72f, 0.47f, -0.09f), 0.46f);
+      quads[0].pose.orientation = q;
+      push_quad(quads[0]);
+    }
+    const float ledgeY = 0.06f;
+    if (ticket || v.superStrikes > 0 || v.comebacks > 0) add_piece(scene, 3, at(0.72f, ledgeY, -0.02f), q, 0.38f, 0, 0, 0, 0.0f);
+    if (ticket) {
+      place_panel(quads[1], g.ticketPanel, at(0.59f, ledgeY + 0.016f + 0.05f, 0.0f), 0.17f);
+      quads[1].pose.orientation = q;
+      push_quad(quads[1]);
+    }
+    if (v.superStrikes > 0) {
+      const XrVector3f ball = at(0.75f, ledgeY + 0.016f + 0.04f, 0.0f);
+      add_piece(scene, 2, ball, q, 0.075f, 0xFFFFFF, 0x7FD8FF, 0, 0.55f + 0.25f * std::sin(t * 9.0f));
+      if (scene.sparkCount < 2) {
+        scene.sparkAt[scene.sparkCount] = ball;
+        scene.sparkRadius[scene.sparkCount] = 0.05f;
+        ++scene.sparkCount;
+      }
+    }
+    if (v.comebacks > 0) {
+      add_piece(scene, 1, at(0.85f, ledgeY + 0.016f + 0.1f, 0.0f), sway(q, t, 0.04f, 1.6f), 0.2f, c1, 0xFFD21F, 20, 0.0f);
+    }
+  }
+
+  // Beside the big screen in your room: your banners either side (the rival's on the right while
+  // they gloat) and the board above it.
+  if (g.mrMode && !g.tabletop && g.shownScreenValid && !g.inSuite) {
+    const XrPosef& sp = g.shownScreenPose;
+    const float w = g.shownScreenW, h = g.shownScreenH;
+    const float size = std::max(0.45f, std::min(1.6f, 0.6f * h));
+    auto along = [&](float x, float y, float z) {
+      const XrVector3f o = q_rot(sp.orientation, XrVector3f{x, y, z});
+      return XrVector3f{sp.position.x + o.x, sp.position.y + o.y, sp.position.z + o.z};
+    };
+    const float side = 0.5f * w + 0.3f * size;
+    const float y = 0.5f * h - 0.5f * size;
+    add_piece(scene, 0, along(-side, y, 0.02f), sway(sp.orientation, t, 0.03f, 1.0f), size, c1, c2, v.captain + 1, 0.0f);
+    if (rival >= 0) {
+      add_piece(scene, 0, along(side, y, 0.02f), sway(sp.orientation, t, 0.1f, 4.0f), size, r1, r2, rival + 1, 0.1f);
+    } else {
+      add_piece(scene, 0, along(side, y, 0.02f), sway(sp.orientation, t, 0.03f, 1.2f), size, c1, c2, v.captain + 1, 0.0f);
+    }
+    if (board) {
+      const float bw = std::max(0.5f, std::min(1.3f, 0.36f * w));
+      const float bh = bw * 440.0f / 640.0f;
+      place_panel(quads[2], g.homePanel, along(0.0f, 0.5f * h + 0.05f + 0.5f * bh, 0.0f), bw);
+      quads[2].pose.orientation = sp.orientation;
+      push_quad(quads[2]);
+    }
+  }
+
+  // The Tabletop field: a pennant at each corner, yours; the far two the rival's while they gloat.
+  if (g.tabletop && !g.stereoFailed && !g.inSuite) {
+    const float k = g.table.scale;
+    const float size = 6.5f * k;
+    for (int corner = 0; corner < 4; ++corner) {
+      const float gx = (corner & 1) ? 22.5f : -22.5f, gy = (corner & 2) ? 14.5f : -14.5f;
+      const bool far = gy > 0.0f;
+      const XrVector3f p = table_point(gx, gy, 0.5f * 6.5f);
+      // The flag points away from the field's middle, along the pitch.
+      const XrQuaternionf q = yaw_quat(g.table.yaw + (gx < 0.0f ? 3.14159265f : 0.0f));
+      if (far && rival >= 0) {
+        add_piece(scene, 1, p, sway(q, t, 0.08f, 4.0f), size, r1, r2, rival + 1, 0.1f);
+      } else {
+        add_piece(scene, 1, p, sway(q, t, 0.04f, 1.5f + 0.2f * corner), size, c1, c2, v.captain + 1, 0.0f);
+      }
+    }
+  }
+}
+
+// The cup suite (VR, between a cup's games): the cup you are playing for on a pedestal in front of
+// you (a ghost until you win it), the table to your left, your banner and the next opponent's either
+// side, your trophies to your right with the home board above them.
+// r61: a point of the cup suite (meters: x right, y up from its floor, z back toward where it opened,
+// as tools/suites builds its rooms) in your room (LOCAL), and a turn whose front faces that spot.
+XrVector3f suite_point(float x, float y, float z) {
+  const float c = std::cos(g.suiteYaw), sn = std::sin(g.suiteYaw);
+  return XrVector3f{g.suiteOrigin.x + x * c + z * sn, g.floorY + y, g.suiteOrigin.z - x * sn + z * c};
+}
+XrQuaternionf suite_facing(float x, float z) { return yaw_quat(g.suiteYaw + std::atan2(-x, -z)); }
+
+void update_suite(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount,
+                  XrCompositionLayerQuad* quads) {
+  if (!g.inSuite) return;
+  const xrhome::Cup cup = xrhome::cup();
+  const xrhome::View v = xrhome::view();
+  const float t = static_cast<float>(now_ns() % 1000000000000ull) / 1e9f;
+  // A board hangs as a quad layer over the room's layer; the effects over it see it as solid.
+  auto push_quad = [&](XrCompositionLayerQuad& q) {
+    if (*layerCount < 24) layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
+    if (scene.panelCount < 4) scene.panels[scene.panelCount++] = xrfx::Scene::Panel{q.pose, q.size.width, q.size.height};
+  };
+  // The pedestal and the cup.
+  add_piece(scene, 4, suite_point(0.0f, 0.5f, -1.5f), suite_facing(0.0f, -1.5f), 1.0f, 0, 0, 0, 0.0f);
+  if (cup.trophy >= 0 && cup.trophy < 8) {
+    uint32_t cc = 0, cb = 0;
+    xrfx::cup_colours(cup.trophy, &cc, &cb);
+    const bool won = (g.trophyBits >> cup.trophy) & 1u;
+    const float spin = 0.4f * t;
+    const XrVector3f cupAt = suite_point(0.0f, 1.0f + 0.5f * 0.34f + 0.03f * std::sin(t * 1.3f), -1.5f);
+    // Not won yet: a ghost of it, glowing; it fills in the day you win it.
+    add_piece(scene, 5, cupAt, yaw_quat(g.suiteYaw + spin), 0.34f, won ? cc : 0x8FA8D8, won ? cb : 0x30405A, won ? 0 : 1,
+              won ? 0.15f : 0.35f + 0.15f * std::sin(t * 2.2f));
+  }
+  // Your banner and the next opponent's, either side of the big screen's casing.
+  uint32_t c1 = 0, c2 = 0;
+  xrfx::team_colours(v.captain, &c1, &c2);
+  add_piece(scene, 0, suite_point(-2.35f, 1.8f, -2.2f), sway(suite_facing(-2.35f, -2.2f), t, 0.03f, 1.0f), 1.1f, c1, c2,
+            v.captain + 1, 0.0f);
+  if (cup.nextOpponent >= 0) {
+    uint32_t o1 = 0, o2 = 0;
+    xrfx::team_colours(cup.nextOpponent, &o1, &o2);
+    add_piece(scene, 0, suite_point(2.35f, 1.8f, -2.2f), sway(suite_facing(2.35f, -2.2f), t, 0.03f, 1.3f), 1.1f, o1, o2,
+              cup.nextOpponent + 1, 0.0f);
+  }
+  // The table.
+  if (cup.teams > 0) {
+    static const char* const kCupNames[8] = {"MUSHROOM CUP", "FLOWER CUP", "STAR CUP", "BOWSER CUP",
+                                             "SUPER MUSHROOM CUP", "SUPER FLOWER CUP", "SUPER STAR CUP",
+                                             "SUPER BOWSER CUP"};
+    struct Text {
+      std::string title, footer, names[8];
+      int wins[8] = {}, losses[8] = {}, points[8] = {};
+      bool mine[8] = {};
+      int count = 0;
+    } tx;
+    tx.title = std::string(cup.trophy >= 0 && cup.trophy < 8 ? kCupNames[cup.trophy] : "TOURNAMENT") +
+               (cup.rounds > 0 ? "  -  ROUND " + std::to_string(std::min(cup.round + 1, cup.rounds)) + " OF " +
+                                     std::to_string(cup.rounds)
+                               : "");
+    // Best first: points, then wins.
+    int order[8];
+    for (int i = 0; i < cup.teams; ++i) order[i] = i;
+    std::sort(order, order + cup.teams, [&](int a, int b) {
+      return cup.points[a] != cup.points[b] ? cup.points[a] > cup.points[b] : cup.wins[a] > cup.wins[b];
+    });
+    tx.count = cup.teams;
+    for (int i = 0; i < cup.teams; ++i) {
+      const int k = order[i];
+      tx.names[i] = upper(xrhome::captain_name(cup.captains[k]));
+      tx.wins[i] = cup.wins[k];
+      tx.losses[i] = cup.losses[k];
+      tx.points[i] = cup.points[k];
+      tx.mine[i] = k == cup.user;
+    }
+    tx.footer = cup.nextOpponent >= 0 ? "NEXT: YOU VS " + upper(xrhome::captain_name(cup.nextOpponent)) : "";
+    request_panel(g_cupBoard, cup.generation, 768, 560, [tx](uint8_t* px, int w, int h) {
+      xrtext::CupLine lines[8];
+      for (int i = 0; i < tx.count; ++i) lines[i] = {tx.names[i].c_str(), tx.wins[i], tx.losses[i], tx.points[i], tx.mine[i]};
+      xrtext::cup_board(px, w, h, tx.title.c_str(), lines, tx.count, tx.footer.c_str());
+    });
+    if (show_panel(g_cupBoard, g.cupPanel)) {
+      place_panel(quads[3], g.cupPanel, suite_point(-1.3f, 1.3f, -1.4f), 0.95f);
+      quads[3].pose.orientation = suite_facing(-1.3f, -1.4f);
+      push_quad(quads[3]);
+    }
+  }
+  // The home board above your trophies.
+  request_home_board(v);
+  if (show_panel(g_homeBoard, g.homePanel)) {
+    place_panel(quads[0], g.homePanel, suite_point(1.3f, 1.52f, -1.45f), 0.7f);
+    quads[0].pose.orientation = suite_facing(1.3f, -1.45f);
+    push_quad(quads[0]);
+  }
+  // (The captain's name plaque is part of the baked room: tools/suites/suite_scene.py name_plaque.)
+}
+
+// r61: the suite's room for a home captain (suites/suite_<name>.room, _room.jpg and _outside.jpg,
+// staged from the APK by StrikersHome.java), read and decoded on a thread, then handed to xr_fx.
+const char* suite_name(int captain) {
+  switch (captain) {
+  case 1: return "daisy";
+  case 2: return "dk";
+  case 5: return "luigi";
+  case 7: return "peach";
+  case 9: return "waluigi";
+  case 10: return "wario";
+  case 11: return "yoshi";
+  default: return "mario";
+  }
+}
+
+std::atomic<int> g_suiteLoadGen{0};  // the newest room asked for; an older load gives up
+
+void request_suite_room(int captain) {
+  if (g.suiteCaptain == captain) return;
+  g.suiteCaptain = captain;
+  const int gen = ++g_suiteLoadGen;
+  const char* home = std::getenv("STRIKERS_HOME");
+  const std::string base = std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") +
+                           "/suites/suite_" + suite_name(captain);
+  std::thread([base, gen]() {
+    const uint64_t t0 = now_ns();
+    xrfx::Room room;
+    // The mesh (r62, "SRM2"): vertex, index and LED counts, the lamps' colour (+1 spare), then per
+    // vertex x y z u v, the normal and the shine (gloss, metal), 32-bit indices, and 6 floats per LED
+    // (xrfx::Room).
+    if (FILE* f = std::fopen((base + ".room").c_str(), "rb")) {
+      char magic[4] = {};
+      uint32_t counts[3] = {};
+      float lamp[4] = {};
+      if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SRM2", 4) == 0 && std::fread(counts, 4, 3, f) == 3 &&
+          std::fread(lamp, 4, 4, f) == 4 && counts[0] > 0 && counts[0] < 4000000 && counts[1] > 0 &&
+          counts[1] < 12000000 && counts[1] % 3 == 0 && counts[2] < 4096) {
+        room.verts.resize(static_cast<size_t>(counts[0]) * xrfx::Room::kRoomFloats);
+        room.indices.resize(counts[1]);
+        room.leds.resize(static_cast<size_t>(counts[2]) * xrfx::Room::kLedFloats);
+        const bool read = std::fread(room.verts.data(), sizeof(float), room.verts.size(), f) == room.verts.size() &&
+                          std::fread(room.indices.data(), 4, room.indices.size(), f) == room.indices.size() &&
+                          std::fread(room.leds.data(), sizeof(float), room.leds.size(), f) == room.leds.size();
+        const bool inRange = read && std::all_of(room.indices.begin(), room.indices.end(),
+                                                 [&](uint32_t i) { return i < counts[0]; });
+        if (inRange) {
+          std::memcpy(room.lamp, lamp, sizeof(room.lamp));
+        } else {
+          room.verts.clear();
+          room.indices.clear();
+          room.leds.clear();
+        }
+      }
+      std::fclose(f);
+    }
+    if (room.indices.empty()) {
+      XWARN("cup suite: no room in %s.room", base.c_str());
+      return;
+    }
+    auto load = [](const std::string& path, std::vector<uint8_t>& out, uint32_t& w, uint32_t& h) {
+      int iw = 0, ih = 0, n = 0;
+      unsigned char* px = stbi_load(path.c_str(), &iw, &ih, &n, 4);
+      if (px == nullptr) return false;
+      out.assign(px, px + static_cast<size_t>(iw) * ih * 4);
+      w = static_cast<uint32_t>(iw);
+      h = static_cast<uint32_t>(ih);
+      stbi_image_free(px);
+      return true;
+    };
+    if (!load(base + "_room.jpg", room.rgba, room.width, room.height)) {
+      XWARN("cup suite: could not read %s_room.jpg", base.c_str());
+      return;
+    }
+    if (!load(base + "_outside.jpg", room.outside, room.outsideWidth, room.outsideHeight)) {
+      XWARN("cup suite: could not read %s_outside.jpg (the window shows black)", base.c_str());
+    }
+    if (gen != g_suiteLoadGen.load()) return;  // another captain's asked for since
+    XLOG("cup suite: %s read in %.0f ms (%zu vertices, %zu LEDs, light %ux%u, outside %ux%u)", base.c_str(),
+         static_cast<double>(now_ns() - t0) / 1e6, room.verts.size() / xrfx::Room::kRoomFloats,
+         room.leds.size() / xrfx::Room::kLedFloats, room.width, room.height, room.outsideWidth, room.outsideHeight);
+    xrfx::set_room(std::move(room));
+  }).detach();
+}
+
+// r61: in a cup between its games the view goes to the suite (VR, big screen), the one change of view
+// the game makes on its own (Lance's OK); your own view comes back for the matches. A stick double
+// click there takes you out of it until the cup's hub is left.
+void update_suite_mode() {
+  const xrhome::Cup cup = xrhome::cup();
+  if (!cup.inHub) g.suiteDismissed = false;
+  const bool want = cup.inHub && !g.suiteDismissed && !g.stereoFailed;
+  if (want == g.inSuite) return;
+  if (want) {
+    g.suiteSavedMr = g.mrMode;
+    g.suiteSavedTabletop = g.tabletop;
+    g.inSuite = true;
+    g.tabletop = false;
+    set_mr_mode(false);
+    // The suite stands where you are, its window the way you face (level).
+    const XrQuaternionf& o = g.headPose.orientation;
+    const float fx = -(2 * (o.x * o.z + o.w * o.y)), fz = -(1 - 2 * (o.x * o.x + o.y * o.y));
+    g.suiteYaw = g.headValid && (fx * fx + fz * fz) > 1e-6f ? std::atan2(-fx, -fz) : 0.0f;
+    g.suiteOrigin = g.headValid ? XrVector3f{g.headPose.position.x, g.floorY, g.headPose.position.z}
+                                : XrVector3f{0.0f, g.floorY, 0.0f};
+    XLOG("cup suite: on (cup %d, round %d of %d), at (%.2f, %.2f) facing %.0f deg", cup.trophy, cup.round + 1,
+         cup.rounds, g.suiteOrigin.x, g.suiteOrigin.z, g.suiteYaw * 57.29578f);
+  } else {
+    g.inSuite = false;
+    g.tabletop = g.suiteSavedTabletop;
+    set_mr_mode(g.suiteSavedMr);
+    // Its room goes (about 90 MB of pictures) until the next time.
+    ++g_suiteLoadGen;
+    g.suiteCaptain = -2;
+    if (g.fxReady) xrfx::set_room(xrfx::Room{});
+    XLOG("cup suite: off, back to %s", mode_name());
+  }
+}
+
+// r60 (Lance: "a way to hover over the achievements youve earned in that trophy room area, so that
+// you can see the ones you earned and have yet to earn"): the badge under either pointer on the board
+// (the grid xrtext::badge_board draws), outlined (gold earned, white not yet), with a card for it
+// (title, description, earned or not and how far along) just in front of the board over the badge,
+// drawn on a thread when the pointed-at badge changes.
+void update_board_hover(const XrCompositionLayerQuad& board, xrfx::Scene& scene,
+                        const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount, XrCompositionLayerQuad& tip) {
+  const int count = static_cast<int>(g.boardRows.size());
+  if (count == 0 || g.boardH == 0) {
+    g.boardHover = -1;
+    return;
+  }
+  const float w = static_cast<float>(kBoardW), h = static_cast<float>(g.boardH);
+  const int rows = (count + kBoardColumns - 1) / kBoardColumns;
+  const float header = 0.13f * h, margin = 0.04f * w;
+  const float cell = std::min((w - 2.0f * margin) / kBoardColumns, (h - header - 2.0f * margin) / rows);
+  const float x0 = 0.5f * (w - cell * kBoardColumns), y0 = header + margin;
+  int hover = -1;
+  XrVector3f hit{0.0f, 0.0f, 0.0f};
+  int pointer = -1;
+  for (int hand = 1; hand >= 0 && hover < 0; --hand) {  // the right pointer first
+    if (!g.aimValid[hand]) continue;
+    float qx = 0, qy = 0, dist = 0;
+    if (!ray_quad(g.aim[hand], board.pose, &qx, &qy, &dist)) continue;
+    const float px = (qx / board.size.width + 0.5f) * w, py = (0.5f - qy / board.size.height) * h;
+    const int col = static_cast<int>(std::floor((px - x0) / cell)), row = static_cast<int>(std::floor((py - y0) / cell));
+    if (col < 0 || col >= kBoardColumns || row < 0 || row >= rows || row * kBoardColumns + col >= count) continue;
+    hover = row * kBoardColumns + col;
+    const XrVector3f dir = q_rot(g.aim[hand].orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+    hit = {g.aim[hand].position.x + dir.x * dist, g.aim[hand].position.y + dir.y * dist,
+           g.aim[hand].position.z + dir.z * dist};
+    pointer = hand;
+  }
+  if (hover != g.boardHover) {
+    g.boardHover = hover;
+    if (hover >= 0) {
+      const xrra::AchievementRow& r = g.boardRows[static_cast<size_t>(hover)];
+      std::string head = r.unlocked ? "EARNED" : "NOT EARNED YET";
+      if (!r.unlocked && !r.progress.empty()) head += "  " + r.progress;
+      const int gen = ++g.tipGen;
+      g.tipShownFor = -1;
+      std::thread([head, title = r.title, desc = r.description, points = r.points, gen]() {
+        std::vector<uint8_t> px(static_cast<size_t>(kTipW) * kTipH * 4);
+        xrtext::achievement_toast(px.data(), static_cast<int>(kTipW), static_cast<int>(kTipH), head.c_str(),
+                                  title.c_str(), desc.c_str(), points);
+        std::lock_guard<std::mutex> lock(g_tipMutex);
+        g_tipPixels = std::move(px);
+        g_tipReadyGen = gen;
+      }).detach();
+      g.tipFor = hover;
+    }
+  }
+  if (g.tipGen > 0 && g_tipReadyGen.load() == g.tipGen && g.tipShownGen != g.tipGen) {
+    std::lock_guard<std::mutex> lock(g_tipMutex);
+    panel_upload(g.tip, g_tipPixels.data(), kTipW, kTipH);
+    g.tipShownGen = g.tipGen;
+    g.tipShownFor = g.tipFor;
+  }
+  if (hover < 0) return;
+  // The badge's middle and size on the board, in the room.
+  const int col = hover % kBoardColumns, row = hover / kBoardColumns;
+  const float cx = x0 + (col + 0.5f) * cell, cy = y0 + (row + 0.5f) * cell;
+  const XrVector3f local{(cx / w - 0.5f) * board.size.width, (0.5f - cy / h) * board.size.height, 0.006f};
+  const XrVector3f off = q_rot(board.pose.orientation, local);
+  const XrVector3f centre{board.pose.position.x + off.x, board.pose.position.y + off.y, board.pose.position.z + off.z};
+  const float tile = 0.92f * cell / w * board.size.width;
+  const bool earned = g.boardRows[static_cast<size_t>(hover)].unlocked;
+  if (scene.frameCount < 4) {
+    xrfx::Scene::Frame& f = scene.frames[scene.frameCount++];
+    f.pose = board.pose;
+    f.pose.position = centre;
+    f.thickness = 0.004f;
+    f.width = f.height = tile + 2.0f * f.thickness;
+    f.rgb = earned ? 0xFFD23F : 0xE8F0FF;
+    f.alpha = 1.0f;
+  }
+  if (pointer >= 0) {
+    scene.pointerValid[pointer] = true;
+    scene.pointers[pointer] = hit;
+  }
+  if (g.tip.hasImage && g.tipShownFor == hover && *layerCount < 24) {
+    const XrVector3f up = q_rot(board.pose.orientation, XrVector3f{0.0f, 0.5f * tile + 0.075f, 0.06f});
+    place_panel(tip, g.tip, XrVector3f{centre.x + up.x, centre.y + up.y, centre.z + up.z}, 0.36f);
+    layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&tip);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // 3D modes: eye images shared with Dawn, matrices, and the per-eye pass contract with glPlat.cpp
 // ---------------------------------------------------------------------------------------------
@@ -2137,7 +3239,8 @@ constexpr int kFlagSkipSky = 2;
 constexpr int kFlagTable = 4;
 constexpr int kFlagScorer = 8;  // r42: the life-size scorer alone (glPlat.cpp XR_LAYER_SCORER)
 
-bool stereo_mode() { return g.tabletop || !g.mrMode; }
+// r61: the cup suite is VR without the game's 3D eyes (its own room around the big screen).
+bool stereo_mode() { return (g.tabletop || !g.mrMode) && !g.inSuite; }
 
 // r42: the life-size scorer is out (and was reported lately: a game that stops reporting hides it).
 bool scorer_shown() {
@@ -2298,13 +3401,47 @@ M4 stadium_model() {
   // the stand point maps to (0, 0, -kStandY) before the turn and scale.
   const float s = stadium_scale(), yaw = g.stadiumYawDebug;
   const float c = -kStandY;
+  // r55: the life-size stadium shakes with a blast (the Jumbotron · Stadium view; with the table, the
+  // table does).
+  const float shake = g.tabletop ? 0.0f : 1.0f;
   return m4_game_to_room(s, yaw,
-                         XrVector3f{-c * std::sin(yaw) * s, stadium_floor_y(), -c * std::cos(yaw) * s});
+                         XrVector3f{-c * std::sin(yaw) * s + shake * g.joltPos.x, stadium_floor_y() + shake * g.joltPos.y,
+                                    -c * std::cos(yaw) * s + shake * g.joltPos.z});
 }
 
 // r44: where the field is shown: where you put it, raised while the scorer celebrates (tableLift).
 XrVector3f table_shown_pos() {
-  return XrVector3f{g.table.position.x, g.table.position.y + g.tableLift, g.table.position.z};
+  // r55: plus the jolt of an item blast (step_jolt).
+  return XrVector3f{g.table.position.x + g.joltPos.x, g.table.position.y + g.tableLift + g.joltPos.y,
+                    g.table.position.z + g.joltPos.z};
+}
+
+// r55: the jolt's spring, once a display frame: about 3.3 shakes a second, gone in about half a
+// second.
+void step_jolt() {
+  const uint64_t t = now_ns();
+  const float dt = g.lastJoltNs != 0 ? std::min(0.05f, static_cast<float>(t - g.lastJoltNs) / 1e9f) : 0.0f;
+  g.lastJoltNs = t;
+  if (dt <= 0.0f) return;
+  constexpr float k = 420.0f, c = 12.0f;
+  float* p[3] = {&g.joltPos.x, &g.joltPos.y, &g.joltPos.z};
+  float* v[3] = {&g.joltVel.x, &g.joltVel.y, &g.joltVel.z};
+  for (int a = 0; a < 3; ++a) {
+    // Small steps, so a big kick never blows the spring up.
+    for (int i = 0; i < 4; ++i) {
+      const float h = dt / 4.0f;
+      *v[a] += (-k * *p[a] - c * *v[a]) * h;
+      *p[a] += *v[a] * h;
+    }
+    if (std::fabs(*p[a]) < 1e-5f && std::fabs(*v[a]) < 1e-4f) *p[a] = *v[a] = 0.0f;
+  }
+}
+
+// r55: a kick to the jolt (m/s), capped so stacked blasts never throw the field across the room.
+void kick_jolt(float vx, float vy, float vz) {
+  g.joltVel.x = std::max(-0.6f, std::min(0.6f, g.joltVel.x + vx));
+  g.joltVel.y = std::max(-0.6f, std::min(0.6f, g.joltVel.y + vy));
+  g.joltVel.z = std::max(-0.6f, std::min(0.6f, g.joltVel.z + vz));
 }
 
 M4 table_model() { return m4_game_to_room(g.table.scale, g.table.yaw, table_shown_pos()); }
@@ -3247,6 +4384,7 @@ void on_session_began() {
   init_refresh_rate();
   apply_performance_settings();
   set_mr_mode(g.mrMode);
+  xrctrl::start(g.instance, g.session, g.renderModelsSupported);  // r54: the controllers' models
 }
 
 void poll_events() {
@@ -3294,6 +4432,20 @@ void poll_events() {
     case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
       g.quit = true;
       break;
+    case XR_TYPE_EVENT_DATA_PERF_SETTINGS_EXT: {
+      // r60: the headset warning that the CPU or GPU is at its limit (thermal or load).
+      const auto* e = reinterpret_cast<const XrEventDataPerfSettingsEXT*>(&event);
+      static const char* kSub[] = {"?", "compositing", "rendering", "thermal"};
+      const int sub = static_cast<int>(e->subDomain);
+      const auto level = [](XrPerfSettingsNotificationLevelEXT l) {
+        return l == XR_PERF_SETTINGS_NOTIF_LEVEL_NORMAL_EXT    ? "normal"
+               : l == XR_PERF_SETTINGS_NOTIF_LEVEL_WARNING_EXT ? "warning"
+                                                                 : "impaired";
+      };
+      XLOG("perf notification: %s %s %s -> %s", e->domain == XR_PERF_SETTINGS_DOMAIN_CPU_EXT ? "CPU" : "GPU",
+           sub >= 0 && sub < 4 ? kSub[sub] : "?", level(e->fromLevel), level(e->toLevel));
+      break;
+    }
     default:
       break;
     }
@@ -3356,12 +4508,16 @@ void log_stats() {
     XLOG("decode per game frame: %.1f draws decoded, %.1f reused, %.0f vertices, %.2f ms CPU | %.1f waiting for "
          "their pipeline, %.1f not eligible",
          d[0] / frames, d[1] / frames, d[2] / frames, d[5] / 1000.0 / frames, d[3] / frames, d[4] / frames);
+    // r53: where those draws come from, per game frame (send, then its biggest GL views).
+    char census[512];
+    PortXrTakeDrawCensus(census, sizeof(census), static_cast<unsigned long>(g.gameFramesSinceStats));
+    if (census[0] != '\0') XLOG("draws per game frame: %s%s", census, g.replayRunning ? " [replay]" : "");
   }
   if (g.handoffSame + g.handoffLate > 0) {  // r44
-    XLOG("eye hand-off: %u in their own display frame, %u a frame late (wait %s)", g.handoffSame, g.handoffLate,
-         g.handoffWait ? "on" : "off");
+    XLOG("eye hand-off: %u in their own display frame, %u a frame late (wait %s, cut short %u, game frame %.1f ms)",
+         g.handoffSame, g.handoffLate, g.handoffWait ? "on" : "off", g.handoffCut, g.gameFrameEmaNs / 1e6);
   }
-  g.handoffSame = g.handoffLate = 0;
+  g.handoffSame = g.handoffLate = g.handoffCut = 0;
   g.eyeFenceNs = g.swapNs = g.cpuWaitNs = g.fxNs = g.xrEndNs = 0;
   std::memset(g.loopNs, 0, sizeof(g.loopNs));
   g.xrWaitNsSinceStats = 0;
@@ -3411,6 +4567,7 @@ extern "C" int PortXrInit(void) {
   }
   create_passthrough();
   load_screens();       // r42: where you left the big screens
+  load_shelf();         // r57: where you left the trophy shelf
   load_crowd_level();   // r42: your crowd volume
   load_view_height();   // r44g: your stadium height
 
@@ -3643,7 +4800,10 @@ extern "C" int PortXrStereoFrameBegin(void) {
   slot.mainDrawn = false;
   slot.mainOverlay = g.splitThisFrame;
   g.openTarget = 0;
-  if (g.splitThisFrame) {
+  // r53: a replay frame that draws the broadcast picture leaves the split stadium as it was (each eye
+  // keeps its last image and pose); the table still goes over it as an overlay.
+  g.splitSkipStadium = g.splitThisFrame && g.stadiumRest && g.worldlessFrame == aurora_xr_current_frame();
+  if (g.splitThisFrame && !g.splitSkipStadium) {
     wgpu::SharedTextureMemoryVkImageLayoutBeginState layoutBegin{};
     layoutBegin.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     layoutBegin.newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3687,6 +4847,9 @@ extern "C" int PortXrStereoEyeLayer(int eye, int layer, float view[16], float pr
                                                   (g.stereoLayers > 1 && g.frameLayerKind[1] == kLayerStadium));
   const int samples = stadiumLayer ? g.msaaStadium : g.msaaTable;
   const bool stadiumHere = g.splitThisFrame && layer >= 0 && layer < 3 && g.frameLayerKind[layer] == kLayerStadium;
+  if (stadiumHere && g.splitSkipStadium) {
+    return 0;  // r53: the broadcast picture's turn in a replay
+  }
   if (g.singlePass) {
     // r43: each layer goes into the main (wide, both eyes) pass or, split, the stadium's one-eye
     // pass; passes open and close in the GX stream, with their native-unit viewports and coverage
@@ -3821,6 +4984,10 @@ extern "C" void PortXrNoteLoopTimes(int ranGameFrame, unsigned long long xrBegin
   g.loopNs[2] += tasks;
   g.loopNs[3] += auroraEnd;
   g.loopNs[4] += xrEnd;
+  // r53: what a game frame takes before its PortXrEndFrame, for the hand-off wait's budget. Rises
+  // at once, falls slowly, so one light frame does not open the wait for a heavy run.
+  const double frame = static_cast<double>(xrBegin + auroraBegin + tasks + auroraEnd);
+  g.gameFrameEmaNs = frame > g.gameFrameEmaNs ? frame : g.gameFrameEmaNs * 0.95 + frame * 0.05;
 }
 
 // --- Goal celebrations (Game.cpp) and the Tabletop player marker, drawn by xr_fx.cpp. ---
@@ -3874,12 +5041,23 @@ static void ensure_fx() {
                                                        viewCount, &viewCount, views.data()))) {
       dev.width = (static_cast<uint32_t>(views[0].recommendedImageRectWidth * 0.6f) / 8) * 8;
       dev.height = (static_cast<uint32_t>(views[0].recommendedImageRectHeight * 0.6f) / 8) * 8;
+      // r61: the cup suite's room at the runtime's own size: you walk up to it and read it.
+      dev.roomWidth = views[0].recommendedImageRectWidth;
+      dev.roomHeight = views[0].recommendedImageRectHeight;
     }
+    dev.maxAnisotropy = g.maxAnisotropy;
+    dev.roomSamples = g.roomSamples;
     g.fxReady = xrfx::init(dev);
   }
 }
 
-extern "C" void PortXrSetGameplayLive(int live) { g.gameplayLive = live != 0; }
+extern "C" void PortXrSetGameplayLive(int live) {
+  g.gameplayLive = live != 0;
+  if (g.gameplayLive) {
+    g.replayRunning = false;  // r53: play is back, whatever the phases said
+    g.worldless = false;
+  }
+}
 
 // --- r42: the life-size scorer's show, its banner, and the crowd volume panel ---
 
@@ -4176,6 +5354,10 @@ extern "C" void PortXrSetPlayerMarker(int shown, float x, float y, float z, int 
   if (!g.active) {
     return;
   }
+  if (teamCaptain >= 0 && teamCaptain < 12 && teamCaptain != g.skinCaptain) {
+    XLOG("controllers: your team's skin, captain class %d", teamCaptain);  // r53
+    g.skinCaptain = teamCaptain;
+  }
   const bool show = shown != 0 && g.tabletop && !g.stereoFailed;
   if (show) {
     ensure_fx();
@@ -4215,12 +5397,43 @@ extern "C" int PortXrHudOnlyNormalView(void) {
              : 0;
 }
 
+// r53: glPlat.cpp asks once per normal send whether this frame's broadcast picture leaves the 3D world
+// out during a Tabletop replay (see replayRunning); such a frame gets no readback, so the screen keeps
+// the last real picture. Decided once per Aurora frame.
+extern "C" int PortXrNormalViewWorldless(void) {
+  const uint32_t frame = aurora_xr_current_frame();
+  if (frame == g.worldlessFrame) return g.worldless ? 1 : 0;
+  g.worldlessFrame = frame;
+  g.worldless = false;
+  g.stadiumRest = false;
+  // A replay longer than the game's own hold (11.5 s, PORT_GOAL_SHOW_FRAMES) plus the skip and the
+  // kickoff is a missed phase: drop it rather than hide the screen for good.
+  if (g.replayRunning && now_ns() - g.replayStartNs > 30000000000ull) {
+    XWARN("replay flag still up after 30 s: cleared");
+    g.replayRunning = false;
+  }
+  if (g.replayRunning && g.active && g.tabletop && stereo_mode() && !g.stereoFailed && g.hasProjection && !g.paused &&
+      !g.gameplayLive) {
+    if (g.mrMode) {
+      g.worldless = true;
+    } else if (g.singlePass && g.stadiumSplit) {
+      g.showParity ^= 1u;
+      g.worldless = (g.showParity & 1u) != 0;
+      g.stadiumRest = !g.worldless;
+    }
+  }
+  if (g.worldless) aurora_xr_skip_readback(frame);
+  return g.worldless ? 1 : 0;
+}
+
 extern "C" void PortXrCelebrationPhase(int phase) {
   if (!g.active) {
     return;
   }
   static const char* kPhases[] = {"?", "replay started", "replay played out", "skipped", "play live"};
   XLOG("celebration: %s", (phase >= 1 && phase <= 4) ? kPhases[phase] : "?");
+  g.replayRunning = phase == 1;  // r53 (see replayRunning)
+  if (phase == 1) g.replayStartNs = now_ns();
   if (g.fxReady) {
     xrfx::phase(phase);
   }
@@ -4258,6 +5471,131 @@ extern "C" void PortXrRumbleStop(int pad) {
   }
 }
 
+// --- r55: item blasts in your room (Lance's "explosive MR": a Bob-omb blast "shakes the view and
+// throws sparks onto your floor", a Chain Chomp lunge "makes the table jolt"). Presentation only.
+
+namespace {
+
+// Where a game point is in the room for the current view, and which way its embers fly: off the
+// Tabletop field (up), across the life-size pitch (up), or out of the big screen toward you (from
+// the broadcast picture's point). False when it is nowhere to be seen.
+bool blast_point(float x, float y, float z, float ndcX, float ndcY, int ndcValid, XrVector3f* at, XrVector3f* dir,
+                 float* unit) {
+  if (g.tabletop && !g.stereoFailed && stereo_mode()) {
+    *at = table_point(x, y, z);
+    *dir = XrVector3f{0.0f, 1.0f, 0.0f};
+    *unit = g.table.scale;
+    return true;
+  }
+  if (!g.mrMode && stereo_mode()) {
+    const M4 t = stadium_model();
+    *at = XrVector3f{x * t.m[0][0] + y * t.m[1][0] + z * t.m[2][0] + t.m[3][0],
+                     x * t.m[0][1] + y * t.m[1][1] + z * t.m[2][1] + t.m[3][1],
+                     x * t.m[0][2] + y * t.m[1][2] + z * t.m[2][2] + t.m[3][2]};
+    *dir = XrVector3f{0.0f, 1.0f, 0.0f};
+    *unit = stadium_scale();
+    return true;
+  }
+  // The big screen: the point on its picture, bursting out of it toward you.
+  if (!ndcValid || !g.swapchainHasImage || g.swapchainWidth == 0) return false;
+  const FreeScreen& s = g.screens[screen_room()];
+  if (!s.placed) return false;
+  const float w = s.width, h = s.width * static_cast<float>(g.swapchainHeight) / static_cast<float>(g.swapchainWidth);
+  const float rx = std::cos(s.yaw), rz = -std::sin(s.yaw);  // the quad's +X
+  const float nx = std::sin(s.yaw), nz = std::cos(s.yaw);   // its face, toward you
+  *at = XrVector3f{s.position.x + rx * ndcX * 0.5f * w + nx * 0.02f, s.position.y + ndcY * 0.5f * h,
+                   s.position.z + rz * ndcX * 0.5f * w + nz * 0.02f};
+  *dir = XrVector3f{nx, 0.25f, nz};
+  *unit = w / 40.0f;
+  return true;
+}
+
+// A short buzz in both hands, unless the game's own rumble is already stronger.
+void blast_buzz(float amplitude, float seconds) {
+  if (g.rumble.startPending && g.rumble.amplitude >= amplitude) return;
+  g.rumble.amplitude = amplitude;
+  g.rumble.seconds = seconds;
+  g.rumble.startPending = true;
+  g.rumble.stopPending = false;
+}
+
+}  // namespace
+
+extern "C" void PortXrItemBlast(float x, float y, float z, int size, float radius, int type, int throwerPad, float ndcX,
+                                float ndcY, int ndcValid) {
+  if (!g.active || !g.running) return;
+  const float strength = 1.0f + static_cast<float>(std::max(0, std::min(2, size)));
+  XrVector3f at{}, dir{};
+  float unit = 1.0f;
+  const bool seen = blast_point(x, y, z, ndcX, ndcY, ndcValid, &at, &dir, &unit);
+  if (g.blastsLogged < 12) {
+    ++g.blastsLogged;
+    XLOG("items: blast (type %d, size %d, radius %.1f, thrower pad %d) at (%.1f, %.1f, %.1f) -> %s (%.2f, %.2f, %.2f)",
+         type, size, radius, throwerPad, x, y, z, seen ? "room" : "not in view", at.x, at.y, at.z);
+  }
+  if (seen) {
+    ensure_fx();
+    if (g.fxReady) xrfx::blast(at, dir, unit, strength, 0);
+  }
+  // The field (or the stadium, or the big screen) jumps; a warm flash through the room; a buzz.
+  const float jx = 0.05f * std::sin(x * 1.7f), jz = 0.05f * std::cos(y * 1.3f);
+  kick_jolt(jx * strength, (g.tabletop ? 0.16f : 0.07f) * strength, jz * strength);
+  if (g.fxReady) xrfx::screen_flash(1.0f, 0.55f, 0.15f, (g.mrMode ? 0.1f : 0.14f) + 0.05f * strength);
+  blast_buzz(0.25f + 0.2f * strength, 0.08f + 0.05f * strength);
+}
+
+extern "C" void PortXrChompSlam(float x, float y, float z, float ndcX, float ndcY, int ndcValid) {
+  if (!g.active || !g.running) return;
+  XrVector3f at{}, dir{};
+  float unit = 1.0f;
+  if (blast_point(x, y, z, ndcX, ndcY, ndcValid, &at, &dir, &unit)) {
+    ensure_fx();
+    if (g.fxReady) xrfx::blast(at, dir, unit, 2.0f, 1);
+  }
+  // Slammed down, then it springs back.
+  kick_jolt(0.0f, g.tabletop ? -0.4f : -0.12f, 0.0f);
+  blast_buzz(0.7f, 0.18f);
+  XLOG("items: Chain Chomp slam at (%.1f, %.1f)", x, y);
+}
+
+extern "C" void PortXrChompBite(float x, float y, float z, float vx, float vy) {
+  if (!g.active || !g.running) return;
+  // Shoved the way it lunged: the lunge's direction in the room.
+  float dx = 0.0f, dz = 0.0f;
+  const float len = std::sqrt(vx * vx + vy * vy);
+  if (len > 1e-3f) {
+    if (g.tabletop && !g.stereoFailed) {
+      const XrVector3f a = table_point(x, y, z), b = table_point(x + vx / len, y + vy / len, z);
+      const float l = std::max(1e-6f, std::sqrt((b.x - a.x) * (b.x - a.x) + (b.z - a.z) * (b.z - a.z)));
+      dx = (b.x - a.x) / l;
+      dz = (b.z - a.z) / l;
+    } else {
+      dx = vx / len;  // the game's x along the room's x, y across: near enough for a shove
+      dz = -vy / len;
+    }
+  }
+  const float k = g.tabletop ? 0.3f : 0.1f;
+  kick_jolt(dx * k, 0.04f, dz * k);
+  blast_buzz(0.55f, 0.12f);
+}
+
+// --- r57: the trophy shelf's cups (Game.cpp, StatsTracker.cpp) ---
+
+extern "C" void PortXrSetTrophies(unsigned bits, const unsigned short* wins8) {
+  if (!g.active || wins8 == nullptr) return;
+  g.trophyBits = bits & 0xFFu;
+  std::memcpy(g.trophyWins, wins8, sizeof(g.trophyWins));
+  XLOG("shelf: cups won %02x (wins %u %u %u %u | super %u %u %u %u)", g.trophyBits, wins8[0], wins8[1], wins8[2], wins8[3],
+       wins8[4], wins8[5], wins8[6], wins8[7]);
+}
+
+extern "C" void PortXrCupWon(int trophyType, int firstTime) {
+  if (!g.active || trophyType < 0 || trophyType > 7) return;
+  g.trophyBits |= 1u << trophyType;
+  g.newCup = trophyType;
+  g.newCupNs = now_ns();
+  XLOG("shelf: cup %d won%s", trophyType, firstTime ? " for the first time" : "");
+}
 extern "C" int PortXrBeginFrame(void) {
   if (!g.active) {
     return 0;
@@ -4279,6 +5617,12 @@ extern "C" int PortXrBeginFrame(void) {
   xrnet::poll();  // the online room, every headset frame
   sync_input();
   poll_triggers();
+  // r61: the home ground: the panel's home captain pick (twice a second), and the cup suite.
+  if (const uint64_t tHome = now_ns(); tHome - g.homePollNs > 500000000ull) {
+    g.homePollNs = tHome;
+    xrhome::poll();
+  }
+  update_suite_mode();
   // Before the game frame draws: xr_layers.cpp marks the life-size field parts while it classifies.
   PortXrSetStadiumEconomy(g.lodMinPx, 0.5f * static_cast<float>(g.eyeWidth ? g.eyeWidth : 1256),
                           g.skipTallField ? 1 : 0, (g.tabletop && !g.mrMode && !g.stereoFailed) ? 1 : 0);
@@ -4455,7 +5799,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   g.frameState = XrFrameState{XR_TYPE_FRAME_STATE};
   const uint64_t waitStart = now_ns();
   bool frameOk = xr_ok(xrWaitFrame(g.session, &waitInfo, &g.frameState), "xrWaitFrame");
-  g.xrWaitNsSinceStats += now_ns() - waitStart;
+  g.lastWaitReturnNs = now_ns();
+  g.xrWaitNsSinceStats += g.lastWaitReturnNs - waitStart;
   if (frameOk) {
     XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
     frameOk = xr_ok(xrBeginFrame(g.session, &beginInfo), "xrBeginFrame");
@@ -4497,15 +5842,29 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // r44: this frame's eyes usually reach the render worker's submit within a millisecond or two of
     // here; waiting that long puts them in this display frame instead of the next (a whole 13.9 ms
     // later, with poses a frame old). Bounded, so a slow worker costs no more than before.
+    // r53 (Lance, cups 2026-10-20: Tabletop "did not feel like 60"): the wait only takes what the
+    // next game frame can spare. His Tabletop · Stadium log: tasks 12.4 ms + 2.3 ms of this wait per
+    // game frame (37% of them a frame late anyway) = 16.5 ms, past the 13.9 ms display period, so
+    // the headset showed 59-60 frames a second instead of 72 for whole matches.
     if (justRecorded >= 0 && frameOk) {
       constexpr uint64_t kHandoffWaitNs = 2500000ull;
       const uint64_t waitFrom = now_ns();
-      if (g.handoffWait) {
+      uint64_t budgetNs = kHandoffWaitNs;
+      if (g.frameState.predictedDisplayPeriod > 0 && g.lastWaitReturnNs != 0) {
+        // The next display frame's wait returns a period after this one did; before it, the rest
+        // of this frame (~1 ms: effects, layers, xrEndFrame) and the next game frame must run.
+        const int64_t slack = static_cast<int64_t>(g.lastWaitReturnNs) +
+                              static_cast<int64_t>(g.frameState.predictedDisplayPeriod) -
+                              static_cast<int64_t>(waitFrom) - static_cast<int64_t>(g.gameFrameEmaNs) - 1500000;
+        budgetNs = slack <= 0 ? 0 : std::min<uint64_t>(kHandoffWaitNs, static_cast<uint64_t>(slack));
+      }
+      if (g.handoffWait && budgetNs > 0) {
         while (g_slotState[justRecorded].load(std::memory_order_acquire) == 1 &&
-               now_ns() - waitFrom < kHandoffWaitNs) {
+               now_ns() - waitFrom < budgetNs) {
           usleep(100);
         }
       }
+      if (budgetNs < kHandoffWaitNs) ++g.handoffCut;
       if (g_slotState[justRecorded].load(std::memory_order_acquire) == 1) {
         ++g.handoffLate;
       } else {
@@ -4530,7 +5889,14 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad achQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r51
   XrCompositionLayerQuad achHeadQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r51b: its title bar
   XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
-  const XrCompositionLayerBaseHeader* layers[13];
+  XrCompositionLayerQuad boardQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r57: the badge board
+  XrCompositionLayerQuad tipQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r60: the pointed-at badge's card
+  XrCompositionLayerProjection roomLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};  // r61: the cup suite's room
+  // r61: the home ground's boards: by the shelf (or in the suite), its ticket, over the big screen,
+  // the cup suite's table.
+  XrCompositionLayerQuad homeQuads[4] = {{XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD},
+                                         {XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD}};
+  const XrCompositionLayerBaseHeader* layers[24];
   uint32_t layerCount = 0;
 
   // The celebration effects step every display frame, smooth whatever the game's frame rate, with
@@ -4540,6 +5906,9 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   scene.dt = g.lastFxNs != 0 ? static_cast<float>(fxNow - g.lastFxNs) / 1e9f : 0.0f;
   g.lastFxNs = fxNow;
   bool sceneViews = false;
+  step_jolt();  // r55: item blasts shaking the field
+  // r53: the controllers live in the effects layer; r61: and the home ground's pieces.
+  if (g.focused) ensure_fx();
   if (g.fxReady) {
     XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
     locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -4557,7 +5926,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         g.floorY = floor.pose.position.y;
       }
     }
-    scene.floorY = mode_floor_y();  // r44g: the stadium's ground in the stadium
+    // r44g: the stadium's ground in the stadium; r61: the cup suite stands on your own floor.
+    scene.floorY = g.inSuite ? g.floorY : mode_floor_y();
     scene.mr = g.mrMode;
     scene.tabletop = g.tabletop && !g.stereoFailed;
     // r46e (players): the field no longer floats up while the scorer celebrates (r44-r46d); the
@@ -4579,9 +5949,70 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     scene.scorerFeet = g.scorer.lastPos;
     scene.scorerRadius = 0.25f;  // r44e: nearer the body (it also hides what falls behind it, xr_fx)
     scene.scorerHeight = scorer_height_m();
+    // r53: the controllers in your hands, where they are at this display time and what is pressed
+    // (the action states hold until the next xrSyncActions), in your team's skin.
+    scene.skinCaptain = g.skinCaptain;
+    // r57: the trophy shelf (your room only).
+    scene.shelfValid = g.mrMode && g.shelf.placed;
+    scene.shelfPos = g.shelf.position;
+    scene.shelfYaw = g.shelf.yaw;
+    if (g.inSuite) {
+      // r61: in the cup suite your trophies stand on a shelf to your right; r62: picked up and resized
+      // there too (update_shelf, shelf_at).
+      scene.suite = true;
+      scene.shelfValid = true;
+      scene.shelfPos = shelf_at();
+      scene.shelfYaw = shelf_turn();
+      // r61: the room you walk about in, and its live things (the home captain's).
+      const int captain = xrhome::view().captain;
+      request_suite_room(captain);
+      scene.roomShown = true;
+      scene.roomOrigin = g.suiteOrigin;
+      scene.roomOrigin.y = g.floorY;
+      scene.roomYaw = g.suiteYaw;
+      scene.suiteCaptain = captain;
+      ensure_fx();
+    }
+    scene.shelfCups = g.trophyBits;
+    std::memcpy(scene.shelfWins, g.trophyWins, sizeof(scene.shelfWins));
+    scene.shelfNewCup = g.newCup;
+    scene.shelfNewAge = g.newCup >= 0 ? static_cast<float>(now_ns() - g.newCupNs) / 1e9f : 0.0f;
+    for (int i = 0; i < 8; ++i) {
+      scene.shelfCupFree[i] = g.shelf.cupFree[i];
+      scene.shelfCupPose[i] = g.shelf.cupPose[i];
+      scene.shelfCupScale[i] = g.shelf.cupScale[i];  // r60
+    }
+    if (g.focused && g.showControllers) {
+      const XrSpace spaces[2] = {g.actions.gripSpaceL, g.actions.gripSpaceR};
+      for (int h = 0; h < 2; ++h) {
+        xrfx::Scene::Hand& hand = scene.hands[h];
+        XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+        hand.valid = spaces[h] != XR_NULL_HANDLE &&
+                     XR_SUCCEEDED(xrLocateSpace(spaces[h], g.local, g.frameState.predictedDisplayTime, &loc)) &&
+                     (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0 &&
+                     (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+        if (!hand.valid) continue;
+        hand.grip = loc.pose;
+        hand.trigger = get_float(h == 0 ? g.actions.triggerL : g.actions.triggerR);
+        hand.squeeze = get_float(h == 0 ? g.actions.squeezeL : g.actions.squeezeR);
+        const XrVector2f stick = get_vec2(h == 0 ? g.actions.stickL : g.actions.stickR);
+        hand.stick[0] = stick.x;
+        hand.stick[1] = stick.y;
+        hand.stickClick = get_bool(h == 0 ? g.actions.stickClickL : g.actions.stickClickR);
+        hand.button1 = get_bool(h == 0 ? g.actions.x : g.actions.a);
+        hand.button2 = get_bool(h == 0 ? g.actions.y : g.actions.b);
+        hand.menu = h == 0 && get_bool(g.actions.menu);
+      }
+    }
   }
 
   if (g.frameState.shouldRender) {
+    // r61: the cup suite: its room (and the world out of its window) behind everything else; the
+    // game's screen and the boards hang over it, the effects over those. Called every frame so a room
+    // let go after the suite also frees its memory.
+    if (g.fxReady && sceneViews && xrfx::render_room(scene, &roomLayer)) {
+      layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&roomLayer);
+    }
     if (g.mrMode && g.pt.available && g.pt.layerRunning) {
       ptLayer.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
       ptLayer.space = XR_NULL_HANDLE;
@@ -4610,7 +6041,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       projLayer.views = g.projViews;
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projLayer);
     }
-    if (g.swapchainHasImage) {
+    // r53: a Tabletop · Living Room replay plays on the table; the screen, which would only hold the
+    // picture from before the goal, is away until play is live again.
+    const bool replayOnTable = g.worldless && g.replayRunning && g.mrMode && g.tabletop;
+    if (g.swapchainHasImage && !replayOnTable) {
       quad.layerFlags = 0;  // opaque: the GameCube framebuffer's alpha is not coverage
       quad.space = g.local;
       quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -4739,6 +6173,16 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
           quad.size.width = width;
           quad.size.height = width * aspect;
         }
+      } else if (g.inSuite) {
+        // r61: in the cup suite the screen hangs in its casing in front of the window (the room's,
+        // tools/suites/suite_scene.py: 3.2 x 1.8 m, its middle 2.1 m up and 2.9 m ahead), fitted
+        // into it whatever the picture's shape; it is part of the room, so it does not move.
+        constexpr float kSuiteScreenW = 3.2f, kSuiteScreenH = 1.8f;
+        const float width = std::min(kSuiteScreenW, kSuiteScreenH / std::max(aspect, 0.1f));
+        quad.pose.position = suite_point(0.0f, 2.1f, -2.9f);
+        quad.pose.orientation = yaw_quat(g.suiteYaw);
+        quad.size.width = width;
+        quad.size.height = width * aspect;
       } else {
         place_free_screen(quad, aspect);  // r42: wherever you put it
       }
@@ -4747,7 +6191,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         // comes back down after (eased over about half a second).
         // r49 (a player: "sometimes its in a good spot in the middle but sometimes its too high"): not
         // in Tabletop, where the scorer stands beside the field (r46e) and the screen stays put.
-        const bool tableScreen = g.tabletop && !g.stereoFailed;
+        const bool tableScreen = (g.tabletop && !g.stereoFailed) || g.inSuite;
         const float target = scorer_shown() && g.scorer.planned && !tableScreen
                                  ? screen_lift_over_scorer(quad.pose.position, quad.size.width, quad.size.height)
                                  : 0.0f;
@@ -4761,6 +6205,110 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       scene.screenPose = quad.pose;
       scene.screenWidth = quad.size.width;
       scene.screenHeight = quad.size.height;
+      // r60: the free big screen, for the edge pointer (sync_input), and its edge lit while the left
+      // pointer is on it (dim) or while it is held (bright).
+      const bool freeScreen = !(g.tabletop && !g.stereoFailed) && !g.inSuite;  // r61: the suite's stays put
+      g.shownScreenValid = freeScreen;
+      g.shownScreenPose = quad.pose;
+      g.shownScreenW = quad.size.width;
+      g.shownScreenH = quad.size.height;
+      const bool held = freeScreen && g.screens[screen_room()].grabHands != 0;
+      if (freeScreen && (held || g.screenEdgeHover) && scene.frameCount < 4) {
+        xrfx::Scene::Frame& f = scene.frames[scene.frameCount++];
+        const XrVector3f fwd = q_rot(quad.pose.orientation, XrVector3f{0.0f, 0.0f, 0.01f});
+        f.pose = quad.pose;
+        f.pose.position = {quad.pose.position.x + fwd.x, quad.pose.position.y + fwd.y, quad.pose.position.z + fwd.z};
+        f.thickness = std::max(0.015f, std::min(0.08f, 0.012f * quad.size.width));
+        f.width = quad.size.width + 2.0f * f.thickness;
+        f.height = quad.size.height + 2.0f * f.thickness;
+        f.rgb = held ? 0xFFE27A : 0xFFFFFF;
+        f.alpha = held ? 1.0f : 0.6f;
+        if (!held) {
+          scene.pointerValid[0] = true;
+          scene.pointers[0] = g.screenEdgePoint;
+        }
+      }
+    } else {
+      g.shownScreenValid = false;
+    }
+    // r57: the RetroAchievements badge board over the trophy shelf (your room, with a login and the
+    // pictures saved by the panel): looked at every 3 s, redrawn on a thread when anything changed,
+    // hung above the shelf a little behind its trophies (the effects layer, over it, draws those).
+    if (g.mrMode && g.shelf.placed) {
+      const uint64_t tb = now_ns();
+      if (tb - g.boardCheckNs > 3000000000ull && g_boardReadyGen.load() == g.boardGen) {
+        g.boardCheckNs = tb;
+        std::vector<xrra::AchievementRow> rows;
+        uint32_t unl = 0, tot = 0;
+        std::string why;
+        xrra::achievement_rows(&rows, &unl, &tot, &why);
+        const char* home = std::getenv("STRIKERS_HOME");
+        const std::string dir = std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/ra-badges/";
+        int files = 0;
+        for (const xrra::AchievementRow& r : rows) {
+          struct stat bst {};
+          if (!r.badge.empty() && stat((dir + r.badge + ".rgba").c_str(), &bst) == 0 && bst.st_size == 64 * 64 * 4) ++files;
+        }
+        if (tot > 0 && (unl != g.boardUnlocked || files != g.boardFiles)) {
+          g.boardUnlocked = unl;
+          g.boardFiles = files;
+          const int gen = ++g.boardGen;
+          XLOG("shelf: badge board %u of %u unlocked, %d pictures", unl, tot, files);
+          // r60: what this picture shows, for pointing at its badges once it is up.
+          g.boardRowsPending = rows;
+          g.boardHPending = static_cast<uint32_t>(kBoardHeader + ((rows.size() + kBoardColumns - 1) / kBoardColumns) * 76 + 40);
+          std::thread([rows = std::move(rows), unl, tot, gen, dir]() {
+            std::vector<std::vector<uint8_t>> pics(rows.size());
+            std::vector<xrtext::BadgeTile> tiles(rows.size());
+            for (size_t i = 0; i < rows.size(); ++i) {
+              tiles[i].unlocked = rows[i].unlocked;
+              tiles[i].rgba64 = nullptr;
+              if (rows[i].badge.empty()) continue;
+              if (FILE* f = std::fopen((dir + rows[i].badge + ".rgba").c_str(), "rb")) {
+                pics[i].resize(64 * 64 * 4);
+                if (std::fread(pics[i].data(), 1, pics[i].size(), f) == pics[i].size()) tiles[i].rgba64 = pics[i].data();
+                std::fclose(f);
+              }
+            }
+            const int boardRows = (static_cast<int>(rows.size()) + kBoardColumns - 1) / kBoardColumns;
+            const uint32_t h = static_cast<uint32_t>(kBoardHeader + boardRows * 76 + 40);
+            std::vector<uint8_t> px(static_cast<size_t>(kBoardW) * h * 4);
+            char title[96];
+            std::snprintf(title, sizeof(title), "RETROACHIEVEMENTS  %u / %u", unl, tot);
+            xrtext::badge_board(px.data(), static_cast<int>(kBoardW), static_cast<int>(h), tiles.data(),
+                                static_cast<int>(tiles.size()), kBoardColumns, title);
+            std::lock_guard<std::mutex> lock(g_boardMutex);
+            g_boardPixels = std::move(px);
+            g_boardH = h;
+            g_boardReadyGen = gen;
+          }).detach();
+        }
+      }
+      if (g.boardGen > 0 && g_boardReadyGen.load() == g.boardGen && g.boardShownGen != g.boardGen) {
+        std::lock_guard<std::mutex> lock(g_boardMutex);
+        panel_upload(g.board, g_boardPixels.data(), kBoardW, g_boardH);
+        g.boardShownGen = g.boardGen;
+        g.boardRows = g.boardRowsPending;
+        g.boardH = g_boardH;
+        g.boardHover = -1;
+      }
+      if (g.board.hasImage) {
+        const float c = std::cos(g.shelf.yaw), sn = std::sin(g.shelf.yaw);
+        const XrVector3f at{g.shelf.position.x - 0.09f * sn, g.shelf.position.y + 0.44f, g.shelf.position.z - 0.09f * c};
+        place_panel(boardQuad, g.board, at, 0.62f);
+        boardQuad.pose.orientation = {0.0f, std::sin(0.5f * g.shelf.yaw), 0.0f, std::cos(0.5f * g.shelf.yaw)};
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&boardQuad);
+        update_board_hover(boardQuad, scene, layers, &layerCount, tipQuad);
+      }
+    } else {
+      g.boardHover = -1;
+    }
+    // r61: the home ground: the home corner, the banners by the big screen, the Tabletop pennants, and
+    // the cup suite.
+    if (g.inSuite) {
+      update_suite(scene, layers, &layerCount, homeQuads);
+    } else {
+      update_home(scene, layers, &layerCount, homeQuads);
     }
     // r42: in the big screen room mode the eye picture holds only the life-size scorer, who stands
     // in front of the screen: over it.
@@ -4777,8 +6325,11 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       g_bannerReady = false;
       g.bannerBusy = false;
     }
-    if (scorer_shown() && g.banner.hasImage && (g.scorer.phase == 2 || g.scorer.phase == 3)) {
-      const float t = g.scorer.phaseTime;
+    // r53: a second after the scorer arrives, once its celebration's opening (the SIU's jump) is done.
+    constexpr float kBannerDelay = 1.0f;
+    if (scorer_shown() && g.banner.hasImage &&
+        ((g.scorer.phase == 2 && g.scorer.phaseTime >= kBannerDelay) || g.scorer.phase == 3)) {
+      const float t = g.scorer.phase == 2 ? g.scorer.phaseTime - kBannerDelay : g.scorer.phaseTime;
       // It pops up as the scorer arrives and is gone a quarter second into the run back.
       float pop = 1.0f;
       if (g.scorer.phase == 2) {
@@ -4877,19 +6428,32 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     g.fxNs += now_ns() - fxStart;
     // r47: waiting for the online friend at the match start: who we wait for and how to stop, a
     // little over a metre out at about eye level, following your head lazily.
+    // r64: the cup (co-op) wording, and a friend waiting at the other kind of match (never pairs).
     const int waiting = xrnet::waiting_for_friend();
+    const int waitShown = waiting == 0 ? 0 : waiting + (xrnet::waiting_in_cup() ? 10 : 0) + (xrnet::room_maker() ? 20 : 0);
     if (waiting != 0 && g.headValid) {
-      if (waiting != g.netWaitDrawn || !g.netWait.hasImage) {
+      if (waitShown != g.netWaitDrawn || !g.netWait.hasImage) {
         std::vector<uint8_t> pixels(static_cast<size_t>(xrra::kToastW) * xrra::kToastH * 4);
         char header[48];
-        std::snprintf(header, sizeof(header), "ONLINE  -  ROOM %s", xrnet::room_code());
-        xrtext::achievement_toast(pixels.data(), xrra::kToastW, xrra::kToastH, header,
-                                  waiting == 1 ? "WAITING FOR YOUR FRIEND TO JOIN" : "YOUR FRIEND IS HERE",
-                                  waiting == 1 ? "STARTS WHEN THEY JOIN AND START A GRUDGE MATCH. HOLD B TO PLAY THE CPU"
-                                               : "STARTS WHEN THEY START A GRUDGE MATCH TOO. HOLD B TO PLAY THE CPU",
-                                  0);
+        const bool cup = xrnet::waiting_in_cup();
+        std::snprintf(header, sizeof(header), cup ? "CO-OP CUP  -  ROOM %s" : "ONLINE  -  ROOM %s", xrnet::room_code());
+        const char* title = waiting == 1 ? "WAITING FOR YOUR FRIEND TO JOIN"
+                            : waiting == 3 ? (cup ? "YOUR FRIEND STARTED A GRUDGE MATCH" : "YOUR FRIEND STARTED A CUP MATCH")
+                                           : "YOUR FRIEND IS HERE";
+        const char* body;
+        if (waiting == 3) {
+          body = cup ? "FOR CO-OP THEY GO INTO A CUP AND START ITS NEXT MATCH. HOLD B TO PLAY ALONE"
+                     : "FOR A GRUDGE MATCH THEY BACK OUT AND START ONE. HOLD B TO PLAY THE CPU";
+        } else if (cup) {
+          body = xrnet::room_maker() ? "STARTS WHEN THEY START A CUP MATCH. YOU ARE THE CAPTAIN. HOLD B TO PLAY ALONE"
+                                     : "STARTS WHEN THEY START A CUP MATCH TOO. HOLD B TO PLAY ALONE";
+        } else {
+          body = waiting == 1 ? "STARTS WHEN THEY JOIN AND START A GRUDGE MATCH. HOLD B TO PLAY THE CPU"
+                              : "STARTS WHEN THEY START A GRUDGE MATCH TOO. HOLD B TO PLAY THE CPU";
+        }
+        xrtext::achievement_toast(pixels.data(), xrra::kToastW, xrra::kToastH, header, title, body, 0);
         panel_upload(g.netWait, pixels.data(), xrra::kToastW, xrra::kToastH);
-        g.netWaitDrawn = waiting;
+        g.netWaitDrawn = waitShown;
       }
       float fx = 0.0f, fz = -1.0f;
       floor_forward(g.headPose, &fx, &fz);
@@ -4978,6 +6542,7 @@ extern "C" void PortXrShutdown(void) {
   aurora_xr_set_submit_callback(nullptr, nullptr);
   aurora_xr_set_surface_suppressed(false);
   xrra::shutdown();
+  xrctrl::stop();  // r54: before the session goes
   xrfx::shutdown();
   if (g.device != VK_NULL_HANDLE) {
     vkDeviceWaitIdle(g.device);
@@ -5002,6 +6567,8 @@ extern "C" void PortXrShutdown(void) {
   if (g.view != XR_NULL_HANDLE) xrDestroySpace(g.view);
   if (g.actions.gripSpaceL != XR_NULL_HANDLE) xrDestroySpace(g.actions.gripSpaceL);
   if (g.actions.gripSpaceR != XR_NULL_HANDLE) xrDestroySpace(g.actions.gripSpaceR);
+  if (g.actions.aimSpaceL != XR_NULL_HANDLE) xrDestroySpace(g.actions.aimSpaceL);
+  if (g.actions.aimSpaceR != XR_NULL_HANDLE) xrDestroySpace(g.actions.aimSpaceR);
   if (g.device != VK_NULL_HANDLE) {
     for (UploadSlot& u : g.uploads) {
       if (u.mapped != nullptr) vkUnmapMemory(g.device, u.memory);
@@ -5043,6 +6610,11 @@ extern "C" void PortXrGoal(int, int, int, int, int, int) {}
 extern "C" void PortXrCelebrationPhase(int) {}
 extern "C" void PortXrSetGameplayLive(int) {}
 extern "C" void PortXrSetPlayerMarker(int, float, float, float, int) {}
+extern "C" void PortXrItemBlast(float, float, float, int, float, int, int, float, float, int) {}
+extern "C" void PortXrChompSlam(float, float, float, float, float, int) {}
+extern "C" void PortXrChompBite(float, float, float, float, float) {}
+extern "C" void PortXrSetTrophies(unsigned, const unsigned short*) {}
+extern "C" void PortXrCupWon(int, int) {}
 extern "C" int PortXrScreenFlash(float, float, float, float) { return 0; }
 extern "C" int PortXrTakeTestWipe(void) { return 0; }
 extern "C" int PortXrTakeTestItem(void) { return 0; }
@@ -5056,6 +6628,7 @@ extern "C" void PortXrNoteItemUse(int, int, int) {}
 extern "C" void PortXrLog(const char*) {}
 extern "C" float PortXrCharacterScale(void) { return 1.0f; }
 extern "C" int PortXrHudOnlyNormalView(void) { return 0; }
+extern "C" int PortXrNormalViewWorldless(void) { return 0; }
 extern "C" int PortXrEyeViewAllowed(int, int) { return 1; }
 extern "C" int PortXrStadiumLayerActive(void) { return 0; }
 extern "C" void PortXrRumblePreset(int, int) {}

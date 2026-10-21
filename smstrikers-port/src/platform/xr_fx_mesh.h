@@ -31,6 +31,13 @@ enum Id : uint8_t {
   kPaperBent, kPaperCurl, kPaperTwist, kStreamer,
   kCoin, kHeart, kStar, kPetal, kMushroom, kEgg, kBanana, kShell, kHammer, kRose, kGarlic, kBow,
   kCap,  // r43c: the hat trick's hats
+  // r57: the trophy shelf in your room: a cup (about a unit tall; the cup main colour, its base the
+  // detail colour) and the shelf itself (in meters: wood main colour, trim detail, brackets dark).
+  kTrophy, kShelf,
+  // r61: the home ground: a hanging banner on a rod (a unit tall), a pennant on a pole (a unit tall),
+  // a ball (a unit across).
+  kBanner, kPennant, kBall,
+  kPedestal,  // r61: the cup suite's pedestal, a unit tall (wood column, gold trim, dark base)
   kCount
 };
 
@@ -443,6 +450,111 @@ inline Set build(float detail) {
     b.xform(from, rot_y(0.0f), V3{0.0f, 0.24f, 0.0f});
   }
   finish(kCap);
+
+  // r57: a trophy cup, about a unit tall, standing on y = -0.5: an octagonal plinth (detail colour),
+  // a stem with a knob, the bowl with a rolled rim, open at the top, and two loop handles (main
+  // colour, polished by the shader).
+  start(kTrophy);
+  b.lathe_poly(1, 8, 1.0f, {{0.0f, -0.5f}, {0.3f, -0.5f}, {0.3f, -0.4f}, {0.24f, -0.36f}, {0.07f, -0.36f}});
+  {
+    const std::vector<RH> prof = {{0.07f, -0.36f}, {0.06f, -0.3f}, {0.11f, -0.22f},
+                                  {0.05f, -0.12f}, {0.07f, -0.06f}, {0.14f, -0.02f}};
+    b.lathe(1, n(24, 10), n(10, 4), 0.0f, [prof](float, float v) { return spline(prof, v); }, none);
+  }
+  {
+    // Out and up the outside, over the rolled rim, down the inside to the bowl's floor.
+    const std::vector<RH> prof = {{0.14f, -0.02f}, {0.27f, 0.08f}, {0.33f, 0.25f}, {0.36f, 0.4f}, {0.37f, 0.44f},
+                                  {0.34f, 0.45f},  {0.31f, 0.4f},  {0.27f, 0.22f}, {0.12f, 0.08f}, {0.0f, 0.06f}};
+    b.lathe(1, n(28, 12), n(24, 10), 0.0f, [prof](float, float v) { return spline(prof, v); }, none);
+  }
+  for (float side : {-1.0f, 1.0f}) {
+    // A loop out from the bowl's side, from under the rim down to its waist: a tube round an arc.
+    b.patch(n(10, 6), n(16, 8), 0.0f,
+            [side](float u, float v) {
+              const float a = kPi * v;
+              const V3 c{side * (0.33f + 0.16f * std::sin(a)), 0.36f - 0.26f * v, 0.0f};
+              const V3 tg = normalize(V3{side * 0.16f * kPi * std::cos(a), -0.26f, 0.0f});
+              const V3 bn{0.0f, 0.0f, 1.0f};
+              const V3 nm = cross(bn, tg);  // tg x nm = bn: the tube's normals then point out
+              const float t = 2.0f * kPi * u, r = 0.028f;
+              return c + nm * (r * std::cos(t)) - bn * (r * std::sin(t));
+            },
+            none);
+  }
+  finish(kTrophy);
+
+  // r57: the shelf, in meters, y up, its front toward +z, the board's middle at the origin (its top at
+  // y = 0.016): a rounded wooden board, a trim strip along the front, two dark brackets under it.
+  // Rounded boxes: a superellipsoid built z-up like the ellipsoid, then turned so z is up.
+  auto rbox = [&](float mat, float a, float bb, float c, float e, V3 at) {
+    const size_t from = set.verts.size();
+    auto sp = [e](float x) { return std::copysign(std::pow(std::fabs(x), e), x); };
+    b.patch(n(28, 12), n(12, 6), mat,
+            [=](float u, float v) {
+              const float phi = -0.5f * kPi + kPi * v, t = 2.0f * kPi * u;
+              return V3{a * sp(std::cos(phi)) * sp(std::sin(t)), bb * sp(std::cos(phi)) * sp(std::cos(t)), c * sp(std::sin(phi))};
+            },
+            none);
+    b.xform(from, rot_x(-0.5f * kPi), at);
+  };
+  start(kShelf);
+  rbox(0.0f, 0.46f, 0.11f, 0.016f, 0.3f, V3{0.0f, 0.0f, 0.0f});
+  rbox(1.0f, 0.465f, 0.008f, 0.02f, 0.3f, V3{0.0f, 0.0f, 0.108f});
+  for (float side : {-1.0f, 1.0f}) rbox(3.0f, 0.012f, 0.08f, 0.05f, 0.3f, V3{side * 0.33f, -0.06f, -0.02f});
+  finish(kShelf);
+
+  // r61: a banner a unit tall hanging from a gold rod: the cloth (main colour; the shader paints its
+  // stripes and the captain's emblem from the position) with a swallowtail and a soft ripple.
+  start(kBanner);
+  {
+    const size_t from = set.verts.size();
+    b.lathe(0, n(10, 6), 1, 3.0f, [](float, float v) { return RH{0.018f, -0.27f + 0.54f * v}; }, none);
+    b.xform(from, rot_y(0.0f), V3{0.0f, 0.5f, 0.0f});
+  }
+  for (float side : {-1.0f, 1.0f}) {
+    const size_t from = set.verts.size();
+    b.ellipsoid(n(10, 6), n(6, 3), 3.0f, 0.03f, 0.03f, 0.03f);
+    b.xform(from, rot_y(0.0f), V3{side * 0.285f, 0.5f, 0.0f});
+  }
+  b.patch(n(10, 6), n(18, 8), 0.0f,
+          [](float u, float v) {
+            const float x = -0.21f + 0.42f * u;
+            const float bottom = -0.49f + 0.17f * (1.0f - std::fabs(2.0f * u - 1.0f));
+            const float y = 0.49f + (bottom - 0.49f) * v;
+            return V3{x, y, 0.025f * std::sin(3.0f * kPi * u + 2.0f * v) * v};
+          },
+          none);
+  finish(kBanner);
+
+  // r61: a pennant a unit tall: a dark pole with a gold knob, the flag (main colour) off its top.
+  start(kPennant);
+  b.lathe(1, n(8, 5), 1, 3.0f, [](float, float v) { return RH{0.012f, -0.5f + v}; }, none);
+  {
+    const size_t from = set.verts.size();
+    b.ellipsoid(n(10, 6), n(6, 3), 1.0f, 0.03f, 0.03f, 0.03f);
+    b.xform(from, rot_y(0.0f), V3{0.0f, 0.51f, 0.0f});
+  }
+  b.patch(n(12, 6), n(6, 3), 0.0f,
+          [](float u, float v) {
+            const float x = 0.012f + 0.5f * u;
+            const float y = (0.47f + (0.15f - 0.47f) * v) * (1.0f - u) + 0.31f * u;
+            return V3{x, y, 0.02f * std::sin(2.5f * kPi * u) * u};
+          },
+          none);
+  finish(kPennant);
+
+  // r61: a ball a unit across (the Super Strike ball on its stand; the shader paints its panels).
+  start(kBall);
+  b.ellipsoid(n(28, 12), n(16, 8), 0.0f, 0.5f, 0.5f, 0.5f);
+  finish(kBall);
+
+  // r61: a pedestal a unit tall, standing on y = -0.5: a dark stepped base, an octagonal wooden
+  // column, a gold cap the cup stands on (its top at y = 0.5).
+  start(kPedestal);
+  b.lathe_poly(1, 8, 3.0f, {{0.0f, -0.5f}, {0.34f, -0.5f}, {0.34f, -0.44f}, {0.29f, -0.44f}, {0.29f, -0.4f}});
+  b.lathe_poly(1, 8, 0.0f, {{0.29f, -0.4f}, {0.22f, -0.38f}, {0.2f, 0.38f}, {0.24f, 0.4f}});
+  b.lathe_poly(1, 8, 1.0f, {{0.24f, 0.4f}, {0.3f, 0.42f}, {0.3f, 0.5f}, {0.0f, 0.5f}});
+  finish(kPedestal);
 
   return set;
 }

@@ -20,6 +20,12 @@
         android:required="true" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    <!-- strikers-quest r54: the headset's own Touch controller models (XR_FB_render_model), drawn in
+         your hands in your team's colours (src/platform/xr_ctrl_model.cpp). -->
+    <uses-feature
+        android:name="com.oculus.feature.RENDER_MODEL"
+        android:required="false" />
+    <uses-permission android:name="com.oculus.permission.RENDER_MODEL" />
     <queries>
         <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
         <intent>

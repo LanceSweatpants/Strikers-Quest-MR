@@ -413,6 +413,16 @@ void initialize() {
       g_logIntervalSec = 10.0;
     }
   }
+#ifdef __ANDROID__
+  // strikers-quest r60: on by default on the headset (every 15 s; AURORA_GPU_PROF_LOG=0 still turns
+  // it off), so a player's log says how long the GPU takes per frame and per pass.
+  else {
+    g_logIntervalSec = 15.0;
+  }
+  if (const char* env = std::getenv("AURORA_GPU_PROF_LOG"); env != nullptr && env[0] == '0' && env[1] == '\0') {
+    g_logIntervalSec = 0.0;
+  }
+#endif
 #ifndef TRACY_ENABLE
   if (g_logIntervalSec <= 0.0) {
     g_enabled = false;

@@ -40,6 +40,8 @@ extern cBall* g_pBall;
 #include "port/xr_scorer.h"    // strikers-quest r42: the life-size scorer
 #include "port/edition.h"      // strikers-quest r43: Classic / Plus
 #include "port/xr_net.h"       // strikers-quest: online 1v1
+#include "port/xr_layers.h"    // strikers-quest r53: per-match field/stadium log
+#include "Game/DB/Cup.h"       // strikers-quest r61: the cup suite's table
 #include "NL/nlTask.h"
 #include <string.h>
 #include "Game/AnimInventory.h"
@@ -467,6 +469,9 @@ void cGame::BeginGame(bool bRematch, bool bStraightToKickoff)
     OSReport("[match] begin rematch=%d kickoff=%d\n",
              bRematch ? 1 : 0, bStraightToKickoff ? 1 : 0);
     OSReport("[match] version %s\n", PortPlusFeatures() ? "Plus" : "Classic"); // strikers-quest r43
+    // strikers-quest r53: which stadium, and the field/stadium split logged again for it.
+    PortXrLayersNewMatch((int)nlSingleton<GameInfoManager>::Instance()->GetStadium());
+    PortHomeMatchBegin(); // r61: the home ground's score keeping for this match
 
     if (m_eGameState != GS_PRE_GAME)
     {
@@ -552,6 +557,7 @@ static void port_celebration_goal(int side, int goalType, int numGoals, int hype
     if (character < 0 && g_pTeams[side] != NULL)
         character = port_celebration_character(g_pTeams[side]->GetCaptain());
     PortXrGoal(side, character, numGoals == 2 ? 1 : 0, hyper, ownGoal ? 1 : 0, humanPad);
+    PortHomeGoal(side, numGoals == 2 ? 1 : 0); // r61: the home ground's comebacks and Super Strikes
     // r42: the crowd keeps roaring, and (but for a Super Strike) the scorer comes over life-size.
     // strikers-quest r43: Plus only; Classic is alpha 1.2's goal (no roar, no scorer, no banner).
     if (PortPlusFeatures())
@@ -559,6 +565,71 @@ static void port_celebration_goal(int side, int goalType, int numGoals, int hype
         PortCrowdRoarStart(side);
         XrScorerGoal(ownGoal ? teamTouch : scorer, side, numGoals == 2);
     }
+}
+
+// strikers-quest r61: the cup suite (xr_home.cpp): while a cup or tournament is on and no match is
+// being played, the cup played for and its table, twice a second (read only).
+static int port_team_captain(int team)
+{
+    // eTeamID (Team.h) -> eCharacterClass (Character.h).
+    static const int kCaptain[8] = { DAISY, DONKEYKONG, LUIGI, MARIO, PEACH, WALUIGI, WARIO, YOSHI };
+    return team >= 0 && team < 8 ? kCaptain[team] : -1;
+}
+
+static void port_home_cup_poll(u32 taskState)
+{
+    static int s_tick = 0;
+    if (++s_tick < 30)
+        return;
+    s_tick = 0;
+    GameInfoManager* info = nlSingleton<GameInfoManager>::s_pInstance;
+    BaseCup* cup = info != NULL ? info->GetCurrentCup() : NULL;
+    const bool inCup = info != NULL && cup != NULL && info->IsInCupOrTournamentMode();
+    const bool inMatch = g_pGame != NULL && taskState != 0;
+    if (!inCup || inMatch)
+    {
+        PortHomeCupState(0, -1, 0, 0, 0, NULL, NULL, NULL, NULL, -1, -1);
+        return;
+    }
+    int captains[8], wins[8], losses[8], points[8];
+    const int teams = cup->GetNumTeams() < 8 ? (int)cup->GetNumTeams() : 8;
+    int user = -1;
+    for (int i = 0; i < teams; i++)
+    {
+        TeamStats* ts = cup->GetTeamStats(i);
+        captains[i] = ts != NULL ? port_team_captain((int)ts->mTeamIndex) : -1;
+        wins[i] = ts != NULL ? (int)ts->mNumWins : 0;
+        losses[i] = ts != NULL ? (int)ts->mNumLosses + (int)ts->mNumOTLosses : 0;
+        points[i] = ts != NULL ? (int)ts->mNumPoints : 0;
+        if (ts != NULL && ts->mTeamIndex == cup->mUserSelectedTeam)
+            user = i;
+    }
+    // The game of this round with your team in it: the other team is the one you play next.
+    int next = -1;
+    const int round = (int)cup->mRoundNumber;
+    // r62 (Lance's r61 clip: the board read "ROUND -5 OF 7", every team MARIO): while the cup is still
+    // being set up (skill level, captain choice) its round and teams are not filled in yet; no table
+    // until they are.
+    if (round < 0 || round >= (int)cup->GetNumRounds() || user < 0)
+    {
+        PortHomeCupState(1, (int)info->GetTrophyTypeByCurrentMode(), 0, (int)cup->GetNumRounds(), 0, NULL, NULL, NULL,
+                         NULL, -1, -1);
+        return;
+    }
+    {
+        for (int gm = 0; gm < 4 && next < 0; gm++)
+        {
+            BasicGameInfo* bg = cup->GetGameInfo(round, gm);
+            if (bg == NULL)
+                continue;
+            if (bg->mTeamIndex[0] == cup->mUserSelectedTeam)
+                next = port_team_captain((int)bg->mTeamIndex[1]);
+            else if (bg->mTeamIndex[1] == cup->mUserSelectedTeam)
+                next = port_team_captain((int)bg->mTeamIndex[0]);
+        }
+    }
+    PortHomeCupState(1, (int)info->GetTrophyTypeByCurrentMode(), round, (int)cup->GetNumRounds(), teams, captains, wins,
+                     losses, points, user, next);
 }
 
 extern "C" void PortCelebrationPoll(void)
@@ -570,6 +641,33 @@ extern "C" void PortCelebrationPoll(void)
 
     if (nlTaskManager::m_pInstance == NULL)
         return;
+
+    // strikers-quest r57: the trophy shelf: the cups won and how many times, from the save (read
+    // only), handed over when they change (checked twice a second).
+    {
+        static int s_trophyTick = 0;
+        static unsigned s_prevBits = 0xFFFFFFFFu;
+        static unsigned short s_prevWins[8] = {};
+        GameInfoManager* info = nlSingleton<GameInfoManager>::s_pInstance;
+        if (info != NULL && ++s_trophyTick >= 30)
+        {
+            s_trophyTick = 0;
+            const unsigned bits = info->mUserInfo.mTrophies[0];
+            unsigned short wins[8];
+            bool changed = bits != s_prevBits;
+            for (int t = 0; t < 8; t++)
+            {
+                wins[t] = info->mUserInfo.mSpoils[t].mNumCupWins;
+                changed = changed || wins[t] != s_prevWins[t];
+                s_prevWins[t] = wins[t];
+            }
+            if (changed)
+            {
+                s_prevBits = bits;
+                PortXrSetTrophies(bits, wins);
+            }
+        }
+    }
     const u32 taskState = nlTaskManager::m_pInstance->m_CurrState;
     Presentation& pres = Presentation::Instance();
     // Self-test (xr_fx "wipe"): the replay wipe with the white flash, during live play.
@@ -663,10 +761,12 @@ extern "C" void PortCelebrationPoll(void)
                 markerPos[2] = player->m_v3Position.z;
                 cFielder* captain = team->GetCaptain();
                 markerTeamCaptain = captain != NULL ? port_celebration_character(captain) : -1;
+                PortHomeHumanSide(side); // r61: the side you play, for the home ground's records
             }
         }
     }
     PortXrSetPlayerMarker(markerShown, markerPos[0], markerPos[1], markerPos[2], markerTeamCaptain);
+    port_home_cup_poll(taskState);
 
     // Self-test (xr_fx "sts"): the Super Strike meter over the player you control for 3 s (180
     // game frames), its white bar sweeping once, no shot taken.
@@ -839,12 +939,136 @@ static void port_net_unpack_options(const unsigned char* in, int size)
     pInfo->mUseCurGameSettings = in[n] != 0;
 }
 
+// strikers-quest r63, online co-op Cup (Lance: "an online co-op mode for Cup mode", "1 player controls 2
+// players the other controls the other 2"): the cup a mode is played in, as stored (the round robin;
+// a Bowser cup also has its knockout).
+static BaseCup* port_cup_series(GameInfoManager* pInfo, int mode)
+{
+    switch (mode)
+    {
+    case GameInfoManager::GM_MUSHROOM_CUP: return &pInfo->mMushroomCupSeries;
+    case GameInfoManager::GM_FLOWER_CUP: return &pInfo->mFlowerCupSeries;
+    case GameInfoManager::GM_STAR_CUP: return &pInfo->mStarCupSeries;
+    case GameInfoManager::GM_BOWSER_CUP: return &pInfo->mBowserCupSeries;
+    case GameInfoManager::GM_SUPER_MUSHROOM_CUP: return &pInfo->mSuperMushroomCupSeries;
+    case GameInfoManager::GM_SUPER_FLOWER_CUP: return &pInfo->mSuperFlowerCupSeries;
+    case GameInfoManager::GM_SUPER_STAR_CUP: return &pInfo->mSuperStarCupSeries;
+    case GameInfoManager::GM_SUPER_BOWSER_CUP: return &pInfo->mSuperBowserCupSeries;
+    default: return NULL;
+    }
+}
+
+static BaseCup* port_cup_knockout(GameInfoManager* pInfo, int mode)
+{
+    if (mode == GameInfoManager::GM_BOWSER_CUP)
+        return &pInfo->mBowserCupKnockout;
+    if (mode == GameInfoManager::GM_SUPER_BOWSER_CUP)
+        return &pInfo->mSuperBowserCupKnockout;
+    return NULL;
+}
+
+static void port_put32(unsigned char* p, int x)
+{
+    memcpy(p, &x, 4);
+}
+
+static int port_get32(const unsigned char* p)
+{
+    int x;
+    memcpy(&x, p, 4);
+    return x;
+}
+
+// The cup being played, whole, for the guest: [mode][knockout?][round just ended?][last result 4]
+// [match requirement 4][series size 2][series][knockout size 2][knockout]. 0 if it does not fit.
+static int port_net_pack_cup(unsigned char* out, int max)
+{
+    GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
+    const int mode = (int)pInfo->GetCurrentMode();
+    BaseCup* series = port_cup_series(pInfo, mode);
+    BaseCup* knockout = port_cup_knockout(pInfo, mode);
+    if (series == NULL)
+        return 0;
+    const int seriesSize = series->GetSaveDataSize();
+    const int knockoutSize = knockout != NULL ? knockout->GetSaveDataSize() : 0;
+    const int size = 3 + 8 + 2 + seriesSize + 2 + knockoutSize;
+    if (size > max)
+        return 0;
+    int n = 0;
+    out[n++] = (unsigned char)mode;
+    out[n++] = pInfo->mDoingKnockout ? 1 : 0;
+    out[n++] = pInfo->mDidRoundJustEnd ? 1 : 0;
+    port_put32(out + n, (int)pInfo->mUserLastResults[mode]);
+    n += 4;
+    port_put32(out + n, (int)pInfo->mCupMatchRequirement);
+    n += 4;
+    out[n++] = (unsigned char)(seriesSize & 0xFF);
+    out[n++] = (unsigned char)(seriesSize >> 8);
+    series->SerializeData(out + n);
+    n += seriesSize;
+    out[n++] = (unsigned char)(knockoutSize & 0xFF);
+    out[n++] = (unsigned char)(knockoutSize >> 8);
+    if (knockout != NULL)
+        knockout->SerializeData(out + n);
+    n += knockoutSize;
+    return n;
+}
+
+// The host's cup taken over (the guest, at the match start): the same mode, round, games, standings
+// and match up, then this match's record pointed at as the hub does.
+static bool port_net_unpack_cup(const unsigned char* in, int size)
+{
+    GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
+    if (size < 15)
+        return false;
+    const int mode = in[0];
+    BaseCup* series = port_cup_series(pInfo, mode);
+    BaseCup* knockout = port_cup_knockout(pInfo, mode);
+    if (series == NULL)
+        return false;
+    int n = 11;
+    const int seriesSize = in[n] | (in[n + 1] << 8);
+    n += 2;
+    if (seriesSize != series->GetSaveDataSize() || n + seriesSize + 2 > size)
+        return false;
+    const int seriesAt = n;
+    n += seriesSize;
+    const int knockoutSize = in[n] | (in[n + 1] << 8);
+    n += 2;
+    if (knockoutSize != (knockout != NULL ? knockout->GetSaveDataSize() : 0) || n + knockoutSize > size)
+        return false;
+    series->DeserializeData((void*)(in + seriesAt));
+    if (knockout != NULL)
+        knockout->DeserializeData((void*)(in + n));
+    pInfo->SetMode((GameInfoManager::eGameModes)mode);  // picks the series or the knockout as the cup
+    pInfo->mDoingKnockout = in[1] != 0;
+    pInfo->mDidRoundJustEnd = in[2] != 0;
+    pInfo->mUserLastResults[mode] = (eUserGameResult)port_get32(in + 3);
+    pInfo->mCupMatchRequirement = (eUserGameResult)port_get32(in + 7);
+    pInfo->DetermineNextMatchups(1);  // this round's game with the user's team in it
+    pInfo->SetPreviousTeamStats();
+    return true;
+}
+
+// Games played in the cup so far (a knockout counts after the whole round robin).
+static int port_cup_progress(void)
+{
+    GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
+    BaseCup* cup = pInfo->GetCurrentCup();
+    if (cup == NULL)
+        return 0;
+    const int round = cup->mRoundNumber < 0 ? 100 + (cup->mRoundNumber + 5) * 10 : cup->mRoundNumber;
+    return round * 16 + cup->mGameNumber;
+}
+
 extern "C" int PortNetGameHoldMatchStart(void)
 {
     GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
-    if (pInfo == NULL || !pInfo->IsInFriendlyMode())
+    // r63: a cup match goes online too (co-op: both on the cup's team); a tournament does not.
+    const bool cup = pInfo != NULL && pInfo->IsInCupMode() && !pInfo->IsInTournamentMode();
+    if (pInfo == NULL || !(pInfo->IsInFriendlyMode() || cup))
         return 0;
-    PortNetMatch m;
+    static PortNetMatch m;  // (the cup makes it big)
     memset(&m, 0, sizeof m);
     m.teams[0] = (int)pInfo->GetTeam(0);
     m.teams[1] = (int)pInfo->GetTeam(1);
@@ -853,6 +1077,15 @@ extern "C" int PortNetGameHoldMatchStart(void)
     m.stadium = (int)pInfo->GetStadium();
     m.optionsSize = port_net_pack_options(m.options);
     const short side = pInfo->GetPlayingSide(0);
+    m.mode = (int)pInfo->GetCurrentMode();
+    if (cup)
+    {
+        m.coopSide = side == 1 ? 1 : 0;
+        m.cupSize = port_net_pack_cup(m.cup, (int)sizeof(m.cup));
+        m.cupProgress = port_cup_progress();
+        if (m.cupSize == 0)
+            return 0;  // (cannot happen with the game's cups; offline then)
+    }
     return PortNetHoldMatchStart(&m, side == 1 ? 1 : 0);
 }
 
@@ -860,15 +1093,28 @@ extern "C" void PortNetGameFrameBegin(void)
 {
     unsigned int seed = 0;
     int isStart = 0;
-    PortNetMatch m;
+    static PortNetMatch m;
     if (!PortNetFrameBegin(&seed, &m, &isStart))
         return;
     // Every online frame starts from the same random state on both headsets.
     nlSetRandomSeed(seed, &nlDefaultSeed);
     if (!isStart)
         return;
-    // The agreed match: home = the host's pick on pad 0, away = the guest's on pad 1.
     GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
+    if (m.mode != GameInfoManager::GM_FRIENDLY)
+    {
+        // r63, co-op Cup: the host's cup (the host takes it over again, unchanged), both pads on its
+        // team's side: pad 0 the host (the captain and a sidekick), pad 1 the guest (the other two).
+        if (!port_net_unpack_cup(m.cup, m.cupSize))
+            return;  // (a cup this build doesn't know: each plays its own then)
+        const short side = (short)(m.coopSide == 1 ? 1 : 0);
+        for (int pad = 0; pad < 4; pad++)
+            pInfo->SetPlayingSide((unsigned short)pad, (short)(pad < 2 ? side : -1));
+        pInfo->mMainUserPadNumber = (eFEINPUT_PAD)0;
+        port_net_unpack_options(m.options, m.optionsSize);
+        return;
+    }
+    // The agreed match: home = the host's pick on pad 0, away = the guest's on pad 1.
     pInfo->SetMode(GameInfoManager::GM_FRIENDLY);
     pInfo->SetTeam(0, (eTeamID)m.teams[0]);
     pInfo->SetTeam(1, (eTeamID)m.teams[1]);

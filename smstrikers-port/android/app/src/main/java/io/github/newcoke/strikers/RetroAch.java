@@ -194,6 +194,80 @@ final class RetroAch {
         }
     }
 
+    /**
+     * r57: the set's badge pictures for the trophy shelf's board in the game (xr_quest.cpp): each
+     * downloaded once from RA's media server, decoded and saved as raw 64 x 64 RGBA in ra-badges/
+     * in the game's folder ("<BadgeName>.rgba"), from the set saved in ra-set.json. Blocks: call it
+     * off the UI thread. Returns how many are there now.
+     */
+    static int fetchBadges(Context context) {
+        File set = file(context, SET_FILE);
+        if (!set.isFile()) return 0;
+        java.util.List<String> names = new java.util.ArrayList<>();
+        try (InputStream in = new java.io.FileInputStream(set)) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            for (int n; (n = in.read(buf)) > 0; ) bytes.write(buf, 0, n);
+            JSONObject patch = new JSONObject(bytes.toString("UTF-8"));
+            JSONObject data = patch.optJSONObject("PatchData");
+            JSONArray all = data != null ? data.optJSONArray("Achievements") : null;
+            for (int i = 0; all != null && i < all.length(); i++) {
+                JSONObject a = all.optJSONObject(i);
+                if (a == null || a.optInt("ID") == WARNING_ID) continue;
+                String b = a.optString("BadgeName");
+                if (b.matches("[0-9A-Za-z_]{1,16}")) names.add(b);
+            }
+        } catch (IOException | JSONException e) {
+            return 0;
+        }
+        File dir = file(context, "ra-badges");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        int have = 0;
+        for (String name : names) {
+            File out = new File(dir, name + ".rgba");
+            if (out.isFile() && out.length() == 64 * 64 * 4) {
+                have++;
+                continue;
+            }
+            try {
+                HttpURLConnection c = (HttpURLConnection)
+                        new URL("https://media.retroachievements.org/Badge/" + name + ".png").openConnection();
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(15000);
+                c.setRequestProperty("User-Agent", userAgent(context));
+                if (c.getResponseCode() != 200) continue;
+                ByteArrayOutputStream png = new ByteArrayOutputStream();
+                try (InputStream s = c.getInputStream()) {
+                    byte[] buf = new byte[16384];
+                    for (int n; (n = s.read(buf)) > 0; ) png.write(buf, 0, n);
+                }
+                android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeByteArray(png.toByteArray(), 0, png.size());
+                if (bmp == null) continue;
+                android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(bmp, 64, 64, true);
+                int[] argb = new int[64 * 64];
+                scaled.getPixels(argb, 0, 64, 0, 0, 64, 64);
+                byte[] rgba = new byte[64 * 64 * 4];
+                for (int i = 0; i < argb.length; i++) {
+                    rgba[i * 4] = (byte) (argb[i] >> 16);
+                    rgba[i * 4 + 1] = (byte) (argb[i] >> 8);
+                    rgba[i * 4 + 2] = (byte) argb[i];
+                    rgba[i * 4 + 3] = (byte) (argb[i] >>> 24);
+                }
+                File tmp = new File(dir, name + ".tmp");
+                try (OutputStream o = new FileOutputStream(tmp)) {
+                    o.write(rgba);
+                }
+                //noinspection ResultOfMethodCallIgnored
+                tmp.renameTo(out);
+                have++;
+            } catch (IOException | RuntimeException e) {
+                // the next panel start tries again
+            }
+        }
+        return have;
+    }
+
     static void logout(Context context) {
         //noinspection ResultOfMethodCallIgnored
         loginFile(context).delete();

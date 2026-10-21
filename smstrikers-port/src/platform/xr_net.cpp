@@ -20,6 +20,7 @@ extern "C" void PortNetSetFixedStep(int on);  // src/platform/vi.c
 #include <unistd.h>
 
 #include "xr_voice.h"  // strikers-quest r44: voice frames ride on the input messages
+#include "xr_home.h"   // strikers-quest r61: who the friend is, for the online rival
 
 #include <algorithm>
 #include <atomic>
@@ -72,7 +73,9 @@ constexpr int kServerPort = 443;
 // pairs players by Version and protocol (LobbyActivity, the server's /quick/<KEY>).
 // strikers-quest r50: 6, the sounds draw their own random numbers now (nlAudioSeed, NL/nlMath.cpp), so
 // the game's own numbers differ from an r49 headset's whenever a crowd chant or voice line picks one.
-constexpr uint8_t kProtocol = 6;
+// strikers-quest r63: 7, online co-op Cup: the hello says Friendly or cup (and how far the cup is),
+// the start can carry the host's whole cup.
+constexpr uint8_t kProtocol = 7;
 
 uint64_t now_ms() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -175,6 +178,9 @@ struct Shared {
   // strikers-quest r45: the tournament match this room is for (the panel's match id), "" = none
   // (under m): its result is written for the panel when the match ends.
   std::string tourney;
+  // strikers-quest r64: this headset made the room (the panel's Host an online match), under m: in
+  // co-op Cup the maker's cup is played and the maker plays the captain.
+  bool roomMaker = false;
   std::atomic<bool> connected{false};
   std::atomic<bool> running{false};
   // strikers-quest r50: the round trips the network thread measured (under m), for the game thread's
@@ -440,7 +446,15 @@ struct Choice {
   int team = 0, sidekick = 0, stadium = 0;
   uint8_t options[64] = {};
   int optionsSize = 0;
+  // r63: the game mode (0 Friendly, else a cup: co-op) and how far that cup is (games played).
+  uint8_t mode = 0;
+  uint32_t progress = 0;
+  uint8_t maker = 0;  // r64: 1 = this headset made the room (Host an online match)
 };
+
+// r63, co-op Cup: this headset's cup at its match start (Game.cpp port_net_pack_cup) and its team's side.
+std::vector<uint8_t> g_localCup;
+int g_localCoopSide = 0;
 
 struct State {
   bool threadStarted = false;
@@ -545,6 +559,9 @@ void write_choice(Writer& w, const Choice& c) {
   w.u32(static_cast<uint32_t>(c.stadium));
   w.u8(static_cast<uint8_t>(c.optionsSize));
   w.bytes(c.options, static_cast<size_t>(c.optionsSize));
+  w.u8(c.mode);  // r63
+  w.u32(c.progress);
+  w.u8(c.maker);  // r64
 }
 
 Choice read_choice(Reader& r) {
@@ -554,8 +571,14 @@ Choice read_choice(Reader& r) {
   c.stadium = static_cast<int>(r.u32());
   c.optionsSize = std::min<int>(r.u8(), 64);
   r.bytes(c.options, static_cast<size_t>(c.optionsSize));
+  c.mode = r.u8();  // r63
+  c.progress = r.u32();
+  c.maker = r.u8();  // r64
   return c;
 }
+
+// r63: a Friendly pairs only with a Friendly, a cup only with a cup (co-op).
+bool same_kind(const Choice& a, const Choice& b) { return (a.mode == 0) == (b.mode == 0); }
 
 void send_hello() {
   Writer w = header(kHello);
@@ -563,6 +586,15 @@ void send_hello() {
   w.u8(ready ? 1 : 0);
   w.u8(local_edition());  // r43
   write_choice(w, st.localChoice);
+  // r61: who this is, for the friend's home ground (their online rival): 'H', this headset's player
+  // id and team name. After everything else, so a build without it reads the hello as before.
+  const std::string& id = xrhome::my_id();
+  const std::string& name = xrhome::my_name();
+  w.u8('H');
+  w.u8(static_cast<uint8_t>(std::min<size_t>(id.size(), 32)));
+  w.bytes(id.data(), std::min<size_t>(id.size(), 32));
+  w.u8(static_cast<uint8_t>(std::min<size_t>(name.size(), 24)));
+  w.bytes(name.data(), std::min<size_t>(name.size(), 24));
   send(std::move(w.v));
   st.lastHelloMs = now_ms();
 }
@@ -656,6 +688,15 @@ void host_start() {
   w.u8(local_edition());  // r43: the guest checks it too
   write_choice(w, st.localChoice);
   write_choice(w, st.peerChoice);
+  const bool coop = st.localChoice.mode != 0;
+  if (coop) {
+    // r63, co-op Cup: 'C', the side both play on, the host's cup (the room server takes up to 4096
+    // bytes a message; the biggest cup, a Super Bowser Cup with its knockout, is about 2.8 KB).
+    w.u8('C');
+    w.u8(static_cast<uint8_t>(g_localCoopSide));
+    w.u32(static_cast<uint32_t>(g_localCup.size()));
+    w.bytes(g_localCup.data(), g_localCup.size());
+  }
   st.startMsg = w.v;
   st.match = PortNetMatch{};
   st.match.teams[0] = st.localChoice.team;
@@ -665,13 +706,37 @@ void host_start() {
   st.match.stadium = st.localChoice.stadium;
   st.match.optionsSize = st.localChoice.optionsSize;
   std::memcpy(st.match.options, st.localChoice.options, sizeof(st.match.options));
+  st.match.mode = st.localChoice.mode;
+  if (coop) {
+    st.match.coopSide = g_localCoopSide;
+    st.match.cupSize = static_cast<int>(std::min(g_localCup.size(), sizeof(st.match.cup)));
+    std::memcpy(st.match.cup, g_localCup.data(), static_cast<size_t>(st.match.cupSize));
+  }
   st.frame = 0;  // the friend's first inputs may arrive before this headset's frame 0
   std::memset(st.remoteTag, 0, sizeof(st.remoteTag));
   st.lastRemoteMs = 0;
   st.startPending = true;
   send(st.startMsg);
   st.lastStartSendMs = now_ms();
-  NLOG("net: starting the online match as home (round trip %u ms, input delay %d frames)", st.rttMs, st.delay);
+  if (coop) {
+    NLOG("net: starting the online co-op cup match as host: your cup, you the captain and a sidekick, the "
+         "friend the other two (round trip %u ms, input delay %d frames, cup %zu bytes)", st.rttMs, st.delay,
+         g_localCup.size());
+  } else {
+    NLOG("net: starting the online match as home (round trip %u ms, input delay %d frames)", st.rttMs, st.delay);
+  }
+}
+
+// r63: who hosts once both wait at the match start: a Friendly, the lower id; a co-op cup, the headset
+// whose cup is further along (its cup is the one played on), the lower id on a tie.
+bool i_host() {
+  if (st.localChoice.mode != 0) {
+    // r64: co-op Cup: whoever made the room (Host an online match) hosts: their cup, the captain.
+    // Quick match (nobody made it): the cup further along, then the lower id.
+    if (st.localChoice.maker != st.peerChoice.maker) return st.localChoice.maker != 0;
+    if (st.localChoice.progress != st.peerChoice.progress) return st.localChoice.progress > st.peerChoice.progress;
+  }
+  return st.myId < st.peerId;
 }
 
 void handle(const std::vector<uint8_t>& msg) {
@@ -734,7 +799,20 @@ void handle(const std::vector<uint8_t>& msg) {
     r.u8();  // r43: the Version, the same as this headset's (checked above)
     const Choice c = read_choice(r);
     if (!r.ok) return;
-    if (ready && !st.peerReady) NLOG("net: friend started a Friendly, waiting at the loading screen");
+    // r61: the friend's player id and team name, when their build sends them (xrhome).
+    if (r.at < msg.size() && msg[r.at] == 'H') {
+      Reader tail = r;
+      tail.u8();
+      char id[33] = {}, name[25] = {};
+      const size_t idLen = std::min<size_t>(tail.u8(), 32);
+      tail.bytes(id, idLen);
+      const size_t nameLen = std::min<size_t>(tail.u8(), 24);
+      tail.bytes(name, nameLen);
+      if (tail.ok && idLen > 0) xrhome::set_peer(std::string(id, idLen), std::string(name, nameLen));
+    }
+    if (ready && !st.peerReady) {
+      NLOG("net: friend started a %s, waiting at the loading screen", c.mode != 0 ? "cup match (co-op)" : "Friendly");
+    }
     // r39b: the friend stopped waiting while this headset waits for them (see PortNetHoldMatchStart).
     if (ready) {
       st.peerLeftHoldMs = 0;
@@ -757,12 +835,29 @@ void handle(const std::vector<uint8_t>& msg) {
     const uint8_t edition = r.u8();
     const Choice home = read_choice(r);
     const Choice away = read_choice(r);
+    // r63: a co-op cup start: 'C', the side both play on, the host's cup.
+    bool coop = false;
+    int coopSide = 0;
+    std::vector<uint8_t> cup;
+    if (r.ok && r.at < msg.size() && msg[r.at] == 'C') {
+      r.u8();
+      coop = true;
+      coopSide = r.u8();
+      const uint32_t size = r.u32();
+      if (r.ok && size <= sizeof(PortNetMatch::cup) && r.need(size)) {
+        cup.assign(msg.begin() + static_cast<long>(r.at), msg.begin() + static_cast<long>(r.at + size));
+        r.at += size;
+      } else {
+        return;
+      }
+    }
     // r44c: optional, from the test friend only (tools/fakefriend): which side the computer plays.
     const uint8_t cpuPlays = r.ok && r.at < msg.size() ? r.u8() : 0;
     if (!r.ok || guest != st.myId || host != sender) return;
     // r43: never a match on the other Version (the hellos keep the two apart already).
     if (edition != local_edition()) return;
     if (st.online || st.startPending || !st.localReady) return;  // already going, or not at the start
+    if (coop != (st.localChoice.mode != 0)) return;  // r63: a cup only with a cup, a Friendly with a Friendly
     st.isHost = false;
     st.seed = seed;
     st.delay = std::clamp(delay, 1, 60);
@@ -775,12 +870,23 @@ void handle(const std::vector<uint8_t>& msg) {
     st.match.optionsSize = home.optionsSize;
     std::memcpy(st.match.options, home.options, sizeof(st.match.options));
     st.match.cpuPlays = cpuPlays == 1 ? 1 : 0;  // r44c: only the host's own side
+    st.match.mode = home.mode;
+    if (coop) {
+      st.match.coopSide = coopSide == 1 ? 1 : 0;
+      st.match.cupSize = static_cast<int>(cup.size());
+      std::memcpy(st.match.cup, cup.data(), cup.size());
+    }
     st.frame = 0;  // the host's first inputs may arrive before this headset's frame 0
     std::memset(st.remoteTag, 0, sizeof(st.remoteTag));
     st.lastRemoteMs = 0;
     st.startPending = true;
-    NLOG("net: starting the online match as away (input delay %d frames)%s", st.delay,
-         st.match.cpuPlays != 0 ? ", the test friend's side played by this headset's computer" : "");
+    if (coop) {
+      NLOG("net: starting the online co-op cup match as guest: the friend's cup, you two of the sidekicks "
+           "(input delay %d frames, cup %zu bytes)", st.delay, cup.size());
+    } else {
+      NLOG("net: starting the online match as away (input delay %d frames)%s", st.delay,
+           st.match.cpuPlays != 0 ? ", the test friend's side played by this headset's computer" : "");
+    }
     break;
   }
   case kInput: {
@@ -849,6 +955,8 @@ void poll() {
       sh.room = sanitize_room(std::getenv("STRIKERS_ROOM"));
       const char* tourney = std::getenv("STRIKERS_TOURNEY");  // r45
       sh.tourney = tourney != nullptr ? tourney : "";
+      const char* maker = std::getenv("STRIKERS_ROOM_MAKER");  // r64
+      sh.roomMaker = maker != nullptr && maker[0] == '1';
       sh.roomSet = true;
     }
     room = sh.room;
@@ -951,9 +1059,20 @@ void poll() {
   if (!st.online && now - st.lastHelloMs > 500) send_hello();
   // Both at the loading screen: the lower id hosts (home side). r39b: on a recent hello (they come
   // every 0.5 s); the hold now waits out a quiet friend, whose last ready bit may be an old one.
+  // r63: a Friendly with a Friendly, a cup with a cup (co-op); i_host picks who hosts.
   if (st.localReady && st.peerReady && peer_present() && now - st.peerHelloMs < 2000 && !st.online &&
-      !st.startPending && st.myId < st.peerId) {
-    host_start();
+      !st.startPending) {
+    if (!same_kind(st.localChoice, st.peerChoice)) {
+      static uint64_t told = 0;
+      if (now - told > 10000) {
+        told = now;
+        NLOG("net: the friend waits at a %s and this headset at a %s: both need the same (two Friendlies, "
+             "or both in a cup for co-op)", st.peerChoice.mode != 0 ? "cup match" : "Friendly",
+             st.localChoice.mode != 0 ? "cup match" : "Friendly");
+      }
+    } else if (i_host()) {
+      host_start();
+    }
   }
   // The host repeats the start until the friend's input shows up.
   if (st.isHost && (st.online || st.startPending) && st.lastRemoteMs == 0 && now - st.lastStartSendMs > 300) {
@@ -1090,14 +1209,25 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
     st.localChoice.stadium = localChoice->stadium;
     st.localChoice.optionsSize = std::clamp(localChoice->optionsSize, 0, 64);
     std::memcpy(st.localChoice.options, localChoice->options, sizeof(st.localChoice.options));
+    // r63: Friendly or cup; a cup's whole state and its team's side, for a co-op start as host.
+    st.localChoice.mode = static_cast<uint8_t>(localChoice->mode);
+    st.localChoice.progress = static_cast<uint32_t>(std::max(localChoice->cupProgress, 0));
+    {
+      std::lock_guard<std::mutex> lock(xrnet::sh.m);
+      st.localChoice.maker = xrnet::sh.roomMaker ? 1 : 0;  // r64
+    }
+    xrnet::g_localCoopSide = localChoice->coopSide;
+    xrnet::g_localCup.assign(localChoice->cup,
+                             localChoice->cup + std::clamp(localChoice->cupSize, 0, static_cast<int>(sizeof(localChoice->cup))));
     st.localReady = true;
     st.readySinceMs = now;
     st.peerLeftHoldMs = 0;
     xrnet::send_hello();
+    const char* what = st.localChoice.mode != 0 ? "Cup match (co-op)" : "Friendly";
     if (xrnet::peer_present()) {
-      NLOG("net: Friendly started with the friend in the room: waiting for them to start one too");
+      NLOG("net: %s started with the friend in the room: waiting for them to start one too", what);
     } else {
-      NLOG("net: Friendly started in room %s: waiting for the friend to join", st.room.c_str());
+      NLOG("net: %s started in room %s: waiting for the friend to join", what, st.room.c_str());
     }
   }
   if (st.cancelWait) {
@@ -1116,7 +1246,18 @@ namespace xrnet {
 
 int waiting_for_friend() {
   if (!st.localReady || st.online || st.startPending || st.gaveUp || now_ms() - st.lastHoldMs > 1000) return 0;
-  return peer_present() ? 2 : 1;
+  if (!peer_present()) return 1;
+  // r64: they wait at a match start of the other kind (a Grudge Match against this cup match, or the
+  // other way round): the two never pair, so say so.
+  if (st.peerReady && !same_kind(st.localChoice, st.peerChoice)) return 3;
+  return 2;
+}
+
+bool waiting_in_cup() { return st.localChoice.mode != 0; }
+
+bool room_maker() {
+  std::lock_guard<std::mutex> lock(sh.m);
+  return sh.roomMaker;
 }
 
 void cancel_wait() { st.cancelWait = true; }
@@ -1200,6 +1341,14 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_newcoke_strikers_StrikersActivi
   xrnet::sh.tourney = mid;
 }
 
+// strikers-quest r64: the panel's room was made here (Host an online match) or not (Join, Quick
+// match), with the room (StrikersActivity, before nativeSetRoom); taken at the next match start.
+extern "C" JNIEXPORT void JNICALL Java_io_github_newcoke_strikers_StrikersActivity_nativeSetRoomMaker(JNIEnv*, jclass,
+                                                                                                    jboolean maker) {
+  std::lock_guard<std::mutex> lock(xrnet::sh.m);
+  xrnet::sh.roomMaker = maker == JNI_TRUE;
+}
+
 // strikers-quest r45: StrikersActivity, once a second: true once after a tournament match ended and
 // its result was written (tourney-result.txt), so the panel comes up to report it.
 extern "C" JNIEXPORT jboolean JNICALL Java_io_github_newcoke_strikers_StrikersActivity_nativeTakeTourneyResult(JNIEnv*,
@@ -1236,6 +1385,8 @@ bool lockstep() { return false; }
 bool step(const NetPad&, NetPad*, NetPad*) { return false; }
 int local_pad() { return 0; }
 int waiting_for_friend() { return 0; }
+bool waiting_in_cup() { return false; }
+bool room_maker() { return false; }
 void cancel_wait() {}
 const char* room_code() { return ""; }
 }  // namespace xrnet

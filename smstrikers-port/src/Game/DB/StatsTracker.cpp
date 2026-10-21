@@ -6,7 +6,10 @@ template <>
 StatsTracker* nlSingleton<StatsTracker>::s_pInstance;
 
 #include "Game/DB/StatsTracker.h"
+#include "port/xr_quest.h" // strikers-quest r57: a cup won, for the trophy shelf
 #include "Game/AI/FielderActions.h"
+#include "Game/AI/Fielder.h" // strikers-quest r61: the captains, for the home ground
+#include "Game/Team.h"
 #include "Game/FE/feHelpFuncs.h"
 #include "Game/Game.h"
 #include "Game/GameInfo.h"
@@ -1814,6 +1817,21 @@ void StatsTracker::TrackWinner(int forfeitSide)
 
     if (!mHasGameEnded)
     {
+        // strikers-quest r61: the home ground's records (read only; xr_home.cpp).
+        {
+            int captains[2] = { -1, -1 };
+            for (int side = 0; side < 2; side++)
+            {
+                cFielder* captain = g_pTeams[side] != NULL ? g_pTeams[side]->GetCaptain() : NULL;
+                int c = captain != NULL ? (int)captain->m_eCharacterClass : -1;
+                static const int kGoalieToFielder[] = { DAISY, DONKEYKONG, LUIGI, MARIO, PEACH, WALUIGI, WARIO, YOSHI };
+                if (c >= DAISY_GOALIE && c <= YOSHI_GOALIE)
+                    c = kGoalieToFielder[c - DAISY_GOALIE];
+                captains[side] = (c >= 0 && c < NUM_FIELDER_CLASSES && c != MYSTERY) ? c : -1;
+            }
+            PortHomeMatchEnd(scoreLeft, scoreRight, mIsOvertime ? 1 : 0, (forfeitSide == 0 || forfeitSide == 1) ? forfeitSide : -1,
+                             nlSingleton<GameInfoManager>::Instance()->IsInCupOrTournamentMode() ? 1 : 0, captains[0], captains[1]);
+        }
         if (nlSingleton<GameInfoManager>::Instance()->IsInCupOrTournamentMode())
         {
             if (mIsOvertime && !wasForfeit)
@@ -2063,8 +2081,11 @@ void StatsTracker::AwardCup(eUserGameResult gameResult)
     if (mIsUserCupWinner == true)
     {
         eTrophyType tourneyCup = nlSingleton<GameInfoManager>::Instance()->GetTrophyTypeByCurrentMode();
+        // strikers-quest r57: the trophy shelf in your room celebrates the cup (first time or again).
+        const bool firstTime = (nlSingleton<GameInfoManager>::Instance()->mUserInfo.mTrophies[tourneyCup / 8] & (1 << (tourneyCup % 8))) == 0;
         nlSingleton<GameInfoManager>::Instance()->mUserInfo.mTrophies[tourneyCup / 8] |= (1 << (tourneyCup % 8));
         nlSingleton<GameInfoManager>::Instance()->SetResultsOfLastUserGame(RESULT_CUP_WIN);
+        PortXrCupWon((int)tourneyCup, firstTime ? 1 : 0);
     }
 }
 

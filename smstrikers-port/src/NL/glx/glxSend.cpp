@@ -3,6 +3,8 @@
 #include "port/aspect.h"
 #include "port/probeobj.h"
 #include "port/xr_layers.h" // strikers-quest: Tabletop leaves the stands out
+// strikers-quest r59 (dolphin/gx/GXAurora.h): cut the table's oversized ground to the field box.
+extern "C" void GXAuroraSetXrClip(unsigned char on, const float* planes16);
 #include "dolphin/os.h"
 #include "port/endian.h"
 #include <stdlib.h>
@@ -2932,7 +2934,15 @@ void glx_SendFrame_cb(eGLView view, unsigned long flags, const glModelPacket* p)
         // the draw is skipped; the state changes above still apply, so the packets after it are right.
         if (p == NULL || !PortXrSkipPacketDraw(p->state.matrix))
         {
+            PortXrCountDraw((int)view); // strikers-quest r53: draw census
+            // strikers-quest r59: field ground reaching past the field box is cut to it on the table.
+            float xrClipPlanes[16];
+            const bool xrClip = p != NULL && PortXrTableClip(p->state.matrix, xrClipPlanes) != 0;
+            if (xrClip)
+                GXAuroraSetXrClip(1, xrClipPlanes);
             glx_DrawPacket(p);
+            if (xrClip)
+                GXAuroraSetXrClip(0, NULL);
         }
     }
 }

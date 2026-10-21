@@ -547,6 +547,214 @@ void achievements_list(uint8_t* rgba, int w, int h, const AchievementLine* rows,
   cv.write(rgba);
 }
 
+// r57: the badge board over the trophy shelf (Lance: "alongside your RetroAchievements badges"): a
+// framed board, its title, and every badge of the set in rows of `columns`, the ones unlocked in
+// colour, the rest grey and dim. A badge without a picture shows as a plain star.
+void badge_board(uint8_t* rgba, int w, int h, const BadgeTile* tiles, int count, int columns, const char* title) {
+  Canvas cv(w, h);
+  panel(cv, 6.0f, 6.0f, w - 6.0f, h - 6.0f, 28.0f, 6.0f, rgb(0x000000, 0.9f), rgb(0xFFD23F), rgb(0x22305A, 0.95f),
+        rgb(0x0B1020, 0.95f));
+  const float header = 0.13f * h;
+  const std::string t = caps(title);
+  const float room = 0.9f * w;
+  const float tpx = std::min(0.62f * header, text_width(t.c_str(), 0.62f * header) > room
+                                                 ? 0.62f * header * room / text_width(t.c_str(), 0.62f * header)
+                                                 : 0.62f * header);
+  draw_text(cv, t.c_str(), 0.5f * w, 0.55f * header + 6.0f,
+            TextStyle{tpx, rgb(0xFFF7B0), rgb(0xFFC21F), rgb(0x05070C), 3.0f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  if (count <= 0 || columns <= 0) {
+    cv.write(rgba);
+    return;
+  }
+  const int rows = (count + columns - 1) / columns;
+  const float margin = 0.04f * w;
+  const float cell = std::min((w - 2.0f * margin) / columns, (h - header - 2.0f * margin) / rows);
+  const float x0 = 0.5f * (w - cell * columns), y0 = header + margin;
+  const float tile = 0.86f * cell;
+  for (int i = 0; i < count; ++i) {
+    const BadgeTile& b = tiles[i];
+    const float cx = x0 + (i % columns + 0.5f) * cell, cy = y0 + (i / columns + 0.5f) * cell;
+    if (b.rgba64 == nullptr) {
+      star(cv, cx, cy, 0.4f * tile, b.unlocked ? rgb(0xFFD23F) : rgb(0x4A5468), rgb(0x10141E));
+      continue;
+    }
+    // The 64 x 64 picture scaled into the tile (nearest at this size reads fine), with a thin frame.
+    const int tx0 = static_cast<int>(cx - 0.5f * tile), ty0 = static_cast<int>(cy - 0.5f * tile);
+    const int ts = static_cast<int>(tile);
+    for (int y = -2; y < ts + 2; ++y) {
+      for (int x = -2; x < ts + 2; ++x) {
+        const bool frame = x < 0 || y < 0 || x >= ts || y >= ts;
+        if (frame) {
+          cv.over(tx0 + x, ty0 + y, b.unlocked ? rgb(0xFFD23F) : rgb(0x3A4252), 1.0f);
+          continue;
+        }
+        const int sx = std::min(63, x * 64 / ts), sy = std::min(63, y * 64 / ts);
+        const uint8_t* s = b.rgba64 + (static_cast<size_t>(sy) * 64 + sx) * 4;
+        float r = s[0] / 255.0f, gch = s[1] / 255.0f, bch = s[2] / 255.0f;
+        if (!b.unlocked) {
+          const float l = 0.3f * r + 0.59f * gch + 0.11f * bch;
+          r = gch = bch = 0.15f + 0.35f * l;
+        }
+        cv.over(tx0 + x, ty0 + y, Color{r, gch, bch, 1.0f}, s[3] / 255.0f);
+      }
+    }
+  }
+  cv.write(rgba);
+}
+
+namespace {
+
+// r61: `text` with its left edge at x, centred on cy, shrunk to fit `room` pixels.
+void text_left(Canvas& cv, const std::string& text, float x, float cy, float px, float room, Color top, Color bottom,
+               float outline) {
+  const float wide = text_width(text.c_str(), px);
+  if (wide > room && wide > 0.0f) px *= room / wide;
+  const float w = text_width(text.c_str(), px);
+  draw_text(cv, text.c_str(), x + 0.5f * w, cy,
+            TextStyle{px, top, bottom, rgb(0x05070C), outline, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+}
+
+// A filled rounded rectangle.
+void fill_rounded(Canvas& cv, float x0, float y0, float x1, float y1, float r, Color c) {
+  for (int y = static_cast<int>(y0) - 1; y <= static_cast<int>(y1) + 1; ++y) {
+    for (int x = static_cast<int>(x0) - 1; x <= static_cast<int>(x1) + 1; ++x) {
+      const float sd = rounded_rect_sd(x + 0.5f, y + 0.5f, x0, y0, x1, y1, r);
+      cv.over(x, y, c, 0.5f - sd);
+    }
+  }
+}
+
+}  // namespace
+
+void home_board(uint8_t* rgba, int w, int h, const char* title, uint32_t teamRgb, uint32_t teamRgb2,
+                const HomeLine* lines, int count) {
+  Canvas cv(w, h);
+  panel(cv, 6.0f, 6.0f, w - 6.0f, h - 6.0f, 28.0f, 6.0f, rgb(0x000000, 0.9f), rgb(0xFFD23F), rgb(0x1B2440, 0.95f),
+        rgb(0x0B1020, 0.95f));
+  // The title band in the team's colours.
+  const float band = 0.16f * h;
+  const Color c1 = rgb(teamRgb), c2 = rgb(teamRgb2);
+  for (int y = 16; y < static_cast<int>(16 + band); ++y) {
+    const float t = (y - 16.0f) / band;
+    for (int x = 16; x < w - 16; ++x) {
+      const float sd = rounded_rect_sd(x + 0.5f, y + 0.5f, 16.0f, 16.0f, w - 16.0f, 16.0f + band, 18.0f);
+      cv.over(x, y, mix(c1, mix(c1, rgb(0x000000), 0.35f), t), 0.5f - sd);
+    }
+  }
+  // A stripe of the second colour under it.
+  fill_rounded(cv, 16.0f, 16.0f + band - 6.0f, w - 16.0f, 16.0f + band, 3.0f, c2);
+  const std::string t = caps(title);
+  text_left(cv, t, 0.5f * w - 0.5f * std::min(text_width(t.c_str(), 0.55f * band), 0.9f * w), 16.0f + 0.5f * band,
+            0.55f * band, 0.9f * w, rgb(0xFFFFFF), rgb(0xE6ECF5), 3.0f);
+  if (count <= 0) {
+    cv.write(rgba);
+    return;
+  }
+  const float top = 16.0f + band + 0.03f * h;
+  const float row = (h - 22.0f - top) / static_cast<float>(count);
+  const float left = 0.06f * w, room = 0.88f * w;
+  for (int i = 0; i < count; ++i) {
+    const HomeLine& l = lines[i];
+    const float y = top + i * row;
+    if (i > 0) fill_rounded(cv, left, y - 1.5f, left + room, y + 0.5f, 1.0f, rgb(0x3A4664, 0.8f));
+    text_left(cv, caps(l.label), left, y + 0.17f * row, 0.17f * row, room, rgb(0x9AA6BE), rgb(0x7E8AA2), 1.5f);
+    float valueRoom = room;
+    if (l.tag != nullptr && l.tag[0] != '\0') {
+      // The tag: a pill at the right.
+      const std::string tag = caps(l.tag);
+      const float px = 0.22f * row;
+      const float tw = text_width(tag.c_str(), px) + 0.5f * px;
+      const float x1 = left + room, x0 = x1 - tw, cy = y + 0.45f * row;
+      fill_rounded(cv, x0, cy - 0.62f * px, x1, cy + 0.62f * px, 0.6f * px, rgb(l.tagRgb));
+      draw_text(cv, tag.c_str(), 0.5f * (x0 + x1), cy,
+                TextStyle{px, rgb(0xFFFFFF), rgb(0xF0F0F0), rgb(0x05070C), 2.0f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+      valueRoom = room - tw - 0.03f * w;
+    }
+    text_left(cv, caps(l.value), left, y + 0.45f * row, 0.3f * row, valueRoom, rgb(0xFFF7B0), rgb(0xFFC21F), 2.5f);
+    if (l.note != nullptr && l.note[0] != '\0') {
+      const Color nc = rgb(l.noteRgb);
+      text_left(cv, caps(l.note), left, y + 0.76f * row, 0.17f * row, room, nc, mix(nc, rgb(0x000000), 0.15f), 1.5f);
+    }
+  }
+  cv.write(rgba);
+}
+
+void match_ticket(uint8_t* rgba, int w, int h, const char* header, const char* score, const char* date,
+                  uint32_t teamRgb, uint32_t teamRgb2) {
+  Canvas cv(w, h);
+  // A gold frame round a paper ticket.
+  panel(cv, 4.0f, 4.0f, w - 4.0f, h - 4.0f, 14.0f, 8.0f, rgb(0x000000, 0.85f), rgb(0xFFD23F), rgb(0xF6EFD9),
+        rgb(0xE9DDBA));
+  // The stub at the left in the team colour, cut off by a dotted line.
+  const float stub = 0.24f * w;
+  fill_rounded(cv, 22.0f, 22.0f, stub, h - 22.0f, 8.0f, rgb(teamRgb));
+  fill_rounded(cv, stub - 14.0f, 22.0f, stub, h - 22.0f, 2.0f, rgb(teamRgb2));
+  for (float y = 26.0f; y < h - 26.0f; y += 14.0f) {
+    fill_rounded(cv, stub + 8.0f, y, stub + 12.0f, y + 6.0f, 2.0f, rgb(0x6A5A3A));
+  }
+  star(cv, 0.5f * (22.0f + stub - 14.0f), 0.5f * h, 0.12f * h, rgb(0xFFD23F), rgb(0x10141E));
+  const float cx = 0.5f * (stub + 16.0f + w - 22.0f), room = w - 22.0f - stub - 30.0f;
+  auto centred = [&](const std::string& text, float cy, float px, Color a, Color b, float outline) {
+    const float wide = text_width(text.c_str(), px);
+    if (wide > room) px *= room / wide;
+    draw_text(cv, text.c_str(), cx, cy, TextStyle{px, a, b, rgb(0x2A1E0E), outline, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  };
+  centred(caps(header), 0.24f * h, 0.15f * h, rgb(teamRgb), mix(rgb(teamRgb), rgb(0x000000), 0.3f), 0.0f);
+  centred(caps(score), 0.53f * h, 0.24f * h, rgb(0x2A1E0E), rgb(0x4A3A1E), 0.0f);
+  centred(caps(date), 0.8f * h, 0.11f * h, rgb(0x6A5A3A), rgb(0x6A5A3A), 0.0f);
+  cv.write(rgba);
+}
+
+void cup_board(uint8_t* rgba, int w, int h, const char* title, const CupLine* lines, int count, const char* footer) {
+  Canvas cv(w, h);
+  panel(cv, 6.0f, 6.0f, w - 6.0f, h - 6.0f, 30.0f, 6.0f, rgb(0x000000, 0.9f), rgb(0xFFD23F), rgb(0x22305A, 0.95f),
+        rgb(0x0B1020, 0.95f));
+  const float head = 0.15f * h;
+  const std::string t = caps(title);
+  {
+    float px = 0.5f * head;
+    const float wide = text_width(t.c_str(), px);
+    if (wide > 0.9f * w) px *= 0.9f * w / wide;
+    draw_text(cv, t.c_str(), 0.5f * w, 0.55f * head + 6.0f,
+              TextStyle{px, rgb(0xFFF7B0), rgb(0xFFC21F), rgb(0x05070C), 3.0f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  }
+  const float foot = footer != nullptr && footer[0] != '\0' ? 0.14f * h : 0.0f;
+  const float top = head + 0.04f * h;
+  const float rows = static_cast<float>(std::max(count, 1) + 1);
+  const float row = (h - top - foot - 18.0f) / rows;
+  const float x0 = 0.06f * w, x1 = 0.94f * w;
+  const float colName = x0 + 0.1f * w, colW = 0.62f * w, colL = 0.72f * w, colP = 0.85f * w;
+  auto cell = [&](const std::string& s, float cx, float cy, float px, Color a, Color b) {
+    draw_text(cv, s.c_str(), cx, cy, TextStyle{px, a, b, rgb(0x05070C), 2.0f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  };
+  // Column heads.
+  const Color muted = rgb(0x9AA6BE);
+  const float hy = top + 0.5f * row;
+  cell("W", colW, hy, 0.45f * row, muted, muted);
+  cell("L", colL, hy, 0.45f * row, muted, muted);
+  cell("PTS", colP, hy, 0.45f * row, muted, muted);
+  for (int i = 0; i < count; ++i) {
+    const CupLine& l = lines[i];
+    const float y0 = top + (i + 1) * row, cy = y0 + 0.5f * row;
+    if (l.mine) fill_rounded(cv, x0, y0 + 3.0f, x1, y0 + row - 3.0f, 10.0f, rgb(0xFFD23F, 0.22f));
+    const Color a = l.mine ? rgb(0xFFF7B0) : rgb(0xF0F3FA), b = l.mine ? rgb(0xFFC21F) : rgb(0xC8D0E0);
+    cell(std::to_string(i + 1), x0 + 0.04f * w, cy, 0.5f * row, a, b);
+    text_left(cv, caps(l.name), colName, cy, 0.52f * row, colW - colName - 0.05f * w, a, b, 2.0f);
+    cell(std::to_string(l.wins), colW, cy, 0.5f * row, a, b);
+    cell(std::to_string(l.losses), colL, cy, 0.5f * row, a, b);
+    cell(std::to_string(l.points), colP, cy, 0.5f * row, a, b);
+  }
+  if (foot > 0.0f) {
+    const std::string f = caps(footer);
+    float px = 0.45f * foot;
+    const float wide = text_width(f.c_str(), px);
+    if (wide > 0.9f * w) px *= 0.9f * w / wide;
+    draw_text(cv, f.c_str(), 0.5f * w, h - 12.0f - 0.5f * foot,
+              TextStyle{px, rgb(0xFFFFFF), rgb(0xE0E6F0), rgb(0x05070C), 3.0f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  }
+  cv.write(rgba);
+}
+
 void achievements_header(uint8_t* rgba, int w, int h, const char* title, const char* hint) {
   Canvas cv(w, h);
   panel(cv, 8.0f, 8.0f, w - 8.0f, h - 8.0f, 30.0f, 6.0f, rgb(0x000000, 0.92f), rgb(0xFFD23F), rgb(0x22305A, 0.95f),

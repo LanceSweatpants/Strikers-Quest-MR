@@ -808,6 +808,7 @@ static bool try_stereo(bool decoded, gfx::PipelineRef& pipelineRef) noexcept {
       PipelineConfig config = cache.config;
       config.shaderConfig.decodedVtx = true;
       config.shaderConfig.stereo = true;
+      config.shaderConfig.xrClip = g_gxState.xrClip.enabled;  // r59
       cache.stereoDecodedRef = gfx::pipeline_ref(config);  // queues the build on first sight
     }
     if (!cache.stereoDecodedReady) {
@@ -874,19 +875,25 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     if (lineMode == 0) {
       if (!cache.stereoChecked) {
         cache.stereoChecked = true;
-        cache.stereoFits = stereo_uniform_fits(cache.shaderInfo);
+        cache.stereoFits = stereo_uniform_fits(cache.shaderInfo, state.xrClip.enabled);
         cache.stereoReady = false;
         cache.stereoDecodedQueued = false;
         cache.stereoDecodedReady = false;
         if (cache.stereoFits) {
           PipelineConfig config = cache.config;
           config.shaderConfig.stereo = true;
+          config.shaderConfig.xrClip = state.xrClip.enabled;  // r59
           cache.stereoRef = gfx::pipeline_ref(config);  // queues the build on first sight
         }
       }
       stereoTail = cache.stereoFits;
       stereoDraw = try_stereo(decoded, pipelineRef);
     }
+  }
+  // strikers-quest r59: a clipped draw is only right through its clipping stereo pipeline; until that
+  // is built (or for lines, points and draws whose uniforms leave no room) it is left out.
+  if (state.xrClip.enabled && stereo_active() && !stereoDraw) {
+    return;
   }
 
   if (!decoded) {
@@ -923,6 +930,10 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
       ShaderInfo info = cache.shaderInfo;
       info.stereo = true;
       info.uniformSize += StereoUniformSize;
+      if (state.xrClip.enabled) {  // r59: and the clip planes the clipping pipeline reads
+        info.xrClip = true;
+        info.uniformSize += XrClipUniformSize;
+      }
       cache.uniformRange = build_uniform(info);
     } else {
       cache.uniformRange = build_uniform(cache.shaderInfo);
@@ -1366,11 +1377,29 @@ void handle_aurora(Reader& reader) noexcept {
       gfx::end_xr_eye_pass();
       aurora_gx_set_xr_coverage_mode(0);
       gfx::set_offscreen_uses_native_logical_size(false);
+      if (g_gxState.xrClip.enabled) {  // r59: never left on past its pass
+        g_gxState.xrClip.enabled = false;
+        g_gxState.dirty |= DirtyPipeline | DirtyUniform;
+      }
     }
   } else if (subCmd == GX_AURORA_XR_COVERAGE) {
     // strikers-quest r44e: the next layer's coverage inside the open eye pass (the life-size scorer
     // over passthrough counts its blended, depth-writing surfaces as solid).
     aurora_gx_set_xr_coverage_mode(reader.read<u8>());
+  } else if (subCmd == GX_AURORA_SET_XR_CLIP) {
+    // strikers-quest r59: see GXState::xrClip. The draws after it need the clipping (or plain)
+    // stereo pipeline and a uniform block with (or without) the planes.
+    auto& clip = g_gxState.xrClip;
+    const bool enabled = reader.read<u8>() != 0;
+    if (enabled) {
+      for (auto& plane : clip.planes) {
+        for (int c = 0; c < 4; ++c) {
+          plane[c] = reader.read<f32>();
+        }
+      }
+    }
+    clip.enabled = enabled;
+    g_gxState.dirty |= DirtyPipeline | DirtyUniform;
   }
 
   else {

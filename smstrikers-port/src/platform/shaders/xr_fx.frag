@@ -81,6 +81,18 @@ void main() {
         float a = vParams.z;
         outColor = vec4(c1 * a, a);
         return;
+    } else if (shape == 24) {    // r60: a glowing outline along the quad's edge (the screen's, a badge's)
+        vec2 ext = vec2(vParams.y, 1.0);      // the quad's half size, in half-heights
+        vec2 q = p * ext;
+        float t = max(vColor2.a, 0.004);      // the band's width, in half-heights
+        float band = abs(sdBox(q, ext - vec2(0.5 * t))) - 0.5 * t;
+        float aa = max(fwidth(band), 1e-4);
+        float a = clamp(0.5 - band / aa, 0.0, 1.0);
+        float inside = sdBox(q, ext - vec2(t));
+        float halo = inside < 0.0 ? 0.3 * exp(inside / (1.5 * t)) : 0.0;  // a soft glow just inside it
+        float alpha = max(a, halo) * vParams.z;
+        outColor = vec4(c1 * alpha, alpha * (1.0 - glow));
+        return;
     } else if (shape == 16) {    // the goal flash: an even wash of colour
         float a = vParams.z * (1.0 - smoothstep(0.6, 1.0, length(p)) * 0.3);
         outColor = vec4(c1 * a, a * (1.0 - glow));

@@ -1,4 +1,5 @@
 #include "Game/AI/Powerups.h"
+#include "port/xr_quest.h" // strikers-quest r55: item blasts for the headset's room
 #include "Game/AI/Fielder.h"
 #include "Game/AI/AiUtil.h"
 #include "Game/AI/Scripts/ScriptQuestions.h"
@@ -2032,6 +2033,14 @@ void PowerupBase::Destroy(bool bSilent)
         pEventData->pThrower = m_pThrower;
         pEventData->nThrowerPadID = m_nThrowerPadID;
         pEventData->bIsFreezeBomb = (m_eType == POWER_UP_FREEZE_SHELL);
+        // strikers-quest r55: the blast for the headset's room (sparks, the table jolting): read only,
+        // so both headsets of an online match stay the same game.
+        {
+            float ndcX = 0.0f, ndcY = 0.0f;
+            const int onScreen = PortBroadcastNdc(m_v3Position.x, m_v3Position.y, m_v3Position.z, &ndcX, &ndcY);
+            PortXrItemBlast(m_v3Position.x, m_v3Position.y, m_v3Position.z, (int)meSize, pEventData->fExplosionRadius,
+                            (int)m_eType, m_nThrowerPadID, ndcX, ndcY, onScreen);
+        }
     }
     else if (!bSilent)
     {

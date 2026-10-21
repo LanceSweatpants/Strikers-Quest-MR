@@ -31,6 +31,10 @@ int local_pad();
 // strikers-quest r47: the match start is waiting for the friend (the loading screen): 0 not
 // waiting, 1 nobody else in the room yet, 2 the friend is in the room but hasn't started a Friendly.
 int waiting_for_friend();
+// r64: 3 from waiting_for_friend = they wait at the other kind of match start (Grudge vs cup).
+// The match this headset waits at is a cup match (co-op), and whether this headset made the room.
+bool waiting_in_cup();
+bool room_maker();
 // The player stops waiting: this match goes ahead offline, against the computer.
 void cancel_wait();
 // The room this headset is in ("" none).

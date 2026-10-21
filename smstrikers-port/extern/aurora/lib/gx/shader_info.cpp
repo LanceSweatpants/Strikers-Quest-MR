@@ -377,6 +377,10 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
   if (config.stereo) {
     info.stereo = true;
     info.uniformSize += StereoUniformSize;
+    if (config.xrClip) {  // strikers-quest r59
+      info.xrClip = true;
+      info.uniformSize += XrClipUniformSize;
+    }
   }
   info.uniformSize = gfx::align_uniform(info.uniformSize);
   if (info.uniformSize > MaxUniformSize) {
@@ -521,14 +525,21 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
     for (int eye = 0; eye < 2; ++eye) {
       buf.append(ortho ? noRemap : st.clip[eye]);
     }
+    if (info.xrClip) {
+      // strikers-quest r59: must match shader.cpp's xr_clip.
+      for (const auto& plane : g_gxState.xrClip.planes) {
+        buf.append(plane);
+      }
+    }
   }
 }
 
 // strikers-quest r43: whether `monoInfo`'s draw can take the stereo tail and still fit the uniform
 // binding. build_shader_info counts 30 of the 36 matrices fill_uniform writes, so the real block is
-// 6 matrices bigger than uniformSize says.
-bool stereo_uniform_fits(const ShaderInfo& monoInfo) noexcept {
-  const u32 real = monoInfo.uniformSize + 6 * sizeof(Mat3x4<float>) + StereoUniformSize;
+// 6 matrices bigger than uniformSize says. r59: plus the clip planes when `xrClip`.
+bool stereo_uniform_fits(const ShaderInfo& monoInfo, bool xrClip) noexcept {
+  const u32 real =
+      monoInfo.uniformSize + 6 * sizeof(Mat3x4<float>) + StereoUniformSize + (xrClip ? XrClipUniformSize : 0);
   return gfx::align_uniform(real) <= MaxUniformSize;
 }
 

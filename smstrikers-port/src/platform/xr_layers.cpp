@@ -26,6 +26,15 @@ const float kFieldTop = 3.5f;
 const float kFieldBottom = -2.0f;
 // Objects centred past this on the camera side (the fence is at about -13.6) are stadium.
 const float kCameraSideCutY = -14.5f;
+// r58: the pitch itself (Field.cpp half extents) and a low ground piece covering part of it. r59: any
+// size up to a sanity bound (Konga's main floor is one piece, x +-27, y +-33.7; its outer quarters
+// reach x 43): the part past the field box is cut off on the table (PortXrTableClip).
+const float kPitchHalfX = 20.6f;
+const float kPitchHalfY = 12.1f;
+const float kGroundHalfX = 60.0f;
+const float kGroundHalfY = 45.0f;
+const float kGroundTop = 1.2f;
+const float kGroundBottom = -0.5f;
 
 struct Key
 {
@@ -45,6 +54,7 @@ struct Info
     bool stadium;
     bool crowd;
     bool tallField; // a field object standing up (goals, benches, fence), not the flat pitch
+    bool clip;      // r59: field ground reaching past the field box, cut to it on the table
     float mn[3];
     float mx[3];
     float t0[3];
@@ -65,6 +75,14 @@ std::unordered_map<uintptr_t, Mark> s_stadium;
 // This frame's field (non-stadium) handles, for the self-test switch that drops them from the
 // stadium layer.
 std::unordered_map<uintptr_t, bool> s_field;
+// r59: this frame's handles of field ground to cut to the field box on the table.
+std::unordered_map<uintptr_t, bool> s_clipField;
+// The view matrix of the view being sent (row-vector, as s_V), kept whatever STRIKERS_XR_CULL says,
+// and the table clip planes made from it (eye space), for the cull serial they were made for.
+float s_sendV[4][4];
+bool s_sendVValid = false;
+float s_clipPlanes[16];
+unsigned s_clipSerial = 0;
 // Camera-side objects and whether the game hides them from its own camera (DoTranslucency), by
 // object (kept across frames: the game may draw an object before deciding its translucency for the
 // frame, so the latest decision is used, one frame late at worst), and this frame's matrix handles
@@ -97,6 +115,11 @@ bool s_skipTallField = false;
 bool s_bothLayers = false;  // this frame sends the table layer as well (Tabletop · Stadium)
 const DrawableObject* s_ball = NULL;  // r43b: PortXrSetBall
 int s_logged = 0;
+int s_stadiumId = -1;  // r53: PortXrLayersNewMatch
+// r53 draw census: [send][view], send 0 broadcast, 1 table, 2 stadium, 3 scorer.
+enum { kCensusSends = 4, kCensusViews = 0x22 };
+unsigned long s_census[kCensusSends][kCensusViews];
+bool s_scorerLayer = false;  // r42 (declared here for the census; set by PortXrSetScorerLayer)
 
 // The camera of the view being sent, for culling stadium objects it cannot see. Row-vector view
 // (v' = v * V, the game's nlMatrix4) and a GX projection (clip = P * v, rows as stored).
@@ -106,6 +129,12 @@ float s_P[4][4];
 unsigned s_cullSerial = 1;
 unsigned long s_culledThisFrame = 0;
 unsigned long s_culledTotal = 0;
+// r58: why the stats line has read "culled 0/frame" in every 3D log since at least r51b (r9-r42b:
+// 400-500 a frame): the eye sends' stadium draws reaching the cull test with culling off, unbounded,
+// or tested (and culled), shown with the draw census; and per match the first few tested far objects
+// with their corners against each frustum side.
+unsigned long s_cullDiag[4];  // off, unbounded, tested, culled
+int s_cullSamples = 0;
 
 bool cull_enabled()
 {
@@ -145,7 +174,7 @@ void world_bounds(const DrawableObject* object, float mn[3], float mx[3])
 
 Info classify(const DrawableObject* object)
 {
-    Info info;
+    Info info = {};
     world_bounds(object, info.mn, info.mx);
     const nlMatrix4& m = object->GetWorldMatrix();
     for (int k = 0; k < 3; k++)
@@ -170,25 +199,54 @@ Info classify(const DrawableObject* object)
     // x +-10, y -15.8, found with xr_tune "probe" in r20) came out as black sawtooth silhouettes
     // beside the Tabletop field in the room. They belong to the stadium, life-size.
     const bool behindCameraTouchline = 0.5f * (info.mn[1] + info.mx[1]) < kCameraSideCutY;
-    const bool field = !behindCameraTouchline && info.mn[0] >= -kFieldHalfX && info.mx[0] <= kFieldHalfX &&
-                       info.mn[1] >= -kFieldHalfY && info.mx[1] <= kFieldHalfY && info.mx[2] <= kFieldTop &&
-                       info.mn[2] >= kFieldBottom;
-    if (s_logged < 400)
+    const bool inFieldBox = info.mn[0] >= -kFieldHalfX && info.mx[0] <= kFieldHalfX && info.mn[1] >= -kFieldHalfY &&
+                            info.mx[1] <= kFieldHalfY && info.mx[2] <= kFieldTop && info.mn[2] >= kFieldBottom;
+    // r58 (Lance, Konga Coliseum: "the see through field"): some stadiums lay the ground in big flat
+    // pieces reaching past the field box; by the box they were stadium, so the table had no floor and
+    // the life-size stadium floor showed through it. Low ground covering part of the pitch is field.
+    // r59: r58 capped its size and missed Konga's main floor (one piece, x +-27, y +-33.7) and outer
+    // quarters (x to 43); now any size, cut to the field box on the table (PortXrTableClip), on either
+    // side of the pitch (the camera-side cut is for the bench area, not the ground).
+    const bool pitchGround = info.mn[2] >= kGroundBottom && info.mx[2] <= kGroundTop && info.mn[0] < kPitchHalfX &&
+                             info.mx[0] > -kPitchHalfX && info.mn[1] < kPitchHalfY && info.mx[1] > -kPitchHalfY &&
+                             info.mn[0] >= -kGroundHalfX && info.mx[0] <= kGroundHalfX &&
+                             info.mn[1] >= -kGroundHalfY && info.mx[1] <= kGroundHalfY;
+    const bool field = (!behindCameraTouchline && inFieldBox) || pitchGround;
+    info.clip = field && !inFieldBox;
+    // r53: per match (PortXrLayersNewMatch), field objects always (they are what the table shows; a
+    // player saw "extra stuff from the stadium" on it), the first 120 stadium ones. r58: and every
+    // stadium one over the pitch (the r57 log stopped before Konga's middle floor).
+    const bool overPitch = info.mn[0] < kPitchHalfX && info.mx[0] > -kPitchHalfX && info.mn[1] < kPitchHalfY &&
+                           info.mx[1] > -kPitchHalfY;
+    if (field || overPitch || s_logged < 120)
     {
-        s_logged++;
+        if (!field && !overPitch)
+            s_logged++;
         fprintf(stderr,
-                "[xr-layer] %s hash=%08lx flags=%08lx aabb x[%.1f,%.1f] y[%.1f,%.1f] z[%.1f,%.1f]\n",
-                field ? "FIELD  " : "STADIUM", (unsigned long)object->m_uHashID, creation, info.mn[0], info.mx[0],
-                info.mn[1], info.mx[1], info.mn[2], info.mx[2]);
+                "[xr-layer] %s stadium=%d hash=%08lx flags=%08lx aabb x[%.1f,%.1f] y[%.1f,%.1f] z[%.1f,%.1f]\n",
+                field ? (info.clip ? "GROUND " : "FIELD  ") : "STADIUM", s_stadiumId,
+                (unsigned long)object->m_uHashID, creation, info.mn[0], info.mx[0], info.mn[1], info.mx[1],
+                info.mn[2], info.mx[2]);
     }
     info.stadium = !field;
     info.tallField = field && (info.mx[2] - info.mn[2]) > 0.4f;
     return info;
 }
 
+// How many of the box's (padded) corners lie outside each side of the current view's frustum: left,
+// right, bottom, top, behind.
+void frustum_counts(const float mn[3], const float mx[3], int out[5]);
+
 // True when the box is wholly outside one side of the current view's frustum. Homogeneous
 // half-space tests, so corners behind the camera are handled.
 bool outside_frustum(const float mn[3], const float mx[3])
+{
+    int out[5];
+    frustum_counts(mn, mx, out);
+    return out[0] == 8 || out[1] == 8 || out[2] == 8 || out[3] == 8 || out[4] == 8;
+}
+
+void frustum_counts(const float mn[3], const float mx[3], int out[5])
 {
     // A little margin: an object grazing the edge is drawn.
     const float pad[3] = { (mx[0] - mn[0]) * 0.05f + 0.5f, (mx[1] - mn[1]) * 0.05f + 0.5f,
@@ -211,7 +269,24 @@ bool outside_frustum(const float mn[3], const float mx[3])
         outTop += (cw - cy < 0.0f);
         outBehind += (cw <= 0.0f);
     }
-    return outLeft == 8 || outRight == 8 || outBottom == 8 || outTop == 8 || outBehind == 8;
+    out[0] = outLeft;
+    out[1] = outRight;
+    out[2] = outBottom;
+    out[3] = outTop;
+    out[4] = outBehind;
+}
+
+// r58 diagnostic: one tested object, its corners per side and the camera it was tested against.
+void log_cull_sample(const Mark& mark)
+{
+    int out[5];
+    frustum_counts(mark.mn, mark.mx, out);
+    fprintf(stderr,
+            "[xr-cull] %s aabb x[%.1f,%.1f] y[%.1f,%.1f] z[%.1f,%.1f] out l%d r%d b%d t%d behind%d | V row3 (%.2f %.2f "
+            "%.2f %.2f) col2 (%.2f %.2f %.2f) | P %.3f %.3f %.3f %.3f %.3f %.3f\n",
+            s_tableLayer ? "table" : "stadium", mark.mn[0], mark.mx[0], mark.mn[1], mark.mx[1], mark.mn[2], mark.mx[2],
+            out[0], out[1], out[2], out[3], out[4], s_V[3][0], s_V[3][1], s_V[3][2], s_V[3][3], s_V[0][2], s_V[1][2],
+            s_V[2][2], s_P[0][0], s_P[1][1], s_P[2][2], s_P[2][3], s_P[3][2], s_P[3][3]);
 }
 
 // True when the box would be smaller than s_lodMinPx across in the current eye: far-off details.
@@ -259,6 +334,8 @@ void PortXrClassifyAndMark(const DrawableObject* object, uintptr_t matrixHandle)
     {
         if (s_tuneSkipStadiumField || (s_skipTallField && info.tallField))
             s_field[matrixHandle] = true;
+        if (info.clip)
+            s_clipField[matrixHandle] = true;
         if (s_probeState != 0)
         {
             ProbeInfo p;
@@ -314,6 +391,13 @@ void PortXrTuneSkip(int crowd, int stands, int stadiumField)
 
 void PortXrSetCullCamera(const float* view16, const float* proj16)
 {
+    // r59: the table clip needs the view whether or not culling is on.
+    s_sendVValid = view16 != NULL;
+    if (view16 != NULL)
+    {
+        memcpy(s_sendV, view16, sizeof(s_sendV));
+        ++s_clipSerial;
+    }
     if (view16 == NULL || proj16 == NULL || !cull_enabled())
     {
         s_cullOn = false;
@@ -323,6 +407,56 @@ void PortXrSetCullCamera(const float* view16, const float* proj16)
     memcpy(s_P, proj16, sizeof(s_P));
     s_cullOn = true;
     ++s_cullSerial;
+}
+
+int PortXrTableClip(uintptr_t matrixHandle, float planes16[16])
+{
+    // r59: in the table layer's eye send, field ground reaching past the field box is cut to it.
+    if (!s_eyeSend || !s_tableLayer || !s_sendVValid || s_clipField.empty() || s_clipField.count(matrixHandle) == 0)
+        return 0;
+    static unsigned s_planesSerial = 0;
+    if (s_planesSerial != s_clipSerial)
+    {
+        s_planesSerial = s_clipSerial;
+        // Row-vector view: eye = world * V, V = [A 0; T 1]. world = (eye - T) * A^-1, so a world plane
+        // n.w + d >= 0 is, in eye space, (A^-1 n) . eye + (d - (T A^-1) . n) >= 0.
+        const float(*V)[4] = s_sendV;
+        float inv[3][3];
+        inv[0][0] = V[1][1] * V[2][2] - V[1][2] * V[2][1];
+        inv[0][1] = V[0][2] * V[2][1] - V[0][1] * V[2][2];
+        inv[0][2] = V[0][1] * V[1][2] - V[0][2] * V[1][1];
+        inv[1][0] = V[1][2] * V[2][0] - V[1][0] * V[2][2];
+        inv[1][1] = V[0][0] * V[2][2] - V[0][2] * V[2][0];
+        inv[1][2] = V[0][2] * V[1][0] - V[0][0] * V[1][2];
+        inv[2][0] = V[1][0] * V[2][1] - V[1][1] * V[2][0];
+        inv[2][1] = V[0][1] * V[2][0] - V[0][0] * V[2][1];
+        inv[2][2] = V[0][0] * V[1][1] - V[0][1] * V[1][0];
+        const float det = V[0][0] * inv[0][0] + V[0][1] * inv[1][0] + V[0][2] * inv[2][0];
+        if (fabsf(det) < 1e-12f)
+            return 0;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                inv[r][c] /= det;
+        float tInv[3];  // T * A^-1
+        for (int c = 0; c < 3; c++)
+            tInv[c] = V[3][0] * inv[0][c] + V[3][1] * inv[1][c] + V[3][2] * inv[2][c];
+        // The field box's four sides, inner side positive: x >= -X, x <= X, y >= -Y, y <= Y.
+        const float world[4][4] = {
+            {1.0f, 0.0f, 0.0f, kFieldHalfX},
+            {-1.0f, 0.0f, 0.0f, kFieldHalfX},
+            {0.0f, 1.0f, 0.0f, kFieldHalfY},
+            {0.0f, -1.0f, 0.0f, kFieldHalfY},
+        };
+        for (int p = 0; p < 4; p++)
+        {
+            const float* n = world[p];
+            for (int j = 0; j < 3; j++)
+                s_clipPlanes[p * 4 + j] = inv[j][0] * n[0] + inv[j][1] * n[1] + inv[j][2] * n[2];
+            s_clipPlanes[p * 4 + 3] = n[3] - (tInv[0] * n[0] + tInv[1] * n[1] + tInv[2] * n[2]);
+        }
+    }
+    memcpy(planes16, s_clipPlanes, sizeof(s_clipPlanes));
+    return 1;
 }
 
 void PortXrProbe() { s_probeState = 1; }
@@ -353,9 +487,73 @@ void PortXrNoteCameraSide(const DrawableObject* object, bool hiddenForCamera)
     s_cameraSideHidden[object] = hiddenForCamera;
 }
 
-// r42: the life-size scorer's handle this frame, and whether its eye pass is being sent.
+// r42: the life-size scorer's handle this frame (whether its eye pass is being sent: s_scorerLayer).
 static uintptr_t s_scorerHandle = 0;
-static bool s_scorerLayer = false;
+
+void PortXrCountDraw(int view)
+{
+    if (view < 0 || view >= kCensusViews)
+        return;
+    const int send = !s_eyeSend ? 0 : (s_scorerLayer ? 3 : (s_tableLayer ? 1 : 2));
+    s_census[send][view]++;
+}
+
+void PortXrTakeDrawCensus(char* out, unsigned long size, unsigned long frames)
+{
+    static const char* kSend[kCensusSends] = {"broadcast", "table", "stadium", "scorer"};
+    if (out == NULL || size == 0)
+        return;
+    out[0] = '\0';
+    const double n = frames > 0 ? (double)frames : 1.0;
+    unsigned long used = 0;
+    for (int s = 0; s < kCensusSends; s++)
+    {
+        unsigned long total = 0;
+        for (int v = 0; v < kCensusViews; v++)
+            total += s_census[s][v];
+        if (total == 0)
+            continue;
+        int w = snprintf(out + used, size - used, "%s%s %.0f (", used ? " | " : "", kSend[s], total / n);
+        if (w < 0 || (unsigned long)w >= size - used)
+            break;
+        used += (unsigned long)w;
+        // The four biggest views by draws.
+        bool taken[kCensusViews] = {};
+        for (int k = 0; k < 4; k++)
+        {
+            int best = -1;
+            for (int v = 0; v < kCensusViews; v++)
+                if (!taken[v] && s_census[s][v] > 0 && (best < 0 || s_census[s][v] > s_census[s][best]))
+                    best = v;
+            if (best < 0)
+                break;
+            taken[best] = true;
+            w = snprintf(out + used, size - used, "%sv%d %.0f", k ? " " : "", best, s_census[s][best] / n);
+            if (w < 0 || (unsigned long)w >= size - used)
+                break;
+            used += (unsigned long)w;
+        }
+        w = snprintf(out + used, size - used, ")");
+        if (w < 0 || (unsigned long)w >= size - used)
+            break;
+        used += (unsigned long)w;
+    }
+    // r58: the eye sends' stadium cull test (see s_cullDiag).
+    if (s_cullDiag[0] + s_cullDiag[1] + s_cullDiag[2] > 0 && used < size)
+        snprintf(out + used, size - used, " | eye cull: tested %.0f culled %.0f off %.0f unbounded %.0f",
+                 s_cullDiag[2] / n, s_cullDiag[3] / n, s_cullDiag[0] / n, s_cullDiag[1] / n);
+    memset(s_census, 0, sizeof(s_census));
+    memset(s_cullDiag, 0, sizeof(s_cullDiag));
+}
+
+void PortXrLayersNewMatch(int stadium)
+{
+    // Logging only: the classification itself stays as it was (objects seen before keep their answer).
+    s_logged = 0;
+    s_cullSamples = 0;
+    s_stadiumId = stadium;
+    fprintf(stderr, "[xr-layer] new match, stadium %d\n", stadium);
+}
 
 void PortXrSetScorerHandle(uintptr_t matrixHandle) { s_scorerHandle = matrixHandle; }
 void PortXrSetScorerLayer(bool scorer) { s_scorerLayer = scorer; }
@@ -389,6 +587,8 @@ bool PortXrSkipPacketDraw(uintptr_t matrixHandle)
     Mark& mark = it->second;
     if (s_eyeSend && ((mark.crowd && s_tuneSkipCrowd) || (!mark.crowd && s_tuneSkipStands)))
         return true;
+    if (s_eyeSend && (!s_cullOn || !mark.bounded))
+        ++s_cullDiag[!s_cullOn ? 0 : 1];
     if (!s_cullOn || !mark.bounded)
         return false;
     if (mark.cullSerial != s_cullSerial)
@@ -398,6 +598,18 @@ bool PortXrSkipPacketDraw(uintptr_t matrixHandle)
                       (s_eyeSend && !s_tableLayer && s_lodMinPx > 0.0f && !mark.crowd && too_small(mark.mn, mark.mx));
         if (mark.culled)
             ++s_culledThisFrame;
+        if (s_eyeSend)
+        {
+            ++s_cullDiag[2];
+            if (mark.culled)
+                ++s_cullDiag[3];
+            // Far stands (camera side or across the pitch), which some eye usually has behind it.
+            if (s_cullSamples < 4 && fabsf(0.5f * (mark.mn[1] + mark.mx[1])) > 20.0f)
+            {
+                ++s_cullSamples;
+                log_cull_sample(mark);
+            }
+        }
     }
     return mark.culled;
 }
@@ -426,6 +638,8 @@ void PortXrLayersEndFrame()
     }
     s_stadium.clear();
     s_field.clear();
+    s_clipField.clear();
+    s_sendVValid = false;
     s_normalSkip.clear();
     if (!PortXrStereoWorld())
         s_cameraSideHidden.clear(); // objects come and go with matches; start fresh outside 3D

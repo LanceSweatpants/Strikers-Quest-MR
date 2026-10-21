@@ -200,6 +200,19 @@ final class StrikersHome {
         // in the app's private folder, and the name the game's calls carry.
         setenv("STRIKERS_RA_LOGIN", RetroAch.loginFile(context).getAbsolutePath());
         setenv("STRIKERS_RA_UA", RetroAch.userAgent(context));
+        // strikers-quest r61: the home ground (src/platform/xr_home.cpp): who this headset is to an
+        // online friend (the panel's player id, made here the first time, and team name).
+        SharedPreferences lobby = context.getSharedPreferences(LOBBY_PREFS, Context.MODE_PRIVATE);
+        String playerId = lobby.getString("playerId", "");
+        if (playerId.length() != 16) {
+            StringBuilder sb = new StringBuilder();
+            java.security.SecureRandom r = new java.security.SecureRandom();
+            for (int i = 0; i < 16; i++) sb.append("0123456789abcdef".charAt(r.nextInt(16)));
+            playerId = sb.toString();
+            lobby.edit().putString("playerId", playerId).commit();
+        }
+        setenv("STRIKERS_PLAYER_ID", playerId);
+        setenv("STRIKERS_TEAM_NAME", lobby.getString("teamName", ""));
         loadEnvFile(home);
     }
 
@@ -332,12 +345,16 @@ final class StrikersHome {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         long installed = versionCode(context);
         if (prefs.getLong(KEY_STAGED_VERSION, -1) == installed
-                && new File(home, "input-prompts/LICENSE-Kenney.txt").exists()) {
+                && new File(home, "input-prompts/LICENSE-Kenney.txt").exists()
+                && new File(home, "suites").isDirectory()) {
             return;
         }
 
         try {
             copyAssetTree(context.getAssets(), "input-prompts", new File(home, "input-prompts"));
+            // strikers-quest r61: the cup suites' baked rooms, a mesh and two pictures each
+            // (src/platform/xr_quest.cpp request_suite_room reads them).
+            copyAssetTree(context.getAssets(), "suites", new File(home, "suites"));
             prefs.edit().putLong(KEY_STAGED_VERSION, installed).apply();
         } catch (IOException e) {
             // Not fatal: the game says so on stderr and keeps the GameCube prompts.

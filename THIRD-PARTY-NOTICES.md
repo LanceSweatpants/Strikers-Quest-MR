@@ -334,8 +334,9 @@ Notes:
 These are in the APK but need no notice; they are listed for completeness.
 
 - **SQLite** 3.51.3 (in `libmain.so`): public domain.
-- **stb_image** 2.30 (in SDL, `src/video/stb_image.h`): offered as MIT or public domain; used under
-  the public-domain option. https://github.com/nothings/stb
+- **stb_image** 2.30 (in SDL, `src/video/stb_image.h`), and 2.29 in
+  `smstrikers-port/src/platform/third_party/stb_image.h` (alpha 1.13: reads the cup suite pictures):
+  offered as MIT or public domain; used under the public-domain option. https://github.com/nothings/stb
 - **stb_rect_pack, stb_textedit, stb_truetype** (modified copies in Dear ImGui): offered as MIT or
   public domain; used under the public-domain option. https://github.com/nothings/stb
 - **miniz** 1.15 (in SDL, `src/video/miniz.h`): public domain (Unlicense).

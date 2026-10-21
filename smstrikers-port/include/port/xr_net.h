@@ -25,6 +25,16 @@ typedef struct PortNetMatch {
     /* strikers-quest r44c: 0 both sides human; 1 home / 2 away played by this headset's computer AI
      * (only the test friend, tools/fakefriend, asks for it; a real headset never does). */
     int cpuPlays;
+    /* strikers-quest r63, online co-op Cup (Lance: "an online co-op mode for Cup mode"): the game
+     * mode (GameInfoManager::eGameModes; 0 Friendly), and for a cup the side both players play on
+     * (the cup team's) and the host's cup as it stands (Game.cpp port_net_pack_cup), which the
+     * guest takes over at the match start: the two headsets play the same cup. */
+    int mode;
+    int coopSide;
+    unsigned char cup[3584];
+    int cupSize;
+    /* How far the cup is (games played), so the headset further along hosts it. */
+    int cupProgress;
 } PortNetMatch;
 
 /* SuperLoadingScene, every frame its intro slide is done, with this headset's picks and the side
@@ -48,7 +58,8 @@ void PortNetCommitFrame(void);
 void PortNetFrameEnd(unsigned int stateHash, int inFrontEnd);
 
 /* Game.cpp, the game's half: PortNetHoldMatchStart with this headset's picks from GameInfoManager
- * (Friendly only), and PortNetFrameBegin applied (the seed, and the agreed match on frame 0). */
+ * (a Friendly; r63: or a cup match, for co-op), and PortNetFrameBegin applied (the seed, and the
+ * agreed match on frame 0). */
 int PortNetGameHoldMatchStart(void);
 void PortNetGameFrameBegin(void);
 

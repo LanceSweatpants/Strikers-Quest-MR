@@ -89,7 +89,16 @@ public class StrikersActivity extends SDLActivity {
         // r39b: only when the panel passed one. A start without it (adb, a self-test) keeps what
         // env.txt set in prepare just above, or no room at all.
         final android.content.Intent start = getIntent();
-        if (start != null && start.hasExtra(LobbyActivity.EXTRA_ROOM)) setRoomEnv(roomFrom(start));
+        if (start != null && start.hasExtra(LobbyActivity.EXTRA_ROOM)) {
+            setRoomEnv(roomFrom(start));
+            // r64: whether this headset made that room (co-op Cup: the maker's cup, the captain).
+            try {
+                android.system.Os.setenv("STRIKERS_ROOM_MAKER",
+                        start.getBooleanExtra(LobbyActivity.EXTRA_ROOM_MAKER, false) ? "1" : "0", true);
+            } catch (android.system.ErrnoException e) {
+                android.util.Log.e("strikers", "setenv STRIKERS_ROOM_MAKER failed", e);
+            }
+        }
         // strikers-quest r45: a tournament match: its id, for the result the network layer writes.
         if (start != null && start.hasExtra(LobbyActivity.EXTRA_TOURNEY)) {
             try {
@@ -142,6 +151,9 @@ public class StrikersActivity extends SDLActivity {
 
     /** strikers-quest r45: src/platform/xr_net.cpp; the tournament match the next room is for. */
     private static native void nativeSetTourney(String mid);
+
+    /** strikers-quest r64: src/platform/xr_net.cpp; this headset made the next room (Host). */
+    private static native void nativeSetRoomMaker(boolean maker);
 
     /** strikers-quest r45: true once after a tournament match ended and tourney-result.txt was written. */
     private static native boolean nativeTakeTourneyResult();
@@ -226,6 +238,7 @@ public class StrikersActivity extends SDLActivity {
                 // r45: the tournament match this room is for ("" for none), before the room itself.
                 final String mid = intent.getStringExtra(LobbyActivity.EXTRA_TOURNEY);
                 nativeSetTourney(mid != null ? mid : "");
+                nativeSetRoomMaker(intent.getBooleanExtra(LobbyActivity.EXTRA_ROOM_MAKER, false));  // r64
                 nativeSetRoom(room);
             } catch (UnsatisfiedLinkError e) {
                 android.util.Log.w("strikers", "no native room switch in this build", e);

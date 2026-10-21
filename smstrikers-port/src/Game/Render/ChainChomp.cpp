@@ -1,4 +1,5 @@
 #include "Game/Render/ChainChomp.h"
+#include "port/xr_quest.h" // strikers-quest r55: the slam for the headset's room
 #include "NL/vmath.h"
 
 #include "Game/Game.h"
@@ -153,6 +154,11 @@ void ChainChomp::Update(float fDeltaT)
             EmitTrail();
 
             FireCameraRumbleFilter(0.0f, 0.2f);
+
+            // strikers-quest r55: the slam for the headset's room (the table jolts): read only.
+            float ndcX = 0.0f, ndcY = 0.0f;
+            const int onScreen = PortBroadcastNdc(mv3Position.x, mv3Position.y, mv3Position.z, &ndcX, &ndcY);
+            PortXrChompSlam(mv3Position.x, mv3Position.y, mv3Position.z, ndcX, ndcY, onScreen);
         }
         else
         {

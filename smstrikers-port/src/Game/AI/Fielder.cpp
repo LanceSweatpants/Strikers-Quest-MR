@@ -1002,6 +1002,9 @@ void cFielder::CollideWithChainCallback(ChainChomp* pChainChomp)
             InitActionSquishReact(pChainChomp->mv3Velocity);
             EmitChainBite(this);
         }
+        // strikers-quest r55: the bite for the headset's room (the table jolts the way it lunged): read only.
+        PortXrChompBite(m_v3Position.x, m_v3Position.y, m_v3Position.z, pChainChomp->mv3Velocity.x,
+                        pChainChomp->mv3Velocity.y);
 
         if (pChainChomp->mpThrower != nullptr)
         {

@@ -34,6 +34,10 @@ bool PortXrSkipPacketDraw(uintptr_t matrixHandle);
 // it cannot see are left out; NULL turns culling off. The game's own culling is off in the headset
 // 3D modes because the eyes look all around; this is per send instead. STRIKERS_XR_CULL=0 disables.
 void PortXrSetCullCamera(const float* view16, const float* proj16);
+// r59, glxSend.cpp at the draw: 1 when this packet is field ground reaching past the field box and the
+// table layer is being sent; `planes16` gets the field box's four sides in the send's eye space for
+// GXAuroraSetXrClip around the draw.
+int PortXrTableClip(uintptr_t matrixHandle, float planes16[16]);
 // xr_quest.cpp's stats line: stadium objects left out by that culling since the last call.
 unsigned long PortXrLayersTakeCulled();
 // glPlat.cpp: around the table layer's eye re-sends.
@@ -61,6 +65,14 @@ void PortXrSetScorerLayer(bool scorer);
 // r43b, DrawableBall::Render: the game ball's drawable. Always field, wherever it is when first
 // classified (in the air or in the net when you switch to Tabletop, it would have stayed stadium).
 void PortXrSetBall(const DrawableObject* ball);
+// r53 draw census, glxSend.cpp at each draw that goes out: counted by send (the broadcast picture,
+// the table, the stadium, the scorer) and GL view. xr_quest.cpp's stats line takes the counts as
+// text (per game frame over `frames`) and clears them.
+void PortXrCountDraw(int view);
+void PortXrTakeDrawCensus(char* out, unsigned long size, unsigned long frames);
+// r53: a new match is being set up: log the field/stadium split of its objects again (the r20-r52
+// log stopped after the first 400 objects of the session, so later stadiums never showed).
+void PortXrLayersNewMatch(int stadium);
 
 #endif
 

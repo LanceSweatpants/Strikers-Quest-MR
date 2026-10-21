@@ -130,4 +130,11 @@ public:
 
 extern cTeam* g_pTeams[];
 
+// strikers-quest r63, online co-op Cup (Lance: "1 player controls 2 players the other controls the other
+// 2. so by default 1 will control the captain and then the other will control 2 of the minions"): with
+// pads 0 and 1 both on `team`'s side, pad 0 plays the captain and the first sidekick, pad 1 the other two
+// (either takes the goalie when he is theirs to throw). True when `pad` may take `player`; always with
+// one person on the team. Every place a pad moves between players asks (Team.cpp, Player.cpp).
+bool PortPadMayControl(cTeam* team, int pad, cPlayer* player);
+
 #endif // _CTEAM_H_

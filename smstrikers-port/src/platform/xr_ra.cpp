@@ -619,6 +619,7 @@ void achievement_rows(std::vector<AchievementRow>* rows, uint32_t* unlocked, uin
       r.description = a->description != nullptr ? a->description : "";
       r.points = static_cast<int>(a->points);
       r.unlocked = a->unlocked != 0;
+      r.badge = a->badge_name;  // r57: the badge board
       if (!r.unlocked) r.progress = a->measured_progress;
       (r.unlocked ? *rows : locked).push_back(std::move(r));
     }

@@ -164,6 +164,9 @@ void aurora_xr_set_frame_callback(AuroraXrFrameCallback callback, void* user);
 typedef void (*AuroraXrSubmitCallback)(uint32_t frame, void* user);
 void aurora_xr_set_submit_callback(AuroraXrSubmitCallback callback, void* user);
 uint32_t aurora_xr_current_frame(void);
+/* strikers-quest r53: frame (aurora_xr_current_frame()) gets no readback for the frame callback:
+ * its picture is not one to show (the 3D world left out of it), so the screen keeps the last one. */
+void aurora_xr_skip_readback(uint32_t frame);
 
 void aurora_set_log_level(AuroraLogLevel level);
 void aurora_set_pause_on_focus_lost(bool value);

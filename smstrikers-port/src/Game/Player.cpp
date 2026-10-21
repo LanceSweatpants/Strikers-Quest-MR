@@ -27,6 +27,7 @@
 #include "Game/Physics/PhysicsColumn.h"
 #include "Game/FixedUpdateTask.h"
 #include "Game/FormationDefines.h"
+#include "Game/Team.h"  // strikers-quest r63: PortPadMayControl
 
 // PORT: linkable, so the debug menu can drive it. Only the keyword changed.
 u8 sbNoBallPickups;
@@ -359,7 +360,8 @@ u8 cPlayer::SwapController()
             for (i = 0; i < 4; i++)
             {
                 pPotentialSwapPlayer = m_pTeam->GetPlayer(i);
-                if (pPotentialSwapPlayer != this)
+                // strikers-quest r63: in co-op only the pair this pad plays (Team.h PortPadMayControl).
+                if (pPotentialSwapPlayer != this && PortPadMayControl(m_pTeam, iPadID, pPotentialSwapPlayer))
                 {
                     cGlobalPad* pPotentialSwapPad = (pPotentialSwapPlayer->m_pController != NULL)
                                                       ? pPotentialSwapPlayer->m_pController->m_pGlobalPad
@@ -404,7 +406,7 @@ u8 cPlayer::SwapController()
                     dz = pCandidate->m_v3Position.z - g_pBall->m_v3Position.z;
                     float fDist = nlSqrt(dx * dx + dy * dy + dz * dz, true);
 
-                    if (pCandidate != this)
+                    if (pCandidate != this && PortPadMayControl(m_pTeam, iPadID, pCandidate))  // r63
                     {
                         cGlobalPad* pCandidatePad = (pCandidate->m_pController != NULL) ? pCandidate->m_pController->m_pGlobalPad : NULL;
                         if (pCandidatePad == NULL && fDist < fBestDist)
@@ -636,7 +638,7 @@ void cPlayer::PickupBall(cBall* pBall)
 
             cAIPad* goalieCtrl = m_pTeam->GetGoalie()->m_pController;
             cGlobalPad* goaliePad = (goalieCtrl != NULL) ? goalieCtrl->m_pGlobalPad : NULL;
-            if (goaliePad != NULL)
+            if (goaliePad != NULL && PortPadMayControl(m_pTeam, goaliePad->m_padIndex, this))  // r63
             {
                 closest = m_pTeam->GetGoalie();
             }
@@ -648,6 +650,9 @@ void cPlayer::PickupBall(cBall* pBall)
                     cPlayer* player = m_pTeam->GetPlayer(i);
                     cGlobalPad* playerPad = (player->m_pController != NULL) ? player->m_pController->m_pGlobalPad : NULL;
                     if (playerPad == NULL)
+                        continue;
+                    // strikers-quest r63: in co-op the pad of the pair this player is in.
+                    if (!PortPadMayControl(m_pTeam, playerPad->m_padIndex, this))
                         continue;
 
                     if (closest != NULL)
@@ -1354,8 +1359,29 @@ void cPlayer::DoRegularPassing(cPlayer* pTeammate, bool bVolleyPass, bool bAllow
     {
         if (pPassTarget->m_pController == NULL)
         {
-            pPassTarget->SetAIPad(m_pController);
-            SetAIPad(NULL);
+            cGlobalPad* passerPad = m_pController->m_pGlobalPad;
+            if (passerPad == NULL || PortPadMayControl(m_pTeam, passerPad->m_padIndex, pPassTarget))
+            {
+                pPassTarget->SetAIPad(m_pController);
+                SetAIPad(NULL);
+            }
+            else
+            {
+                // strikers-quest r63, co-op: a pass to the friend's pair: their pad goes to the receiver
+                // (off whichever of the two they were on), the passer keeps this one.
+                for (int j = 0; j < 5; j++)
+                {
+                    cPlayer* mate = m_pTeam->GetPlayer(j);
+                    cGlobalPad* matePad = (mate != this && mate->m_pController != NULL) ? mate->m_pController->m_pGlobalPad : NULL;
+                    if (matePad != NULL && PortPadMayControl(m_pTeam, matePad->m_padIndex, pPassTarget))
+                    {
+                        cAIPad* pad = mate->m_pController;
+                        mate->SetAIPad(NULL);
+                        pPassTarget->SetAIPad(pad);
+                        break;
+                    }
+                }
+            }
         }
     }
 }

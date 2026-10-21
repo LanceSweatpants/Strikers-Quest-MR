@@ -125,6 +125,13 @@ extern "C" {
  */
 #define GX_AURORA_XR_COVERAGE 0x0045
 
+/**
+ * strikers-quest r59: cut the stereo draws that follow to four planes. Followed by a u8 (1 = on,
+ * 0 = off) and, when on, 16 f32: four planes (a, b, c, d) in the send's centre-view eye space; a
+ * fragment is kept where a*x + b*y + c*z + d >= 0 for all four.
+ */
+#define GX_AURORA_SET_XR_CLIP 0x0046
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -226,6 +233,12 @@ void GXAuroraXrEyePass(u8 begin, u8 slot, u8 samples, u8 coverage);
  * (GX_AURORA_XR_COVERAGE); the pass's end sets it back to 0.
  */
 void GXAuroraXrCoverage(u8 mode);
+
+/**
+ * strikers-quest r59: clip the stereo draws that follow to four eye-space planes (16 floats), or
+ * stop (on = 0; planes ignored) (GX_AURORA_SET_XR_CLIP). In-band.
+ */
+void GXAuroraSetXrClip(u8 on, const f32* planes16);
 
 /**
  * strikers-quest: 0 = off, 1 = draws inside a decode scope, 2 = every eligible draw. Read by the
