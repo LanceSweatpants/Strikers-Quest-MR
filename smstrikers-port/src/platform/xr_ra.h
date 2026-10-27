@@ -23,6 +23,10 @@ void frame(bool ranGameFrame);
 // while none is ready; asking also starts drawing the next one waiting.
 bool take_toast(std::vector<uint8_t>& rgba);
 
+// r104 (Lance: make it "optional, or togglable"): which pop-ups show from now on: 2 all (the default), 1 only
+// the unlocks (and the set complete), 0 none. The rest are still written to the log.
+void set_popups(int mode);
+
 void shutdown();
 
 // r51 (a player: "a button combination to open the achievements menu in-game"): the set as this run

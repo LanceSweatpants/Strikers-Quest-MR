@@ -121,12 +121,13 @@ void update_crowd_mix();
 void settings_input(XrVector2f stick);  // r44g: the pause settings panel
 void reload_controls();                 // r46: the button map (xr_controls.txt)
 void load_view_height();
+void load_room_options();               // r104: the trophy shelf / badge board / achievement pop-up switches
 
 namespace {
 
 constexpr const char* kTag = "strikers_xr";
 // Bumped every headset round; the first log line of a session says which build is running.
-constexpr const char* kBuildTag = "STRIKERS_XR build=r103";
+constexpr const char* kBuildTag = "STRIKERS_XR build=r104";
 
 // r39: every line also goes to the game log (stderr -> /sdcard/Strikers/strikers-log.txt): the
 // headset's system log turns over within minutes, so a session's stats and errors were lost.
@@ -547,7 +548,13 @@ struct State {
   uint64_t sliderShownUntilNs = 0;
   uint64_t crowdRepeatNs = 0;         // right stick held: the next step
   int settingsStickDirY = 0;          // r44g: the right stick's last up/down push while paused
-  int settingsRow = 0;                // r44g: the settings row picked (0 crowd, 1 voice, 2 height)
+  int settingsRow = 0;                // r44g: the settings row picked (0 crowd, 1 voice, 2 height; r104: 3 shelf +
+                                      // badge board, 4 achievement pop-ups)
+  // r104 (Lance: the trophy shelf and the RetroAchievements board "optional, or togglable"; "bundled up"):
+  // one switch for the trophy shelf (your room and the cup suite, picking trophies up too) and the
+  // RetroAchievements badge board over it. xr_room_options.txt
+  bool showShelf = true;
+  int raPopups = 2;                   // RetroAchievements pop-ups: 2 all, 1 unlocks only, 0 none
   // r46: the button map (ControlSource per ControlAction), and when xr_controls.txt was last looked at.
   int controls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu, kSrcNone};
   uint64_t longPassSinceNs = 0;       // r47: the long-pass button went down (L first, then A)
@@ -807,7 +814,7 @@ State g;
 std::vector<uint8_t> g_bannerPixels;
 std::atomic<bool> g_bannerReady{false};
 constexpr uint32_t kBannerW = 1024, kBannerH = 560;  // r43d: 420 + the stats line
-constexpr uint32_t kSliderW = 640, kSliderH = 380;  // r44g: the settings panel's three rows
+constexpr uint32_t kSliderW = 640, kSliderH = 548;  // r44g: the settings panel's rows (r104: five, was 380 for three)
 // r51b: the achievements list: one tall picture of every row (xrtext::achievements_list), 8 rows of
 // it in view at a time, under a title bar (xrtext::achievements_header).
 constexpr uint32_t kAchW = 1000, kAchRowH = 94, kAchShownRows = 8, kAchHeadH = 150;
@@ -3459,7 +3466,8 @@ int cup_near(const XrVector3f& p) {
 void update_shelf(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL, const XrVector3f& handR,
                   const XrPosef* poseL, const XrPosef* poseR) {
   auto& sh = g.shelf;
-  const bool here = (g.mrMode && sh.placed) || g.inSuite;  // r62: the suite's trophies too
+  // r62: the suite's trophies too; r104: none while the shelf is switched off (a held trophy goes back)
+  const bool here = g.showShelf && ((g.mrMode && sh.placed) || g.inSuite);
   const bool grip[2] = {gripL, gripR}, have[2] = {haveL, haveR}, prev[2] = {sh.prevGripL, sh.prevGripR};
   const XrVector3f hand[2] = {handL, handR};
   const XrPosef* pose[2] = {poseL, poseR};
@@ -7555,6 +7563,7 @@ extern "C" int PortXrInit(void) {
   load_shelf();         // r57: where you left the trophy shelf
   load_crowd_level();   // r42: your crowd volume
   load_view_height();   // r44g: your stadium height
+  load_room_options();  // r104: shelf, badge board, achievement pop-ups on or off
 
   aurora_xr_set_surface_suppressed(true);
   aurora_xr_set_frame_callback(&on_aurora_frame, nullptr);
@@ -8253,8 +8262,39 @@ void save_view_height() {
   }
 }
 
-// r44g, the pause settings panel (r42's crowd volume, r44's voice switch, the stadium height): the
-// right stick up/down picks a row, left/right changes it (held: every quarter second).
+// r104 (Lance: make the trophy shelf and the RetroAchievements board "optional, or togglable", "bundled up"):
+// the shelf with its badge board (one switch) and which RetroAchievements pop-ups show, kept beside the
+// stadium height.
+std::string room_options_path() {
+  const char* home = std::getenv("STRIKERS_HOME");
+  return std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/xr_room_options.txt";
+}
+
+void load_room_options() {
+  if (FILE* f = std::fopen(room_options_path().c_str(), "r")) {
+    char key[32];
+    int value = 0;
+    while (std::fscanf(f, "%31s %d", key, &value) == 2) {
+      if (std::strcmp(key, "shelf") == 0) g.showShelf = value != 0;
+      else if (std::strcmp(key, "popups") == 0) g.raPopups = std::max(0, std::min(2, value));
+    }
+    std::fclose(f);
+  }
+  xrra::set_popups(g.raPopups);
+  XLOG("room options: trophy shelf + badge board %s, achievement pop-ups %s", g.showShelf ? "on" : "off",
+       g.raPopups == 2 ? "all" : (g.raPopups == 1 ? "unlocks only" : "off"));
+}
+
+void save_room_options() {
+  if (FILE* f = std::fopen(room_options_path().c_str(), "w")) {
+    std::fprintf(f, "shelf %d\npopups %d\n", g.showShelf ? 1 : 0, g.raPopups);
+    std::fclose(f);
+  }
+}
+
+// r44g, the pause settings panel (r42's crowd volume, r44's voice switch, the stadium height; r104: the
+// shelf + badge board, the achievement pop-ups): the right stick up/down picks a row, left/right
+// changes it (held: every quarter second).
 void settings_input(XrVector2f stick) {
   if (!g.paused) {
     g.settingsStickDirY = 0;
@@ -8269,7 +8309,7 @@ void settings_input(XrVector2f stick) {
   const int dirY = stick.y > 0.7f ? 1 : (stick.y < -0.7f ? -1 : 0);
   if (dirY != g.settingsStickDirY) {
     g.settingsStickDirY = dirY;
-    const int row = std::max(0, std::min(2, g.settingsRow - dirY));  // up = the row above
+    const int row = std::max(0, std::min(4, g.settingsRow - dirY));  // up = the row above
     if (dirY != 0 && row != g.settingsRow) {
       g.settingsRow = row;
       changed();
@@ -8292,6 +8332,20 @@ void settings_input(XrVector2f stick) {
   } else if (g.settingsRow == 1) {
     if (!first || (step > 0) == xrvoice::enabled()) return;  // once per push: right on, left off
     xrvoice::set_enabled(step > 0);
+  } else if (g.settingsRow == 3) {
+    // r104: the trophy shelf and its badge board together, once per push: right on, left off
+    if (!first || (step > 0) == g.showShelf) return;
+    g.showShelf = step > 0;
+    save_room_options();
+    XLOG("trophy shelf + badge board %s", g.showShelf ? "on" : "off");
+  } else if (g.settingsRow == 4) {
+    // r104: the achievement pop-ups, once per push: right = more (off, unlocks only, all), left = fewer
+    const int mode = std::max(0, std::min(2, g.raPopups + step));
+    if (!first || mode == g.raPopups) return;
+    g.raPopups = mode;
+    xrra::set_popups(mode);
+    save_room_options();
+    XLOG("achievement pop-ups %s", mode == 2 ? "all" : (mode == 1 ? "unlocks only" : "off"));
   } else {
     const int cm = std::max(kViewHeightMinCm, std::min(kViewHeightMaxCm, g.viewHeightCm + 5 * step));
     if (cm == g.viewHeightCm) return;
@@ -8980,14 +9034,14 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       scene.skinEtch = idx >= 0 && idx < 64 ? 100 + idx : 0;
     }
     // r57: the trophy shelf (your room only).
-    scene.shelfValid = g.mrMode && g.shelf.placed;
+    scene.shelfValid = g.showShelf && g.mrMode && g.shelf.placed;  // r104: unless switched off
     scene.shelfPos = g.shelf.position;
     scene.shelfYaw = g.shelf.yaw;
     if (g.inSuite) {
       // r61: in the cup suite your trophies stand on a shelf to your right; r62: picked up and resized
       // there too (update_shelf, shelf_at).
       scene.suite = true;
-      scene.shelfValid = true;
+      scene.shelfValid = g.showShelf;
       scene.shelfPos = shelf_at();
       scene.shelfYaw = shelf_turn();
       // r61: the room you walk about in, and its live things (the home captain's).
@@ -9271,7 +9325,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // r57: the RetroAchievements badge board over the trophy shelf (your room, with a login and the
     // pictures saved by the panel): looked at every 3 s, redrawn on a thread when anything changed,
     // hung above the shelf a little behind its trophies (the effects layer, over it, draws those).
-    if (g.mrMode && g.shelf.placed) {
+    // r104: unless switched off in the pause settings (one switch with the shelf).
+    if (g.showShelf && g.mrMode && g.shelf.placed) {
       const uint64_t tb = now_ns();
       if (tb - g.boardCheckNs > 3000000000ull && g_boardReadyGen.load() == g.boardGen) {
         g.boardCheckNs = tb;
@@ -9786,7 +9841,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         std::vector<uint8_t> pixels(static_cast<size_t>(kSliderW) * kSliderH * 4);
         const int voice = !xrvoice::enabled() ? 0 : (xrvoice::mic_allowed() ? 1 : 2);  // r44
         xrtext::settings_panel(pixels.data(), kSliderW, kSliderH, g.crowdLevel, 10, voice, g.viewHeightCm,
-                               g.settingsRow);
+                               g.settingsRow, g.showShelf, g.raPopups);
         panel_upload(g.slider, pixels.data(), kSliderW, kSliderH);
       }
       if (!g.sliderPlaced && g.headValid) {

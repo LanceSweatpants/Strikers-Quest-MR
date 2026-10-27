@@ -310,15 +310,18 @@ void goal_banner(uint8_t* rgba, int w, int h, const char* name, uint32_t teamRgb
 }
 
 // r44g (r42's crowd volume panel, r44's voice line): the pause settings, one row picked at a time.
-void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row) {
+void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row, bool shelf,
+                    int popups) {
   Canvas cv(w, h);
   const float u = 0.3125f * w;  // r42's whole panel height: 200 at 640 wide
   panel(cv, 8.0f, 8.0f, w - 8.0f, h - 8.0f, 0.16f * u, 0.02f * u, rgb(0x000000, 0.9f), rgb(0xFFFFFF, 0.9f),
         rgb(0x1E2A44, 0.92f), rgb(0x0B1020, 0.92f));
-  // The rows' bands, top to bottom: crowd volume (title and bar), voice chat, stadium height; the hint.
-  const float band[3][2] = {{0.06f * u, 0.76f * u}, {0.80f * u, 1.18f * u}, {1.22f * u, 1.60f * u}};
+  // The rows' bands, top to bottom: crowd volume (title and bar), voice chat, stadium height; r104: the
+  // trophy shelf + badge board, the achievement pop-ups; the hint.
+  const float band[5][2] = {{0.06f * u, 0.76f * u}, {0.80f * u, 1.18f * u}, {1.22f * u, 1.60f * u},
+                            {1.64f * u, 2.02f * u}, {2.06f * u, 2.44f * u}};
   const float bx0 = 0.04f * w, bx1 = 0.96f * w;
-  if (row >= 0 && row < 3) {  // the picked row: a lighter band with a gold edge
+  if (row >= 0 && row < 5) {  // the picked row: a lighter band with a gold edge
     const float y0 = band[row][0], y1 = band[row][1];
     for (int y = static_cast<int>(y0) - 3; y <= static_cast<int>(y1) + 3; ++y) {
       for (int x = static_cast<int>(bx0) - 3; x <= static_cast<int>(bx1) + 3; ++x) {
@@ -366,10 +369,19 @@ void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice
                   heightCm > 0 ? "HIGHER" : "LOWER");
   }
   draw_text(cv, hl, 0.5f * w, 1.41f * u, line_style(fitted(hl, 0.18f * u), row == 2, 0xFFFFFF, 0xDDE4F0));
+  // r104: on = green, off = grey (the voice chat line's colours); pop-ups "unlocks only" in amber.
+  auto onoff = [&](const char* text, float y, int r, int state) {
+    const uint32_t top = state == 2 ? 0x9CFF8A : (state == 1 ? 0xFFD27A : 0xB8C2D6);
+    const uint32_t bottom = state == 2 ? 0x3CC23C : (state == 1 ? 0xFF9800 : 0x9AA6BE);
+    draw_text(cv, text, 0.5f * w, y, line_style(fitted(text, 0.18f * u), row == r, top, bottom));
+  };
+  onoff(shelf ? "TROPHY SHELF + BADGES: ON" : "TROPHY SHELF + BADGES: OFF", 1.83f * u, 3, shelf ? 2 : 0);
+  onoff(popups == 2 ? "ACHIEVEMENT POP-UPS: ALL" : (popups == 1 ? "ACHIEVEMENT POP-UPS: UNLOCKS ONLY" : "ACHIEVEMENT POP-UPS: OFF"),
+        2.25f * u, 4, popups);
   const char* hint = "RIGHT STICK:  UP / DOWN PICKS,  LEFT / RIGHT CHANGES";
   TextStyle hs{fitted(hint, 0.12f * u), rgb(0xB8C2D6), rgb(0x9AA6BE), rgb(0x05070C), 0.012f * u, rgb(0x000000, 0.0f),
                0.0f, 0.0f};
-  draw_text(cv, hint, 0.5f * w, 0.5f * (1.60f * u + h - 8.0f), hs);
+  draw_text(cv, hint, 0.5f * w, 0.5f * (2.44f * u + h - 8.0f), hs);
   cv.write(rgba);
 }
 

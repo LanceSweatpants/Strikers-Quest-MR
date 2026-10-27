@@ -113,7 +113,9 @@ And around the game:
 - **Voice chat** in online matches (alpha 1.4): turn it on with **Voice chat** on the app's first
   screen, or in the game's pause settings.
 - **Pause settings**: crowd volume, voice chat, and your eye height in the stadium (for playing seated,
-  or if you're shorter or taller).
+  or if you're shorter or taller). Alpha 1.15: the trophy shelf and its badges on or off, and the
+  RetroAchievements pop-ups (all, unlocks only, or off). Pause, then **right stick** up/down picks a
+  row and left/right changes it.
 - **Button mapping** (alpha 1.6): put pass, shoot, items, hit, swap items, L, R, pause and (alpha 1.8)
   the long pass on whichever buttons you like, with **Controls** on the app's first screen.
 - **Bluetooth controllers** (alpha 1.8): a paired gamepad is your player too, right alongside the Quest
@@ -303,6 +305,8 @@ squeeze the left grip (it turns gold while you hold it).
 - **Hold a trophy:** squeeze a grip with your hand on the trophy. Squeeze the **other** grip and move
   your hands apart or together to resize it. Let go and it flies back to its place.
 - **Badges:** point either controller at a badge over the shelf to see if you've earned it.
+- **Don't want them?** Pause → **TROPHY SHELF + BADGES: OFF** (right stick left) hides the shelf and the
+  badges, in your room and in the cup suite. Right turns them back on.
 
 ### The cup suite
 

@@ -22,7 +22,10 @@ void goal_banner(uint8_t* rgba, int w, int h, const char* name, uint32_t teamRgb
 // of them lit, and a hint line. r44: and the voice chat switch, `voice` 0 off, 1 on, 2 on but the
 // microphone not allowed. r44g: the pause settings panel: those two and your eye height in the
 // stadium (heightCm, + higher), with `row` (0 crowd, 1 voice, 2 height) picked; h about 0.6 w.
-void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row);
+// r104: and two more rows: the trophy shelf + its RetroAchievements badge board on/off (one switch), and the
+// RetroAchievements pop-ups (2 all, 1 unlocks only, 0 off).
+void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row, bool shelf,
+                    int popups);
 
 // r46: a RetroAchievements pop-up: `header` ("ACHIEVEMENT UNLOCKED") with the points (none when
 // points <= 0), the title, and the description (wrapped onto two lines if it must), beside a gold

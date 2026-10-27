@@ -268,8 +268,12 @@ std::deque<Toast> g_toasts;          // waiting (under g_toastMutex)
 std::vector<uint8_t> g_toastPixels;  // the one drawn (under g_toastMutex)
 std::atomic<bool> g_toastDrawing{false};
 std::atomic<bool> g_toastReady{false};
+std::atomic<int> g_popups{2};  // r104: set_popups
 
-void toast(const char* header, const char* title, const char* description, int points) {
+// `unlock`: an achievement unlocked or the set complete (r104: shown with pop-ups on "unlocks only").
+void toast(const char* header, const char* title, const char* description, int points, bool unlock = false) {
+  const int mode = g_popups.load();
+  if (mode == 0 || (mode == 1 && !unlock)) return;  // r104: switched off in the pause settings
   std::lock_guard<std::mutex> lock(g_toastMutex);
   if (g_toasts.size() >= 16) return;  // a flood (a reconnect's backlog): the rest only in the log
   g_toasts.push_back(Toast{header != nullptr ? header : "", title != nullptr ? title : "",
@@ -336,12 +340,12 @@ void RC_CCONV on_event(const rc_client_event_t* e, rc_client_t*) {
       const rc_client_achievement_t* a = e->achievement;
       if (a == nullptr || a->id == kWarningAchievementId) break;
       RLOG("ra: UNLOCKED %u \"%s\" (%u points)", a->id, a->title, a->points);
-      toast("ACHIEVEMENT UNLOCKED", a->title, a->description, static_cast<int>(a->points));
+      toast("ACHIEVEMENT UNLOCKED", a->title, a->description, static_cast<int>(a->points), true);
       break;
     }
     case RC_CLIENT_EVENT_GAME_COMPLETED:
       RLOG("ra: every achievement in the set unlocked");
-      toast("RETROACHIEVEMENTS", "SET COMPLETE!", "EVERY ACHIEVEMENT IN SUPER MARIO STRIKERS UNLOCKED", 0);
+      toast("RETROACHIEVEMENTS", "SET COMPLETE!", "EVERY ACHIEVEMENT IN SUPER MARIO STRIKERS UNLOCKED", 0, true);
       break;
     case RC_CLIENT_EVENT_SERVER_ERROR:
       if (e->server_error != nullptr) {
@@ -552,6 +556,8 @@ void frame(bool ranGameFrame) {
     rc_client_idle(s.client);  // the server's keep-alive and retries go on while no game frame runs
   }
 }
+
+void set_popups(int mode) { g_popups = mode < 0 ? 0 : (mode > 2 ? 2 : mode); }
 
 bool take_toast(std::vector<uint8_t>& rgba) {
   if (g_toastReady.load()) {
