@@ -75,6 +75,8 @@ Notes:
 | Luckiest Guy font | Regular (Google Fonts) | Apache-2.0 | https://fonts.google.com/specimen/Luckiest+Guy |
 | Opus audio codec (libopus) | 1.5.2 | BSD-3-Clause (Opus variant) | https://opus-codec.org |
 | rcheevos | 12.5.0 | MIT | https://github.com/RetroAchievements/rcheevos |
+| LAPACK routines (Java port, guest converter) | 3.2.2, as NumPy's lapack_lite carries them | BSD-3-Clause (LAPACK modified BSD) | https://www.netlib.org/lapack/ |
+| NumPy lapack_lite (the C those routines were ported from) | - | BSD-3-Clause | https://github.com/numpy/numpy |
 
 ---
 
@@ -320,6 +322,17 @@ Notes:
   the release tarball, https://github.com/RetroAchievements/rcheevos/archive/refs/tags/v12.5.0.tar.gz,
   unmodified; the zip, encrypted-3DS, RAIntegration and libretro parts are left out). Runs the
   RetroAchievements set in the game (`src/platform/xr_ra.cpp`).
+
+### LAPACK and NumPy lapack_lite (guest converter)
+
+- License: BSD-3-Clause (text: [BSD 3-Clause License](#bsd-3-clause-license)).
+- LAPACK: Copyright (c) 1992-2013 The University of Tennessee and The University of Tennessee Research
+  Foundation; Copyright (c) 2000-2013 The University of California Berkeley; Copyright (c) 2006-2013
+  The University of Colorado Denver. All rights reserved.
+- NumPy: Copyright (c) 2005-2025, NumPy Developers. All rights reserved.
+- `android/app/src/main/java/io/github/newcoke/strikers/guests/pics/Lapack.java` is a Java translation of
+  the LAPACK 3.2.2 least-squares path (dgelsd and the routines it calls) as NumPy's `lapack_lite` builds
+  it, so the guest kits' colours come out the same as the PC tools'. Only that path is translated.
 
 ### Kenney Input Prompts
 

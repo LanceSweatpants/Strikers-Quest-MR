@@ -1,4 +1,5 @@
 #include "Game/AI/FielderActions.h"
+#include "port/lineup.h"  // strikers-quest r79
 #include "Game/Camera/CameraMan.h"
 #include "Game/Camera/animcam.h"
 #include "Game/Camera/rumblefilter.h"
@@ -38,6 +39,8 @@
 #include "NL/nlMath.h"
 #include "NL/plat/plataudio.h"
 #include "types.h"
+#include "Game/Team.h"
+#include "port/franchise.h"  // strikers-quest r72: hits between captains feed franchise nemeses
 
 static f32 CANT_COLLIDE = *(f32*)__float_max;
 
@@ -1626,6 +1629,14 @@ bool cFielder::InitActionHitReact(cPlayer* pAttacker, unsigned short desiredFaci
     if (g_pGame->IsGameplayOrOvertime())
     {
         StatsTracker::Instance()->TrackStat(STATS_HITS_MADE, pAttacker->m_pTeam->m_nSide, pAttacker->m_ID, 0, 0, 0, 0);
+        // strikers-quest r72: who hit whom (0 = a captain, else the sidekick's m_ID), for franchise nemeses
+        cTeam* at = pAttacker->m_pTeam;
+        cTeam* vt = m_pTeam;
+        if (at != NULL && vt != NULL)
+        {
+            PortFranchiseHit(at->m_nSide, (cPlayer*)at->GetCaptain() == pAttacker ? 0 : (int)pAttacker->m_ID, vt->m_nSide,
+                             (cPlayer*)vt->GetCaptain() == (cPlayer*)this ? 0 : (int)m_ID);
+        }
     }
 
     m_fDesiredSpeed = 0.0f;
@@ -2973,10 +2984,12 @@ void cFielder::SetupCaptainSTSAnimCam(bool arg1)
 {
     mActionShootToScoreVars.captainStsCamera = new ((cAnimCamera*)nlMalloc(sizeof(cAnimCamera), 8, false)) cAnimCamera();
 
+    // strikers-quest r79: a co-captain's Super Strike under his own captain's camera (include/port/lineup.h)
     BasicString<char, Detail::TempStringAllocator> cameraName = Format(BasicString<char, Detail::TempStringAllocator>("{0}_ShootToScoreCamera"),
-        (const char*)GetTeamName(nlSingleton<GameInfoManager>::s_pInstance
+        (const char*)GetTeamName((eTeamID)PortStsTeam(m_pTeam->m_nSide, (int)m_eCharacterClass,
+            (int)nlSingleton<GameInfoManager>::s_pInstance
                 ->mGameInfo[nlSingleton<GameInfoManager>::Instance()->mCurrentMode]
-                ->mTeamIndex[(s16)m_pTeam->m_nSide]));
+                ->mTeamIndex[(s16)m_pTeam->m_nSide])));
 
     if (mActionShootToScoreVars.captainStsCamera->CameraAnimationExists(cameraName.c_str()))
     {
@@ -3536,7 +3549,8 @@ void cFielder::ActionShootToScore(float fDeltaT)
         {
             if (m_pCurrentAnimController->TestTrigger(shaolinTime))
             {
-                BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)m_pTeam->m_nSide)));
+                BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName((eTeamID)PortStsTeam(m_pTeam->m_nSide,
+                    (int)m_eCharacterClass, (int)nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)m_pTeam->m_nSide))));  // r79
                 effectName.AppendInPlace("_captain_sts_effect");
 
                 EffectsGroup* pGroup = fxGetGroup(effectName.c_str());

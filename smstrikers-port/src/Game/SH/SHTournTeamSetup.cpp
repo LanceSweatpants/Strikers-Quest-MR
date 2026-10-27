@@ -8,6 +8,7 @@
 #include "Game/SH/SHCupHub.h"
 #include "NL/gl/glPlat.h"
 #include "NL/gl/glStruct.h"
+#include "port/xr_guest.h"
 
 #include "NL/nlBind.h"
 
@@ -65,6 +66,8 @@ TournTeamSetupSceneV2::~TournTeamSetupSceneV2()
  */
 void TournTeamSetupSceneV2::SceneCreated()
 {
+    // strikers-quest r67: a new tournament's teams are picked again, guests included.
+    PortGuestClearPicks();
     FEPresentation* presentation = m_pFEScene->m_pFEPackage->GetPresentation();
     FEAudio::EnableSounds(false);
 
@@ -283,6 +286,56 @@ void TournTeamSetupSceneV2::Update(float fDeltaT)
 
     SetupButtonsBasedOnState(mCurrentState);
 
+    // strikers-quest r67: the guest picker (include/port/xr_guest.h) over this screen, for the row
+    // being set up: a guest picked on it goes in its slot and the row moves on as an A press would.
+    if (mCurrentState == STATE_CAPTAIN || mCurrentState == STATE_SIDEKICK)
+    {
+        const int role = mCurrentState == STATE_CAPTAIN ? PORT_GUEST_CAPTAIN : PORT_GUEST_SIDEKICK;
+        bool freeCaptains[8];
+        for (int t = 0; t < 8; t++)
+        {
+            freeCaptains[t] = mCaptainGrid->IsValid((eTeamID)t);
+        }
+        PortGuestPickerOffer(0, role, freeCaptains);
+        int guest = -1;
+        if (PortGuestPickerTake(0, role, &guest))
+        {
+            const int slot = PortGuestSlotFor(guest, freeCaptains);
+            if (slot >= 0 && role == PORT_GUEST_CAPTAIN)
+            {
+                mCaptainGrid->MoveHighlightToTarget((eTeamID)slot);
+                mCurrentCaptain = (eTeamID)slot;
+                PortGuestSetPick(slot, PORT_GUEST_CAPTAIN, guest);
+                PortGuestSetPick(slot, PORT_GUEST_SIDEKICK, -1);
+                mComponents[0]->SetActiveSlide("Slide1");
+                UpdateCaptainName();
+                mComponents[0]->Update(0.0f);
+                ChangeState(mCurrentState, STATE_SIDEKICK);
+                lastCaptainSelectSoundStrPlayed = NULL;
+                FEAudio::PlayAnimAudioEvent("sfx_accept", false);
+                return;
+            }
+            if (slot >= 0 && role == PORT_GUEST_SIDEKICK)
+            {
+                mSKGrid->MoveHighlightToTarget((eSidekickID)slot);
+                mCurrentSK = (eSidekickID)slot;
+                PortGuestSetPick(mCurrentCaptain, PORT_GUEST_SIDEKICK, guest);
+                SetTeam();
+                AutoTagCurrentRowAsHumanPlayer();
+                UpdateRow(mMenuItems.GetActiveItemIndex());
+                ChangeState(mCurrentState, STATE_SCROLLING);
+                FEAudio::PlayAnimAudioEvent("sfx_accept_no_screen_change", false);
+                if (lastCaptainSelectSoundStrPlayed != NULL)
+                {
+                    FEAudio::StopAnimAudioEvent(lastCaptainSelectSoundStrPlayed);
+                    lastCaptainSelectSoundStrPlayed = NULL;
+                }
+                ScrollDown(false);
+                return;
+            }
+        }
+    }
+
     if (mCurrentState == STATE_IN)
     {
         TLSlide* slide = presentation->m_currentSlide;
@@ -413,6 +466,9 @@ void TournTeamSetupSceneV2::Update(float fDeltaT)
                 }
                 else
                 {
+                    // strikers-quest r67: the game's own captain: no guest on that team.
+                    PortGuestSetPick(mCurrentCaptain, PORT_GUEST_CAPTAIN, -1);
+                    PortGuestSetPick(mCurrentCaptain, PORT_GUEST_SIDEKICK, -1);
                     ChangeState(mCurrentState, STATE_SIDEKICK);
                     lastCaptainSelectSoundStrPlayed = FECharacterSound::PlayCaptainName(mCurrentCaptain);
                 }
@@ -451,6 +507,7 @@ void TournTeamSetupSceneV2::Update(float fDeltaT)
     {
         if (g_pFEInput->JustPressed(FE_ALL_PADS, 0x100, false, NULL))
         {
+            PortGuestSetPick(mCurrentCaptain, PORT_GUEST_SIDEKICK, -1);  // strikers-quest r67
             SetTeam();
             AutoTagCurrentRowAsHumanPlayer();
             UpdateRow(mMenuItems.GetActiveItemIndex());
@@ -898,12 +955,19 @@ void TournTeamSetupSceneV2::UpdateCaptainName()
         captainDesc->m_LocStrId = TOURN_CAPTAIN_DESCRIPTIONS[mCurrentCaptain];
         captainDesc->m_OverloadFlags |= 0x8;
     }
+    // strikers-quest r68b: a guest captain: where it's from, and no Strikers captain's emblem.
+    if (unsigned long desc = PortGuestLocTeamDesc((int)mCurrentCaptain))
+    {
+        captainDesc->m_LocStrId = desc;
+        captainDesc->m_OverloadFlags |= 0x8;
+    }
 
     TLComponentInstance* comp = FEFinder<TLComponentInstance, 4>::Find<TLSlide>(
         slide,
         InlineHasher(nlStringLowerHash("COMPONENT")));
 
     comp->SetActiveSlide(GetTeamName(mCurrentCaptain));
+    comp->m_bVisible = !PortGuestTeamHasGuestCaptain((int)mCurrentCaptain);
 }
 
 /**
@@ -924,7 +988,7 @@ void TournTeamSetupSceneV2::UpdateSKName()
         slide,
         InlineHasher(nlStringLowerHash("SIDEKICK_NAME")));
 
-    sidekickNameText->m_LocStrId = GetLOCSidekickName(mCurrentSK);
+    sidekickNameText->m_LocStrId = GetLOCSidekickNameForTeam(mCurrentSK, (int)mCurrentCaptain);
     sidekickNameText->m_OverloadFlags |= 0x8;
 
     TLTextInstance* captainDescText = FEFinder<TLTextInstance, 3>::Find<TLSlide>(
@@ -940,12 +1004,18 @@ void TournTeamSetupSceneV2::UpdateSKName()
         captainDescText->m_LocStrId = TOURN_CAPTAIN_DESCRIPTIONS[mCurrentCaptain];
         captainDescText->m_OverloadFlags |= 0x8;
     }
+    if (unsigned long desc = PortGuestLocTeamDesc((int)mCurrentCaptain))  // strikers-quest r68b
+    {
+        captainDescText->m_LocStrId = desc;
+        captainDescText->m_OverloadFlags |= 0x8;
+    }
 
     TLComponentInstance* teamComp = FEFinder<TLComponentInstance, 4>::Find<TLSlide>(
         slide,
         InlineHasher(nlStringLowerHash("COMPONENT")));
 
     teamComp->SetActiveSlide(GetTeamName(mCurrentCaptain));
+    teamComp->m_bVisible = !PortGuestTeamHasGuestCaptain((int)mCurrentCaptain);
 }
 
 void TournTeamSetupSceneV2::SetTeam()
@@ -1010,6 +1080,15 @@ void TournTeamSetupSceneV2::Proceed()
     }
 
     pGameInfo->SetMode(GameInfoManager::GM_TOURNAMENT);
+    // strikers-quest r67: the computer's rows (filled in, or left from an earlier edit) are no guests.
+    for (int row = 0; row < mTournInfo.m_numTeams; row++)
+    {
+        if (!mTeamData[row].isHumanPlayer && !mTeamData[row].isEmpty)
+        {
+            PortGuestSetPick((int)mTeamData[row].captain, PORT_GUEST_CAPTAIN, -1);
+            PortGuestSetPick((int)mTeamData[row].captain, PORT_GUEST_SIDEKICK, -1);
+        }
+    }
     nlSingleton<GameInfoManager>::Instance()->GetCurrentRoundNumber();
 
     if (mTournInfo.m_tournMode == TM_LEAGUE)

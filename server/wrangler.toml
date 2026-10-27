@@ -27,5 +27,14 @@ new_sqlite_classes = ["Matchmaker"]
 tag = "v3"
 new_sqlite_classes = ["Tourneys"]
 
+# r100: online franchise leagues (2-8 headsets)
+[[durable_objects.bindings]]
+name = "LEAGUES"
+class_name = "League"
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["League"]
+
 # No [vars]: TEST_FAST (short tournament timers for test-tourney.mjs) is only ever given to a local
 # `wrangler dev --var TEST_FAST:1`, never to the deployed worker.

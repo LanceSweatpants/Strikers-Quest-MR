@@ -55,6 +55,7 @@ struct Info
     bool crowd;
     bool tallField; // a field object standing up (goals, benches, fence), not the flat pitch
     bool clip;      // r59: field ground reaching past the field box, cut to it on the table
+    bool tableThin; // r98: a small Konga border piece left off the table (PortXrSkipPacketDraw)
     float mn[3];
     float mx[3];
     float t0[3];
@@ -77,6 +78,10 @@ std::unordered_map<uintptr_t, Mark> s_stadium;
 std::unordered_map<uintptr_t, bool> s_field;
 // r59: this frame's handles of field ground to cut to the field box on the table.
 std::unordered_map<uintptr_t, bool> s_clipField;
+// r98: this frame's handles of small Konga border pieces left off the table, and how many such objects
+// this match (logged once).
+std::unordered_map<uintptr_t, bool> s_tableThin;
+int s_tableThinObjects = 0;
 // The view matrix of the view being sent (row-vector, as s_V), kept whatever STRIKERS_XR_CULL says,
 // and the table clip planes made from it (eye space), for the cull serial they were made for.
 float s_sendV[4][4];
@@ -230,6 +235,18 @@ Info classify(const DrawableObject* object)
     }
     info.stadium = !field;
     info.tallField = field && (info.mx[2] - info.mn[2]) > 0.4f;
+    // r98 (Lance, "yeah try the konga thing": Tabletop at Konga Coliseum 45 fps, elsewhere 72): Konga lays 314
+    // field pieces on the table (Phenac 56), 308 of them round the pitch's border, 163 under a unit across
+    // (4 cm on the table). Those small border pieces - centre off the pitch, under 1 unit - stay off the table
+    // there; the pitch, goals, fence and every bigger piece stay, and the life-size stadium keeps them all.
+    const float ext = fmaxf(info.mx[0] - info.mn[0], fmaxf(info.mx[1] - info.mn[1], info.mx[2] - info.mn[2]));
+    const float cx = 0.5f * (info.mn[0] + info.mx[0]), cy = 0.5f * (info.mn[1] + info.mx[1]);
+    info.tableThin = field && s_stadiumId == 2 && !info.clip && ext < 1.0f &&
+                     (fabsf(cx) > kPitchHalfX || fabsf(cy) > kPitchHalfY);
+    if (info.tableThin && ++s_tableThinObjects % 20 == 0)
+    {
+        fprintf(stderr, "[xr-layer] r98: %d small Konga border pieces left off the table so far\n", s_tableThinObjects);
+    }
     return info;
 }
 
@@ -336,6 +353,8 @@ void PortXrClassifyAndMark(const DrawableObject* object, uintptr_t matrixHandle)
             s_field[matrixHandle] = true;
         if (info.clip)
             s_clipField[matrixHandle] = true;
+        if (info.tableThin)  // r98
+            s_tableThin[matrixHandle] = true;
         if (s_probeState != 0)
         {
             ProbeInfo p;
@@ -551,6 +570,7 @@ void PortXrLayersNewMatch(int stadium)
     // Logging only: the classification itself stays as it was (objects seen before keep their answer).
     s_logged = 0;
     s_cullSamples = 0;
+    s_tableThinObjects = 0;  // r98
     s_stadiumId = stadium;
     fprintf(stderr, "[xr-layer] new match, stadium %d\n", stadium);
 }
@@ -571,6 +591,9 @@ bool PortXrSkipPacketDraw(uintptr_t matrixHandle)
     // out of the broadcast view and of the Tabletop field (r21 had the hidden centre-line sign back
     // on the table in Tabletop · Stadium).
     if ((!s_eyeSend || s_tableLayer) && !s_normalSkip.empty() && s_normalSkip.count(matrixHandle) != 0)
+        return true;
+    // r98: Konga's small border pieces, off the table (classify)
+    if (s_eyeSend && s_tableLayer && !s_tableThin.empty() && s_tableThin.count(matrixHandle) != 0)
         return true;
     // The stadium layer's life-size field: all of it (self-test), or the standing parts when the
     // table carries the game anyway.
@@ -639,6 +662,7 @@ void PortXrLayersEndFrame()
     s_stadium.clear();
     s_field.clear();
     s_clipField.clear();
+    s_tableThin.clear();  // r98
     s_sendVValid = false;
     s_normalSkip.clear();
     if (!PortXrStereoWorld())

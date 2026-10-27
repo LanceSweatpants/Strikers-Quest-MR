@@ -37,6 +37,7 @@
 #include "xr_voice.h" // r44: voice chat, its switch on the pause panel
 #include "xr_ra.h"    // r46: RetroAchievements, its pop-ups
 #include "xr_home.h"  // r61: the home ground
+#include "xr_evo.h"   // r96: the 3D evolution
 #include <cctype>
 #include <ctime>
 // r61: stb_image (public domain / MIT), JPEG only, its functions private to this file: the cup suite's
@@ -44,8 +45,13 @@
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG  // r67: the guest picker's portraits
 #include "third_party/stb_image.h"
 #include "../../include/port/xr_net.h"
+#include "../../include/port/xr_guest.h"  // r67: guest scorers' names
+#include <functional>  // r70c
+#include "../../include/port/franchise.h"  // r70: franchise mode's hub
+#include "../../include/port/lineup.h"     // r81: the co-captains
 
 #include <algorithm>
 #include <atomic>
@@ -57,6 +63,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <sys/stat.h>
@@ -119,7 +126,7 @@ namespace {
 
 constexpr const char* kTag = "strikers_xr";
 // Bumped every headset round; the first log line of a session says which build is running.
-constexpr const char* kBuildTag = "STRIKERS_XR build=r53";
+constexpr const char* kBuildTag = "STRIKERS_XR build=r103";
 
 // r39: every line also goes to the game log (stderr -> /sdcard/Strikers/strikers-log.txt): the
 // headset's system log turns over within minutes, so a session's stats and errors were lost.
@@ -449,6 +456,11 @@ struct State {
   // every frame. Measured: table alone 60, stadium alone ~53, both in one pass ~41-46 (GPU).
   // xr_tune "stadiumsplit <0|1>".
   bool stadiumSplit = true;
+  // r87 (Lance: "FPS needs fixed within VR modes both presentation ways"; his r86 log, Konga Coliseum:
+  // Jumbotron · Stadium 40 game fps, both eyes' stadium every frame = 628 draws x 2 eyes, the game
+  // thread waiting ~9.5 ms a frame on the GPU): the same split there, the stadium alone in its layer,
+  // one eye a frame; the scorer, when out, over it. xr_tune "jumbosplit <0|1>".
+  bool jumboSplit = true;
   bool splitThisFrame = false;        // this game frame draws the stadium into slot.stadium
   int stadiumNextEye = 0;
   int openTarget = 0;                 // 0 none, 1 the main (wide) pass, 2 the stadium pass
@@ -555,6 +567,84 @@ struct State {
   bool achPrevB = false;
   Panel achPanel, achHead;
   XrVector3f achPos{0.0f, 0.0f, 0.0f};
+  // r67: the guest picker over the game's own pick screens (include/port/xr_guest.h); r68e: the
+  // character select menu, everyone on one panel: opens by itself when a side starts choosing (Y opens
+  // it again), the stick (or D-pad) moves, A picks, B closes it to the game's own screen.
+  bool gpOffered = false;             // a pick screen offers it this input sync
+  bool gpOpen = false;
+  int gpSide = -1, gpRole = 0, gpCursor = 0, gpPage = 0, gpGen = 0;
+  bool gpPrevY = false, gpPrevL = false, gpPrevR = false, gpHoldA = false, gpHoldB = false;
+  int gpDir = 0;                      // the stick's way last sync (0 none, 1-4 left right up down)
+  int gpAutoDone = -1;                // r68e: the offer (side * 2 + role) the menu already opened for
+  uint64_t gpOpenNs = 0;              // r68g: when it opened
+  // r79: a Grudge Match side's sidekick pick starts with its co-captain (the captains' menu; X: none)
+  bool gpCo = false, gpPrevX = false;
+  unsigned gpCoTaken = 0;             // the Strikers captains it can't be (bit = eTeamID)
+  int scorerPlayerId = -1;           // r68h: the scorer's m_ID (PortXrScorerPlayer)
+  bool lastGoalOwn = false;          // r85: the last goal was an own goal (PortXrGoal)
+  bool scorerFaceOff = false;         // r73: the show is a franchise nemesis's face-off (PortXrScorerFaceOff)
+  uint32_t maxLayers = 0;             // r73: the compositor's most layers a frame (0 = not known)
+  uint64_t gpRepeatNs = 0;            // when a held stick moves the cursor again
+  Panel gpPanel, gpTip;
+  bool gpPlaced = false, gpTipPlaced = false;
+  XrVector3f gpPos{0.0f, 0.0f, 0.0f}, gpTipPos{0.0f, 0.0f, 0.0f};
+  // r70: franchise mode's hub (include/port/franchise.h): Y on the game's main menu opens it, on the big
+  // screen like the character select menu. Modes: the 3 career slots, a new career's club, the hub
+  // (pages: the club, the standings, last week's results).
+  bool frOpen = false, frOnMenu = false;
+  int frMode = 0, frCursor = 0, frSlot = 0, frPage = 0, frGen = 0, frDir = 0;
+  bool frPrevY = false, frHoldA = false, frHoldB = false, frPrevX = false, frConfirmDelete = false;
+  bool frAfterMatch = false;          // a franchise match was played: the hub opens back on the menu
+  // r70c: the hub's mode 3, one of your Pokemon evolving (stage 0 a split's choice, 1 evolving, 2 evolved,
+  // 3 stopped), from when (the animation's clock).
+  int frEvoStage = 0, frEvoChoice = 0;
+  bool frEvoNewShiny = false;
+  bool frEvoFanfare = false;  // r99: its victory fanfare started (at the flash)
+  uint64_t frEvoStartNs = 0;
+  // r75: the hub's mode 4, a new career's own players on the character select menu: stage 0 your
+  // captain, 1 your backup captain (X: none), 2 your sidekicks; the club and the picks so far.
+  int frPickStage = 0, frPickClub = 0, frPickCap = -1, frPickBk = -1;
+  // r76, co-op: the loaded career's outside changes seen, and the co-op card's state as last drawn
+  unsigned frChangeSerial = 0;
+  long long frCoopKey = -1;
+  // r77: the hub's mode 5, trades: stage 0 what you give (0 captain, 1 backup, 2 sidekicks), 1 their
+  // offers; the last answer; Y inside the hub (its own edge: frPrevY is the opener's)
+  int frTradeStage = 0, frTradeWhat = 0;
+  std::string frTradeMsg;
+  bool frHubPrevY = false;
+  // (the menu cursor kept per stage, so B goes back to where you were)
+  int frPickCursor[3] = {0, 0, 0};
+  // r100, online leagues: the hub's mode 6 (make one: how many people; join one: its code typed, stage 1) and
+  // mode 7 (joining: the league's club picker)
+  int frLgStage = 0, frLgMax = 8, frLgPos = 0;
+  int frLgChar[6] = {0, 0, 0, 0, 0, 0};
+  PortFranchiseEvolution frEvo = {};
+  Panel frEvoPanel;
+  // r73: the league in your room (franchise, outside matches): the news wire under the big screen,
+  // the TV beside it; their data refreshed every 2 s on the game thread.
+  bool frRoomOn = false;
+  int frRoomGen = 0;
+  uint64_t frRoomNextNs = 0;
+  std::string frRoomKey;
+  Panel frTicker, frTv;
+  // r70b: the franchise match's intro card (10 s from its intro) and the playoff series board.
+  int frCardSerial = 0, frCardGen = 0, frCardKey = -1;
+  uint64_t frIntroUntilNs = 0;
+  Panel frIntro, frSeries;
+  Panel frLive;                // r77: the live XP meter
+  long long frLiveKey = -2;
+  int frLiveGen = 0;
+  // r87: each row's level as last shown (-1 none yet), when its level-up light started (0 none), from what,
+  // and the next redraw while one is lit (~15 a second)
+  int frLiveShown[3] = {-1, -1, -1}, frLiveFrom[3] = {-1, -1, -1};
+  uint64_t frLiveGlowNs[3] = {0, 0, 0}, frLiveTickNs = 0;
+  bool frLiveLit = false;
+  bool frIntroPlaced = false, frSeriesPlaced = false;
+  XrVector3f frIntroPos{0.0f, 0.0f, 0.0f}, frSeriesPos{0.0f, 0.0f, 0.0f};
+  uint64_t frOpenNs = 0, frRepeatNs = 0, frConfirmNs = 0;
+  Panel frPanel, frTip;
+  bool frPlaced = false, frTipPlaced = false;
+  XrVector3f frPos{0.0f, 0.0f, 0.0f}, frTipPos{0.0f, 0.0f, 0.0f};
   Panel netWait;                      // r47: "waiting for your friend" at an online match start
   int netWaitDrawn = 0;               // the state its picture shows (xrnet::waiting_for_friend)
   bool netWaitPlaced = false;
@@ -668,6 +758,8 @@ struct State {
   // (its middle on the floor under you, its window ahead); its baked room (the home captain's,
   // suites/suite_<name>.*) is loaded on a thread.
   int suiteCaptain = -2;  // the one loaded or loading
+  std::string suiteLoaded;     // r73: the room loaded or loading ("mario" ... or a guest series' "pokemon")
+  std::string suiteGuestName;  // r73: a guest series' suite: the guest's name for its plaque, "" none
   XrVector3f suiteOrigin{0.0f, 0.0f, 0.0f};
   float suiteYaw = 0.0f;
   unsigned trophyBits = 0;
@@ -750,6 +842,1642 @@ struct AsyncPanel {
   int forGeneration = -1;  // what it was last asked to show (the caller's numbering)
 };
 AsyncPanel g_homeBoard, g_ticket, g_cupBoard;
+AsyncPanel g_guestPicker, g_guestTip;  // r67
+AsyncPanel g_franchise, g_frTip;       // r70
+AsyncPanel g_frIntro, g_frSeries;      // r70b
+AsyncPanel g_frLive;                   // r77: the live XP meter
+PortFranchiseLive g_frLiveData = {};   // r77: what it shows (under g_frMutex)
+// r87: the meter's level-up light per row (captain, co-captain, sidekicks): seconds into it (< 0 none) and
+// the level it went up from (under g_frMutex).
+struct FrLiveGlow {
+  float t[3] = {-1.0f, -1.0f, -1.0f};
+  int from[3] = {-1, -1, -1};
+};
+FrLiveGlow g_frLiveGlow;
+AsyncPanel g_frEvo;                    // r70c: the evolution scene (redrawn ~15 times a second)
+AsyncPanel g_frTickerP, g_frTvP;       // r73: the news wire and the TV in your room
+constexpr uint32_t kFrTickerW = 1600, kFrTickerH = 72, kFrTvW = 960, kFrTvH = 600;
+constexpr uint32_t kFrEvoW = 1152, kFrEvoH = 693;
+// r70b: the franchise match on now (intro card, series board) and the room's bunting, set on the game
+// thread (the pad hook); the card under g_frMutex, the bunting colours atomic (0 = none).
+std::atomic<uint32_t> g_frBunting1{0}, g_frBunting2{0};
+std::atomic<bool> g_frBuntingOn{false}, g_frChampion{false};
+
+// r70: what the franchise hub's picture is drawn from: filled on the game thread (the pad hook) whenever
+// it changes, read by the drawing threads under the mutex.
+struct FrClubInfo {
+  std::string id, name, place, div, conf;
+  uint32_t c1 = 0, c2 = 0;
+};
+struct FrSnapshot {
+  int mode = 0, cursor = 0, page = 0, slot = 0;
+  bool confirmDelete = false, canPlay = false;
+  PortFranchiseSlot slots[PORT_FR_SLOTS] = {};
+  PortFranchiseView view = {};
+  PortFranchiseToday today = {};  // r70b: today's other games (to watch one)
+  std::vector<FrClubInfo> clubs;
+  // r70c: an evolution on show (mode 3)
+  PortFranchiseEvolution evo = {};
+  int evoStage = 0, evoChoice = 0;
+  bool evoNewShiny = false;
+  // r75: picking your own players (mode 4): the stage, the club, the captain picked (menu pick, -1 none)
+  int pickStage = 0, pickClub = 0, pickCap = -1;
+  // r76, co-op: the careers screen's co-op card (shown with a friend in the room or one saved), its
+  // state (PortFranchiseCoopState) and saved career; the loaded career is co-op (and run by the friend)
+  bool coopShown = false, coopActive = false, coopGuest = false;
+  int coopState = 0;
+  PortFranchiseSlot coopSlot = {};
+  std::string coopName;
+  std::vector<PortFranchiseEvoRow> evoWatch;  // r77: the Evo Watch page
+  std::string evoReadyName;                   // r95: one of yours ready to evolve (postponed too), "" none
+  // r77: trades (mode 5): the stage, what you give and its value per option, their offers, the answer
+  int tradeStage = 0, tradeWhat = 0;
+  bool tradeOpen = false;
+  std::string tradeGive[3];
+  int tradeGiveValue[3] = {0, 0, 0};
+  std::vector<PortFranchiseTradeOffer> offers;
+  std::string tradeMsg;
+  // r100, online leagues: the careers screen's league card (one saved here, its code), the make / join screen,
+  // the join lobby, the open league
+  bool leagueSaved = false;
+  PortFranchiseSlot leagueSlot = {};
+  std::string leagueCode;
+  int lgStage = 0, lgMax = 8, lgPos = 0;
+  std::string lgTyped;
+  PortFranchiseLeagueLobby lobby = {};
+  PortFranchiseLeagueView league = {};
+};
+// r100: a league code's letters (no 0 / O / 1 / I: xr_league.cpp's)
+constexpr const char* kFrCodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+std::mutex g_frMutex;
+FrSnapshot g_frSnap;
+PortFranchiseCard g_frCard = {};  // r70b: under g_frMutex
+// r73: what the news wire and the TV show (under g_frMutex)
+struct FrRoom {
+  std::vector<std::string> lines;  // the wire's lines, in turn
+  PortFranchiseView view = {};
+  std::vector<std::string> clubIds, clubPlaces;
+};
+FrRoom g_frRoom;
+// The club picker's grid: 8 columns x 4 rows, a conference in two rows, a division in 4 columns.
+int fr_club_at(int row, int col) {
+  const int conf = row / 2, div = (row % 2) * 2 + col / 4, k = col % 4;
+  return conf * 16 + div * 4 + k;
+}
+void fr_club_place(int club, int* row, int* col) {
+  const int conf = club / 16, div = (club % 16) / 4, k = club % 4;
+  *row = conf * 2 + div / 2;
+  *col = (div % 2) * 4 + k;
+}
+// The hub's state as the game has it now, for the next picture (game thread).
+void fr_refresh() {
+  FrSnapshot s;
+  s.mode = g.frMode;
+  s.cursor = g.frCursor;
+  s.page = g.frPage;
+  s.slot = g.frSlot;
+  s.confirmDelete = g.frConfirmDelete;
+  s.canPlay = PortFranchiseCanPlay();
+  if (g.frMode == 0) PortFranchiseSlots(s.slots);  // (reads the three save files)
+  PortFranchiseGetView(&s.view);
+  PortFranchiseTodayGames(&s.today);
+  s.evo = g.frEvo;
+  s.evoStage = g.frEvoStage;
+  s.evoChoice = g.frEvoChoice;
+  s.evoNewShiny = g.frEvoNewShiny;
+  s.pickStage = g.frPickStage;
+  s.pickClub = g.frPickClub;
+  s.pickCap = g.frPickCap;
+  // r76, co-op
+  s.coopState = PortFranchiseCoopState();
+  const bool coopSaved = g.frMode == 0 && PortFranchiseCoopFile(&s.coopSlot);
+  s.coopShown = s.coopState != 0 || coopSaved;
+  s.coopActive = PortFranchiseCoopActive();
+  s.coopGuest = PortFranchiseCoopGuest();
+  s.coopName = PortNetCoopFriendName();
+  // r100, online leagues
+  if (g.frMode == 0) {
+    char code[12] = {};
+    s.leagueSaved = PortFranchiseLeagueFile(&s.leagueSlot, code, sizeof(code));
+    s.leagueCode = code;
+  }
+  s.lgStage = g.frLgStage;
+  s.lgMax = g.frLgMax;
+  s.lgPos = g.frLgPos;
+  for (int i = 0; i < 6; ++i) s.lgTyped.push_back(kFrCodeChars[g.frLgChar[i] & 31]);
+  if (g.frMode == 7) PortFranchiseLeagueLobbyGet(&s.lobby);
+  PortFranchiseLeagueGetView(&s.league);
+  if (s.league.active) s.today.count = 0;  // (no watching in a league: the week waits on its people)
+  if (g.frMode == 2) {  // r95: the page bar marks the Evo Watch while one of yours is ready
+    PortFranchiseEvolution ready;
+    if (PortFranchiseReadyEvolution(&ready)) s.evoReadyName = ready.fromName;
+  }
+  if (g.frMode == 2 && g.frPage == 8) {  // r77
+    s.evoWatch.resize(80);
+    s.evoWatch.resize(
+        static_cast<size_t>(PortFranchiseEvoWatch(s.evoWatch.data(), static_cast<int>(s.evoWatch.size()))));
+  }
+  if (g.frMode == 5) {  // r77: trades
+    s.tradeStage = g.frTradeStage;
+    s.tradeWhat = g.frTradeWhat;
+    s.tradeOpen = PortFranchiseTradeOpen();
+    s.tradeMsg = g.frTradeMsg;
+    PortFranchiseTradeOffer scratch[1];
+    for (int what = 0; what < 3; ++what) {
+      char name[64] = {};
+      const int n = PortFranchiseTradeOptions(what, scratch, 1, &s.tradeGiveValue[what], name, sizeof(name));
+      s.tradeGive[what] = n > 0 || name[0] != '\0' ? name : "";
+    }
+    if (g.frTradeStage == 1) {
+      int value = 0;
+      s.offers.resize(70);
+      s.offers.resize(static_cast<size_t>(PortFranchiseTradeOptions(g.frTradeWhat, s.offers.data(),
+                                                                     static_cast<int>(s.offers.size()), &value, nullptr, 0)));
+    }
+  }
+  const int n = PortFranchiseClubCount();
+  for (int i = 0; i < n; ++i) {
+    FrClubInfo c;
+    c.id = PortFranchiseClubId(i);
+    c.name = PortFranchiseClubName(i);
+    c.place = PortFranchiseClubPlace(i);
+    c.div = PortFranchiseDivisionName(i);
+    c.conf = PortFranchiseConferenceName(i);
+    c.c1 = PortFranchiseClubColor(i, 0);
+    c.c2 = PortFranchiseClubColor(i, 1);
+    s.clubs.push_back(c);
+  }
+  std::lock_guard<std::mutex> lock(g_frMutex);
+  g_frSnap = std::move(s);
+  ++g.frGen;
+}
+// r68e: the character select menu (Lance: "the large ass character selection menu"): everyone on one
+// big panel, the Strikers characters and the guests, a section per game, each starting a row.
+constexpr int kMenuCaptainCols = 12, kMenuSidekickCols = 4;
+constexpr uint32_t kGuestW = 2160, kGuestH = 1300, kGuestTipW = 640, kGuestTipH = 90;
+
+// r67: a guest's portrait, its own game's art (STRIKERS_HOME/guests/portraits/<pack>.png,
+// tools/outside/build_portraits.py), read once; empty when there is none. Read from the picker's
+// drawing threads, so behind a mutex; entries never move once made.
+struct GuestPortrait {
+  std::vector<uint8_t> rgba;
+  int w = 0, h = 0;
+};
+const GuestPortrait& guest_portrait(const std::string& pack) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, GuestPortrait> cache;
+  std::lock_guard<std::mutex> lock(mutex);
+  auto it = cache.find(pack);
+  if (it != cache.end()) return it->second;
+  GuestPortrait& p = cache[pack];
+  const char* home = std::getenv("STRIKERS_HOME");
+  if (home != nullptr && !pack.empty()) {
+    const std::string path = std::string(home) + "/guests/portraits/" + pack + ".png";
+    int iw = 0, ih = 0, n = 0;
+    unsigned char* px = stbi_load(path.c_str(), &iw, &ih, &n, 4);
+    if (px != nullptr) {
+      p.rgba.assign(px, px + static_cast<size_t>(iw) * ih * 4);
+      p.w = iw;
+      p.h = ih;
+      stbi_image_free(px);
+    }
+  }
+  return p;
+}
+void draw_franchise_pick(uint8_t* px, int w, int h, const FrSnapshot& s);  // r75 (after the menu's entries)
+std::string fr_upper(std::string s);                                         // (below)
+// r70: the franchise hub's picture (a drawing thread): the careers, a new career's club, or the hub's
+// pages (the club, the standings, last week's results). Logos: guests/portraits/club_<id>.png and
+// franchise_league.png (tools/outside/franchise_data.py).
+void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
+  const int nClubs = static_cast<int>(s.clubs.size());
+  auto club_logo = [&](int club) -> const GuestPortrait& {
+    static const GuestPortrait none;
+    if (club < 0 || club >= nClubs) return none;
+    return guest_portrait("club_" + s.clubs[club].id);
+  };
+  auto logo_line = [&](xrtext::FrLine& l, int club) {
+    const GuestPortrait& p = club_logo(club);
+    if (!p.rgba.empty()) {
+      l.logo = p.rgba.data();
+      l.logoW = p.w;
+      l.logoH = p.h;
+    }
+  };
+  auto line = [](const std::string& text, const std::string& right = std::string()) {
+    xrtext::FrLine l;
+    l.text = text;
+    l.right = right;
+    return l;
+  };
+  auto record = [](int wins, int losses) { return std::to_string(wins) + "-" + std::to_string(losses); };
+  const GuestPortrait& league = guest_portrait("franchise_league");
+  const uint8_t* leagueRgba = league.rgba.empty() ? nullptr : league.rgba.data();
+  if (s.mode == 1) {
+    // A new career's club: all 32 by conference (two rows each) and division (four across).
+    std::vector<xrtext::GuestTile> tiles;
+    std::vector<std::string> tags(nClubs);
+    for (int i = 0; i < nClubs; ++i) {
+      const FrClubInfo& c = s.clubs[i];
+      tags[i] = c.conf + " - " + c.div;
+      const GuestPortrait& p = club_logo(i);
+      xrtext::GuestTile t{p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, c.name.c_str(), tags[i].c_str()};
+      int r = 0, col = 0;
+      fr_club_place(i, &r, &col);
+      t.row = r;
+      t.col = col;
+      t.frame = c.c1;
+      tiles.push_back(t);
+    }
+    char title[96];
+    if (s.slot == PORT_FR_COOP_SLOT)  // r76
+      std::snprintf(title, sizeof(title), "NEW CO-OP CAREER   -   CHOOSE YOUR CLUB");
+    else if (s.slot == PORT_FR_LEAGUE_SLOT)  // r100
+      std::snprintf(title, sizeof(title), "NEW ONLINE LEAGUE (UP TO %d PEOPLE)   -   CHOOSE YOUR CLUB", s.lgMax);
+    else
+      std::snprintf(title, sizeof(title), "NEW CAREER (SLOT %d)   -   CHOOSE YOUR CLUB", s.slot + 1);
+    xrtext::guest_picker(px, w, h, title, tiles.data(), static_cast<int>(tiles.size()), 8, s.cursor,
+                         "STICK: MOVE   -   A: THIS CLUB (THEN PICK YOUR PLAYERS)   -   B: BACK");
+    return;
+  }
+  if (s.mode == 4) {
+    draw_franchise_pick(px, w, h, s);
+    return;
+  }
+  if (s.mode == 6) {
+    // r100 (Lance: "UP TO 8 player online ... leagues"): make a league (how many people), or join one by its code
+    std::vector<xrtext::FrCard> lc;
+    xrtext::FrCard make;
+    make.title = "MAKE A LEAGUE";
+    make.lines.push_back(line("YOU PICK YOUR CLUB AND PLAYERS"));
+    make.lines.push_back(line("YOUR FRIENDS JOIN WITH THE CODE"));
+    make.lines.push_back(line("EVERY OTHER CLUB: THE COMPUTER"));
+    make.lines.push_back(line(""));
+    xrtext::FrLine people = line(s.cursor == 0 ? "UP / DOWN: PEOPLE" : "PEOPLE", "UP TO " + std::to_string(s.lgMax));
+    people.gold = s.cursor == 0;
+    make.lines.push_back(people);
+    make.lines.push_back(line(""));
+    xrtext::FrLine go = line(s.cursor == 0 ? "A: MAKE IT" : "MAKE IT");
+    go.cursor = s.cursor == 0;
+    go.dim = s.cursor != 0;
+    make.lines.push_back(go);
+    lc.push_back(make);
+    xrtext::FrCard join;
+    join.title = "JOIN A LEAGUE";
+    join.lines.push_back(line("TYPE THE CODE YOUR FRIEND GAVE YOU"));
+    join.lines.push_back(line("THEN PICK A FREE CLUB"));
+    join.lines.push_back(line(""));
+    std::string typed;
+    for (int i = 0; i < 6; ++i) {
+      const char ch = i < static_cast<int>(s.lgTyped.size()) ? s.lgTyped[i] : 'A';
+      if (i > 0) typed += " ";
+      typed += s.cursor == 1 && s.lgStage == 1 && i == s.lgPos ? std::string("[") + ch + "]" : std::string(" ") + ch + " ";
+    }
+    xrtext::FrLine code = line("CODE:  " + typed);
+    code.gold = s.cursor == 1;
+    join.lines.push_back(code);
+    join.lines.push_back(line(""));
+    xrtext::FrLine jg = line(s.cursor != 1 ? "JOIN" : (s.lgStage == 1 ? "A: JOIN THIS LEAGUE" : "A: TYPE THE CODE"));
+    jg.cursor = s.cursor == 1;
+    jg.dim = s.cursor != 1;
+    join.lines.push_back(jg);
+    lc.push_back(join);
+    xrtext::franchise_board(px, w, h, "ONLINE LEAGUE", "UP TO 8 PEOPLE, ONE CLUB EACH, ONE SEASON TOGETHER", 0x16306E,
+                            0xFFD23F, leagueRgba, league.w, league.h, lc,
+                            s.lgStage == 1 ? "LEFT / RIGHT: WHICH LETTER   -   UP / DOWN: CHANGE IT   -   A: JOIN   -   B: BACK"
+                                           : "LEFT / RIGHT: MAKE OR JOIN   -   A: CHOOSE   -   B: BACK");
+    return;
+  }
+  if (s.mode == 7) {
+    // r100: joining a league: connecting, then its clubs (the free ones to pick; who has the rest)
+    const PortFranchiseLeagueLobby& lb = s.lobby;
+    if (lb.state == 3) {
+      std::vector<xrtext::GuestTile> tiles;
+      std::vector<std::string> tags(nClubs);
+      for (int i = 0; i < nClubs && i < PORT_FR_CLUBS; ++i) {
+        const FrClubInfo& c = s.clubs[i];
+        std::string who = lb.taken[i] ? std::string("TAKEN: ") + lb.takenBy[i] : std::string(lb.captain[i]);
+        for (char& ch : who) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        tags[i] = who.empty() ? c.conf + " - " + c.div : who;
+        const GuestPortrait& p = club_logo(i);
+        xrtext::GuestTile t{p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, c.name.c_str(), tags[i].c_str()};
+        int r = 0, col = 0;
+        fr_club_place(i, &r, &col);
+        t.row = r;
+        t.col = col;
+        t.frame = c.c1;
+        t.taken = lb.taken[i];
+        tiles.push_back(t);
+      }
+      char title[128];
+      std::snprintf(title, sizeof(title), "LEAGUE %s (%d OF %d PEOPLE)   -   PICK A FREE CLUB%s%s", lb.code, lb.members,
+                    lb.max, lb.error[0] != '\0' ? "   -   " : "", lb.error[0] != '\0' ? fr_upper(lb.error).c_str() : "");
+      xrtext::guest_picker(px, w, h, title, tiles.data(), static_cast<int>(tiles.size()), 8, s.cursor,
+                           "STICK: MOVE   -   A: THIS CLUB (ITS PLAYERS COME WITH IT)   -   B: BACK");
+      return;
+    }
+    std::vector<xrtext::FrCard> lc;
+    xrtext::FrCard c;
+    c.title = std::string("LEAGUE ") + lb.code;
+    c.weight = 2.0f;
+    std::string what;
+    switch (lb.state) {
+      case 1: what = "CONNECTING..."; break;
+      case 2: what = "NO LEAGUE WITH THAT CODE"; break;
+      case 4: what = "JOINING..."; break;
+      case 5: what = "JOINED!"; break;
+      case 6: what = "THAT LEAGUE IS FULL"; break;
+      default: what = "..."; break;
+    }
+    xrtext::FrLine l = line(what);
+    l.gold = true;
+    c.lines.push_back(l);
+    if (lb.owner[0] != '\0') c.lines.push_back(line("ITS OWNER: " + fr_upper(lb.owner)));
+    if (lb.max > 0 && lb.state != 2) c.lines.push_back(line(std::to_string(lb.members) + " OF " + std::to_string(lb.max) + " PEOPLE"));
+    if (lb.error[0] != '\0') {
+      xrtext::FrLine e = line(fr_upper(lb.error));
+      e.dim = true;
+      c.lines.push_back(e);
+    }
+    lc.push_back(c);
+    xrtext::franchise_board(px, w, h, "ONLINE LEAGUE", "JOINING WITH A CODE", 0x16306E, 0xFFD23F, leagueRgba, league.w,
+                            league.h, lc, "B: BACK");
+    return;
+  }
+  if (s.mode == 5) {
+    // r77 (Lance: "i couldnt see how tf to operate trades"): what you give, then who you could get for it
+    // (best value first) and whether their club would say yes
+    const int me = s.view.myClub;
+    std::vector<xrtext::FrCard> tc;
+    xrtext::FrCard give;
+    give.title = "YOU GIVE";
+    static const char* const kWhat[3] = {"YOUR CAPTAIN", "YOUR BACKUP CAPTAIN", "YOUR SIDEKICKS"};
+    for (int i = 0; i < 3; ++i) {
+      const bool has = !s.tradeGive[i].empty();
+      const bool on = s.tradeStage == 0 ? s.cursor == i : s.tradeWhat == i;
+      xrtext::FrLine l = line(std::string(kWhat[i]) + ": " + (has ? s.tradeGive[i] : std::string("NONE")),
+                              has ? "VALUE " + std::to_string(s.tradeGiveValue[i]) : std::string());
+      l.cursor = on;
+      l.gold = on && s.tradeStage == 1;
+      l.dim = !has;
+      give.lines.push_back(l);
+    }
+    give.lines.push_back(line(""));
+    xrtext::FrLine rule = line("THEY SAY YES WHEN WHAT THEY GET IS WORTH 90% OF WHAT THEY GIVE");
+    rule.dim = true;
+    give.lines.push_back(rule);
+    xrtext::FrLine rule2 = line("VALUE = RATING + A POINT A LEVEL OVER 8");
+    rule2.dim = true;
+    give.lines.push_back(rule2);
+    xrtext::FrLine when = line("OPEN UNTIL WEEK 12, AND AGAIN AFTER THE SEASON");
+    when.dim = true;
+    give.lines.push_back(when);
+    if (!s.tradeOpen) {
+      xrtext::FrLine shut = line("THE TRADE WINDOW IS SHUT RIGHT NOW");
+      shut.gold = true;
+      give.lines.push_back(shut);
+    }
+    if (!s.tradeMsg.empty()) {
+      xrtext::FrLine m = line(s.tradeMsg);
+      m.gold = true;
+      give.lines.push_back(m);
+    }
+    tc.push_back(give);
+    if (s.tradeStage == 1) {
+      xrtext::FrCard offers;
+      offers.title = "WHO YOU COULD GET";
+      offers.weight = 1.6f;
+      const int n = static_cast<int>(s.offers.size());
+      const int rows = 12;
+      const int first = std::max(0, std::min(s.cursor - rows / 2, n - rows));
+      for (int i = first; i < n && i < first + rows; ++i) {
+        const PortFranchiseTradeOffer& o = s.offers[i];
+        std::string t = std::string(o.name) + (o.shiny ? " (SHINY)" : "") + "  LV " + std::to_string(o.level);
+        if (s.tradeWhat != 2) t += o.backup ? "  (BACKUP)" : "  (CAPTAIN)";
+        xrtext::FrLine l = line(i == s.cursor ? "A: " + t : t, std::to_string(o.value) + (o.fair ? "  YES" : "  NO"));
+        logo_line(l, o.club);
+        l.cursor = i == s.cursor;
+        l.dim = !o.fair;
+        offers.lines.push_back(l);
+      }
+      if (n == 0) offers.lines.push_back(line("NOBODY TO TRADE WITH"));
+      tc.push_back(offers);
+    }
+    const FrClubInfo noClub;
+    const FrClubInfo& myClub = me >= 0 && me < nClubs ? s.clubs[me] : noClub;
+    const GuestPortrait& lg = club_logo(me);
+    xrtext::franchise_board(px, w, h, "TRADES", myClub.name, myClub.c1 != 0 ? myClub.c1 : 0x16306E,
+                            myClub.c2 != 0 ? myClub.c2 : 0xFFD23F, lg.rgba.empty() ? nullptr : lg.rgba.data(), lg.w, lg.h, tc,
+                            s.tradeStage == 0
+                                ? "UP / DOWN: WHAT YOU GIVE   -   A: SEE WHO YOU COULD GET   -   B: BACK TO THE HUB"
+                                : "UP / DOWN: PICK A PLAYER   -   A: OFFER THE TRADE   -   B: BACK");
+    return;
+  }
+  std::vector<xrtext::FrCard> cards;
+  if (s.mode == 0) {
+    // The three careers.
+    for (int i = 0; i < PORT_FR_SLOTS; ++i) {
+      const PortFranchiseSlot& sl = s.slots[i];
+      const bool on = i == s.cursor;
+      xrtext::FrCard c;
+      c.title = "CAREER " + std::to_string(i + 1);
+      if (sl.used) {
+        int club = -1;
+        for (int k = 0; k < nClubs; ++k)
+          if (s.clubs[k].id == sl.clubId) club = k;
+        xrtext::FrLine name = line(sl.club);
+        logo_line(name, club);
+        name.gold = true;
+        c.lines.push_back(name);
+        c.lines.push_back(line("SEASON " + std::to_string(sl.season)));
+        c.lines.push_back(sl.week > PORT_FR_WEEKS ? line("PLAYOFFS")
+                                                  : line("WEEK " + std::to_string(sl.week) + " OF 20"));
+        c.lines.push_back(line("RECORD", record(sl.wins, sl.losses)));
+        c.lines.push_back(line(""));
+        xrtext::FrLine go = line(on ? "A: CONTINUE" : "CONTINUE");
+        go.cursor = on;
+        go.dim = !on;
+        c.lines.push_back(go);
+        xrtext::FrLine del = line(on && s.confirmDelete ? "X AGAIN: DELETE IT FOR GOOD" : "X: DELETE");
+        del.gold = on && s.confirmDelete;
+        del.dim = !on;
+        c.lines.push_back(del);
+      } else {
+        xrtext::FrLine e = line("EMPTY");
+        e.dim = true;
+        c.lines.push_back(e);
+        c.lines.push_back(line(""));
+        c.lines.push_back(line(""));
+        c.lines.push_back(line(""));
+        c.lines.push_back(line(""));
+        xrtext::FrLine go = line(on ? "A: NEW CAREER" : "NEW CAREER");
+        go.cursor = on;
+        go.dim = !on;
+        c.lines.push_back(go);
+        c.lines.push_back(line(""));
+      }
+      cards.push_back(c);
+    }
+    if (s.coopShown) {
+      // r76: the co-op career (played online with the friend in the room, both keep it)
+      const PortFranchiseSlot& sl = s.coopSlot;
+      const bool on = s.cursor == PORT_FR_COOP_SLOT;
+      std::string friendName = s.coopName;
+      for (char& ch : friendName) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+      xrtext::FrCard c;
+      c.title = "CO-OP CAREER";
+      xrtext::FrLine who = line(s.coopState == 0 ? "NO FRIEND IN THE ROOM"
+                                                 : "WITH " + (friendName.empty() ? std::string("YOUR FRIEND") : friendName));
+      who.dim = s.coopState == 0;
+      c.lines.push_back(who);
+      if (sl.used) {
+        int club = -1;
+        for (int k = 0; k < nClubs; ++k)
+          if (s.clubs[k].id == sl.clubId) club = k;
+        xrtext::FrLine name = line(sl.club);
+        logo_line(name, club);
+        name.gold = true;
+        c.lines.push_back(name);
+        c.lines.push_back(line("SEASON " + std::to_string(sl.season) + "  " +
+                               (sl.week > PORT_FR_WEEKS ? std::string("PLAYOFFS") : "WEEK " + std::to_string(sl.week))));
+        c.lines.push_back(line("RECORD", record(sl.wins, sl.losses)));
+      } else {
+        xrtext::FrLine e = line(s.coopState == 3 || s.coopState == 4 ? "THEIRS OR A NEW ONE" : "NONE YET");
+        e.dim = true;
+        c.lines.push_back(e);
+        c.lines.push_back(line(""));
+        c.lines.push_back(line(""));
+      }
+      std::string act;
+      switch (s.coopState) {
+        case 0: act = "HOST OR JOIN AN ONLINE MATCH FIRST"; break;
+        case 1: act = "TALKING TO YOUR FRIEND..."; break;
+        case 2: act = sl.used ? "PLAY TOGETHER" : "NEW CO-OP CAREER"; break;
+        case 3: act = "YOUR FRIEND OPENS IT (THEY HOST)"; break;
+        case 4: act = "JOIN YOUR FRIEND"; break;
+        default: act = "GETTING THE CAREER..."; break;
+      }
+      const bool can = s.coopState == 2 || s.coopState == 4;
+      xrtext::FrLine go = line(on && can ? "A: " + act : act);
+      go.cursor = on && can;
+      go.dim = !on || !can;
+      c.lines.push_back(go);
+      xrtext::FrLine sub = line(s.coopState == 0 ? "(THE PANEL: HOST AN ONLINE MATCH / JOIN WITH A CODE)"
+                                                 : "SAME CLUB: YOU SPLIT THE TEAM");
+      sub.dim = true;
+      c.lines.push_back(sub);
+      if (sl.used) {
+        xrtext::FrLine del = line(on && s.confirmDelete ? "X AGAIN: DELETE IT FOR GOOD" : "X: DELETE");
+        del.gold = on && s.confirmDelete;
+        del.dim = !on;
+        c.lines.push_back(del);
+      }
+      cards.push_back(c);
+    }
+    {
+      // r100: the online league (up to 8 people, a club each): the one this headset is in, or make / join one
+      const PortFranchiseSlot& sl = s.leagueSlot;
+      const bool on = s.cursor == PORT_FR_LEAGUE_SLOT;
+      xrtext::FrCard c;
+      c.title = "ONLINE LEAGUE";
+      if (s.leagueSaved) {
+        int club = -1;
+        for (int k = 0; k < nClubs; ++k)
+          if (s.clubs[k].id == sl.clubId) club = k;
+        xrtext::FrLine name = line(sl.club);
+        logo_line(name, club);
+        name.gold = true;
+        c.lines.push_back(name);
+        c.lines.push_back(line("CODE " + s.leagueCode));
+        c.lines.push_back(line("SEASON " + std::to_string(sl.season) + "  " +
+                               (sl.week > PORT_FR_WEEKS ? std::string("PLAYOFFS") : "WEEK " + std::to_string(sl.week))));
+        c.lines.push_back(line("RECORD", record(sl.wins, sl.losses)));
+        c.lines.push_back(line(""));
+        xrtext::FrLine go = line(on ? "A: CONTINUE" : "CONTINUE");
+        go.cursor = on;
+        go.dim = !on;
+        c.lines.push_back(go);
+        xrtext::FrLine del = line(on && s.confirmDelete ? "X AGAIN: LEAVE IT FOR GOOD" : "X: LEAVE");
+        del.gold = on && s.confirmDelete;
+        del.dim = !on;
+        c.lines.push_back(del);
+      } else {
+        xrtext::FrLine e = line("UP TO 8 PEOPLE");
+        e.dim = true;
+        c.lines.push_back(e);
+        xrtext::FrLine e2 = line("A CLUB EACH, THE REST CPU");
+        e2.dim = true;
+        c.lines.push_back(e2);
+        c.lines.push_back(line(""));
+        c.lines.push_back(line(""));
+        c.lines.push_back(line(""));
+        xrtext::FrLine go = line(on ? "A: MAKE OR JOIN ONE" : "MAKE OR JOIN ONE");
+        go.cursor = on;
+        go.dim = !on;
+        c.lines.push_back(go);
+        c.lines.push_back(line(""));
+      }
+      cards.push_back(c);
+    }
+    xrtext::franchise_board(px, w, h, "FRANCHISE MODE", "STRIKERS SUPER LEAGUE", 0x16306E, 0xFFD23F, leagueRgba,
+                            league.w, league.h, cards,
+                            "STICK: CHOOSE A CAREER   -   A: PLAY IT   -   X: DELETE / LEAVE   -   B: CLOSE");
+    return;
+  }
+  // The hub.
+  const PortFranchiseView& v = s.view;
+  const int me = v.myClub;
+  const FrClubInfo none;
+  const FrClubInfo& mine = me >= 0 && me < nClubs ? s.clubs[me] : none;
+  const char* pages[11] = {"CLUB", "STANDINGS", "PLAYOFFS", "RESULTS", "LEADERS", "FEED", "HISTORY", "NEMESIS",
+                           "EVO WATCH", "DIFFICULTY", "LEAGUE"};  // r77: the Evo Watch; r97: the difficulty; r100
+  const PortFranchiseLeagueView& lg = s.league;  // r100: an online league's
+  std::string pageBar;
+  for (int i = 0; i < (lg.active ? 11 : 10); ++i) {
+    if (i > 0) pageBar += "  ";
+    std::string name = pages[i];
+    if (i == 8 && !s.evoReadyName.empty()) name += " (READY!)";  // r95
+    pageBar += i == s.page ? "[" + name + "]" : name;
+  }
+  const bool playoffs = v.phase == PORT_FR_PHASE_PLAYOFFS, done = v.phase == PORT_FR_PHASE_DONE;
+  std::string subtitle = "SEASON " + std::to_string(v.season) + " - ";
+  if (done)
+    subtitle += "CHAMPIONS CROWNED";
+  else if (playoffs)
+    subtitle += std::string(v.roundName) + " (DAY " + std::to_string(v.week - PORT_FR_WEEKS) + ")";
+  else
+    subtitle += "WEEK " + std::to_string(v.week);
+  {
+    static const char* const kLevelShort[5] = {"", "ROOKIE", "PRO", "SUPERSTAR", "LEGEND"};  // r97
+    subtitle += std::string(" - ") + kLevelShort[std::max(1, std::min(4, v.difficulty))];
+  }
+  std::string friendName = s.coopName;  // r76
+  for (char& ch : friendName) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  if (friendName.empty()) friendName = "YOUR FRIEND";
+  if (s.coopActive) subtitle = "CO-OP WITH " + friendName + " - " + subtitle;
+  if (lg.active) subtitle = std::string("LEAGUE ") + lg.code + " - " + subtitle;  // r100
+  std::string hint = "LEFT / RIGHT: " + pageBar;
+  auto place_of = [&](int club) { return club >= 0 && club < nClubs ? s.clubs[club].place : std::string("?"); };
+  // the band's logo: your club's; on the playoffs page, the round's
+  const GuestPortrait* bandLogo = &club_logo(me);
+  if (s.page == 0) {
+    xrtext::FrCard club;
+    club.title = "YOUR CLUB";
+    club.weight = 1.15f;
+    // r70c: levels (and shiny)
+    auto lv = [](int level, bool shiny) {
+      return "  LV " + std::to_string(level) + (shiny ? "  SHINY" : "");
+    };
+    xrtext::FrLine cap = line("CAPTAIN: " + std::string(v.captain) + lv(v.captainLevel, v.captainShiny),
+                              std::to_string(v.captainGoals) + " G" + (v.startsBackup ? "" : "  STARTS"));
+    cap.gold = !v.startsBackup;
+    club.lines.push_back(cap);
+    if (v.backup[0] != '\0') {
+      xrtext::FrLine bk = line("BACKUP: " + std::string(v.backup) + lv(v.backupLevel, v.backupShiny),
+                               std::to_string(v.backupGoals) + " G" + (v.startsBackup ? "  STARTS" : ""));
+      bk.gold = v.startsBackup;
+      club.lines.push_back(bk);
+    } else {
+      xrtext::FrLine bk = line("NO BACKUP CAPTAIN");
+      bk.dim = true;
+      club.lines.push_back(bk);
+    }
+    club.lines.push_back(line("SIDEKICKS: " + std::string(v.kind) + lv(v.sidekickLevel, false)));
+    for (int k = 0; k < 3; ++k) {
+      // r71: each one's goals this season; a rookie says so
+      xrtext::FrLine sk = line("   " + std::string(v.sidekicks[k]) + (v.sidekickAge[k] == 0 ? "  ROOKIE" : ""),
+                               std::to_string(v.sidekickGoals[k]) + " G");
+      sk.dim = true;
+      club.lines.push_back(sk);
+    }
+    club.lines.push_back(line("RECORD", record(v.wins, v.losses)));
+    club.lines.push_back(line("GOALS FOR - AGAINST", std::to_string(v.goalsFor) + " - " + std::to_string(v.goalsAgainst)));
+    club.lines.push_back(line(mine.div + " DIVISION", "#" + std::to_string(v.divisionRank) + " OF 4"));
+    if (v.titles > 0) {
+      xrtext::FrLine t = line("SUPER STRIKE SERIES TITLES", std::to_string(v.titles));
+      t.gold = true;
+      club.lines.push_back(t);
+    }
+    cards.push_back(club);
+    xrtext::FrCard next;
+    next.weight = 1.15f;
+    if (playoffs && v.nextOpponent >= 0)
+      next.title = std::string(v.roundName) + " - GAME " + std::to_string(v.myGameNo);
+    else if (playoffs || done)
+      next.title = done ? "THE SEASON'S OVER" : std::string(v.roundName);
+    else
+      next.title = "WEEK " + std::to_string(v.week) + " OF 20";
+    if (v.nextOpponent >= 0 && v.nextOpponent < nClubs) {
+      const FrClubInfo& o = s.clubs[v.nextOpponent];
+      next.lines.push_back(line(v.nextHome ? "HOME, AT YOUR GROUND" : "AWAY, AT " + o.place));
+      xrtext::FrLine opp = line("VS " + o.name);
+      logo_line(opp, v.nextOpponent);
+      opp.gold = true;
+      next.lines.push_back(opp);
+      if (playoffs) {
+        const int a = v.mySeriesMe, b = v.mySeriesThem;
+        next.lines.push_back(line(a == b ? "SERIES TIED" : (a > b ? "YOU LEAD THE SERIES" : "YOU TRAIL THE SERIES"),
+                                  std::to_string(a) + "-" + std::to_string(b)));
+        if (a == 2 || b == 2) {
+          xrtext::FrLine el = line(a == 2 && b == 2 ? "GAME 5: WINNER TAKES THE SERIES"
+                                                    : (a == 2 ? "WIN AND YOU'RE THROUGH" : "LOSE AND YOU'RE OUT"));
+          el.gold = true;
+          next.lines.push_back(el);
+        }
+      } else {
+        next.lines.push_back(line("THEIR RECORD", record(v.oppWins, v.oppLosses)));
+      }
+      next.lines.push_back(line("THEIR CAPTAIN: " + std::string(v.oppCaptain)));
+      if (v.nextNemesis >= 0) {  // r72
+        const PortFranchiseView::Nem& n = v.nems[v.nextNemesis];
+        xrtext::FrLine nl = line("NEMESIS: " + std::string(n.name) + " " + n.title,
+                                 std::to_string(n.beatYou) + "-" + std::to_string(n.lostToYou));
+        nl.gold = true;
+        next.lines.push_back(nl);
+      }
+      if (lg.active && lg.vsMember >= 0 && lg.vsMember < lg.memberCount) {
+        // r100: a person's club: played online, once you're both ready (the home club's headset hosts)
+        const PortFranchiseLeagueView::Member& them = lg.members[lg.vsMember];
+        const std::string who = fr_upper(them.name);
+        xrtext::FrLine p = line("A PERSON'S CLUB: " + who, them.online ? "ONLINE" : "OFFLINE");
+        p.gold = true;
+        next.lines.push_back(p);
+        std::string act;
+        if (!s.canPlay && !lg.meReady)
+          act = "BACK TO THE MAIN MENU TO PLAY";
+        else if (!lg.synced && !lg.meReady)
+          act = "GETTING THE LEAGUE'S NEWEST...";
+        else if (lg.meReady)
+          act = "READY: WAITING FOR " + who + "  (A: NOT READY)";
+        else
+          act = std::string("A: READY TO PLAY ") + who + " ONLINE" + (lg.themReady ? "  - THEY'RE READY!" : "");
+        xrtext::FrLine go = line(act);
+        go.cursor = s.cursor == 0 && (lg.meReady || (s.canPlay && lg.synced));
+        go.dim = !go.cursor;
+        next.lines.push_back(go);
+        xrtext::FrLine how = line(them.online ? "YOU BOTH SAY READY, THE MATCH STARTS ON BOTH HEADSETS"
+                                              : "THEY'RE OFFLINE: THE OWNER CAN SIM THE REST (LEAGUE PAGE)");
+        how.dim = true;
+        next.lines.push_back(how);
+      } else {
+        xrtext::FrLine go = line(!s.canPlay ? "BACK TO THE MAIN MENU TO PLAY"
+                                            : (s.cursor == 0 ? "A: PLAY THIS MATCH" : "PLAY THIS MATCH"));
+        go.cursor = s.canPlay && s.cursor == 0;
+        go.dim = !s.canPlay;
+        next.lines.push_back(go);
+        // r70b: or work it out (and in the regular season, every week to the playoffs)
+        xrtext::FrLine sim = line(s.cursor == 1 ? "A: SIM THIS MATCH" : "SIM THIS MATCH");
+        sim.cursor = s.cursor == 1;
+        sim.dim = s.cursor != 1;
+        next.lines.push_back(sim);
+      }
+      if (!playoffs && !lg.active) {  // (r100: a league's weeks wait on its people)
+        xrtext::FrLine all = line(s.cursor == 2 ? "A: SIM TO THE PLAYOFFS" : "SIM TO THE PLAYOFFS");
+        all.cursor = s.cursor == 2;
+        all.dim = s.cursor != 2;
+        next.lines.push_back(all);
+      }
+      if (v.backup[0] != '\0') {
+        xrtext::FrLine sw = line(v.startsBackup ? "X: YOUR CAPTAIN STARTS" : "X: YOUR BACKUP STARTS");
+        sw.dim = true;
+        next.lines.push_back(sw);
+      }
+      hint += lg.active && lg.vsMember >= 0 ? "   -   A: READY / NOT READY   -   X: SWAP STARTING CAPTAIN   -   B: CAREERS"
+                                            : "   -   UP / DOWN + A: PLAY OR SIM   -   X: SWAP STARTING CAPTAIN   -   B: CAREERS";
+    } else {
+      xrtext::FrLine st = line(v.status[0] != '\0' ? std::string(v.status) : std::string("NO MATCH TODAY"));
+      st.gold = true;
+      next.lines.push_back(st);
+      next.lines.push_back(line(""));
+      if (v.canSimDay) {
+        // r70b: play out the day, or watch one of today's games (CPU v CPU)
+        xrtext::FrLine a = line(s.cursor == 0 ? "A: PLAY OUT THE DAY" : "PLAY OUT THE DAY");
+        a.cursor = s.cursor == 0;
+        next.lines.push_back(a);
+        for (int i = 0; i < s.today.count && i < 6; ++i) {
+          std::string t = "WATCH: " + place_of(s.today.home[i]) + " V " + place_of(s.today.away[i]);
+          std::string r;
+          const int si = s.today.series[i];
+          if (si >= 0 && si < v.seriesCount) {
+            const PortFranchiseSeries& sr = v.series[si];
+            const int hw = sr.hi == s.today.home[i] ? sr.winsHi : sr.winsLo;
+            r = std::to_string(hw) + "-" + std::to_string(sr.winsHi + sr.winsLo - hw);
+          }
+          xrtext::FrLine wl = line(s.cursor == i + 1 ? "A: " + t : t, r);
+          logo_line(wl, s.today.home[i]);
+          wl.cursor = s.cursor == i + 1;
+          next.lines.push_back(wl);
+        }
+        xrtext::FrLine x = line("X: ON TO YOUR NEXT MATCH (OR THE FINAL WHISTLE)");
+        x.dim = true;
+        next.lines.push_back(x);
+        hint += "   -   UP / DOWN + A: PLAY OUT THE DAY OR WATCH A GAME   -   X: SKIP AHEAD   -   B: CAREERS";
+      } else if (done) {
+        xrtext::FrLine a = line("A: START SEASON " + std::to_string(v.season + 1));
+        a.cursor = true;
+        next.lines.push_back(a);
+        xrtext::FrLine k = line("SAME CLUBS AND PLAYERS, A NEW SCHEDULE");
+        k.dim = true;
+        next.lines.push_back(k);
+        hint += "   -   A: NEXT SEASON   -   B: CAREERS";
+      } else {
+        hint += "   -   B: CAREERS";
+      }
+    }
+    if (s.coopGuest) {
+      // r76: the friend's headset runs the co-op career: its matches start from there (both join)
+      xrtext::FrLine cl = line(friendName + " RUNS THIS CAREER: THEY START THE MATCHES, YOU JOIN IN");
+      cl.gold = true;
+      next.lines.insert(next.lines.begin(), cl);
+      hint = "LEFT / RIGHT: " + pageBar + "   -   B: CAREERS";
+    } else if (s.coopActive && s.coopState == 0) {
+      xrtext::FrLine cl = line("CO-OP: YOUR FRIEND ISN'T IN THE ROOM, NOTHING PLAYS WITHOUT THEM");
+      cl.dim = true;
+      next.lines.insert(next.lines.begin(), cl);
+    }
+    if (lg.active && lg.link != 2) {  // r100
+      xrtext::FrLine cl = line("CONNECTING TO THE LEAGUE...");
+      cl.dim = true;
+      next.lines.insert(next.lines.begin(), cl);
+    }
+    xrtext::FrLine head = line(v.headline);
+    head.dim = true;
+    next.lines.push_back(line(""));
+    next.lines.push_back(head);
+    cards.push_back(next);
+    xrtext::FrCard div;
+    div.title = mine.div + " DIVISION";
+    for (int i = 0; i < 4; ++i) {
+      const PortFranchiseRow& r = v.division[i];
+      if (r.club < 0 || r.club >= nClubs) continue;
+      xrtext::FrLine l = line(std::to_string(i + 1) + ". " + s.clubs[r.club].place, record(r.wins, r.losses));
+      logo_line(l, r.club);
+      l.gold = r.mine;
+      div.lines.push_back(l);
+    }
+    cards.push_back(div);
+  } else if (s.page == 1) {
+    for (int conf = 0; conf < 2; ++conf) {
+      xrtext::FrCard c;
+      const int first = v.conference[conf][0].club;
+      c.title = (first >= 0 && first < nClubs ? s.clubs[first].conf : std::string(conf == 0 ? "CROWN" : "STAR")) +
+                " CONFERENCE";
+      for (int i = 0; i < 16; ++i) {
+        const PortFranchiseRow& r = v.conference[conf][i];
+        if (r.club < 0 || r.club >= nClubs) continue;
+        const int gd = r.goalsFor - r.goalsAgainst;
+        const std::string gds = gd > 0 ? "+" + std::to_string(gd) : std::to_string(gd);
+        bool seeded = false;
+        for (int k = 0; k < 7; ++k)
+          if (v.seeds[conf][k] == r.club) seeded = true;
+        xrtext::FrLine l = line(std::to_string(i + 1) + ". " + s.clubs[r.club].name,
+                                record(r.wins, r.losses) + "   " + gds);
+        logo_line(l, r.club);
+        l.gold = r.mine;
+        l.dim = !seeded && !r.mine;  // (7 a conference make the playoffs: the division winners + 3)
+        c.lines.push_back(l);
+      }
+      cards.push_back(c);
+    }
+    hint += "   -   BRIGHT: IN THE PLAYOFFS (DIVISION WINNERS + 3 WILD CARDS)   -   B: CAREERS";
+  } else if (s.page == 2) {
+    // The playoffs: each conference's bracket, the Super Strike Series in the middle. Before they start,
+    // the picture as the table stands.
+    auto series_line = [&](const PortFranchiseSeries& sr) {
+      const std::string text = "(" + std::to_string(sr.hiSeed) + ") " + place_of(sr.hi) + "  VS  (" +
+                               std::to_string(sr.loSeed) + ") " + place_of(sr.lo);
+      xrtext::FrLine l = line(text, std::to_string(sr.winsHi) + "-" + std::to_string(sr.winsLo));
+      logo_line(l, sr.winner >= 0 ? sr.winner : sr.hi);
+      l.gold = sr.hi == me || sr.lo == me;
+      l.dim = sr.winner >= 0 && !l.gold;
+      return l;
+    };
+    xrtext::FrCard confCard[2];
+    for (int conf = 0; conf < 2; ++conf) {
+      xrtext::FrCard& c = confCard[conf];
+      c.title = std::string(conf == 0 ? "CROWN" : "STAR") + " CONFERENCE";
+      c.weight = 1.25f;
+      if (v.phase == PORT_FR_PHASE_REGULAR) {
+        xrtext::FrLine h = line("IF THE SEASON ENDED TODAY");
+        h.dim = true;
+        c.lines.push_back(h);
+        for (int k = 0; k < 7; ++k) {
+          const int club = v.seeds[conf][k];
+          if (club < 0 || club >= nClubs) continue;
+          xrtext::FrLine l = line("(" + std::to_string(k + 1) + ") " + s.clubs[club].name,
+                                  k == 0 ? "BYE" : (k < 4 ? "DIV" : "WILD"));
+          logo_line(l, club);
+          l.gold = club == me;
+          c.lines.push_back(l);
+        }
+        xrtext::FrLine r1 = line("KICKOFF ROUND: 2 V 7, 3 V 6, 4 V 5");
+        r1.dim = true;
+        c.lines.push_back(line(""));
+        c.lines.push_back(r1);
+        continue;
+      }
+      const int bye = v.seeds[conf][0];
+      for (int round = 1; round <= 3; ++round) {
+        bool any = false;
+        for (int i = 0; i < v.seriesCount; ++i) {
+          const PortFranchiseSeries& sr = v.series[i];
+          if (sr.round != round || sr.conf != conf) continue;
+          if (!any) {
+            static const char* const kRound[4] = {"", "KICKOFF ROUND", "SEMIFINALS", "CONFERENCE FINALS"};
+            xrtext::FrLine h = line(kRound[round], round == 1 ? "BYE: (1) " + place_of(bye) : std::string());
+            h.dim = true;
+            c.lines.push_back(h);
+            any = true;
+          }
+          c.lines.push_back(series_line(sr));
+        }
+      }
+    }
+    xrtext::FrCard fin;
+    fin.title = "SUPER STRIKE SERIES";
+    fin.weight = 0.9f;
+    for (int i = 0; i < v.seriesCount; ++i)
+      if (v.series[i].round == 4) {
+        const PortFranchiseSeries& sr = v.series[i];
+        xrtext::FrLine a = line(s.clubs[sr.hi].name, std::to_string(sr.winsHi));
+        logo_line(a, sr.hi);
+        a.gold = sr.winner == sr.hi || sr.hi == me;
+        xrtext::FrLine b = line(s.clubs[sr.lo].name, std::to_string(sr.winsLo));
+        logo_line(b, sr.lo);
+        b.gold = sr.winner == sr.lo || sr.lo == me;
+        fin.lines.push_back(line("CROWN V STAR, BEST OF 5"));
+        fin.lines.push_back(a);
+        fin.lines.push_back(b);
+      }
+    if (v.champion >= 0 && v.champion < nClubs) {
+      fin.lines.push_back(line(""));
+      xrtext::FrLine ch = line("CHAMPIONS: " + s.clubs[v.champion].name);
+      logo_line(ch, v.champion);
+      ch.gold = true;
+      fin.lines.push_back(ch);
+    } else if (fin.lines.empty()) {
+      xrtext::FrLine t = line("THE CROWN AND STAR CHAMPIONS");
+      t.dim = true;
+      fin.lines.push_back(t);
+      xrtext::FrLine t2 = line("MEET HERE, BEST OF 5");
+      t2.dim = true;
+      fin.lines.push_back(t2);
+    }
+    cards.push_back(confCard[0]);
+    cards.push_back(fin);
+    cards.push_back(confCard[1]);
+    if (v.phase != PORT_FR_PHASE_REGULAR) {
+      const GuestPortrait& rl = guest_portrait(v.roundLogo);
+      if (!rl.rgba.empty()) bandLogo = &rl;
+    }
+    hint += "   -   EVERY ROUND BEST OF 5, THE HIGHER SEED HOME IN GAMES 1, 2, 5   -   B: CAREERS";
+  } else if (s.page == 4) {
+    // r71: the scoring race, who's hot, who's not
+    xrtext::FrCard race;
+    race.title = "GOLDEN BOOT RACE";
+    race.weight = 1.3f;
+    for (int i = 0; i < v.leaderCount; ++i) {
+      const PortFranchiseView::Leader& l = v.leaders[i];
+      xrtext::FrLine ln = line(std::to_string(i + 1) + ". " + l.name + " (" + place_of(l.club) + ")", std::to_string(l.goals));
+      logo_line(ln, l.club);
+      ln.gold = l.club == me;
+      race.lines.push_back(ln);
+    }
+    if (v.leaderCount == 0) race.lines.push_back(line("NO GOALS YET"));
+    cards.push_back(race);
+    xrtext::FrCard hot;
+    hot.title = "ON FIRE";
+    for (int i = 0; i < v.hotCount; ++i) {
+      xrtext::FrLine ln = line(std::string(v.hot[i].name) + " (" + place_of(v.hot[i].club) + ")", "+" + std::to_string(v.hot[i].form));
+      ln.gold = v.hot[i].club == me;
+      hot.lines.push_back(ln);
+    }
+    if (v.hotCount == 0) hot.lines.push_back(line("NOBODY YET"));
+    xrtext::FrLine gap = line("");
+    hot.lines.push_back(gap);
+    xrtext::FrLine coldHead = line("IN A SLUMP");
+    coldHead.dim = true;
+    hot.lines.push_back(coldHead);
+    for (int i = 0; i < v.coldCount; ++i) {
+      xrtext::FrLine ln = line(std::string(v.cold[i].name) + " (" + place_of(v.cold[i].club) + ")", std::to_string(v.cold[i].form));
+      ln.dim = v.cold[i].club != me;
+      hot.lines.push_back(ln);
+    }
+    cards.push_back(hot);
+    hint += "   -   B: CAREERS";
+  } else if (s.page == 5) {
+    // r71: the players' feed
+    xrtext::FrCard f;
+    f.title = "PLAYER FEED";
+    for (int i = 0; i < v.feedCount; ++i) f.lines.push_back(line(v.feed[i]));
+    if (v.feedCount == 0) f.lines.push_back(line("QUIET WEEK"));
+    cards.push_back(f);
+    hint += "   -   B: CAREERS";
+  } else if (s.page == 10 && lg.active) {
+    // r100: the online league: its code, its people (online, their game this week in or not, ready), the owner's
+    // SIM THE REST
+    xrtext::FrCard ppl;
+    ppl.title = std::string("LEAGUE ") + lg.code;
+    ppl.weight = 1.6f;
+    std::string waiting;
+    for (int i = 0; i < lg.memberCount; ++i) {
+      const PortFranchiseLeagueView::Member& m = lg.members[i];
+      std::string state = !m.online ? "OFFLINE" : (m.ready ? "READY" : "ONLINE");
+      state += m.done ? "  PLAYED" : "  TO PLAY";
+      xrtext::FrLine l = line(fr_upper(m.name) + (m.owner ? " (OWNER)" : "") + "  -  " + place_of(m.club), state);
+      logo_line(l, m.club);
+      l.gold = m.me;
+      l.dim = !m.online && !m.me;
+      ppl.lines.push_back(l);
+      if (!m.done) waiting += (waiting.empty() ? "" : ", ") + fr_upper(m.name);
+    }
+    xrtext::FrLine count = line(std::to_string(lg.memberCount) + " OF " + std::to_string(lg.max) + " PEOPLE");
+    count.dim = true;
+    ppl.lines.push_back(count);
+    cards.push_back(ppl);
+    xrtext::FrCard wk;
+    wk.title = "THIS WEEK";
+    xrtext::FrLine code = line(std::string("FRIENDS JOIN WITH CODE ") + lg.code);
+    code.gold = true;
+    wk.lines.push_back(code);
+    wk.lines.push_back(line(waiting.empty() ? "EVERYONE'S GAME IS IN" : "WAITING ON: " + waiting));
+    wk.lines.push_back(line(lg.link == 2 ? "CONNECTED" : "CONNECTING...", lg.synced ? "UP TO DATE" : "SYNCING"));
+    if (lg.owner) {
+      xrtext::FrLine sim = line(lg.canSimRest ? "A: SIM THE REST (THEIR GAMES WORKED OUT)" : "SIM THE REST");
+      sim.cursor = lg.canSimRest;
+      sim.dim = !lg.canSimRest;
+      wk.lines.push_back(sim);
+      xrtext::FrLine note = line("YOU OWN THIS LEAGUE: YOU SET ITS DIFFICULTY");
+      note.dim = true;
+      wk.lines.push_back(note);
+    }
+    if (lg.error[0] != '\0') {
+      xrtext::FrLine e = line(fr_upper(lg.error));
+      e.dim = true;
+      wk.lines.push_back(e);
+    }
+    cards.push_back(wk);
+    hint += lg.owner && lg.canSimRest ? "   -   A: SIM THE REST   -   B: CAREERS" : "   -   B: CAREERS";
+  } else if (s.page == 9) {
+    // r97 (Lance: "we need a difficulty setting for franchise mode, bc that shit was becoming too easy and i
+    // want a real life nemesis/A-Life system where im not always dominating or being the MVP")
+    static const char* const kLevels[4] = {"ROOKIE", "PROFESSIONAL", "SUPERSTAR", "LEGEND"};
+    static const char* const kWhat[4] = {
+        "THE GAME'S EASIEST CPU. NEMESES GO EASY, THE LEAGUE LETS YOU SHINE",
+        "A REAL GAME. NEMESES HUNT YOU, CPU STARS SCORE",
+        "THE CPU PLAYS HARD. NEMESES HOLD GRUDGES, CPU CLUBS GROW FASTER, STARS CHASE THE GOLDEN BOOT",
+        "THE GAME'S HARDEST CPU. NEMESES HUNT YOUR CAPTAIN ALL GAME, THE LEAGUE'S STARS RUN THE MVP RACE"};
+    xrtext::FrCard c;
+    c.title = "DIFFICULTY";
+    c.weight = 2.0f;
+    const int now = std::max(1, std::min(4, v.difficulty));
+    for (int i = 0; i < 4; ++i) {
+      xrtext::FrLine l = line(std::string(s.cursor == i ? "> " : "  ") + kLevels[i], i + 1 == now ? "ON" : "");
+      l.gold = i + 1 == now;
+      c.lines.push_back(l);
+      xrtext::FrLine d = line(std::string("     ") + kWhat[i]);
+      d.dim = true;
+      c.lines.push_back(d);
+    }
+    cards.push_back(c);
+    xrtext::FrCard how;
+    how.title = "WHAT IT CHANGES";
+    how.lines.push_back(line("YOUR MATCHES: THE GAME'S OWN CPU SKILL"));
+    how.lines.push_back(line("NEMESES: HOW HARD THEY HUNT YOUR CAPTAIN"));
+    how.lines.push_back(line("GRUDGES: HOW FAST THEY BUILD"));
+    how.lines.push_back(line("CPU CLUBS: HOW FAST THEY LEVEL + EVOLVE"));
+    how.lines.push_back(line("CPU STARS: THEIR SHARE OF THEIR CLUB'S GOALS"));
+    how.lines.push_back(line("WORKED-OUT GAMES OF YOURS: A LITTLE HARDER"));
+    if (lg.active && !lg.owner) {  // r100
+      xrtext::FrLine own = line("ONLINE LEAGUE: ITS OWNER SETS IT");
+      own.gold = true;
+      how.lines.push_back(own);
+    }
+    cards.push_back(how);
+    hint += "   -   UP / DOWN: CHOOSE   -   A: SET IT   -   B: CAREERS";
+  } else if (s.page == 8) {
+    // r77 (Lance: "an evo watch where we see the current levels of all pokemon that are in our
+    // franchise, as to see who's leveling up at what rate"): every Pokemon in the league, highest first:
+    // its club, its level (+ levels this season), and its next form at what level
+    const int perCard = 11;
+    for (size_t at = 0; at < s.evoWatch.size() && cards.size() < 3; at += perCard) {
+      xrtext::FrCard c;
+      c.title = at == 0 ? "EVO WATCH" : " ";
+      for (size_t i = at; i < s.evoWatch.size() && i < at + perCard; ++i) {
+        const PortFranchiseEvoRow& r = s.evoWatch[i];
+        std::string left = std::string(r.name) + (r.shiny ? " (SHINY)" : "");
+        if (r.ready)  // r95
+          left += "  READY TO EVOLVE!";
+        else
+          left += r.evoLevel > 0 ? "  > " + std::string(r.evoName) + " AT " + std::to_string(r.evoLevel) : "  FINAL FORM";
+        std::string right = "LV " + std::to_string(r.level);
+        if (r.seasonGain > 0) right += " (+" + std::to_string(r.seasonGain) + ")";
+        xrtext::FrLine l = line(left, right);
+        logo_line(l, r.club);
+        l.gold = r.mine;
+        l.dim = !r.mine && r.evoLevel == 0;
+        c.lines.push_back(l);
+      }
+      cards.push_back(c);
+    }
+    if (s.evoWatch.empty()) {
+      xrtext::FrCard c;
+      c.title = "EVO WATCH";
+      c.lines.push_back(line("NO POKEMON IN THIS LEAGUE"));
+      cards.push_back(c);
+    }
+    if (!s.evoReadyName.empty()) hint += "   -   A: EVOLVE " + fr_upper(s.evoReadyName);  // r95
+    hint += "   -   GOLD: YOURS   -   (+N): LEVELS THIS SEASON   -   B: CAREERS";
+  } else if (s.page == 7) {
+    // r72: the nemesis wall: who has beef with your captain, their titles, what they've become
+    xrtext::FrCard wall;
+    wall.title = "NEMESES";
+    wall.weight = 1.5f;
+    for (int i = 0; i < v.nemCount; ++i) {
+      const PortFranchiseView::Nem& n = v.nems[i];
+      std::string head = std::string(n.name) + " " + n.title;
+      if (n.teammate) head += "  (YOUR OWN)";
+      xrtext::FrLine l = line(head, "HEAT " + std::to_string(n.heat));
+      if (n.club >= 0) logo_line(l, n.club);
+      l.gold = n.active;
+      l.dim = !n.active;
+      if (i == v.nextNemesis) l.cursor = true;
+      wall.lines.push_back(l);
+      std::string detail = "   " + (n.club >= 0 ? place_of(n.club) : std::string("RETIRED")) + "  -  BEAT YOU " +
+                           std::to_string(n.beatYou) + ", LOST " + std::to_string(n.lostToYou);
+      if (n.rank > 0) detail += "  -  RANK " + std::to_string(n.rank);
+      xrtext::FrLine d = line(detail);
+      d.dim = true;
+      wall.lines.push_back(d);
+    }
+    if (v.nemCount == 0) {
+      wall.lines.push_back(line("NOBODY HAS BEEF WITH YOU... YET"));
+      xrtext::FrLine d = line("BEAT THEM, EMBARRASS THEM, KNOCK THEM OUT - THEY'LL REMEMBER");
+      d.dim = true;
+      wall.lines.push_back(d);
+    }
+    cards.push_back(wall);
+    // the hottest one's story: its traits and what happened
+    if (v.nemCount > 0) {
+      const PortFranchiseView::Nem& n = v.nems[v.nextNemesis >= 0 ? v.nextNemesis : 0];
+      xrtext::FrCard story;
+      story.title = v.nextNemesis >= 0 ? "NEXT UP: YOUR NEMESIS" : "THE HOTTEST BEEF";
+      xrtext::FrLine nm = line(n.name);
+      const GuestPortrait& p = guest_portrait(n.key);
+      if (!p.rgba.empty()) {
+        nm.logo = p.rgba.data();
+        nm.logoW = p.w;
+        nm.logoH = p.h;
+      }
+      nm.gold = true;
+      story.lines.push_back(nm);
+      story.lines.push_back(line(n.title));
+      for (int t = 0; t < n.traitCount; ++t) story.lines.push_back(line(n.traits[t]));
+      if (n.last[0] != '\0') {
+        xrtext::FrLine ls = line(n.last);
+        ls.dim = true;
+        story.lines.push_back(ls);
+      }
+      cards.push_back(story);
+    }
+    hint += "   -   B: CAREERS";
+  } else if (s.page == 6) {
+    // r71: awards night and the hall of fame
+    xrtext::FrCard a;
+    a.title = v.phase == PORT_FR_PHASE_DONE ? "AWARDS NIGHT" : "LAST AWARDS NIGHT";
+    for (int i = 0; i < v.awardCount; ++i) {
+      xrtext::FrLine ln = line(v.awards[i]);
+      std::string up = mine.place;
+      for (char& ch : up) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+      ln.gold = !up.empty() && std::string(v.awards[i]).find(up) != std::string::npos;
+      a.lines.push_back(ln);
+    }
+    if (v.awardCount == 0) a.lines.push_back(line("AFTER THE SUPER STRIKE SERIES"));
+    cards.push_back(a);
+    xrtext::FrCard hf;
+    hf.title = "HALL OF FAME";
+    hf.weight = 1.2f;
+    for (int i = 0; i < v.historyCount; ++i) hf.lines.push_back(line(v.history[i]));
+    if (v.historyCount == 0) hf.lines.push_back(line("NO SEASONS FINISHED YET"));
+    cards.push_back(hf);
+    hint += "   -   B: CAREERS";
+  } else {
+    xrtext::FrCard c;
+    c.title = v.resultCount > 0 ? (v.week > PORT_FR_WEEKS + 1 ? "LAST GAME DAY" : "LAST WEEK'S RESULTS") : "NO RESULTS YET";
+    xrtext::FrCard c2;
+    c2.title = " ";
+    std::string myPlace = mine.place;  // the results name the places in capitals
+    for (char& ch : myPlace) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    for (int i = 0; i < v.resultCount; ++i) {
+      xrtext::FrLine l = line(v.results[i]);
+      l.gold = !myPlace.empty() && std::string(v.results[i]).find(myPlace) != std::string::npos;
+      (i < 8 ? c : c2).lines.push_back(l);
+    }
+    cards.push_back(c);
+    if (!c2.lines.empty()) cards.push_back(c2);
+    if (v.newsCount > 0) {  // r70c: the league's news (evolutions round the league)
+      xrtext::FrCard n;
+      n.title = "AROUND THE LEAGUE";
+      for (int i = 0; i < v.newsCount; ++i) {
+        xrtext::FrLine l = line(v.news[i]);
+        l.gold = std::string(v.news[i]).find("SHINY") != std::string::npos;
+        n.lines.push_back(l);
+      }
+      cards.push_back(n);
+    }
+    hint += "   -   B: CAREERS";
+  }
+  if (!s.coopGuest) hint += "   -   Y: TRADES";  // r77
+  xrtext::franchise_board(px, w, h, mine.name, subtitle, mine.c1 != 0 ? mine.c1 : 0x16306E,
+                          mine.c2 != 0 ? mine.c2 : 0xFFD23F, bandLogo->rgba.empty() ? nullptr : bandLogo->rgba.data(),
+                          bandLogo->w, bandLogo->h, cards, hint);
+}
+// r70b: a franchise match's intro card and the playoff series board (under the big screen).
+constexpr uint32_t kFrIntroW = 1440, kFrIntroH = 640, kFrSeriesW = 1000, kFrSeriesH = 96;
+// r77: the live XP meter (your captain this match), under the series board / over Tabletop's score bar.
+constexpr uint32_t kFrLiveW = 1000, kFrLiveH = 170;
+// One captain's meter: its name and level bar, its goals / assists and next form; side = the right-hand note.
+void draw_live_row(uint8_t* px, int w, int h, const char* name, int level, int xp, int newLevel, int newXp, int gain,
+                   int goals, int assists, bool won, bool evolves, int evoLevel, const char* evoName, bool pokemon,
+                   const std::string& side, float glow, int glowFrom, float sideGlow) {
+  auto plural = [](int n, const char* word) { return std::to_string(n) + " " + word + (n == 1 ? "" : "S"); };
+  std::string line = plural(goals, "GOAL") + ", " + plural(assists, "ASSIST") + (won ? "  -  WINNING" : "") + "  -  ";
+  // r87: "LEVEL UP!" while it glows, not for the rest of the match
+  const bool levelUp = glow >= 0.0f;
+  bool gold = false;
+  if (evolves) {
+    line += std::string("EVOLUTION EARNED: ") + evoName + " (AFTER THE MATCH)";
+    gold = true;
+  } else if (evoLevel > 0) {
+    line += std::string(levelUp ? "LEVEL UP!  " : "") + "EVOLVES INTO " + evoName + " AT LV " + std::to_string(evoLevel);
+  } else {
+    line += levelUp ? "LEVEL UP!" : (pokemon ? "FINAL FORM" : "LEVELING UP");
+  }
+  xrtext::xp_meter(px, w, h, name, level, xp, newLevel, newXp, gain, line.c_str(), gold, side.c_str(), glow, glowFrom,
+                   sideGlow);
+}
+// r79: with a co-captain the panel is two meters high: your captain on top, the co-captain under it.
+void draw_franchise_live(uint8_t* px, int w, int h, const PortFranchiseLive& l, const FrLiveGlow& glow) {
+  const int rowH = l.co ? h / 2 : h;
+  // the sidekicks' level as it stands (the old one for the first moment of its light)
+  const int skShown = glow.t[2] >= 0.0f && glow.t[2] < 0.3f && glow.from[2] >= 0 ? glow.from[2] : l.skNewLevel;
+  const std::string side = std::string(l.kind) + " LV " + std::to_string(skShown) + "  +" + std::to_string(l.skGain);
+  draw_live_row(px, w, rowH, l.name, l.level, l.xp, l.newLevel, l.newXp, l.gain, l.goals, l.assists, l.won, l.evolves,
+                l.evoLevel, l.evoName, l.pokemon, side, glow.t[0], glow.from[0], glow.t[2]);
+  if (l.co)
+    draw_live_row(px + static_cast<size_t>(w) * rowH * 4, w, h - rowH, l.coName, l.coLevel, l.coXp, l.coNewLevel,
+                  l.coNewXp, l.coGain, l.coGoals, l.coAssists, l.won, l.coEvolves, l.coEvoLevel, l.coEvoName,
+                  l.coPokemon, "CO-CAPTAIN", glow.t[1], glow.from[1], -1.0f);
+}
+std::string fr_upper(std::string s) {
+  for (char& ch : s) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  return s;
+}
+std::string franchise_series_text(const PortFranchiseCard& c) {
+  const int a = c.seriesWins[0], b = c.seriesWins[1];
+  std::string state;
+  if (a == b) {
+    state = "SERIES TIED " + std::to_string(a) + "-" + std::to_string(b);
+  } else {
+    const int lead = a > b ? c.club[0] : c.club[1];
+    state = fr_upper(PortFranchiseClubPlace(lead)) + " LEAD " + std::to_string(std::max(a, b)) + "-" +
+            std::to_string(std::min(a, b));
+  }
+  return fr_upper(c.roundName) + "   -   GAME " + std::to_string(c.gameNo) + "   -   " + state;
+}
+void draw_franchise_intro(uint8_t* px, int w, int h, const PortFranchiseCard& c) {
+  std::vector<xrtext::FrCard> cards;
+  const bool playoff = c.round > 0;
+  for (int side = 0; side < 2; ++side) {
+    const int club = c.club[side];
+    xrtext::FrCard k;
+    k.title = side == 0 ? "HOME" : "AWAY";
+    k.weight = 1.3f;
+    xrtext::FrLine name;
+    name.text = PortFranchiseClubName(club);
+    name.gold = true;
+    const GuestPortrait& p = guest_portrait(std::string("club_") + PortFranchiseClubId(club));
+    if (!p.rgba.empty()) {
+      name.logo = p.rgba.data();
+      name.logoW = p.w;
+      name.logoH = p.h;
+    }
+    k.lines.push_back(name);
+    xrtext::FrLine rec;
+    rec.text = playoff ? "#" + std::to_string(c.seed[side]) + " SEED, " + PortFranchiseConferenceName(club) + " CONFERENCE"
+                       : std::string(PortFranchiseDivisionName(club)) + " DIVISION";
+    rec.right = std::to_string(c.wins[side]) + "-" + std::to_string(c.losses[side]);
+    k.lines.push_back(rec);
+    if (playoff) {
+      xrtext::FrLine sw;
+      sw.text = "SERIES WINS";
+      sw.right = std::to_string(c.seriesWins[side]);
+      sw.gold = c.seriesWins[side] == 2;
+      k.lines.push_back(sw);
+    }
+    if (c.nemesis && c.nemesisSide == side) {
+      // r72: the face-off: your nemesis, its title, its record against you
+      xrtext::FrLine nl;
+      nl.text = "NEMESIS: " + std::string(c.nemesisName);
+      const GuestPortrait& np = guest_portrait(c.nemesisKey);
+      if (!np.rgba.empty()) {
+        nl.logo = np.rgba.data();
+        nl.logoW = np.w;
+        nl.logoH = np.h;
+      }
+      nl.gold = true;
+      k.lines.push_back(nl);
+      xrtext::FrLine tl;
+      tl.text = c.nemesisTitle;
+      tl.right = "BEAT YOU " + std::to_string(c.nemesisBeatYou) + "X";
+      k.lines.push_back(tl);
+    }
+    cards.push_back(k);
+    if (side == 0) {
+      xrtext::FrCard vs;
+      vs.title = "VS";
+      vs.weight = 0.55f;
+      xrtext::FrLine l1;
+      l1.text = playoff ? "GAME " + std::to_string(c.gameNo) : "WEEK " + std::to_string(c.week);
+      vs.lines.push_back(l1);
+      if (playoff) {
+        xrtext::FrLine l2;
+        l2.text = "BEST OF 5";
+        l2.dim = true;
+        vs.lines.push_back(l2);
+        if (c.seriesWins[0] == 2 || c.seriesWins[1] == 2) {
+          xrtext::FrLine l3;
+          l3.text = c.seriesWins[0] == 2 && c.seriesWins[1] == 2 ? "WINNER TAKES ALL" : "CLOSE-OUT GAME";
+          l3.gold = true;
+          vs.lines.push_back(l3);
+        }
+      }
+      if (c.spectating) {
+        xrtext::FrLine l4;
+        l4.text = "WATCHING";
+        l4.dim = true;
+        vs.lines.push_back(l4);
+      }
+      cards.push_back(vs);
+    }
+  }
+  const GuestPortrait& logo = guest_portrait(c.roundLogo[0] != '\0' ? std::string(c.roundLogo) : "franchise_league");
+  const std::string title = playoff ? fr_upper(c.roundName) : "STRIKERS SUPER LEAGUE";
+  const std::string sub = playoff ? franchise_series_text(c).substr(franchise_series_text(c).rfind("   -   ") + 7)
+                                  : "WEEK " + std::to_string(c.week) + " OF 20";
+  xrtext::franchise_board(px, w, h, title, sub, playoff ? 0x1A1A4A : 0x16306E, 0xFFD23F,
+                          logo.rgba.empty() ? nullptr : logo.rgba.data(), logo.w, logo.h, cards, "");
+}
+// r73: the TV in your room (franchise): "SSL TONIGHT", in turn the last scores, the top of both
+// conferences, the Golden Boot race and who's on fire.
+void draw_room_tv(uint8_t* px, int w, int h, const FrRoom& r, int page) {
+  const PortFranchiseView& v = r.view;
+  auto logo_line = [&](xrtext::FrLine& l, int club) {
+    if (club < 0 || club >= static_cast<int>(r.clubIds.size())) return;
+    const GuestPortrait& p = guest_portrait("club_" + r.clubIds[club]);
+    if (!p.rgba.empty()) {
+      l.logo = p.rgba.data();
+      l.logoW = p.w;
+      l.logoH = p.h;
+    }
+  };
+  auto place = [&](int club) {
+    return club >= 0 && club < static_cast<int>(r.clubPlaces.size()) ? r.clubPlaces[club] : std::string("?");
+  };
+  std::vector<xrtext::FrCard> cards;
+  std::string sub;
+  if (page == 0) {
+    sub = "THE SCORES";
+    xrtext::FrCard c;
+    for (int i = 0; i < v.resultCount && i < 8; ++i) {
+      xrtext::FrLine l;
+      l.text = v.results[i];
+      c.lines.push_back(l);
+    }
+    if (c.lines.empty()) {
+      xrtext::FrLine l;
+      l.text = "NO GAMES PLAYED YET";
+      c.lines.push_back(l);
+    }
+    cards.push_back(c);
+  } else if (page == 1) {
+    sub = "TOP OF THE TABLE";
+    for (int conf = 0; conf < 2; ++conf) {
+      xrtext::FrCard c;
+      c.title = conf == 0 ? "CROWN" : "STAR";
+      for (int i = 0; i < 4; ++i) {
+        const PortFranchiseRow& row = v.conference[conf][i];
+        xrtext::FrLine l;
+        l.text = std::to_string(i + 1) + ". " + place(row.club);
+        l.right = std::to_string(row.wins) + "-" + std::to_string(row.losses);
+        l.gold = row.mine;
+        logo_line(l, row.club);
+        c.lines.push_back(l);
+      }
+      cards.push_back(c);
+    }
+  } else {
+    sub = "WHO'S HOT";
+    xrtext::FrCard c;
+    c.title = "GOLDEN BOOT";
+    for (int i = 0; i < v.leaderCount && i < 4; ++i) {
+      xrtext::FrLine l;
+      l.text = v.leaders[i].name;
+      l.right = std::to_string(v.leaders[i].goals);
+      logo_line(l, v.leaders[i].club);
+      c.lines.push_back(l);
+    }
+    if (c.lines.empty()) {
+      xrtext::FrLine l;
+      l.text = "NO GOALS YET";
+      c.lines.push_back(l);
+    }
+    cards.push_back(c);
+    xrtext::FrCard f;
+    f.title = "ON FIRE";
+    for (int i = 0; i < v.hotCount && i < 4; ++i) {
+      xrtext::FrLine l;
+      l.text = v.hot[i].name;
+      logo_line(l, v.hot[i].club);
+      f.lines.push_back(l);
+    }
+    if (f.lines.empty()) {
+      xrtext::FrLine l;
+      l.text = "NOBODY YET";
+      f.lines.push_back(l);
+    }
+    cards.push_back(f);
+  }
+  const GuestPortrait& league = guest_portrait("franchise_league");
+  xrtext::franchise_board(px, w, h, "SSL TONIGHT", sub, 0x16306E, 0xFFD23F,
+                          league.rgba.empty() ? nullptr : league.rgba.data(), league.w, league.h, cards, "");
+}
+
+// r70c: the evolution scene's picture `t` seconds into its stage (xrtext::evolution_scene).
+// r96: `threeD`: the Pokemon is standing in your room in 3D in front of it (update_evo): while it evolves
+// and after, the card is its backdrop: the light and the words, no pictures.
+void draw_franchise_evolution(uint8_t* px, int w, int h, const FrSnapshot& s, float t, bool threeD) {
+  const PortFranchiseEvolution& e = s.evo;
+  const bool pictures = !threeD || s.evoStage == 0 || s.evoStage == 3;
+  auto img = [pictures](const char* key) {
+    const GuestPortrait& p = guest_portrait(key);
+    xrtext::EvoImage im;
+    if (pictures && !p.rgba.empty()) {
+      im.rgba = p.rgba.data();
+      im.w = p.w;
+      im.h = p.h;
+    }
+    return im;
+  };
+  const int choice = e.options == 2 ? std::max(0, std::min(1, s.evoChoice)) : 0;
+  // shiny ones in their shiny colours (portraits/<pack>_shiny.png, when there)
+  auto img_shiny = [&](const char* key, bool shiny) {
+    if (shiny) {
+      const xrtext::EvoImage im = img((std::string(key) + "_shiny").c_str());
+      if (im.rgba != nullptr) return im;
+    }
+    return img(key);
+  };
+  const xrtext::EvoImage from = img_shiny(e.fromKey, e.shiny);
+  const xrtext::EvoImage to = s.evoStage == 2 ? img_shiny(e.toKey[choice], e.shiny || s.evoNewShiny)
+                                              : img(s.evoStage == 0 ? e.toKey[0] : e.toKey[choice]);
+  const xrtext::EvoImage alt = img(e.options == 2 ? e.toKey[1] : e.toKey[0]);
+  const std::string fromName = fr_upper(e.fromName), toName = fr_upper(e.toName[choice]);
+  std::string title, line, hint;
+  switch (s.evoStage) {
+  case 0:  // r95: the EVO page
+    title = "EVO! " + fromName + " IS READY TO EVOLVE!";
+    if (e.options == 2) {
+      line = "LV " + std::to_string(e.level) + ": INTO " + fr_upper(e.toName[0]) + " OR " + fr_upper(e.toName[1]) + "?";
+      hint = "LEFT / RIGHT: CHOOSE   -   A: EVOLVE INTO " + toName + "   -   B: NOT NOW";
+    } else {
+      line = "LV " + std::to_string(e.level) + ": " + fromName + " > ???";
+      hint = "A: EVOLVE (WATCH IT HAPPEN)   -   B: NOT NOW (EVOLVE IT LATER: EVO WATCH PAGE, A)";
+    }
+    break;
+  case 1:
+    title = "WHAT? " + fromName + " IS EVOLVING!";
+    break;
+  case 2:
+    title = "CONGRATULATIONS!";
+    line = "YOUR " + fromName + " EVOLVED INTO " + toName + "!" + (s.evoNewShiny ? "  IT'S SHINY!" : "");
+    hint = "A: CONTINUE";
+    break;
+  default:  // r95: postponed
+    title = "OKAY! " + fromName + " WILL WAIT";
+    line = "EVOLVE IT ANY TIME: EVO WATCH PAGE, A";
+    hint = "A: CONTINUE";
+    break;
+  }
+  // r96: its clock runs 0.8 x through the evolving, so its flash is the 3D one's (8.5 s; it evolves at 8.8)
+  const float tp = s.evoStage == 1 ? 0.8f * t : t;
+  xrtext::evolution_scene(px, w, h, from, to, alt, s.evoStage, tp, choice, title.c_str(), line.c_str(), hint.c_str(),
+                          s.evoNewShiny || e.shiny, e.options);
+}
+// r68e: one entry of the character select menu: what picking it sends (a guest's roster index, or
+// PORT_GUEST_ORIGINAL(_SIDEKICK) + the Strikers character's id), its portrait (guests/portraits/
+// <key>.png: the guests' own art; strikers_<name>: the game's own loading-screen pictures), its name,
+// its game, and its place (sections: Strikers + Charged, Melee, Pokemon; each starts a new row).
+struct MenuEntry {
+  int pick = -1;
+  int team = -1;  // a Strikers captain's eTeamID (taken when the other side has it), else -1
+  std::string portrait, name, tag;
+  int row = 0, col = 0;
+  uint32_t frame = 0;
+};
+const std::vector<MenuEntry>& menu_entries(int role) {
+  static std::vector<MenuEntry> built[2];
+  static bool done[2] = {false, false};
+  static std::mutex mutex;  // the game thread and the panel's drawing thread both ask
+  if (role < 0 || role > 1) role = 0;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (done[role]) return built[role];
+  done[role] = true;
+  std::vector<MenuEntry>& out = built[role];
+  const int cols = role == 0 ? kMenuCaptainCols : kMenuSidekickCols;
+  int row = 0, col = 0;
+  auto add = [&](MenuEntry e) {
+    if (col >= cols) {
+      col = 0;
+      ++row;
+    }
+    e.row = row;
+    e.col = col++;
+    out.push_back(e);
+  };
+  auto new_section = [&]() {
+    if (col > 0) {
+      col = 0;
+      ++row;
+    }
+  };
+  if (role == 0) {
+    // The Strikers captains in their own grid's order (eTeamID: daisy 0, dk 1, luigi 2, mario 3, peach 4,
+    // waluigi 5, wario 6, yoshi 7).
+    static const struct { int team; const char* file; const char* name; } kCaptains[8] = {
+        {3, "mario", "Mario"}, {2, "luigi", "Luigi"}, {4, "peach", "Peach"}, {0, "daisy", "Daisy"},
+        {7, "yoshi", "Yoshi"}, {1, "donkeykong", "Donkey Kong"}, {6, "wario", "Wario"}, {5, "waluigi", "Waluigi"}};
+    for (const auto& c : kCaptains) {
+      MenuEntry e;
+      e.pick = PORT_GUEST_ORIGINAL + c.team;
+      e.team = c.team;
+      e.portrait = std::string("strikers_") + c.file;
+      e.name = c.name;
+      e.tag = "Strikers";
+      e.frame = 0x7A2430;
+      add(e);
+    }
+  } else {
+    // eSidekickID: toad 0, koopa 1, hammer bro 2, birdo 3
+    static const struct { int id; const char* file; const char* name; } kSidekicks[4] = {
+        {0, "toad", "Toad"}, {1, "koopa", "Koopa"}, {2, "hammerbro", "Hammer Bro"}, {3, "birdo", "Birdo"}};
+    for (const auto& s : kSidekicks) {
+      MenuEntry e;
+      e.pick = PORT_GUEST_ORIGINAL_SIDEKICK + s.id;
+      e.portrait = std::string("strikers_") + s.file;
+      e.name = s.name;
+      e.tag = "Strikers";
+      e.frame = 0x7A2430;
+      add(e);
+    }
+    new_section();
+  }
+  // The guests by game: Charged (beside the Strikers captains), Melee, Melee's Pokemon.
+  static const struct { const char* game; const char* tag; uint32_t frame; } kGames[3] = {
+      {"Charged", "Charged", 0x7A4A1E}, {"Melee", "Melee", 0x23407A}, {"Melee Pokemon", "Pokemon", 0x6E2440}};
+  const int n = PortGuestRosterCount(role);
+  // r70c: each evolved Pokemon right after the form it evolves from (Charmander, Charmeleon, Charizard)
+  std::vector<int> order;
+  std::function<void(const char*)> evolutions_of = [&](const char* from) {
+    for (int k = 0; k < n; ++k) {
+      const int idx = PortGuestRosterAt(role, k);
+      if (PortGuestRosterEvolved(idx) && std::strcmp(PortGuestRosterEvolvesFrom(idx), from) == 0) {
+        order.push_back(idx);
+        evolutions_of(PortGuestRosterPack(idx));
+      }
+    }
+  };
+  for (int i = 0; i < n; ++i) {
+    const int index = PortGuestRosterAt(role, i);
+    if (PortGuestRosterEvolved(index) && PortGuestRosterEvolvesFrom(index)[0] != '\0') continue;
+    order.push_back(index);
+    evolutions_of(PortGuestRosterPack(index));
+  }
+  for (int i = 0; i < n; ++i) {  // (any evolved one whose earlier form isn't on this headset: at the end)
+    const int index = PortGuestRosterAt(role, i);
+    if (std::find(order.begin(), order.end(), index) == order.end()) order.push_back(index);
+  }
+  for (int gsec = 0; gsec < 3; ++gsec) {
+    if (gsec > 0) new_section();
+    for (int index : order) {
+      const char* game = PortGuestRosterGame(index);
+      // r69: Lance's Colosseum Pokemon take the Pokemon row (Melee's are off the roster)
+      const bool colo = gsec == 2 && game != nullptr && std::strcmp(game, "Colosseum") == 0;
+      if (game == nullptr || (!colo && std::strcmp(game, kGames[gsec].game) != 0)) continue;
+      MenuEntry e;
+      e.pick = index;
+      const char* pack = PortGuestRosterPack(index);
+      e.portrait = pack != nullptr ? pack : "";
+      const char* name = PortGuestRosterName(index);
+      e.name = name != nullptr ? name : e.portrait;
+      e.tag = kGames[gsec].tag;
+      e.frame = kGames[gsec].frame;
+      add(e);
+    }
+  }
+  return out;
+}
+// The entry the stick moves to from `from`: left / right along its row, up / down to the row above or
+// below (skipping none: every row has someone), the nearest column there.
+int menu_step(const std::vector<MenuEntry>& m, int from, int dir) {
+  if (m.empty()) return 0;
+  from = std::max(0, std::min(static_cast<int>(m.size()) - 1, from));
+  const MenuEntry& at = m[from];
+  if (dir == 1) return from > 0 && m[from - 1].row == at.row ? from - 1 : from;
+  if (dir == 2) return from + 1 < static_cast<int>(m.size()) && m[from + 1].row == at.row ? from + 1 : from;
+  const int want = at.row + (dir == 3 ? -1 : 1);
+  int best = from, bestD = 1 << 30;
+  for (int i = 0; i < static_cast<int>(m.size()); ++i) {
+    if (m[i].row != want) continue;
+    const int d = std::abs(m[i].col - at.col);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+// r75: a new career's own players on the character select menu (the franchise hub's mode 4): your
+// captain, your backup captain, your sidekicks. Evolved forms can't start a career (their silhouette, as
+// on the menu); for the backup, the captain you just picked is darkened.
+void draw_franchise_pick(uint8_t* px, int w, int h, const FrSnapshot& s) {
+  const int stage = std::max(0, std::min(2, s.pickStage));
+  const int role = stage == 2 ? 1 : 0;
+  const std::vector<MenuEntry>& menu = menu_entries(role);
+  std::vector<xrtext::GuestTile> tiles;
+  tiles.reserve(menu.size());
+  for (const MenuEntry& e : menu) {
+    const GuestPortrait& p = guest_portrait(e.portrait);
+    xrtext::GuestTile t{p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, e.name.c_str(), e.tag.c_str()};
+    t.row = e.row;
+    t.col = e.col;
+    t.frame = e.frame;
+    t.locked = role == 0 && e.team < 0 && PortGuestRosterEvolved(e.pick);
+    t.taken = stage == 1 && e.pick == s.pickCap;
+    tiles.push_back(t);
+  }
+  std::string club = s.pickClub >= 0 && s.pickClub < static_cast<int>(s.clubs.size()) ? s.clubs[s.pickClub].name : "";
+  for (char& ch : club) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  static const char* const kWhat[3] = {"CHOOSE YOUR CAPTAIN", "CHOOSE YOUR BACKUP CAPTAIN", "CHOOSE YOUR SIDEKICKS"};
+  static const char* const kHint[3] = {
+      "STICK: MOVE   -   A: YOUR CAPTAIN   -   B: BACK TO THE CLUBS",
+      "STICK: MOVE   -   A: YOUR BACKUP CAPTAIN   -   X: NO BACKUP   -   B: BACK",
+      "STICK: MOVE   -   A: YOUR SIDEKICKS (THE CAREER STARTS)   -   B: BACK"};
+  char title[192];
+  std::snprintf(title, sizeof(title), "NEW CAREER   -   %s   -   %s", club.c_str(), kWhat[stage]);
+  xrtext::guest_picker(px, w, h, title, tiles.data(), static_cast<int>(tiles.size()),
+                       role == 0 ? kMenuCaptainCols : kMenuSidekickCols, s.cursor, kHint[stage]);
+}
 constexpr int kViewHeightMinCm = -60, kViewHeightMaxCm = 100;  // r44g
 
 // xr_quest.cpp is built without include/ on its path: the mixer's crowd controls (port/audio.h).
@@ -895,8 +2623,10 @@ bool create_instance() {
   if (xr_ok(xrGetSystemProperties(g.instance, g.system, &sysProps), "xrGetSystemProperties")) {
     g.colorPassthrough = g.hasPassthroughExt && (pt2.capabilities & XR_PASSTHROUGH_CAPABILITY_COLOR_BIT_FB) != 0;
     g.renderModelsSupported = g.hasRenderModelExt && rm.supportsRenderModelLoading == XR_TRUE;
-    XLOG("headset: %s, %s passthrough, render models %s", sysProps.systemName,
-         g.colorPassthrough ? "colour" : "no colour", g.renderModelsSupported ? "yes" : "no");
+    // r73: the compositor's most layers a frame (the franchise's panels add up): xrEndFrame keeps to it
+    g.maxLayers = sysProps.graphicsProperties.maxLayerCount > 0 ? sysProps.graphicsProperties.maxLayerCount : 16;
+    XLOG("headset: %s, %s passthrough, render models %s, up to %u layers", sysProps.systemName,
+         g.colorPassthrough ? "colour" : "no colour", g.renderModelsSupported ? "yes" : "no", g.maxLayers);
   }
   return true;
 }
@@ -2140,6 +3870,713 @@ void sync_input() {
           else g.achPrevB = false;
         }
       }
+      // r67: the guest picker over the game's own pick screens (include/port/xr_guest.h). Y opens it
+      // there; while it is open nothing reaches the game, and the A or B that closed it is kept from
+      // the game until it is let go (the screen confirms the guest's slot on its own).
+      {
+        int offSide = -1, offRole = -1;
+        g.gpOffered = !g.paused && PortGuestPickerOffered(&offSide, &offRole);
+        if (g.gpOpen && (!g.gpOffered || offSide != g.gpSide || offRole != g.gpRole)) g.gpOpen = false;
+        // r68e: the character select menu opens by itself each time a side starts choosing (once:
+        // B closes it to the game's own screen, Y brings it back).
+        const int offerKey = g.gpOffered ? offSide * 2 + offRole : -1;
+        if (offerKey < 0) g.gpAutoDone = -1;
+        const bool yDown = (status.button & PAD_BUTTON_Y) != 0;
+        const bool autoOpen = g.gpOffered && !g.gpOpen && offerKey != g.gpAutoDone;
+        if (g.gpOffered && !g.gpOpen && ((yDown && !g.gpPrevY) || autoOpen)) {
+          g.gpAutoDone = offerKey;
+          g.gpOpen = true;
+          g.gpSide = offSide;
+          g.gpRole = offRole;
+          g.gpCursor = 0;
+          g.gpDir = 0;
+          g.gpPlaced = false;
+          // an A or B already down (the press that brought this screen up) is not a choice here
+          g.gpHoldA = (status.button & PAD_BUTTON_A) != 0;
+          g.gpHoldB = (status.button & PAD_BUTTON_B) != 0;
+          g.gpOpenNs = now_ns();  // r68g: and nothing picks in its first 0.4 s (Lance's "auto" Mario)
+          // r79: a Grudge Match's sidekick pick starts with the side's co-captain (on the one it has now)
+          g.gpCo = offRole == 1 && PortGuestCoCaptainOffered(offSide);
+          g.gpPrevX = (status.button & PAD_BUTTON_X) != 0;
+          if (g.gpCo) {
+            const int now = PortGuestCoCaptainCurrent(offSide);
+            const std::vector<MenuEntry>& captains = menu_entries(0);
+            for (int i = 0; i < static_cast<int>(captains.size()); ++i)
+              if (captains[i].pick == now) g.gpCursor = i;
+          }
+          ++g.gpGen;
+          XLOG("character select: %s for side %d's %s (%d to pick from)", autoOpen ? "opens" : "Y opens", offSide,
+               offRole ? "sidekick" : "captain", static_cast<int>(menu_entries(offRole).size()));
+        }
+        g.gpPrevY = yDown;
+        if (g.gpOffered) status.button &= static_cast<u16>(~PAD_BUTTON_Y);
+        // r75: whether A / B are really held, read before the open menu clears the buttons below: the
+        // held-until-let-go checks at the end looked at the cleared state, so the press that picked was
+        // "let go" at once and reached the game's own screen the next frame (a second, unasked press)
+        const bool gpRawA = (status.button & PAD_BUTTON_A) != 0, gpRawB = (status.button & PAD_BUTTON_B) != 0;
+        if (g.gpOpen) {
+          const std::vector<MenuEntry>& menu = menu_entries(g.gpCo ? 0 : g.gpRole);
+          if (g.gpCo) {
+            // r79: the Strikers captains it can't be (a team's captain, the other side's co-captain)
+            unsigned coTaken = 0;
+            for (int t = 0; t < 8; ++t)
+              if (!PortGuestCoCaptainFree(g.gpSide, t)) coTaken |= 1u << t;
+            if (coTaken != g.gpCoTaken) {
+              g.gpCoTaken = coTaken;
+              ++g.gpGen;
+            }
+          }
+          int dir = 0;
+          if (moveL.x < -0.6f || (status.button & PAD_BUTTON_LEFT) != 0) dir = 1;
+          else if (moveL.x > 0.6f || (status.button & PAD_BUTTON_RIGHT) != 0) dir = 2;
+          else if (moveL.y > 0.6f || (status.button & PAD_BUTTON_UP) != 0) dir = 3;
+          else if (moveL.y < -0.6f || (status.button & PAD_BUTTON_DOWN) != 0) dir = 4;
+          const uint64_t nowGp = now_ns();
+          bool step = false;
+          if (dir != 0 && dir != g.gpDir) {
+            step = true;
+            g.gpRepeatNs = nowGp + 350000000ull;
+          } else if (dir != 0 && nowGp >= g.gpRepeatNs) {
+            step = true;
+            g.gpRepeatNs = nowGp + 130000000ull;
+          }
+          g.gpDir = dir;
+          const int oldCursor = g.gpCursor;
+          if (step) g.gpCursor = menu_step(menu, g.gpCursor, dir);
+          if (g.gpCursor != oldCursor) ++g.gpGen;
+          const bool aDown = (status.button & PAD_BUTTON_A) != 0, bDown = (status.button & PAD_BUTTON_B) != 0;
+          const bool xDown = (status.button & PAD_BUTTON_X) != 0;
+          if (g.gpCo && xDown && !g.gpPrevX) {
+            // r79: no co-captain; on to the sidekicks
+            PortGuestCoCaptainPick(g.gpSide, -1);
+            XLOG("character select: side %d has no co-captain", g.gpSide);
+            g.gpCo = false;
+            g.gpCursor = 0;
+            ++g.gpGen;
+          } else if (aDown && !g.gpHoldA && now_ns() - g.gpOpenNs < 400000000ull) {
+            g.gpHoldA = true;  // too soon after it opened: not a pick, and kept until let go
+          } else if (aDown && !g.gpHoldA && g.gpCo) {
+            // r79: the co-captain (a captain no team has: a taken one or a locked form does nothing), then
+            // the menu goes on to the sidekicks
+            if (g.gpCursor >= 0 && g.gpCursor < static_cast<int>(menu.size())) {
+              const MenuEntry& e = menu[g.gpCursor];
+              if (PortGuestCoCaptainPick(g.gpSide, e.pick)) {
+                XLOG("character select: side %d's co-captain is %s", g.gpSide, e.name.c_str());
+                g.gpCo = false;
+                g.gpCursor = 0;
+                ++g.gpGen;
+              }
+            }
+            g.gpHoldA = true;
+          } else if (aDown && !g.gpHoldA) {
+            if (g.gpCursor >= 0 && g.gpCursor < static_cast<int>(menu.size())) {
+              const MenuEntry& e = menu[g.gpCursor];
+              // a Strikers captain the other side has is no choice; r70c: nor a locked evolved Pokemon
+              if ((e.team < 0 || PortGuestPickerCaptainFree(e.team)) && !PortGuestRosterLocked(e.pick)) {
+                PortGuestPickerCommit(g.gpSide, g.gpRole, e.pick);
+                XLOG("character select: side %d picks %s", g.gpSide, e.name.c_str());
+                g.gpOpen = false;
+              }
+            }
+            g.gpHoldA = true;
+          } else if (bDown && !g.gpHoldB) {
+            g.gpOpen = false;
+            g.gpHoldB = true;
+          }
+          g.gpPrevX = xDown;
+          status.stickX = status.stickY = status.substickX = status.substickY = 0;
+          status.triggerLeft = status.triggerRight = 0;
+          status.button &= static_cast<u16>(PAD_BUTTON_START);
+        }
+        if (g.gpHoldA) {
+          if (gpRawA) status.button &= static_cast<u16>(~PAD_BUTTON_A);
+          else g.gpHoldA = false;
+        }
+        if (g.gpHoldB) {
+          if (gpRawB) status.button &= static_cast<u16>(~PAD_BUTTON_B);
+          else g.gpHoldB = false;
+        }
+      }
+      // r70: franchise mode's hub (include/port/franchise.h): Y on the game's main menu opens it. While it
+      // is open nothing reaches the game; the A or B that acted is kept from the game until let go.
+      {
+        const bool onMenu = PortFranchiseOnMainMenu() && !g.paused && !g.gpOffered && !g.achOpen;
+        if (onMenu != g.frOnMenu) ++g.frGen;
+        g.frOnMenu = onMenu;
+        if (g.frOpen && !onMenu) g.frOpen = false;
+        if (PortFranchiseMatchActive()) g.frAfterMatch = true;
+        {
+          // r70b: the match on now: its intro card for 10 s from its intro, then the series board
+          PortFranchiseCard card;
+          PortFranchiseMatchCard(&card);
+          const int key = card.valid ? card.serial * 64 + card.gameNo * 8 + card.seriesWins[0] * 3 + card.seriesWins[1] : -1;
+          if (card.valid && card.serial != g.frCardSerial) {
+            g.frCardSerial = card.serial;
+            g.frIntroUntilNs = now_ns() + 10000000000ull;
+            g.frIntroPlaced = false;
+          }
+          if (key != g.frCardKey) {
+            g.frCardKey = key;
+            {
+              std::lock_guard<std::mutex> lock(g_frMutex);
+              g_frCard = card;
+            }
+            ++g.frCardGen;
+          }
+          // r77: the live XP meter's numbers, when they change (a goal, an assist, the lead)
+          {
+            PortFranchiseLive live;
+            const bool liveOn = PortFranchiseLiveXp(&live);
+            const long long liveKey =
+                liveOn ? (static_cast<long long>(live.gain) * 1000003LL + live.skGain * 7919LL + live.goals * 101LL +
+                          live.assists * 11LL + (live.won ? 1 : 0) +
+                          (live.co ? (live.coGain * 31LL + live.coGoals * 3LL + live.coAssists + 1) * 1000000007LL : 0))
+                       : -1;
+            // r87: a row whose level (as the match stands) goes up lights up for xrtext::kLevelGlowS
+            const uint64_t tNow = now_ns();
+            const int levels[3] = {liveOn ? live.newLevel : -1, liveOn && live.co ? live.coNewLevel : -1,
+                                   liveOn ? live.skNewLevel : -1};
+            FrLiveGlow glow;
+            bool lit = false;
+            for (int r = 0; r < 3; ++r) {
+              if (levels[r] < 0) {
+                g.frLiveShown[r] = -1;
+                g.frLiveGlowNs[r] = 0;
+                continue;
+              }
+              if (g.frLiveShown[r] >= 0 && levels[r] > g.frLiveShown[r]) {
+                g.frLiveGlowNs[r] = tNow;
+                g.frLiveFrom[r] = g.frLiveShown[r];
+              }
+              g.frLiveShown[r] = levels[r];
+              if (g.frLiveGlowNs[r] == 0) continue;
+              const float t = static_cast<float>(static_cast<double>(tNow - g.frLiveGlowNs[r]) * 1e-9);
+              if (t >= xrtext::kLevelGlowS) {
+                g.frLiveGlowNs[r] = 0;
+                continue;
+              }
+              glow.t[r] = t;
+              glow.from[r] = g.frLiveFrom[r];
+              lit = true;
+            }
+            // redrawn when the numbers change, ~15 times a second while lit, and once as the light goes
+            const bool redraw = liveKey != g.frLiveKey || (lit && tNow >= g.frLiveTickNs) || (g.frLiveLit && !lit);
+            g.frLiveLit = lit;
+            if (redraw) {
+              g.frLiveKey = liveKey;
+              g.frLiveTickNs = tNow + 66000000ull;
+              {
+                std::lock_guard<std::mutex> lock(g_frMutex);
+                g_frLiveData = live;
+                g_frLiveGlow = glow;
+              }
+              ++g.frLiveGen;
+            }
+          }
+          unsigned b1 = 0, b2 = 0;
+          bool champ = false;
+          g_frBuntingOn = PortFranchiseBunting(&b1, &b2, &champ);
+          g_frBunting1 = b1;
+          g_frBunting2 = b2;
+          g_frChampion = champ;
+        }
+        // r73: the league in your room: what the news wire and the TV show, every 2 s
+        if (now_ns() >= g.frRoomNextNs) {
+          g.frRoomNextNs = now_ns() + 2000000000ull;
+          const bool on = PortFranchiseActive() && !PortFranchiseMatchActive();
+          FrRoom r;
+          std::string key = on ? "on" : "off";
+          if (on) {
+            PortFranchiseGetView(&r.view);
+            const PortFranchiseView& v = r.view;
+            if (v.headline[0] != '\0') r.lines.push_back(v.headline);
+            for (int i = 0; i < v.resultCount; ++i) r.lines.push_back(std::string("FINAL: ") + v.results[i]);
+            for (int i = 0; i < v.newsCount; ++i) r.lines.push_back(v.news[i]);
+            for (int i = 0; i < v.feedCount && i < 3; ++i) r.lines.push_back(v.feed[i]);
+            if (v.leaderCount > 0)
+              r.lines.push_back(std::string("GOLDEN BOOT RACE: ") + v.leaders[0].name + ", " + std::to_string(v.leaders[0].goals) +
+                                " GOALS");
+            const int n = PortFranchiseClubCount();
+            for (int i = 0; i < n; ++i) {
+              r.clubIds.push_back(PortFranchiseClubId(i));
+              r.clubPlaces.push_back(PortFranchiseClubPlace(i));
+            }
+            key += std::to_string(v.season) + "|" + std::to_string(v.week) + "|" + std::to_string(v.phase);
+            for (const std::string& l : r.lines) key += "|" + l;
+          }
+          g.frRoomOn = on && !r.lines.empty();
+          if (key != g.frRoomKey) {
+            g.frRoomKey = key;
+            std::lock_guard<std::mutex> lock(g_frMutex);
+            g_frRoom = std::move(r);
+            ++g.frRoomGen;
+          }
+        }
+        const bool yDown = (status.button & PAD_BUTTON_Y) != 0;
+        const bool backFromMatch = onMenu && g.frAfterMatch && PortFranchiseActive();
+        if (onMenu) g.frAfterMatch = false;
+        if (onMenu && !g.frOpen && !PortFranchiseMatchStarting() && ((yDown && !g.frPrevY) || backFromMatch)) {
+          g.frOpen = true;
+          g.frMode = PortFranchiseActive() ? 2 : 0;
+          g.frCursor = 0;
+          g.frPage = 0;
+          g.frDir = 0;
+          g.frPlaced = false;
+          g.frConfirmDelete = false;
+          g.frHoldA = (status.button & PAD_BUTTON_A) != 0;
+          g.frHoldB = (status.button & PAD_BUTTON_B) != 0;
+          g.frHubPrevY = true;  // r77: the Y that opened it isn't a trades press
+          g.frOpenNs = now_ns();
+          fr_refresh();
+          XLOG("franchise: the hub opens (%s)", g.frMode == 2 ? "a career loaded" : "the careers");
+        }
+        g.frPrevY = yDown;
+        if (onMenu) status.button &= static_cast<u16>(~PAD_BUTTON_Y);
+        const bool xDown = (status.button & PAD_BUTTON_X) != 0;
+        // r75 (Lance: "do not automatically start a game when i select my team"): A / B as really held,
+        // read before the open hub clears the buttons below. The held-until-let-go checks at the end
+        // used the cleared state, so the A that chose the club counted as let go at once and, still held,
+        // was a new press the next frame: "PLAY" on the hub it had just opened (his week 1 match).
+        const bool frRawA = (status.button & PAD_BUTTON_A) != 0, frRawB = (status.button & PAD_BUTTON_B) != 0;
+        if (g.frOpen) {
+          int dir = 0;
+          if (moveL.x < -0.6f || (status.button & PAD_BUTTON_LEFT) != 0) dir = 1;
+          else if (moveL.x > 0.6f || (status.button & PAD_BUTTON_RIGHT) != 0) dir = 2;
+          else if (moveL.y > 0.6f || (status.button & PAD_BUTTON_UP) != 0) dir = 3;
+          else if (moveL.y < -0.6f || (status.button & PAD_BUTTON_DOWN) != 0) dir = 4;
+          const uint64_t nowFr = now_ns();
+          bool step = false;
+          if (dir != 0 && dir != g.frDir) {
+            step = true;
+            g.frRepeatNs = nowFr + 350000000ull;
+          } else if (dir != 0 && nowFr >= g.frRepeatNs) {
+            step = true;
+            g.frRepeatNs = nowFr + 140000000ull;
+          }
+          g.frDir = dir;
+          const bool aDown = (status.button & PAD_BUTTON_A) != 0, bDown = (status.button & PAD_BUTTON_B) != 0;
+          const bool settled = nowFr - g.frOpenNs > 300000000ull;
+          const bool aPress = aDown && !g.frHoldA && settled, bPress = bDown && !g.frHoldB;
+          const bool xPress = xDown && !g.frPrevX;
+          const bool yPress = yDown && !g.frHubPrevY && settled;  // r77: trades
+          g.frHubPrevY = yDown;
+          if (aDown) g.frHoldA = true;
+          if (bDown) g.frHoldB = true;
+          bool changed = step || aPress || bPress || xPress || yPress;
+          if (g.frMode == 0) {  // the career slots
+            // the three careers side by side: left / right (up / down too); r76: and the co-op one; r100: and the
+            // online league's, last
+            std::vector<int> order = {0, 1, 2};
+            if (g_frSnap.coopShown) order.push_back(PORT_FR_COOP_SLOT);
+            order.push_back(PORT_FR_LEAGUE_SLOT);
+            int at = 0;
+            for (size_t i = 0; i < order.size(); ++i)
+              if (order[i] == g.frCursor) at = static_cast<int>(i);
+            if (step && (dir == 1 || dir == 3)) at = std::max(0, at - 1);
+            if (step && (dir == 2 || dir == 4)) at = std::min(static_cast<int>(order.size()) - 1, at + 1);
+            g.frCursor = order[at];
+            if (step) g.frConfirmDelete = false;
+            if (aPress && g.frCursor == PORT_FR_LEAGUE_SLOT) {
+              // r100: the league this headset is in, or make / join one
+              PortFranchiseSlot ls;
+              if (PortFranchiseLeagueFile(&ls, nullptr, 0)) {
+                if (PortFranchiseLoad(PORT_FR_LEAGUE_SLOT)) {
+                  g.frMode = 2;
+                  g.frPage = 0;
+                  g.frCursor = 0;
+                  g.frOpenNs = nowFr;
+                  XLOG("franchise: the online league opens");
+                }
+              } else {
+                g.frMode = 6;
+                g.frLgStage = 0;
+                g.frCursor = 0;
+                XLOG("franchise: online league: make or join");
+              }
+            } else if (xPress && g.frCursor == PORT_FR_LEAGUE_SLOT) {
+              if (g.frConfirmDelete && nowFr - g.frConfirmNs < 3000000000ull) {
+                PortFranchiseLeagueLeave();
+                XLOG("franchise: left the online league");
+                g.frConfirmDelete = false;
+              } else if (g_frSnap.leagueSaved) {
+                g.frConfirmDelete = true;
+                g.frConfirmNs = nowFr;
+              }
+            } else if (aPress && g.frCursor == PORT_FR_COOP_SLOT) {
+              // r76: open the co-op career (this headset runs it), join the friend's, or start a new one
+              const int r = PortFranchiseCoopOpen();
+              if (r == 1) {
+                g.frMode = 2;
+                g.frPage = 0;
+                g.frCursor = 0;
+                g.frOpenNs = nowFr;
+                XLOG("franchise: the co-op career opens (%s)", PortFranchiseCoopGuest() ? "the friend runs it" : "run here");
+              } else if (r == 2) {
+                g.frSlot = PORT_FR_COOP_SLOT;
+                g.frMode = 1;
+                g.frCursor = 0;
+                XLOG("franchise: a new co-op career: choosing a club");
+              }
+            } else if (aPress) {
+              PortFranchiseSlot sl[PORT_FR_SLOTS];
+              PortFranchiseSlots(sl);
+              if (sl[g.frCursor].used) {
+                if (PortFranchiseLoad(g.frCursor)) {
+                  g.frMode = 2;
+                  g.frPage = 0;
+                  XLOG("franchise: career %d continues", g.frCursor + 1);
+                }
+              } else {
+                g.frSlot = g.frCursor;
+                g.frMode = 1;
+                g.frCursor = 0;
+                XLOG("franchise: a new career in slot %d: choosing a club", g.frSlot + 1);
+              }
+            } else if (xPress) {
+              if (g.frConfirmDelete && nowFr - g.frConfirmNs < 3000000000ull) {
+                PortFranchiseDelete(g.frCursor);
+                XLOG("franchise: career %d deleted", g.frCursor + 1);
+                g.frConfirmDelete = false;
+              } else {
+                g.frConfirmDelete = true;
+                g.frConfirmNs = nowFr;
+              }
+            } else if (bPress) {
+              g.frOpen = false;
+            }
+          } else if (g.frMode == 1) {  // a new career's club
+            if (step) {
+              int r = 0, c = 0;
+              fr_club_place(g.frCursor, &r, &c);
+              if (dir == 1) c = std::max(0, c - 1);
+              if (dir == 2) c = std::min(7, c + 1);
+              if (dir == 3) r = std::max(0, r - 1);
+              if (dir == 4) r = std::min(3, r + 1);
+              g.frCursor = fr_club_at(r, c);
+            }
+            if (aPress) {
+              // r75 (Lance: "my club only"): then your own players on the character select menu
+              g.frPickClub = g.frCursor;
+              g.frMode = 4;
+              g.frPickStage = 0;
+              g.frPickCap = g.frPickBk = -1;
+              g.frPickCursor[0] = g.frPickCursor[1] = g.frPickCursor[2] = 0;
+              g.frCursor = 0;
+              XLOG("franchise: career %d with %s: picking your players", g.frSlot + 1, PortFranchiseClubName(g.frPickClub));
+            } else if (bPress) {
+              g.frMode = 0;
+              g.frCursor = g.frSlot;
+            }
+          } else if (g.frMode == 4) {  // r75: a new career's own players: captain, backup captain, sidekicks
+            const std::vector<MenuEntry>& menu = menu_entries(g.frPickStage == 2 ? 1 : 0);
+            if (step) g.frCursor = menu_step(menu, g.frCursor, dir);
+            const int pick = g.frCursor >= 0 && g.frCursor < static_cast<int>(menu.size()) ? menu[g.frCursor].pick : -1;
+            auto to_stage = [&](int stage) {
+              g.frPickCursor[g.frPickStage] = g.frCursor;
+              g.frPickStage = stage;
+              g.frCursor = g.frPickCursor[stage];
+            };
+            if (aPress && pick >= 0) {
+              if (g.frPickStage == 0 && PortFranchiseCaptainPickable(pick)) {
+                g.frPickCap = pick;
+                XLOG("franchise: your captain %s", menu[g.frCursor].name.c_str());
+                to_stage(1);
+              } else if (g.frPickStage == 1 && pick != g.frPickCap && PortFranchiseCaptainPickable(pick)) {
+                g.frPickBk = pick;
+                XLOG("franchise: your backup captain %s", menu[g.frCursor].name.c_str());
+                to_stage(2);
+              } else if (g.frPickStage == 2) {
+                // The career starts on its hub, nothing played: you start your matches yourself (Lance)
+                // r100: an online league's: made on the server too, its code to share
+                if (g.frSlot == PORT_FR_LEAGUE_SLOT
+                        ? PortFranchiseLeagueCreate(g.frPickClub, g.frPickCap, g.frPickBk, pick, g.frLgMax)
+                        : PortFranchiseNewPicked(g.frSlot, g.frPickClub, g.frPickCap, g.frPickBk, pick)) {
+                  XLOG("franchise: career %d with %s, sidekicks %s", g.frSlot + 1, PortFranchiseClubName(g.frPickClub),
+                       menu[g.frCursor].name.c_str());
+                  g.frMode = 2;
+                  g.frPage = 0;
+                  g.frCursor = 0;
+                  g.frOpenNs = nowFr;  // and a moment before A acts on the hub (a fresh press plays)
+                }
+              }
+            } else if (xPress && g.frPickStage == 1) {
+              g.frPickBk = -1;  // no backup captain
+              XLOG("franchise: no backup captain");
+              to_stage(2);
+            } else if (bPress) {
+              if (g.frPickStage == 0) {
+                g.frMode = 1;
+                g.frCursor = g.frPickClub;
+              } else {
+                to_stage(g.frPickStage - 1);
+              }
+            }
+          } else if (g.frMode == 6) {  // r100: make an online league (how many people) or join one (its code)
+            if (g.frLgStage == 0) {
+              if (step && (dir == 1 || dir == 2)) g.frCursor = dir == 2 ? 1 : 0;
+              if (step && g.frCursor == 0 && dir == 3) g.frLgMax = std::min(8, g.frLgMax + 1);
+              if (step && g.frCursor == 0 && dir == 4) g.frLgMax = std::max(2, g.frLgMax - 1);
+              if (aPress && g.frCursor == 0) {
+                g.frSlot = PORT_FR_LEAGUE_SLOT;
+                g.frMode = 1;
+                g.frCursor = 0;
+                XLOG("franchise: a new online league (up to %d people): choosing a club", g.frLgMax);
+              } else if (aPress) {
+                g.frLgStage = 1;
+                g.frLgPos = 0;
+              } else if (bPress) {
+                g.frMode = 0;
+                g.frCursor = PORT_FR_LEAGUE_SLOT;
+              }
+            } else {
+              if (step && dir == 1) g.frLgPos = std::max(0, g.frLgPos - 1);
+              if (step && dir == 2) g.frLgPos = std::min(5, g.frLgPos + 1);
+              if (step && dir == 3) g.frLgChar[g.frLgPos] = (g.frLgChar[g.frLgPos] + 1) % 32;
+              if (step && dir == 4) g.frLgChar[g.frLgPos] = (g.frLgChar[g.frLgPos] + 31) % 32;
+              if (aPress) {
+                std::string code;
+                for (int i = 0; i < 6; ++i) code.push_back(kFrCodeChars[g.frLgChar[i] & 31]);
+                PortFranchiseLeagueJoin(code.c_str());
+                g.frMode = 7;
+                g.frCursor = 0;
+                XLOG("franchise: joining online league %s", code.c_str());
+              } else if (bPress) {
+                g.frLgStage = 0;
+              }
+            }
+          } else if (g.frMode == 7) {  // r100: joining a league: its free clubs
+            const bool picking = g_frSnap.lobby.state == 3;
+            if (step && picking) {
+              int r = 0, c = 0;
+              fr_club_place(g.frCursor, &r, &c);
+              if (dir == 1) c = std::max(0, c - 1);
+              if (dir == 2) c = std::min(7, c + 1);
+              if (dir == 3) r = std::max(0, r - 1);
+              if (dir == 4) r = std::min(3, r + 1);
+              g.frCursor = fr_club_at(r, c);
+            }
+            if (aPress && picking) {
+              if (PortFranchiseLeagueClaim(g.frCursor)) XLOG("franchise: league: claiming %s", PortFranchiseClubName(g.frCursor));
+            } else if (bPress) {
+              PortFranchiseLeagueJoin("");
+              g.frMode = 6;
+              g.frLgStage = 1;
+              g.frCursor = 1;
+            }
+          } else if (g.frMode == 3) {  // r70c: one of your Pokemon evolving
+            // r95 (Lance: "make an EVO page, where we can witness the EVO happening, as well as confirm or
+            // postpone the evo"): stage 0 = the EVO page (a split: choose the form): A evolves it and you
+            // watch, B postpones it (the Evo Watch page's A evolves it any time). Once it's going there is
+            // no B: you said yes on the page (r70c's B-to-stop is what stopped his Pichu unseen).
+            const float t = static_cast<float>(nowFr - g.frEvoStartNs) / 1e9f;
+            if (g.frEvoStage == 0) {
+              if (step && (dir == 1 || dir == 2) && g.frEvo.options == 2) g.frEvoChoice = dir == 2 ? 1 : 0;
+              if (aPress && t > 0.5f) {
+                g.frEvoStage = 1;
+                g.frEvoStartNs = nowFr;
+                g.frEvoFanfare = false;
+                PortEvoMusic(0);  // r99: Pokemon Stadium (Melee) while it evolves
+                XLOG("franchise: evolving %s into %s (A on the EVO page)", g.frEvo.fromKey, g.frEvo.toKey[g.frEvoChoice]);
+              } else if (bPress && t > 0.5f) {
+                bool sh = false, ns = false;
+                PortFranchiseEvolveSlot(g.frEvo.backup, -1, &sh, &ns);
+                g.frEvoStage = 3;
+                g.frEvoStartNs = nowFr;
+                XLOG("franchise: evolution of %s postponed (B on the EVO page)", g.frEvo.fromKey);
+              }
+            } else if (g.frEvoStage == 1) {
+              if (t >= 8.5f && !g.frEvoFanfare) {  // r99: the flash: the Pokemon victory fanfare
+                g.frEvoFanfare = true;
+                PortEvoMusic(1);
+              }
+              if (t >= 8.8f) {  // r96: after the flash (8.5 s), in 3D or on the card
+                bool sh = false, ns = false;
+                PortFranchiseEvolveSlot(g.frEvo.backup, g.frEvoChoice, &sh, &ns);
+                g.frEvoNewShiny = ns;
+                g.frEvoStage = 2;
+                g.frEvoStartNs = nowFr;
+                changed = true;
+                XLOG("franchise: %s evolved into %s%s", g.frEvo.fromKey, g.frEvo.toKey[g.frEvoChoice], ns ? " (shiny)" : "");
+              }
+            } else if ((aPress || bPress) && t > 1.0f) {  // evolved / postponed: back to the hub (or the next one)
+              g.frMode = 2;
+              g.frCursor = 0;
+            }
+          } else if (g.frMode == 5) {  // r77: trades
+            if (g.frTradeStage == 0) {
+              if (step && dir == 3) g.frCursor = std::max(0, g.frCursor - 1);
+              if (step && dir == 4) g.frCursor = std::min(2, g.frCursor + 1);
+              if (aPress && PortFranchiseTradeOpen()) {
+                g.frTradeWhat = g.frCursor;
+                g.frTradeStage = 1;
+                g.frCursor = 0;
+                g.frTradeMsg.clear();
+              } else if (bPress || yPress) {
+                g.frMode = 2;
+                g.frCursor = 0;
+              }
+            } else {
+              const int count = static_cast<int>(g_frSnap.offers.size());
+              if (step && dir == 3) g.frCursor = std::max(0, g.frCursor - 1);
+              if (step && dir == 4) g.frCursor = std::max(0, std::min(count - 1, g.frCursor + 1));
+              if (aPress && g.frCursor < count) {
+                const PortFranchiseTradeOffer o = g_frSnap.offers[g.frCursor];
+                if (PortFranchiseTrade(g.frTradeWhat, o.club, o.backup)) {
+                  g.frTradeMsg = std::string("DONE: ") + o.name + " IS YOURS";
+                  XLOG("franchise: trade done, got %s", o.name);
+                  g.frTradeStage = 0;
+                  g.frCursor = g.frTradeWhat;
+                } else {
+                  g.frTradeMsg = std::string("THEY SAID NO: ") + o.name + " IS WORTH MORE TO THEM";
+                }
+              } else if (bPress) {
+                g.frTradeStage = 0;
+                g.frCursor = g.frTradeWhat;
+              }
+            }
+          } else {  // the hub: the club, the standings, the playoffs, last week's results
+            if (yPress && !PortFranchiseCoopGuest()) {  // r77: Y = trades (the friend's career: theirs to trade)
+              g.frMode = 5;
+              g.frTradeStage = 0;
+              g.frCursor = 0;
+              g.frTradeMsg.clear();
+              XLOG("franchise: trades");
+            }
+            const PortFranchiseLeagueView& lgv = g_frSnap.league;  // r100: an online league's
+            const int pageCount = lgv.active ? 11 : 10;
+            if (g.frPage >= pageCount) g.frPage = 0;
+            if (step && (dir == 1 || dir == 2)) {
+              // r71/r72: 8 pages; r77: 9 (the Evo Watch); r97: 10 (the difficulty); r100: 11 in a league (it)
+              g.frPage = (g.frPage + (dir == 2 ? 1 : pageCount - 1)) % pageCount;
+              g.frCursor = g.frPage == 9 ? std::max(0, std::min(3, PortFranchiseDifficulty() - 1)) : 0;
+            }
+            // r70b: no match of yours today: up / down picks "play out the day" or one of today's games
+            // to watch (CPU v CPU)
+            // with a match of yours: play it (0), work it out (1), or every week to the playoffs (2)
+            // r100: a league's: against a person only ready (0); against the CPU play or work it out (0-1)
+            const bool hasMatch = g_frSnap.view.nextOpponent >= 0;
+            const bool vsPerson = lgv.active && lgv.vsMember >= 0;
+            const int lastOption = g.frPage == 9 ? 3  // r97: the four difficulties
+                                   : g.frPage != 0 ? 0
+                                   : vsPerson ? 0
+                                   : hasMatch ? (g_frSnap.view.phase == PORT_FR_PHASE_REGULAR && !lgv.active ? 2 : 1)
+                                              : (g_frSnap.view.canSimDay ? g_frSnap.today.count : 0);
+            if (step && dir == 3) g.frCursor = std::max(0, g.frCursor - 1);
+            if (step && dir == 4) g.frCursor = std::min(lastOption, g.frCursor + 1);
+            if (g.frCursor > lastOption) g.frCursor = lastOption;
+            if (aPress && g.frPage == 0 && vsPerson && hasMatch) {
+              // r100: ready (or not) for the game against a person's club: both ready, it starts on both
+              PortFranchiseLeagueView now;
+              PortFranchiseLeagueGetView(&now);
+              if (PortFranchiseLeagueSetReady(!now.meReady))
+                XLOG("franchise: league: %s", now.meReady ? "not ready" : "ready for the online game");
+            } else if (aPress && g.frPage == 10 && lgv.active) {
+              if (PortFranchiseLeagueSimRest()) XLOG("franchise: league: the owner simmed the rest of the week");
+            } else if ((aPress || xPress) && g.frPage == 0) {
+              PortFranchiseView v;
+              PortFranchiseGetView(&v);
+              if (aPress && v.nextOpponent >= 0 && g.frCursor > 0) {
+                PortFranchiseSimMine(g.frCursor == 2);
+                g.frCursor = 0;
+              } else if (aPress && PortFranchisePlayNext()) {
+                XLOG("franchise: playing week %d", v.week);
+                g.frOpen = false;
+              } else if (aPress && v.canSimDay && g.frCursor > 0) {
+                if (PortFranchiseWatch(g.frCursor - 1)) {
+                  XLOG("franchise: watching game %d of the day", g.frCursor);
+                  g.frOpen = false;
+                }
+              } else if (v.canSimDay) {
+                // r70b: no match of yours today: A plays the day out, X every day until you play again
+                PortFranchiseSimDay(xPress);
+                g.frCursor = 0;
+              } else if (aPress && v.phase == PORT_FR_PHASE_DONE) {
+                PortFranchiseNextSeason();
+              } else if (xPress) {
+                PortFranchiseSwapStarter();
+              }
+            } else if (aPress && g.frPage == 9) {
+              // r97: A on the difficulty page sets it
+              if (PortFranchiseSetDifficulty(g.frCursor + 1)) XLOG("franchise: difficulty %d", g.frCursor + 1);
+            } else if (aPress && g.frPage == 8) {
+              // r95: A on the Evo Watch page: the EVO page for one of yours that's ready (postponed ones too)
+              PortFranchiseEvolution e;
+              if (PortFranchiseReadyEvolution(&e)) {
+                g.frEvo = e;
+                g.frMode = 3;
+                g.frEvoStage = 0;
+                g.frEvoChoice = 0;
+                g.frEvoNewShiny = false;
+                g.frEvoStartNs = nowFr;
+                XLOG("franchise: the EVO page for %s (Lv %d, from the Evo Watch)", e.fromKey, e.level);
+              }
+            } else if (bPress) {
+              PortFranchiseView v;
+              PortFranchiseGetView(&v);
+              g.frMode = 0;
+              g.frCursor = v.active ? v.slot : 0;
+            }
+          }
+          if (changed && g.frOpen) fr_refresh();
+          // r76, co-op: the career this headset waited for came in (the hub opens on it), the loaded one
+          // changed from the friend's side, or the co-op card's state moved (the friend came, opened it)
+          if (g.frOpen && PortFranchiseCoopTakeOpened()) {
+            g.frMode = 2;
+            g.frPage = 0;
+            g.frCursor = 0;
+            g.frOpenNs = nowFr;
+            XLOG("franchise: the friend's co-op career came in: open (%s)",
+                 PortFranchiseCoopGuest() ? "the friend runs it" : "run here");
+            fr_refresh();
+          }
+          if (g.frOpen && PortFranchiseLeagueTakeOpened()) {  // r100: a league joined: its hub
+            g.frMode = 2;
+            g.frPage = 0;
+            g.frCursor = 0;
+            g.frOpenNs = nowFr;
+            XLOG("franchise: the online league joined: open");
+            fr_refresh();
+          }
+          if (g.frOpen && PortFranchiseChangeSerial() != g.frChangeSerial) {
+            g.frChangeSerial = PortFranchiseChangeSerial();
+            fr_refresh();
+          }
+          {
+            int has = 0, inHub = 0;
+            unsigned id = 0, version = 0;
+            const int known = PortNetCoopFriendCareer(&has, &id, &version, &inHub);
+            const long long key = PortFranchiseCoopState() * 1000003LL + known * 11 + has * 5 + inHub * 2 +
+                                  static_cast<long long>(version) * 37 + id;
+            if (g.frOpen && key != g.frCoopKey) {
+              g.frCoopKey = key;
+              fr_refresh();
+            }
+          }
+          if (g.frOpen && PortFranchiseMatchStarting()) g.frOpen = false;  // (the friend started the co-op match)
+          // r70c: one of your Pokemon ready to evolve: the hub shows it first
+          if (g.frOpen && g.frMode == 2 && g_frSnap.view.evolutionPending && PortFranchisePendingEvolution(&g.frEvo)) {
+            g.frMode = 3;
+            g.frEvoStage = 0;  // r95: the EVO page first (A: evolve and watch, B: not now)
+            g.frEvoChoice = 0;
+            g.frEvoNewShiny = false;
+            g.frEvoStartNs = now_ns();
+            XLOG("franchise: %s is evolving (Lv %d)", g.frEvo.fromKey, g.frEvo.level);
+            fr_refresh();
+          }
+          status.stickX = status.stickY = status.substickX = status.substickY = 0;
+          status.triggerLeft = status.triggerRight = 0;
+          status.button &= static_cast<u16>(PAD_BUTTON_START);
+        }
+        g.frPrevX = xDown;
+        if (g.frHoldA) {
+          if (frRawA) status.button &= static_cast<u16>(~PAD_BUTTON_A);
+          else g.frHoldA = false;
+        }
+        if (g.frHoldB) {
+          if (frRawB) status.button &= static_cast<u16>(~PAD_BUTTON_B);
+          else g.frHoldB = false;
+        }
+      }
       // r42/r44/r44g: while paused, the settings panel (r51: not while the achievements list covers it).
       settings_input(g.achOpen ? XrVector2f{0.0f, 0.0f} : stickR);
       update_crowd_mix();
@@ -2248,9 +4685,17 @@ void sync_input() {
       apply_rumble();
     }
   }
+  // r76: a franchise match on its way from the main menu (a co-op one waits there for the friend's
+  // headset): the menu gets nothing (it would move under the wait); B held still stops the wait (below).
+  const bool holdB = (status.button & PAD_BUTTON_B) != 0;
+  if (PortFranchiseMatchStarting()) {
+    status.button = 0;
+    status.stickX = status.stickY = status.substickX = status.substickY = 0;
+    status.triggerLeft = status.triggerRight = 0;
+  }
   // r47: waiting at the match start for the online friend, B held 2 s stops the wait (the match
   // then goes ahead against the computer).
-  if (xrnet::waiting_for_friend() != 0 && (status.button & PAD_BUTTON_B) != 0) {
+  if (xrnet::waiting_for_friend() != 0 && holdB) {
     const uint64_t tb = now_ns();
     if (g.holdBSinceNs == 0) {
       g.holdBSinceNs = tb;
@@ -2678,11 +5123,17 @@ void request_panel(AsyncPanel& a, int generation, uint32_t w, uint32_t h, Draw d
 }
 
 // Uploads the newest drawing; true once there is one to show.
+// r95 (Lance saw nothing of Pichu evolving, then "you stopped Pichu from evolving" when he pressed B): it
+// waited for the drawing that was asked for LAST. The evolution scene asks for a new picture ~15 times a
+// second, each drawn slower than that, so every finished one had a newer ask by the frame it was done
+// and none ever went up (log: "pk_pichu is evolving", no picture, B 5 s later). Now the newest finished
+// one goes up, whatever is asked for after it.
 bool show_panel(AsyncPanel& a, Panel& p) {
-  if (a.requested > 0 && a.ready.load() == a.requested && a.shown != a.requested) {
+  if (a.ready.load() > a.shown) {
     std::lock_guard<std::mutex> lock(a.mutex);
+    const int ready = a.ready.load();
     panel_upload(p, a.pixels.data(), a.width, a.height);
-    a.shown = a.requested;
+    a.shown = ready;
   }
   return p.hasImage;
 }
@@ -2703,16 +5154,51 @@ std::string date_text(int64_t when) {
   return upper(buf);
 }
 
+// r87: a home-ground captain that may be an imported one (its pack, "" = the Strikers captain): its roster
+// place (-1: none, or not on this headset any more), shown name, colours (xrfx: 100 + roster place) and
+// banner motif (100 + its outline's cell, an evolved form's first form's; else class + 1).
+int home_guest_index(const std::string& pack) {
+  return pack.empty() ? -1 : PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, pack.c_str());
+}
+std::string home_name(int cls, const std::string& pack) {
+  const int idx = home_guest_index(pack);
+  const char* n = idx >= 0 ? PortGuestRosterName(idx) : nullptr;
+  return upper(n != nullptr && n[0] != '\0' ? std::string(n) : std::string(xrhome::captain_name(cls)));
+}
+int home_colour_code(int cls, const std::string& pack) {
+  const int idx = home_guest_index(pack);
+  return idx >= 0 ? 100 + idx : cls;
+}
+// The imported captain picked (this mode) for the team of Strikers captain `cls`, "" none: the cup suite's
+// table and banners (eTeamID order: Daisy, Donkey Kong, Luigi, Mario, Peach, Waluigi, Wario, Yoshi).
+std::string cup_captain_guest(int cls) {
+  static const int kTeamCaptain[8] = {1, 2, 5, 6, 7, 9, 10, 11};
+  for (int team = 0; team < 8; ++team) {
+    if (kTeamCaptain[team] != cls) continue;
+    const int idx = PortGuestGetPick(team, PORT_GUEST_CAPTAIN);
+    const char* pack = idx >= 0 ? PortGuestRosterPack(idx) : nullptr;
+    return pack != nullptr ? std::string(pack) : std::string();
+  }
+  return std::string();
+}
+int home_motif(int cls, const std::string& pack) {
+  int idx = home_guest_index(pack);
+  if (idx < 0) return cls + 1;
+  for (int guard = 0; guard < 4 && idx >= 0 && PortGuestRosterEvolved(idx); ++guard)
+    idx = PortGuestRosterFindAny(0, PortGuestRosterEvolvesFrom(idx));
+  return idx >= 0 && idx < 64 ? 100 + idx : 0;
+}
+
 // The home board's text, from the home ground's state.
 void request_home_board(const xrhome::View& v) {
   uint32_t c1 = 0, c2 = 0;
-  xrfx::team_colours(v.captain, &c1, &c2);
+  xrfx::team_colours(home_colour_code(v.captain, v.captainGuest), &c1, &c2);
   struct Text {
     std::string title, label[4], value[4], tag[4], note[4];
     uint32_t tagRgb[4] = {0x5A6680, 0x5A6680, 0x5A6680, 0x5A6680};
     uint32_t noteRgb[4] = {0x9AA6BE, 0x9AA6BE, 0x9AA6BE, 0x9AA6BE};
   } t;
-  t.title = upper(xrhome::captain_name(v.captain)) + "'S HOME GROUND";
+  t.title = home_name(v.captain, v.captainGuest) + "'S HOME GROUND";
   auto record = [](const xrhome::Record& r, std::string* tag, uint32_t* rgb) {
     *tag = std::to_string(r.wins) + " - " + std::to_string(r.losses) + (r.draws > 0 ? " - " + std::to_string(r.draws) : "");
     *rgb = r.wins > r.losses ? 0x2FA84A : (r.wins < r.losses ? 0xD8303A : 0x5A6680);
@@ -2720,8 +5206,8 @@ void request_home_board(const xrhome::View& v) {
   t.label[0] = "LAST MATCH";
   if (v.last.valid) {
     const std::string them = v.last.online ? (v.last.theirName.empty() ? "A FRIEND" : upper(v.last.theirName))
-                                           : upper(xrhome::captain_name(v.last.theirCaptain));
-    t.value[0] = upper(xrhome::captain_name(v.last.myCaptain)) + " " + std::to_string(v.last.mine) + " - " +
+                                           : home_name(v.last.theirCaptain, v.last.theirGuest);
+    t.value[0] = home_name(v.last.myCaptain, v.last.myGuest) + " " + std::to_string(v.last.mine) + " - " +
                  std::to_string(v.last.theirs) + " " + them;
     const bool won = v.last.mine > v.last.theirs, lost = v.last.mine < v.last.theirs;
     t.tag[0] = won ? "WIN" : (lost ? "LOSS" : "DRAW");
@@ -2734,7 +5220,7 @@ void request_home_board(const xrhome::View& v) {
   }
   t.label[1] = "CPU RIVAL";
   if (v.cpu.valid) {
-    t.value[1] = upper(xrhome::captain_name(v.cpu.captain));
+    t.value[1] = home_name(v.cpu.captain, v.cpu.guest);
     record(v.cpu.record, &t.tag[1], &t.tagRgb[1]);
     if (v.cpu.record.lastLost) {
       t.note[1] = t.value[1] + " RUNS YOUR HOUSE UNTIL YOU BEAT THEM";
@@ -2765,10 +5251,10 @@ void request_home_board(const xrhome::View& v) {
                std::to_string(v.superStrikes) + " SUPER STRIKE GOAL" + (v.superStrikes == 1 ? "" : "S");
   t.tag[3] = std::to_string(v.matches) + " GAME" + (v.matches == 1 ? "" : "S");
   if (v.ticket.valid) {
-    t.note[3] = "FIRST WIN: " + upper(xrhome::captain_name(v.ticket.myCaptain)) + " " + std::to_string(v.ticket.mine) +
+    t.note[3] = "FIRST WIN: " + home_name(v.ticket.myCaptain, v.ticket.myGuest) + " " + std::to_string(v.ticket.mine) +
                 " - " + std::to_string(v.ticket.theirs) + " " +
                 (v.ticket.online ? (v.ticket.theirName.empty() ? std::string("A FRIEND") : upper(v.ticket.theirName))
-                                 : upper(xrhome::captain_name(v.ticket.theirCaptain)));
+                                 : home_name(v.ticket.theirCaptain, v.ticket.theirGuest));
   }
   request_panel(g_homeBoard, v.generation, 640, 440, [t, c1, c2](uint8_t* px, int w, int h) {
     xrtext::HomeLine lines[4];
@@ -2779,12 +5265,12 @@ void request_home_board(const xrhome::View& v) {
   });
   if (v.ticket.valid) {
     uint32_t t1 = 0, t2 = 0;
-    xrfx::team_colours(v.ticket.myCaptain, &t1, &t2);
+    xrfx::team_colours(home_colour_code(v.ticket.myCaptain, v.ticket.myGuest), &t1, &t2);
     const std::string score =
-        upper(xrhome::captain_name(v.ticket.myCaptain)) + "  " + std::to_string(v.ticket.mine) + " - " +
+        home_name(v.ticket.myCaptain, v.ticket.myGuest) + "  " + std::to_string(v.ticket.mine) + " - " +
         std::to_string(v.ticket.theirs) + "  " +
         (v.ticket.online ? (v.ticket.theirName.empty() ? std::string("A FRIEND") : upper(v.ticket.theirName))
-                         : upper(xrhome::captain_name(v.ticket.theirCaptain)));
+                         : home_name(v.ticket.theirCaptain, v.ticket.theirGuest));
     const std::string date = date_text(v.ticket.when);
     request_panel(g_ticket, static_cast<int>(v.ticket.when & 0x7FFFFFFF), 512, 256,
                   [score, date, t1, t2](uint8_t* px, int w, int h) {
@@ -2796,7 +5282,7 @@ void request_home_board(const xrhome::View& v) {
 // A home piece for the scene (up to its 24).
 xrfx::Scene::HomePiece* add_piece(xrfx::Scene& scene, int kind, const XrVector3f& at, const XrQuaternionf& q, float size,
                                   uint32_t rgb1, uint32_t rgb2, int theme, float glow) {
-  if (scene.homeCount >= 24) return nullptr;
+  if (scene.homeCount >= static_cast<int>(sizeof(scene.homePieces) / sizeof(scene.homePieces[0]))) return nullptr;  // r89: 40
   xrfx::Scene::HomePiece& p = scene.homePieces[scene.homeCount++];
   p.kind = kind;
   p.pose.position = at;
@@ -2818,11 +5304,258 @@ XrQuaternionf sway(const XrQuaternionf& base, float t, float amount, float speed
   return q_mul(base, tilt);
 }
 
-// The rival who gloats in your space after beating you (their captain), -1 none.
-int gloating_rival(const xrhome::View& v) {
-  if (v.cpu.valid && v.cpu.record.lastLost) return v.cpu.captain;
-  if (v.online.valid && v.online.record.lastLost && v.last.valid && v.last.online) return v.last.theirCaptain;
+// The rival who gloats in your space after beating you (their captain, -1 none; r87: `guest` its imported
+// one, "" none).
+int gloating_rival(const xrhome::View& v, std::string* guest) {
+  guest->clear();
+  if (v.cpu.valid && v.cpu.record.lastLost) {
+    *guest = v.cpu.guest;
+    return v.cpu.captain;
+  }
+  if (v.online.valid && v.online.record.lastLost && v.last.valid && v.last.online) {
+    *guest = v.last.theirGuest;
+    return v.last.theirCaptain;
+  }
   return -1;
+}
+
+// r89: the home corner's standee (the home captain's portrait over a gold plate, as awards night's).
+AsyncPanel g_cornerP;
+Panel g_cornerPanel;
+XrCompositionLayerQuad g_cornerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+constexpr uint32_t kCornerW = 400, kCornerH = 640;
+float mode_floor_y();  // below
+
+// --- r96 (Lance: "i want to watch that shit occur in 3D and i want their celebration stuff minus the
+// confetti to fall during that process ... for pichu, it should JUST be lightning that falls, for squirtle it
+// should be water that falls/water cannons, charmander -- fire"): the evolution in your room. ---
+//
+// The hub's mode 3 with the Pokemon standing life-size on your floor between you and the big screen
+// (xr_evo.cpp figures, drawn in the effects layer), facing you, in its own standing idle:
+//   EVO page (stage 0): the old form in its colours.
+//   evolving (stage 1, 8.8 s): its theme starts (xrfx::evo_theme: what falls in its celebration, its room
+//     effects, its show - no confetti), growing; at 1.2 s it turns white (2.4 s all white, glowing); from
+//     2.6 s the white shape flips between the old and the new form, faster and faster, pulsing; at 8.5 s the
+//     flash (xrfx::evo_burst: rings, its pieces flung out, sparks, your view white).
+//   evolved (stage 2): the new form comes out of the white in its colours (a shiny one twinkling), its
+//     theme for 6 s more.
+//   postponed (stage 3): the old form, no theme.
+// The big screen's card is its backdrop then (the light, the words). The figures load on a thread
+// (slot 0 the old form, 1 the new: a split's chosen one; the shiny pack's pictures when shiny), go up
+// to the GPU here.
+void floor_forward(const XrPosef& pose, float* fx, float* fz);  // below
+
+struct EvoLoaded {
+  int slot = 0;
+  std::string pack;
+  xrevo::Figure* fig = nullptr;
+  xrfx::Model model;
+};
+std::mutex g_evoLoadMutex;
+std::vector<EvoLoaded> g_evoLoaded;  // under g_evoLoadMutex
+
+struct EvoShow {
+  bool live = false;          // a figure stands in the room now (the card is its backdrop)
+  std::string want[2], have[2], asked[2];
+  xrevo::Figure* fig[2] = {nullptr, nullptr};
+  bool placed = false;
+  XrVector3f feet{0.0f, 0.0f, 0.0f};
+  float yaw = 0.0f;
+  XrVector3f from{0.0f, 0.0f, 0.0f};  // your head when it was placed, and the way to the big screen
+  float dirX = 0.0f, dirZ = -1.0f, baseDist = 1.3f;
+  std::vector<float> verts[2];
+  int stage = -1;
+  uint64_t burstStart = 0;    // the stage-1 start its burst was for
+  uint64_t stage2Start = 0;
+  bool themeEnded = true;
+};
+EvoShow g_evoShow;
+
+void evo_request(int slot, const std::string& pack, const std::string& posePack) {
+  std::thread([slot, pack, posePack]() {
+    EvoLoaded l;
+    l.slot = slot;
+    l.pack = pack;
+    l.fig = xrevo::load(pack, posePack, &l.model);
+    if (l.fig == nullptr && pack != posePack) {  // a shiny pack not there: the normal one
+      l.fig = xrevo::load(posePack, posePack, &l.model);
+    }
+    std::lock_guard<std::mutex> lock(g_evoLoadMutex);
+    g_evoLoaded.push_back(std::move(l));
+  }).detach();
+}
+
+void evo_clear() {
+  EvoShow& es = g_evoShow;
+  for (int i = 0; i < 2; ++i) {
+    if (es.fig[i] != nullptr) {
+      xrevo::release(es.fig[i]);
+      es.fig[i] = nullptr;
+      xrfx::set_model(i, xrfx::Model{});
+    }
+    es.want[i].clear();
+    es.have[i].clear();
+    es.asked[i].clear();
+    es.verts[i].clear();
+  }
+  if (!es.themeEnded) xrfx::evo_end();
+  es.themeEnded = true;
+  es.live = false;
+  es.placed = false;
+  es.feet = {0.0f, 0.0f, 0.0f};
+  es.stage = -1;
+}
+
+void update_evo(xrfx::Scene& scene, uint64_t nowNs) {
+  EvoShow& es = g_evoShow;
+  const bool on = g.fxReady && g.frOpen && g.frMode == 3 && g.headValid && !g.inSuite;
+  // what the threads have read: kept if still wanted, else let go
+  {
+    std::vector<EvoLoaded> done;
+    {
+      std::lock_guard<std::mutex> lock(g_evoLoadMutex);
+      done.swap(g_evoLoaded);
+    }
+    for (EvoLoaded& l : done) {
+      if (!on || l.fig == nullptr || l.pack != es.want[l.slot]) {
+        if (l.fig != nullptr) xrevo::release(l.fig);
+        if (l.fig == nullptr && on && l.pack == es.want[l.slot]) XLOG("evo: no 3D figure for %s (the card shows it)", l.pack.c_str());
+        continue;
+      }
+      if (es.fig[l.slot] != nullptr) xrevo::release(es.fig[l.slot]);
+      es.fig[l.slot] = l.fig;
+      es.have[l.slot] = l.pack;
+      xrfx::set_model(l.slot, std::move(l.model));
+    }
+  }
+  if (!on) {
+    if (es.fig[0] != nullptr || es.fig[1] != nullptr || es.live || !es.themeEnded) evo_clear();
+    return;
+  }
+  const PortFranchiseEvolution& e = g.frEvo;
+  const int choice = e.options == 2 ? std::max(0, std::min(1, g.frEvoChoice)) : 0;
+  const int stage = g.frEvoStage;
+  const std::string from = e.fromKey, to = e.toKey[choice];
+  const bool fromShiny = e.shiny, toShiny = e.shiny || (stage == 2 && g.frEvoNewShiny);
+  es.want[0] = from + (fromShiny ? "_shiny" : "");
+  es.want[1] = to + (toShiny ? "_shiny" : "");
+  for (int i = 0; i < 2; ++i) {
+    if (!es.want[i].empty() && es.want[i] != es.asked[i]) {
+      es.asked[i] = es.want[i];
+      evo_request(i, es.want[i], i == 0 ? from : to);
+    }
+  }
+  if (stage != es.stage) {
+    if (stage == 1) es.burstStart = 0;
+    if (stage == 2) es.stage2Start = g.frEvoStartNs;
+    es.stage = stage;
+  }
+  // its place: on your floor between you and the big screen (or ahead of you), facing you, once a show
+  if (!es.placed) {
+    const XrVector3f head = g.headPose.position;
+    float fx = 0.0f, fz = -1.0f, d = 3.0f;
+    if (scene.screenValid) {
+      fx = scene.screenPose.position.x - head.x;
+      fz = scene.screenPose.position.z - head.z;
+      d = std::sqrt(fx * fx + fz * fz);
+      if (d > 0.2f) {
+        fx /= d;
+        fz /= d;
+      } else {
+        floor_forward(g.headPose, &fx, &fz);
+        d = 3.0f;
+      }
+    } else {
+      floor_forward(g.headPose, &fx, &fz);
+    }
+    es.from = head;
+    es.dirX = fx;
+    es.dirZ = fz;
+    es.baseDist = std::max(1.3f, std::min(2.1f, 0.5f * d));
+    es.yaw = std::atan2(fz, -fx);  // its +X (its front) toward you: (cos yaw, -sin yaw) = (-fx, -fz)
+    es.placed = true;
+  }
+  // how far: its nearest point (the farther-reaching form's, its head or snout) a metre from you; fixed once
+  // it starts to evolve
+  if (stage == 0 || (es.feet.x == 0.0f && es.feet.z == 0.0f)) {
+    float reach = 0.0f;
+    for (int i = 0; i < 2; ++i) {
+      if (es.fig[i] == nullptr) continue;
+      const float hh = xrevo::height(es.fig[i]);
+      reach = std::max(reach, xrevo::front(es.fig[i]) * (hh > 1.9f ? 1.9f / hh : 1.0f));
+    }
+    const float dist = std::max(es.baseDist, reach + 1.0f);
+    const XrVector3f feet{es.from.x + es.dirX * dist, scene.floorY, es.from.z + es.dirZ * dist};
+    if (std::fabs(feet.x - es.feet.x) + std::fabs(feet.z - es.feet.z) > 0.01f) {
+      XLOG("evo: the 3D evolution stands %.2f m ahead (reach %.2f, floor %.2f)", dist, reach, scene.floorY);
+    }
+    es.feet = feet;
+  }
+  const float t = static_cast<float>(nowNs - g.frEvoStartNs) / 1e9f;
+  const float clock = static_cast<float>(static_cast<double>(nowNs % 3600000000000ull) / 1e9);
+  // which figure, how white, how it glows
+  int show = 0;
+  float white = 0.0f, glow = 0.0f, pulse = 1.0f;
+  if (stage == 1) {
+    white = std::min(1.0f, std::max(0.0f, (t - 1.2f) / 1.2f));
+    if (t >= 2.6f && t < 8.5f && es.fig[1] != nullptr) {
+      const float W = 5.9f, u = t - 2.6f;
+      const float phase = 1.1f * u + 3.0f * u * u * u / (W * W);
+      show = (static_cast<int>(std::floor(2.0f * phase)) & 1) != 0 ? 1 : 0;
+      pulse = 1.0f + 0.05f * std::sin(phase * 6.2831853f);
+    }
+    if (t >= 8.5f && es.fig[1] != nullptr) show = 1;
+    glow = std::min(1.0f, std::max(0.0f, (t - 1.2f) / 7.3f));
+  } else if (stage == 2) {
+    show = es.fig[1] != nullptr ? 1 : 0;
+    white = std::max(0.0f, 1.0f - (t + 0.3f) / 1.1f);
+    glow = 0.6f * white;
+  }
+  if (es.fig[show] == nullptr) {
+    es.live = false;
+    scene.models[0].on = scene.models[1].on = false;
+    return;
+  }
+  es.live = true;
+  const xrevo::Figure* f = es.fig[show];
+  const float h = xrevo::height(f);
+  const float scale = h > 1.9f ? 1.9f / h : 1.0f;
+  // the evolution's white growing a touch as it glows (the games' swelling silhouette)
+  const float s = scale * pulse * (1.0f + 0.04f * glow);
+  float lift = 0.0f;
+  if (stage == 1 && white > 0.0f) lift = 0.12f * white * (0.6f + 0.4f * std::sin(clock * 2.2f));  // it rises in its light
+  xrevo::pose(f, clock, es.feet, es.yaw, s, lift, &es.verts[show]);
+  xrfx::Scene::ModelDraw& md = scene.models[show];
+  md.on = true;
+  md.posNrm = es.verts[show].data();
+  md.white = white;
+  md.alpha = 1.0f;
+  md.glow = glow;
+  md.glowRgb = 0xBFE0FF;
+  md.under = stage == 1 || (stage == 2 && t < 6.0f) ? 0.35f : 0.0f;
+  md.flameFrame = static_cast<int>((nowNs / 83000000ull) % 3);
+  scene.models[1 - show].on = false;
+  // its theme (no confetti): while it evolves and 6 s after
+  const float H = h * s;
+  const float R = std::max(0.7f, 1.6f * xrevo::radius(f) * s);
+  if (stage == 1) {
+    xrfx::evo_theme(from.c_str(), es.feet, R, std::max(2.0f, H + 0.8f), 0.5f + 1.3f * std::min(1.0f, t / 8.5f));
+    es.themeEnded = false;
+    if (t >= 8.5f && es.burstStart != g.frEvoStartNs) {
+      es.burstStart = g.frEvoStartNs;
+      xrfx::evo_burst(scene, es.feet, H, 0xFFF4C0);
+      XLOG("evo: the flash");
+    }
+  } else if (stage == 2 && t < 6.0f) {
+    xrfx::evo_theme(to.c_str(), es.feet, R, std::max(2.0f, H + 0.8f), 1.0f);
+    es.themeEnded = false;
+  } else if (!es.themeEnded) {
+    xrfx::evo_end();
+    es.themeEnded = true;
+  }
+  // a shiny one twinkles (in its colours: before it turns white, and once it's out of the white)
+  const bool shinyNow = show == 0 ? fromShiny : toShiny;
+  if (shinyNow && white < 0.5f) xrfx::evo_sparkle(es.feet, 1.2f * xrevo::radius(f) * s, H, scene.dt);
 }
 
 void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount,
@@ -2832,10 +5565,14 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
   const bool board = show_panel(g_homeBoard, g.homePanel);
   const bool ticket = v.ticket.valid && show_panel(g_ticket, g.ticketPanel);
   uint32_t c1 = 0, c2 = 0;
-  xrfx::team_colours(v.captain, &c1, &c2);
-  const int rival = gloating_rival(v);
+  xrfx::team_colours(home_colour_code(v.captain, v.captainGuest), &c1, &c2);
+  std::string rivalGuest;
+  const int rival = gloating_rival(v, &rivalGuest);
   uint32_t r1 = 0, r2 = 0;
-  if (rival >= 0) xrfx::team_colours(rival, &r1, &r2);
+  if (rival >= 0) xrfx::team_colours(home_colour_code(rival, rivalGuest), &r1, &r2);
+  // r87: the banners' motifs (an imported captain's own outline)
+  const int homeMotif = home_motif(v.captain, v.captainGuest);
+  const int rivalMotif = rival >= 0 ? home_motif(rival, rivalGuest) : 0;
   const float t = static_cast<float>(now_ns() % 1000000000000ull) / 1e9f;
   auto push_quad = [&](XrCompositionLayerQuad& q) {
     if (*layerCount < 24) layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
@@ -2849,9 +5586,9 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
       return XrVector3f{g.shelf.position.x + x * cs + z * sn, g.shelf.position.y + y, g.shelf.position.z - x * sn + z * cs};
     };
     const XrQuaternionf q = yaw_quat(yaw);
-    add_piece(scene, 0, at(-0.66f, 0.62f, -0.06f), sway(q, t, 0.03f, 1.1f), 0.62f, c1, c2, v.captain + 1, 0.0f);
+    add_piece(scene, 0, at(-0.66f, 0.62f, -0.06f), sway(q, t, 0.03f, 1.1f), 0.62f, c1, c2, homeMotif, 0.0f);
     if (rival >= 0) {
-      add_piece(scene, 0, at(-0.98f, 0.66f, -0.06f), sway(q, t, 0.12f, 4.0f), 0.62f, r1, r2, rival + 1,
+      add_piece(scene, 0, at(-0.98f, 0.66f, -0.06f), sway(q, t, 0.12f, 4.0f), 0.62f, r1, r2, rivalMotif,
                 0.12f + 0.08f * std::sin(t * 6.0f));
     }
     if (board) {
@@ -2878,6 +5615,76 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
     if (v.comebacks > 0) {
       add_piece(scene, 1, at(0.85f, ledgeY + 0.016f + 0.1f, 0.0f), sway(q, t, 0.04f, 1.6f), 0.2f, c1, 0xFFD21F, 20, 0.0f);
     }
+    // r89 (Lance: "a home ground for EVERY character" - its own corner in your room): on the floor in front
+    // of the shelf, the captain's rug; on it a display pedestal with its things (what falls in its
+    // celebration: swords and shields, bones, a Poke Ball ...; a flame burns on it, sparks crackle: xr_fx's
+    // corner_ambient) and its portrait standing beside it.
+    {
+      const float floorY = mode_floor_y();
+      auto on_floor = [&](float x, float z, float y) {
+        const XrVector3f p = at(x, 0.0f, z);
+        return XrVector3f{p.x, floorY + y, p.z};
+      };
+      const int guestIdx = home_guest_index(v.captainGuest);
+      const char* pack = guestIdx >= 0 ? v.captainGuest.c_str() : "";
+      // r91 (Lance: Cubone's "bone podium thing wasnt aligned with the center of the circle"): the display
+      // stands in the rug's middle; the standee beside the rug, not on it
+      constexpr float kRugX = -0.2f, kRugZ = 0.35f;
+      add_piece(scene, 7, on_floor(kRugX, kRugZ, 0.0f), q, 1.1f, c1, c2, homeMotif, 0.0f);
+      const float pedH = 0.8f;
+      const XrVector3f pedAt = on_floor(kRugX, kRugZ, 0.5f * pedH);
+      add_piece(scene, 4, pedAt, q, pedH, 0, 0, 0, 0.0f);
+      const XrVector3f topAt{pedAt.x, floorY + pedH, pedAt.z};
+      int shapes[3];
+      uint32_t pc1[3], pc2[3];
+      const int np = xrfx::corner_props(pack, v.captain, shapes, pc1, pc2);
+      for (int k = 0; k < np; ++k) {
+        if (k == 0) {
+          // the main one hovering over the middle, turning
+          const XrVector3f p{topAt.x, topAt.y + 0.17f + 0.02f * std::sin(t * 1.4f), topAt.z};
+          add_piece(scene, 6, p, yaw_quat(0.6f * t), 0.2f, pc1[k], pc2[k], shapes[k], 0.0f);
+        } else {
+          // the others going round it
+          const float ang = 0.45f * t + 6.2831853f * static_cast<float>(k - 1) / static_cast<float>(std::max(1, np - 1));
+          const XrVector3f p{topAt.x + 0.17f * std::cos(ang), topAt.y + 0.09f + 0.015f * std::sin(t * 2.0f + k),
+                             topAt.z + 0.17f * std::sin(ang)};
+          add_piece(scene, 6, p, yaw_quat(-ang + 1.2f * t), 0.12f, pc1[k], pc2[k], shapes[k], 0.0f);
+        }
+      }
+      scene.cornerOn = true;
+      scene.cornerTop = topAt;
+      scene.cornerRug = on_floor(kRugX, kRugZ, 0.0f);
+      scene.cornerRadius = 0.55f;
+      scene.cornerClass = v.captain;
+      std::snprintf(scene.cornerPack, sizeof(scene.cornerPack), "%s", pack);
+      // its portrait, standing on the rug beside the display
+      static const char* const kPortraitName[12] = {"birdo", "daisy", "donkeykong", "hammerbro", "koopa", "luigi",
+                                                    "mario", "peach", "toad", "waluigi", "wario", "yoshi"};
+      const std::string portrait = guestIdx >= 0 ? v.captainGuest
+                                                 : std::string("strikers_") +
+                                                       (v.captain >= 0 && v.captain < 12 ? kPortraitName[v.captain] : "mario");
+      const std::string name = home_name(v.captain, v.captainGuest);
+      const int gen = static_cast<int>(std::hash<std::string>()(portrait + "|" + name) & 0x7FFFFFFF);
+      request_panel(g_cornerP, gen, kCornerW, kCornerH, [portrait, name](uint8_t* px, int w, int h) {
+        const GuestPortrait& p = guest_portrait(portrait);
+        xrtext::award_standee(px, w, h, p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, "HOME GROUND", name.c_str());
+      });
+      if (show_panel(g_cornerP, g_cornerPanel)) {
+        const float height = 0.95f;
+        const float width = height * static_cast<float>(kCornerW) / static_cast<float>(kCornerH);
+        place_panel(g_cornerQuad, g_cornerPanel, on_floor(kRugX + 0.8f, kRugZ - 0.05f, 0.5f * height), width);
+        push_quad(g_cornerQuad);
+        // r91 (Lance: Cubone's "flat ass picture not even being visible"): the effects layer goes over the
+        // quad layers, so the rug, display and effects covered the standee wherever they crossed it: now a
+        // stand-in for it there (as the cup suite's boards), hiding what is behind it and leaving it seen
+        if (scene.panelCount < 4) {
+          xrfx::Scene::Panel& pn = scene.panels[scene.panelCount++];
+          pn.pose = g_cornerQuad.pose;
+          pn.width = g_cornerQuad.size.width;
+          pn.height = g_cornerQuad.size.height;
+        }
+      }
+    }
   }
 
   // Beside the big screen in your room: your banners either side (the rival's on the right while
@@ -2892,16 +5699,34 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
     };
     const float side = 0.5f * w + 0.3f * size;
     const float y = 0.5f * h - 0.5f * size;
-    add_piece(scene, 0, along(-side, y, 0.02f), sway(sp.orientation, t, 0.03f, 1.0f), size, c1, c2, v.captain + 1, 0.0f);
+    add_piece(scene, 0, along(-side, y, 0.02f), sway(sp.orientation, t, 0.03f, 1.0f), size, c1, c2, homeMotif, 0.0f);
     if (rival >= 0) {
-      add_piece(scene, 0, along(side, y, 0.02f), sway(sp.orientation, t, 0.1f, 4.0f), size, r1, r2, rival + 1, 0.1f);
+      add_piece(scene, 0, along(side, y, 0.02f), sway(sp.orientation, t, 0.1f, 4.0f), size, r1, r2, rivalMotif, 0.1f);
     } else {
-      add_piece(scene, 0, along(side, y, 0.02f), sway(sp.orientation, t, 0.03f, 1.2f), size, c1, c2, v.captain + 1, 0.0f);
+      add_piece(scene, 0, along(side, y, 0.02f), sway(sp.orientation, t, 0.03f, 1.2f), size, c1, c2, homeMotif, 0.0f);
+    }
+    // r70b: the Super Strike Series bunting while your franchise club is in the playoffs (or champion):
+    // a row of little banners along the screen's top, gold with a star and your club's colours in turn
+    // (champions: all gold, glowing).
+    float buntingH = 0.0f;
+    if (g_frBuntingOn.load()) {
+      const bool champ = g_frChampion.load();
+      const uint32_t f1 = g_frBunting1.load(), f2 = g_frBunting2.load();
+      const int count = 9;
+      const float bs = std::max(0.12f, std::min(0.26f, 0.9f * w / count / 0.6f));
+      const float y0 = 0.5f * h + 0.02f + 0.5f * bs;
+      for (int i = 0; i < count; ++i) {
+        const float x = (static_cast<float>(i) - 0.5f * (count - 1)) * (w / count);
+        const bool gold = champ || (i % 2) == 0;
+        add_piece(scene, 0, along(x, y0, 0.03f), sway(sp.orientation, t + 0.37f * i, 0.05f, 1.3f), bs,
+                  gold ? 0xFFD21F : f1, gold ? 0x16306E : f2, 0, champ ? 0.25f + 0.1f * std::sin(t * 3.0f + i) : 0.0f);
+      }
+      buntingH = bs + 0.03f;
     }
     if (board) {
       const float bw = std::max(0.5f, std::min(1.3f, 0.36f * w));
       const float bh = bw * 440.0f / 640.0f;
-      place_panel(quads[2], g.homePanel, along(0.0f, 0.5f * h + 0.05f + 0.5f * bh, 0.0f), bw);
+      place_panel(quads[2], g.homePanel, along(0.0f, 0.5f * h + 0.05f + buntingH + 0.5f * bh, 0.0f), bw);
       quads[2].pose.orientation = sp.orientation;
       push_quad(quads[2]);
     }
@@ -2918,11 +5743,80 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
       // The flag points away from the field's middle, along the pitch.
       const XrQuaternionf q = yaw_quat(g.table.yaw + (gx < 0.0f ? 3.14159265f : 0.0f));
       if (far && rival >= 0) {
-        add_piece(scene, 1, p, sway(q, t, 0.08f, 4.0f), size, r1, r2, rival + 1, 0.1f);
+        add_piece(scene, 1, p, sway(q, t, 0.08f, 4.0f), size, r1, r2, rivalMotif, 0.1f);
       } else {
-        add_piece(scene, 1, p, sway(q, t, 0.04f, 1.5f + 0.2f * corner), size, c1, c2, v.captain + 1, 0.0f);
+        add_piece(scene, 1, p, sway(q, t, 0.04f, 1.5f + 0.2f * corner), size, c1, c2, homeMotif, 0.0f);
       }
     }
+  }
+}
+
+// r73: awards night in your room (franchise: the champion crowned, until the next season starts; the
+// hub closed): the winners life-size in a row between you and the big screen, each a standee of its
+// portrait over a gold plate (one layer each), a pedestal with a gold trophy beside it.
+// r80: 6 (Sidekick of the Year joined)
+constexpr int kAwardStandees = 6;
+AsyncPanel g_awardP[kAwardStandees];
+Panel g_awardPanel[kAwardStandees];
+XrCompositionLayerQuad g_awardQuad[kAwardStandees] = {
+    {XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD},
+    {XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD}};
+constexpr uint32_t kAwardW = 400, kAwardH = 640;
+float mode_floor_y();                                           // below
+void floor_forward(const XrPosef& pose, float* fx, float* fz);  // below
+
+void update_awards(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount) {
+  if (!g.frRoomOn || !g.mrMode || g.tabletop || !g.shownScreenValid || g.frOpen || g.gpOpen || !g.headValid) return;
+  std::vector<std::string> text, keys;
+  {
+    std::lock_guard<std::mutex> lock(g_frMutex);
+    const PortFranchiseView& v = g_frRoom.view;
+    if (v.phase != PORT_FR_PHASE_DONE) return;
+    for (int i = 0; i < v.awardCount && i < kAwardStandees; ++i) {
+      text.push_back(v.awards[i]);
+      keys.push_back(v.awardKeys[i]);
+    }
+  }
+  const int n = static_cast<int>(text.size());
+  if (n == 0) return;
+  const XrVector3f head = g.headPose.position, sp = g.shownScreenPose.position;
+  float ux = sp.x - head.x, uz = sp.z - head.z;
+  float d = std::sqrt(ux * ux + uz * uz);
+  if (d < 0.5f) {
+    floor_forward(g.headPose, &ux, &uz);
+    d = 3.0f;
+  } else {
+    ux /= d;
+    uz /= d;
+  }
+  const float dist = std::max(1.6f, std::min(3.0f, 0.55f * d));
+  const float rx = -uz, rz = ux;  // your right, facing the screen
+  const float floorY = mode_floor_y();
+  const float t = static_cast<float>(now_ns() % 1000000000000ull) / 1e9f;
+  for (int i = 0; i < n; ++i) {
+    const float lateral = (static_cast<float>(i) - 0.5f * (n - 1)) * (n > 5 ? 0.85f : 0.95f);
+    const XrVector3f at{head.x + ux * dist + rx * lateral, floorY, head.z + uz * dist + rz * lateral};
+    // its standee: "MVP: CHARIZARD (PEWTER CITY)" -> "MVP" over "CHARIZARD (PEWTER CITY)"
+    const std::string& line = text[i];
+    const size_t colon = line.find(':');
+    const std::string award = colon == std::string::npos ? line : line.substr(0, colon);
+    const std::string name = colon == std::string::npos ? std::string() : line.substr(colon + 2);
+    const std::string key = keys[i];
+    request_panel(g_awardP[i], g.frRoomGen, kAwardW, kAwardH, [key, award, name](uint8_t* px, int w, int h) {
+      const GuestPortrait& p = guest_portrait(key);
+      xrtext::award_standee(px, w, h, p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, award.c_str(), name.c_str());
+    });
+    if (show_panel(g_awardP[i], g_awardPanel[i]) && *layerCount < 32) {
+      const float height = 1.55f;  // life-size-ish, the plate included
+      const float width = height * static_cast<float>(kAwardW) / static_cast<float>(kAwardH);
+      place_panel(g_awardQuad[i], g_awardPanel[i], XrVector3f{at.x, floorY + 0.5f * height, at.z}, width);
+      layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&g_awardQuad[i]);
+    }
+    // its gold trophy, held up in front of it (no pedestal: the room's pieces are 24 at most, and the
+    // champion's bunting takes 9)
+    const float yawToYou = std::atan2(head.x - at.x, head.z - at.z);
+    const XrVector3f cup{at.x - ux * 0.18f, floorY + 0.8f + 0.03f * std::sin(t * 1.3f + i), at.z - uz * 0.18f};
+    add_piece(scene, 5, cup, yaw_quat(yawToYou + 0.4f * std::sin(t * 0.7f + i)), 0.3f, 0xFFD21F, 0xFFF2A0, 0, 0.25f);
   }
 }
 
@@ -2960,16 +5854,18 @@ void update_suite(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layer
     add_piece(scene, 5, cupAt, yaw_quat(g.suiteYaw + spin), 0.34f, won ? cc : 0x8FA8D8, won ? cb : 0x30405A, won ? 0 : 1,
               won ? 0.15f : 0.35f + 0.15f * std::sin(t * 2.2f));
   }
-  // Your banner and the next opponent's, either side of the big screen's casing.
+  // Your banner and the next opponent's, either side of the big screen's casing (r87: an imported captain's
+  // own colours and outline).
   uint32_t c1 = 0, c2 = 0;
-  xrfx::team_colours(v.captain, &c1, &c2);
+  xrfx::team_colours(home_colour_code(v.captain, v.captainGuest), &c1, &c2);
   add_piece(scene, 0, suite_point(-2.35f, 1.8f, -2.2f), sway(suite_facing(-2.35f, -2.2f), t, 0.03f, 1.0f), 1.1f, c1, c2,
-            v.captain + 1, 0.0f);
+            home_motif(v.captain, v.captainGuest), 0.0f);
   if (cup.nextOpponent >= 0) {
+    const std::string oppGuest = cup_captain_guest(cup.nextOpponent);
     uint32_t o1 = 0, o2 = 0;
-    xrfx::team_colours(cup.nextOpponent, &o1, &o2);
+    xrfx::team_colours(home_colour_code(cup.nextOpponent, oppGuest), &o1, &o2);
     add_piece(scene, 0, suite_point(2.35f, 1.8f, -2.2f), sway(suite_facing(2.35f, -2.2f), t, 0.03f, 1.3f), 1.1f, o1, o2,
-              cup.nextOpponent + 1, 0.0f);
+              home_motif(cup.nextOpponent, oppGuest), 0.0f);
   }
   // The table.
   if (cup.teams > 0) {
@@ -2995,13 +5891,15 @@ void update_suite(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layer
     tx.count = cup.teams;
     for (int i = 0; i < cup.teams; ++i) {
       const int k = order[i];
-      tx.names[i] = upper(xrhome::captain_name(cup.captains[k]));
+      tx.names[i] = home_name(cup.captains[k], cup_captain_guest(cup.captains[k]));
       tx.wins[i] = cup.wins[k];
       tx.losses[i] = cup.losses[k];
       tx.points[i] = cup.points[k];
       tx.mine[i] = k == cup.user;
     }
-    tx.footer = cup.nextOpponent >= 0 ? "NEXT: YOU VS " + upper(xrhome::captain_name(cup.nextOpponent)) : "";
+    tx.footer = cup.nextOpponent >= 0
+                    ? "NEXT: YOU VS " + home_name(cup.nextOpponent, cup_captain_guest(cup.nextOpponent))
+                    : "";
     request_panel(g_cupBoard, cup.generation, 768, 560, [tx](uint8_t* px, int w, int h) {
       xrtext::CupLine lines[8];
       for (int i = 0; i < tx.count; ++i) lines[i] = {tx.names[i].c_str(), tx.wins[i], tx.losses[i], tx.points[i], tx.mine[i]};
@@ -3021,6 +5919,42 @@ void update_suite(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layer
     push_quad(quads[0]);
   }
   // (The captain's name plaque is part of the baked room: tools/suites/suite_scene.py name_plaque.)
+  // r73: a guest series' room is baked with the plaque's name left off: the guest's own name over it
+  // (the builder's plaque: its middle at (0, 1.3, 2.75) in the room, its face tipped 20 degrees down
+  // toward you, the name 9 cm in front of it and 7 cm up: (0, 1.19, 2.785) there).
+  if (!g.suiteGuestName.empty()) {
+    static AsyncPanel s_plaque;
+    static Panel s_plaquePanel;
+    static XrCompositionLayerQuad s_plaqueQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    const std::string name = g.suiteGuestName;
+    // each series' lettering: (fill top, fill bottom, outline)
+    static const struct { const char* series; uint32_t top, bottom, outline; } kStyle[] = {
+        {"pokemon", 0xFFDA30, 0xF5B400, 0x1F43AE},    {"starfox", 0xFFFFFF, 0xB8C4D8, 0x1F4AB8},
+        {"zelda", 0xFFE070, 0xD8A020, 0x174A1C},      {"kirby", 0xFFB0D0, 0xF070A8, 0x5A1840},
+        {"metroid", 0xFFB040, 0xE06A08, 0x1A2A1A},    {"earthbound", 0xFF5A48, 0xD02018, 0x1A2A6A},
+        {"iceclimber", 0xF0FAFF, 0xA8D8FF, 0x1A3A8A}, {"fireemblem", 0xFFE070, 0xD8A020, 0x6A0A10},
+        {"fzero", 0xFFFFFF, 0xC0D0F0, 0x1A3AD8},      {"gamewatch", 0x101010, 0x101010, 0xB8C0A8},
+        {"bowser", 0xFFA030, 0xE05008, 0x2A0A04},     {"mario_guest", 0xFF4A3A, 0xD81810, 0x101828},
+        {"dk_guest", 0xFFD040, 0xD89810, 0x4A2008}};
+    uint32_t top = 0xFFDA30, bottom = 0xF5B400, outline = 0x1F43AE;
+    for (const auto& s : kStyle)
+      if (g.suiteLoaded == s.series) {
+        top = s.top;
+        bottom = s.bottom;
+        outline = s.outline;
+      }
+    const int key = static_cast<int>(std::hash<std::string>()(name + g.suiteLoaded) & 0x7FFFFFFF);
+    request_panel(s_plaque, key, 1024, 256, [name, top, bottom, outline](uint8_t* px, int w, int h) {
+      xrtext::plaque_name(px, w, h, name.c_str(), top, bottom, outline);
+    });
+    if (show_panel(s_plaque, s_plaquePanel)) {
+      place_panel(s_plaqueQuad, s_plaquePanel, suite_point(0.0f, 2.785f, -1.19f), 1.6f);
+      const float tip = 0.349f;  // 20 degrees: the face turned down toward you
+      const XrQuaternionf down{std::sin(0.5f * tip), 0.0f, 0.0f, std::cos(0.5f * tip)};
+      s_plaqueQuad.pose.orientation = q_mul(suite_facing(0.0f, -1.19f), down);
+      push_quad(s_plaqueQuad);
+    }
+  }
 }
 
 // r61: the suite's room for a home captain (suites/suite_<name>.room, _room.jpg and _outside.jpg,
@@ -3040,13 +5974,57 @@ const char* suite_name(int captain) {
 
 std::atomic<int> g_suiteLoadGen{0};  // the newest room asked for; an older load gives up
 
-void request_suite_room(int captain) {
-  if (g.suiteCaptain == captain) return;
-  g.suiteCaptain = captain;
-  const int gen = ++g_suiteLoadGen;
+std::string suites_dir() {
   const char* home = std::getenv("STRIKERS_HOME");
-  const std::string base = std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") +
-                           "/suites/suite_" + suite_name(captain);
+  return std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/suites/";
+}
+
+// r73 (guest cup suites, Lance's list): a guest captain's series has its own suite, baked once for
+// the series (tools/suites/suite_scene.py, SUITE_NAME "-"), the guest's own name written over its
+// plaque here: "pokemon" for Colosseum's. "" when the series has none on this headset (then the slot's).
+std::string guest_suite(int captainClass, std::string* guestName) {
+  // eCharacterClass -> eTeamID (daisy 0, dk 1, luigi 2, mario 3, peach 4, waluigi 5, wario 6, yoshi 7)
+  static const int kTeamOf[12] = {-1, 0, 1, -1, -1, 2, 3, 4, -1, 5, 6, 7};
+  if (captainClass < 0 || captainClass >= 12 || kTeamOf[captainClass] < 0) return "";
+  const int pick = PortGuestGetPick(kTeamOf[captainClass], PORT_GUEST_CAPTAIN);
+  if (pick < 0) return "";
+  const char* game = PortGuestRosterGame(pick);
+  const char* packC = PortGuestRosterPack(pick);
+  const std::string pack = packC != nullptr ? packC : "";
+  std::string series;
+  if (game != nullptr && std::strcmp(game, "Colosseum") == 0) {
+    series = "pokemon";
+  } else {
+    // Melee's fighters and Charged's captains, by their world
+    static const std::pair<const char*, const char*> kSeries[] = {
+        {"fox", "starfox"},        {"falco", "starfox"},       {"link", "zelda"},        {"younglink", "zelda"},
+        {"zelda", "zelda"},        {"sheik", "zelda"},         {"ganondorf", "zelda"},   {"samus", "metroid"},
+        {"kirby", "kirby"},        {"ness", "earthbound"},     {"popo", "iceclimber"},   {"nana", "iceclimber"},
+        {"marth", "fireemblem"},   {"roy", "fireemblem"},      {"falcon", "fzero"},      {"gamewatch", "gamewatch"},
+        {"drmario", "mario_guest"}, {"bowser", "bowser"},      {"bowserjr", "bowser"},   {"diddykong", "dk_guest"},
+        {"petey", "mario_guest"}};
+    for (const auto& s : kSeries)
+      if (pack == s.first) series = s.second;
+  }
+  if (series.empty()) return "";
+  static std::unordered_map<std::string, bool> s_have;  // (a room is 3 files; the mesh says enough)
+  auto it = s_have.find(series);
+  if (it == s_have.end()) {
+    FILE* f = std::fopen((suites_dir() + "suite_" + series + ".room").c_str(), "rb");
+    if (f != nullptr) std::fclose(f);
+    it = s_have.emplace(series, f != nullptr).first;
+  }
+  if (!it->second) return "";
+  const char* name = PortGuestRosterName(pick);
+  if (guestName != nullptr) *guestName = name != nullptr ? name : "";
+  return series;
+}
+
+void request_suite_room(const std::string& which) {
+  if (g.suiteLoaded == which) return;
+  g.suiteLoaded = which;
+  const int gen = ++g_suiteLoadGen;
+  const std::string base = suites_dir() + "suite_" + which;
   std::thread([base, gen]() {
     const uint64_t t0 = now_ns();
     xrfx::Room room;
@@ -3136,6 +6114,7 @@ void update_suite_mode() {
     // Its room goes (about 90 MB of pictures) until the next time.
     ++g_suiteLoadGen;
     g.suiteCaptain = -2;
+    g.suiteLoaded.clear();
     if (g.fxReady) xrfx::set_room(xrfx::Room{});
     XLOG("cup suite: off, back to %s", mode_name());
   }
@@ -3248,6 +6227,12 @@ bool scorer_shown() {
 }
 // The modes with eye passes: the 3D modes, and every mode while the scorer is out.
 bool eye_mode() { return stereo_mode() || scorer_shown(); }
+
+// r43: Tabletop · Stadium's life-size stadium in its own layer, one eye a game frame; r87: Jumbotron ·
+// Stadium's too (both Stadium modes: not over passthrough).
+bool split_mode() {
+  return g.singlePass && g.stadiumSplit && !g.mrMode && stereo_mode() && (g.tabletop || g.jumboSplit);
+}
 
 int world_layers() {
   if (!stereo_mode()) return 0;
@@ -3435,13 +6420,6 @@ void step_jolt() {
     }
     if (std::fabs(*p[a]) < 1e-5f && std::fabs(*v[a]) < 1e-4f) *p[a] = *v[a] = 0.0f;
   }
-}
-
-// r55: a kick to the jolt (m/s), capped so stacked blasts never throw the field across the room.
-void kick_jolt(float vx, float vy, float vz) {
-  g.joltVel.x = std::max(-0.6f, std::min(0.6f, g.joltVel.x + vx));
-  g.joltVel.y = std::max(-0.6f, std::min(0.6f, g.joltVel.y + vy));
-  g.joltVel.z = std::max(-0.6f, std::min(0.6f, g.joltVel.z + vz));
 }
 
 M4 table_model() { return m4_game_to_room(g.table.scale, g.table.yaw, table_shown_pos()); }
@@ -4122,6 +7100,10 @@ void finish_stereo_frame(uint32_t s) {
     g.hasProjection = true;
     // Drawn over a split stadium: its alpha is coverage (the compositor blends it over).
     g.mainIsOverlay = slot.mainOverlay;
+  } else if (g.singlePass && !g.tabletop && slot.stadiumEye >= 0 && !slot.mainDrawn) {
+    // r87: Jumbotron · Stadium split, the stadium alone this frame: nothing over it (the last pair
+    // over it would be a scorer who has gone).
+    g.hasProjection = false;
   }
 
   if (g.dumpRequested && mainBlitted) {
@@ -4233,6 +7215,9 @@ void poll_triggers() {
       } else if (std::strncmp(line, "stadiumsplit", 12) == 0) {
         // r43 "stadiumsplit <0|1>": Tabletop · Stadium's stadium as its own layer, one eye a frame
         g.stadiumSplit = std::atoi(line + 12) != 0;
+      } else if (std::strncmp(line, "jumbosplit", 10) == 0) {
+        // r87 "jumbosplit <0|1>": Jumbotron · Stadium's stadium as its own layer, one eye a frame
+        g.jumboSplit = std::atoi(line + 10) != 0;
       } else if (std::strncmp(line, "handoffwait", 11) == 0) {
         // r44 "handoffwait <0|1>": wait briefly for this frame's eyes before ending the XR frame
         g.handoffWait = std::atoi(line + 11) != 0;
@@ -4793,9 +7778,9 @@ extern "C" int PortXrStereoFrameBegin(void) {
     g.eyePassOpen[eye] = false;
   }
   // r43 split stadium: Tabletop · Stadium draws the stadium layer for one eye, in turn, into its own
-  // image and layer; the table (and scorer) go over it with coverage alpha.
-  g.splitThisFrame = g.singlePass && g.stadiumSplit && g.tabletop && !g.mrMode && count > 1 &&
-                     kinds[0] == kLayerStadium && slot.stadium.shared;
+  // image and layer; the table (and scorer) go over it with coverage alpha. r87: Jumbotron · Stadium the
+  // same, its stadium often alone (the scorer over it when out).
+  g.splitThisFrame = split_mode() && (count > 1 || !g.tabletop) && kinds[0] == kLayerStadium && slot.stadium.shared;
   slot.stadiumEye = -1;
   slot.mainDrawn = false;
   slot.mainOverlay = g.splitThisFrame;
@@ -5004,6 +7989,7 @@ extern "C" void PortXrGoal(int team, int character, int superStrike, int hyper, 
   XLOG("celebration: GOAL team %d by %s (class %d)%s%s%s, scorer pad %d", team, who, character,
        superStrike ? " SUPER STRIKE" : "", hyper ? " perfect" : "", ownGoal ? " own goal" : "", humanPad);
 
+  g.lastGoalOwn = ownGoal != 0;  // r85: the scorer card says so
   ensure_fx();
   if (g.fxReady) {
     xrfx::goal(team, character, superStrike != 0, hyper != 0, ownGoal != 0);
@@ -5107,13 +8093,40 @@ extern "C" void PortXrScorerFrame(int phase, float phaseTime, float height, int 
       g.bannerBusy = true;
       g_bannerReady = false;
       g.banner.hasImage = false;
-      const std::string name = scorer_name(characterClass);
+      // r67: a guest scorer by its own name. r68h: a sidekick (Strikers' or a guest one) by its own
+      // generated name (PortGuestSidekickName: the same every match).
+      const char* guestName = PortGuestShownName(side, characterClass);
+      const char* sidekickName = PortGuestSidekickName(side, g.scorerPlayerId);
+      std::string name = scorer_name(characterClass);
+      if (sidekickName != nullptr) {
+        name = sidekickName;
+      } else if (guestName != nullptr) {
+        name = guestName;
+      }
+      for (char& ch : name) ch = (char)toupper((unsigned char)ch);
       const uint32_t colour = team_colour(captainClass);
-      const int goals = sc.statGoals, assists = sc.statAssists;
+      int goals = sc.statGoals;
+      const int assists = sc.statAssists;
       const bool hatTrick = sc.statHatTrick;
-      std::thread([name, colour, goals, assists, hatTrick]() {
+      // r72: your franchise nemesis (their captain) scoring on you: called out, its title with it.
+      // r73: or its face-off before kick-off (no stats line).
+      std::string header;
+      {
+        std::lock_guard<std::mutex> lock(g_frMutex);
+        // r81: a side's co-captain (include/port/lineup.h) is their nemesis only when it's the one by name
+        const bool coCaptain = PortSecondCaptain(side) == characterClass;
+        if (g_frCard.valid && g_frCard.nemesis && side == g_frCard.nemesisSide && sidekickName == nullptr &&
+            (!coCaptain || strcasecmp(name.c_str(), g_frCard.nemesisName) == 0)) {
+          header = g.scorerFaceOff ? "YOUR NEMESIS:" : "YOUR NEMESIS SCORES:";
+          name += std::string(" ") + g_frCard.nemesisTitle;
+          if (g.scorerFaceOff) goals = -1;
+        }
+      }
+      const bool ownGoal = g.lastGoalOwn && !g.scorerFaceOff;  // r85
+      std::thread([name, colour, goals, assists, hatTrick, header, ownGoal]() {
         std::vector<uint8_t> pixels(static_cast<size_t>(kBannerW) * kBannerH * 4);
-        xrtext::goal_banner(pixels.data(), kBannerW, kBannerH, name.c_str(), colour, goals, assists, hatTrick);
+        xrtext::goal_banner(pixels.data(), kBannerW, kBannerH, name.c_str(), colour, goals, assists, hatTrick,
+                            header.empty() ? nullptr : header.c_str(), ownGoal);
         g_bannerPixels.swap(pixels);
         g_bannerReady = true;
       }).detach();
@@ -5139,6 +8152,9 @@ extern "C" void PortXrScorerStats(int goals, int assists, int hatTrick) {
   g.scorer.statAssists = assists;
   g.scorer.statHatTrick = hatTrick != 0;
 }
+
+extern "C" void PortXrScorerPlayer(int playerId) { g.scorerPlayerId = playerId; }  // r68h
+extern "C" void PortXrScorerFaceOff(int faceoff) { g.scorerFaceOff = faceoff != 0; }  // r73
 
 extern "C" void PortXrSetPaused(int paused) {
   const bool p = paused != 0;
@@ -5354,6 +8370,11 @@ extern "C" void PortXrSetPlayerMarker(int shown, float x, float y, float z, int 
   if (!g.active) {
     return;
   }
+  if (teamCaptain >= 100 && teamCaptain != g.skinCaptain) {
+    // r68c: a guest captain (Game.cpp, 100 + its roster place): its own colours and outline
+    XLOG("controllers: your captain is guest %d, its own skin", teamCaptain - 100);
+    g.skinCaptain = teamCaptain;
+  }
   if (teamCaptain >= 0 && teamCaptain < 12 && teamCaptain != g.skinCaptain) {
     XLOG("controllers: your team's skin, captain class %d", teamCaptain);  // r53
     g.skinCaptain = teamCaptain;
@@ -5537,9 +8558,9 @@ extern "C" void PortXrItemBlast(float x, float y, float z, int size, float radiu
     ensure_fx();
     if (g.fxReady) xrfx::blast(at, dir, unit, strength, 0);
   }
-  // The field (or the stadium, or the big screen) jumps; a warm flash through the room; a buzz.
-  const float jx = 0.05f * std::sin(x * 1.7f), jz = 0.05f * std::cos(y * 1.3f);
-  kick_jolt(jx * strength, (g.tabletop ? 0.16f : 0.07f) * strength, jz * strength);
+  // A warm flash through the room; a buzz. r89 (Lance on r88, Bowser's blasts in Jumbotron · Stadium:
+  // "take the fucking screen shake OFF ... that shit got so fuckin absurd"): nothing jumps any more (the
+  // life-size stadium moved with every blast, stacking).
   if (g.fxReady) xrfx::screen_flash(1.0f, 0.55f, 0.15f, (g.mrMode ? 0.1f : 0.14f) + 0.05f * strength);
   blast_buzz(0.25f + 0.2f * strength, 0.08f + 0.05f * strength);
 }
@@ -5552,30 +8573,15 @@ extern "C" void PortXrChompSlam(float x, float y, float z, float ndcX, float ndc
     ensure_fx();
     if (g.fxReady) xrfx::blast(at, dir, unit, 2.0f, 1);
   }
-  // Slammed down, then it springs back.
-  kick_jolt(0.0f, g.tabletop ? -0.4f : -0.12f, 0.0f);
+  // r89: felt in the hands only (no screen shake, Lance)
   blast_buzz(0.7f, 0.18f);
   XLOG("items: Chain Chomp slam at (%.1f, %.1f)", x, y);
 }
 
 extern "C" void PortXrChompBite(float x, float y, float z, float vx, float vy) {
   if (!g.active || !g.running) return;
-  // Shoved the way it lunged: the lunge's direction in the room.
-  float dx = 0.0f, dz = 0.0f;
-  const float len = std::sqrt(vx * vx + vy * vy);
-  if (len > 1e-3f) {
-    if (g.tabletop && !g.stereoFailed) {
-      const XrVector3f a = table_point(x, y, z), b = table_point(x + vx / len, y + vy / len, z);
-      const float l = std::max(1e-6f, std::sqrt((b.x - a.x) * (b.x - a.x) + (b.z - a.z) * (b.z - a.z)));
-      dx = (b.x - a.x) / l;
-      dz = (b.z - a.z) / l;
-    } else {
-      dx = vx / len;  // the game's x along the room's x, y across: near enough for a shove
-      dz = -vy / len;
-    }
-  }
-  const float k = g.tabletop ? 0.3f : 0.1f;
-  kick_jolt(dx * k, 0.04f, dz * k);
+  (void)x, (void)y, (void)z, (void)vx, (void)vy;
+  // r89: felt in the hands only (the shove of the field is gone with the rest of the shake, Lance)
   blast_buzz(0.55f, 0.12f);
 }
 
@@ -5891,12 +8897,25 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
   XrCompositionLayerQuad boardQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r57: the badge board
   XrCompositionLayerQuad tipQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r60: the pointed-at badge's card
+  XrCompositionLayerQuad guestQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r67: the guest picker
+  XrCompositionLayerQuad guestTipQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r67: "Y: GUEST CHARACTERS"
+  bool showGuestQuad = false, showGuestTip = false;                     // r68g: added last, on top
+  XrCompositionLayerQuad frQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};       // r70: the franchise hub
+  XrCompositionLayerQuad frTipQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r70: "Y: FRANCHISE"
+  bool showFrQuad = false, showFrTip = false;
+  XrCompositionLayerQuad frIntroQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r70b: the match's intro card
+  XrCompositionLayerQuad frSeriesQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r70b: the playoff series board
+  XrCompositionLayerQuad frLiveQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};   // r77: the live XP meter
+  bool showFrIntro = false, showFrSeries = false, showFrLive = false;
+  XrCompositionLayerQuad frTickerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r73: the news wire
+  XrCompositionLayerQuad frTvQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r73: the TV
+  bool showFrTicker = false, showFrTv = false;
   XrCompositionLayerProjection roomLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};  // r61: the cup suite's room
   // r61: the home ground's boards: by the shelf (or in the suite), its ticket, over the big screen,
   // the cup suite's table.
   XrCompositionLayerQuad homeQuads[4] = {{XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD},
                                          {XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD}};
-  const XrCompositionLayerBaseHeader* layers[24];
+  const XrCompositionLayerBaseHeader* layers[32];
   uint32_t layerCount = 0;
 
   // The celebration effects step every display frame, smooth whatever the game's frame rate, with
@@ -5952,6 +8971,14 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // r53: the controllers in your hands, where they are at this display time and what is pressed
     // (the action states hold until the next xrSyncActions), in your team's skin.
     scene.skinCaptain = g.skinCaptain;
+    // r70c: an evolved Pokemon has no cell in etch.r8 (64 cells, the first 54 guests): its first form's
+    scene.skinEtch = -1;
+    if (g.skinCaptain >= 100) {
+      int idx = g.skinCaptain - 100;
+      for (int guard = 0; guard < 4 && PortGuestRosterEvolved(idx); ++guard)
+        idx = PortGuestRosterFindAny(0, PortGuestRosterEvolvesFrom(idx));
+      scene.skinEtch = idx >= 0 && idx < 64 ? 100 + idx : 0;
+    }
     // r57: the trophy shelf (your room only).
     scene.shelfValid = g.mrMode && g.shelf.placed;
     scene.shelfPos = g.shelf.position;
@@ -5965,12 +8992,18 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       scene.shelfYaw = shelf_turn();
       // r61: the room you walk about in, and its live things (the home captain's).
       const int captain = xrhome::view().captain;
-      request_suite_room(captain);
+      // r73: a guest captain's series suite when this headset has it (its live extras are the
+      // Strikers captains' own: none in a guest's), else the slot's
+      std::string guestName;
+      const std::string series = guest_suite(captain, &guestName);
+      request_suite_room(series.empty() ? std::string(suite_name(captain)) : series);
+      g.suiteGuestName = series.empty() ? std::string() : guestName;
+      g.suiteCaptain = captain;
       scene.roomShown = true;
       scene.roomOrigin = g.suiteOrigin;
       scene.roomOrigin.y = g.floorY;
       scene.roomYaw = g.suiteYaw;
-      scene.suiteCaptain = captain;
+      scene.suiteCaptain = series.empty() ? captain : -1;
       ensure_fx();
     }
     scene.shelfCups = g.trophyBits;
@@ -6022,8 +9055,12 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // The 3D picture. On display frames without a new game frame the last pair is submitted again
     // with the poses it was drawn for, and the compositor reprojects it.
     // r43 split stadium: the life-size stadium under the table, each eye as last drawn (the eyes take
-    // turns), opaque.
-    const bool splitMode = g.singlePass && g.stadiumSplit && g.tabletop && !g.mrMode && stereo_mode();
+    // turns), opaque. r87: Jumbotron · Stadium's too.
+    const bool splitMode = split_mode();
+    if (!splitMode) {
+      // r87: two modes split now: back in one, its stadium starts again from fresh pictures
+      g.stadiumValid[0] = g.stadiumValid[1] = false;
+    }
     if (splitMode && g.stadiumValid[0] && g.stadiumValid[1]) {
       stadiumLayer.layerFlags = 0;
       stadiumLayer.space = g.local;
@@ -6309,6 +9346,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       update_suite(scene, layers, &layerCount, homeQuads);
     } else {
       update_home(scene, layers, &layerCount, homeQuads);
+      update_awards(scene, layers, &layerCount);  // r73
     }
     // r42: in the big screen room mode the eye picture holds only the life-size scorer, who stands
     // in front of the screen: over it.
@@ -6400,7 +9438,350 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       }
     } else {
       g.achPlaced = false;
-    }    if (!g.achOpen && (g.paused || nowNs < g.sliderShownUntilNs)) {
+    }
+    // r67: the guest picker over the game's pick screens, about a metre out at eye height, drawn off
+    // this thread on every move; or, while it is closed there, the small tip under it.
+    if (g.gpOpen && g.headValid) {
+      // r68e: the character select menu, big: everyone, a section per game.
+      // r79: the co-captain step shows the captains (and which it can't be)
+      const bool co = g.gpCo;
+      const int role = co ? 0 : g.gpRole, side = g.gpSide, cursor = g.gpCursor;
+      unsigned taken = co ? g.gpCoTaken : 0u;  // the Strikers captains the other side has (as the screen offers it now)
+      if (!co)
+        for (int t = 0; t < 8; ++t)
+          if (!PortGuestPickerCaptainFree(t)) taken |= 1u << t;
+      request_panel(g_guestPicker, g.gpGen, kGuestW, kGuestH, [co, role, side, cursor, taken](uint8_t* px, int w, int h) {
+        const std::vector<MenuEntry>& menu = menu_entries(role);
+        std::vector<xrtext::GuestTile> tiles;
+        tiles.reserve(menu.size());
+        for (const MenuEntry& e : menu) {
+          const GuestPortrait& p = guest_portrait(e.portrait);
+          xrtext::GuestTile t{p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, e.name.c_str(), e.tag.c_str()};
+          t.row = e.row;
+          t.col = e.col;
+          t.frame = e.frame;
+          t.taken = role == 0 && e.team >= 0 && (taken & (1u << e.team)) != 0;
+          t.locked = PortGuestRosterLocked(e.pick);  // r70c: a silhouette until evolved in franchise
+          tiles.push_back(t);
+        }
+        char title[128];
+        std::snprintf(title, sizeof(title), "CHARACTER SELECT   -   TEAM %d: %s", side + 1,
+                      co ? "CHOOSE A CO-CAPTAIN (2 CAPTAINS + 2 SIDEKICKS)"
+                         : (role == 0 ? "CHOOSE YOUR CAPTAIN" : "CHOOSE YOUR SIDEKICKS"));
+        xrtext::guest_picker(px, w, h, title, tiles.data(), static_cast<int>(tiles.size()),
+                             role == 0 ? kMenuCaptainCols : kMenuSidekickCols, cursor,
+                             co ? "STICK: MOVE   -   A: CO-CAPTAIN   -   X: NO CO-CAPTAIN   -   B: THE GAME'S OWN SCREEN"
+                                : "STICK: MOVE   -   A: PICK   -   B: THE GAME'S OWN SCREEN   -   Y: THIS MENU");
+      });
+      if (show_panel(g_guestPicker, g.gpPanel)) {
+        // r68g (Lance on r68f: "that shit was moving when i moved and it was disappearing behind the
+        // game menu"): the menu is the game screen's own page: right on the big screen, as big as it,
+        // facing the same way, 2 cm in front, and drawn over everything (after the effects layer,
+        // below). Only without a screen in view, a spot in front of you, fixed once.
+        if (scene.screenValid) {
+          place_panel(guestQuad, g.gpPanel, scene.screenPose.position, 1.0f);
+          const float panelHW = static_cast<float>(kGuestH) / static_cast<float>(kGuestW);
+          // as big as the screen (a little over, to cover it), never under 1.4 m (Tabletop's is small)
+          const float width =
+              std::max(1.4f, std::min(scene.screenWidth * 1.04f, scene.screenHeight * 1.04f / panelHW));
+          guestQuad.pose.orientation = scene.screenPose.orientation;
+          const XrVector3f out = q_rot(scene.screenPose.orientation, XrVector3f{0.0f, 0.0f, 0.02f});
+          guestQuad.pose.position = {scene.screenPose.position.x + out.x, scene.screenPose.position.y + out.y,
+                                     scene.screenPose.position.z + out.z};
+          guestQuad.size.width = width;
+          guestQuad.size.height = width * panelHW;
+          g.gpPlaced = false;
+        } else {
+          if (!g.gpPlaced) {
+            float fx = 0.0f, fz = -1.0f;
+            floor_forward(g.headPose, &fx, &fz);
+            g.gpPos = {g.headPose.position.x + fx * 1.3f, g.headPose.position.y - 0.05f,
+                       g.headPose.position.z + fz * 1.3f};
+            g.gpPlaced = true;
+          }
+          place_panel(guestQuad, g.gpPanel, g.gpPos, 1.8f);
+        }
+        showGuestQuad = true;
+      }
+    } else {
+      g.gpPlaced = false;
+    }
+    if (g.gpOffered && !g.gpOpen && g.headValid) {
+      request_panel(g_guestTip, 1, kGuestTipW, kGuestTipH, [](uint8_t* px, int w, int h) {
+        xrtext::guest_tip(px, w, h, "Y: CHARACTER SELECT");
+      });
+      if (show_panel(g_guestTip, g.gpTip)) {
+        if (scene.screenValid) {
+          // r68g: under the big screen's bottom edge, facing the same way
+          place_panel(guestTipQuad, g.gpTip, scene.screenPose.position, 0.42f);
+          guestTipQuad.pose.orientation = scene.screenPose.orientation;
+          const XrVector3f down = q_rot(scene.screenPose.orientation,
+                                        XrVector3f{0.0f, -0.5f * scene.screenHeight - 0.06f, 0.02f});
+          guestTipQuad.pose.position = {scene.screenPose.position.x + down.x, scene.screenPose.position.y + down.y,
+                                        scene.screenPose.position.z + down.z};
+          g.gpTipPlaced = false;
+        } else {
+          if (!g.gpTipPlaced) {
+            float fx = 0.0f, fz = -1.0f;
+            floor_forward(g.headPose, &fx, &fz);
+            g.gpTipPos = {g.headPose.position.x + fx * 1.0f, g.headPose.position.y - 0.42f,
+                          g.headPose.position.z + fz * 1.0f};
+            g.gpTipPlaced = true;
+          }
+          place_panel(guestTipQuad, g.gpTip, g.gpTipPos, 0.42f);
+        }
+        showGuestTip = true;
+      }
+    } else {
+      g.gpTipPlaced = false;
+    }
+    // r70: franchise mode's hub, on the big screen like the character select menu; drawn off this thread
+    // from the game thread's snapshot whenever it changes. While it is closed on the main menu, the tip.
+    // The panels go where the character select menu's go (fr_place).
+    auto fr_place = [&](XrCompositionLayerQuad& quad, Panel& panel, XrVector3f& pos, bool& placed, float panelHW,
+                        bool tip) {
+      if (scene.screenValid) {
+        place_panel(quad, panel, scene.screenPose.position, 1.0f);
+        quad.pose.orientation = scene.screenPose.orientation;
+        XrVector3f off{0.0f, 0.0f, 0.02f};
+        float width = std::max(1.4f, std::min(scene.screenWidth * 1.04f, scene.screenHeight * 1.04f / panelHW));
+        if (tip) {
+          off.y = -0.5f * scene.screenHeight - 0.06f;
+          width = 0.42f;
+        }
+        const XrVector3f out = q_rot(scene.screenPose.orientation, off);
+        quad.pose.position = {scene.screenPose.position.x + out.x, scene.screenPose.position.y + out.y,
+                              scene.screenPose.position.z + out.z};
+        quad.size.width = width;
+        quad.size.height = width * panelHW;
+        placed = false;
+      } else {
+        if (!placed) {
+          float fx = 0.0f, fz = -1.0f;
+          floor_forward(g.headPose, &fx, &fz);
+          const float dist = tip ? 1.0f : 1.3f;
+          pos = {g.headPose.position.x + fx * dist, g.headPose.position.y - (tip ? 0.42f : 0.05f),
+                 g.headPose.position.z + fz * dist};
+          placed = true;
+        }
+        place_panel(quad, panel, pos, tip ? 0.42f : 1.8f);
+      }
+    };
+    if (g.frOpen && g.headValid && g.frMode == 3) {
+      // r70c: the evolution scene, a new picture ~15 times a second while it moves (one at a time)
+      const float t = static_cast<float>(nowNs - g.frEvoStartNs) / 1e9f;
+      const bool moving = g.frEvoStage == 1 || (g.frEvoStage == 2 && t < 30.0f);
+      const int tick = moving ? static_cast<int>(t * 15.0f) : 0;
+      if (g_frEvo.ready.load() == g_frEvo.requested) {
+        const bool threeD = g_evoShow.live;  // r96
+        request_panel(g_frEvo, (g.frGen << 12) + tick * 2 + (threeD ? 1 : 0), kFrEvoW, kFrEvoH, [t, threeD](uint8_t* px, int w, int h) {
+          FrSnapshot s;
+          {
+            std::lock_guard<std::mutex> lock(g_frMutex);
+            s = g_frSnap;
+          }
+          draw_franchise_evolution(px, w, h, s, t, threeD);
+        });
+      }
+      if (show_panel(g_frEvo, g.frEvoPanel)) {
+        fr_place(frQuad, g.frEvoPanel, g.frPos, g.frPlaced, static_cast<float>(kFrEvoH) / static_cast<float>(kFrEvoW),
+                 false);
+        showFrQuad = true;
+      }
+    } else if (g.frOpen && g.headValid) {
+      request_panel(g_franchise, g.frGen, kGuestW, kGuestH, [](uint8_t* px, int w, int h) {
+        FrSnapshot s;
+        {
+          std::lock_guard<std::mutex> lock(g_frMutex);
+          s = g_frSnap;
+        }
+        draw_franchise(px, w, h, s);
+      });
+      if (show_panel(g_franchise, g.frPanel)) {
+        fr_place(frQuad, g.frPanel, g.frPos, g.frPlaced,
+                 static_cast<float>(kGuestH) / static_cast<float>(kGuestW), false);
+        showFrQuad = true;
+      }
+    } else {
+      g.frPlaced = false;
+    }
+    if (g.frOnMenu && !g.frOpen && g.headValid) {
+      request_panel(g_frTip, 1, kGuestTipW, kGuestTipH, [](uint8_t* px, int w, int h) {
+        xrtext::guest_tip(px, w, h, "Y: FRANCHISE MODE");
+      });
+      if (show_panel(g_frTip, g.frTip)) {
+        fr_place(frTipQuad, g.frTip, g.frTipPos, g.frTipPlaced,
+                 static_cast<float>(kGuestTipH) / static_cast<float>(kGuestTipW), true);
+        showFrTip = true;
+      }
+    } else {
+      g.frTipPlaced = false;
+    }
+    // r73: the league in your room (a franchise career loaded, outside matches, the hub closed): the
+    // news wire under the big screen (a line at a time, every 5 s) and the TV left of it (scores, the
+    // top of the table, who's hot; a page every 7 s).
+    if (g.frRoomOn && g.mrMode && !g.tabletop && scene.screenValid && g.headValid && !g.frOpen && !g.gpOpen &&
+        !g.paused && !g.inSuite) {
+      const uint64_t slice = nowNs / 5000000000ull;
+      size_t lineCount = 0;
+      {
+        std::lock_guard<std::mutex> lock(g_frMutex);
+        lineCount = g_frRoom.lines.size();
+      }
+      if (lineCount > 0) {
+        const int idx = static_cast<int>(slice % lineCount);
+        request_panel(g_frTickerP, g.frRoomGen * 1000 + idx, kFrTickerW, kFrTickerH, [idx](uint8_t* px, int w, int h) {
+          std::string text;
+          {
+            std::lock_guard<std::mutex> lock(g_frMutex);
+            if (idx < static_cast<int>(g_frRoom.lines.size())) text = g_frRoom.lines[idx];
+          }
+          xrtext::news_ticker(px, w, h, "SSL NEWS", text.c_str());
+        });
+        if (show_panel(g_frTickerP, g.frTicker)) {
+          place_panel(frTickerQuad, g.frTicker, scene.screenPose.position, 1.0f);
+          frTickerQuad.pose.orientation = scene.screenPose.orientation;
+          const float width = std::max(1.0f, std::min(2.4f, 0.8f * scene.screenWidth));
+          const float hw = static_cast<float>(kFrTickerH) / static_cast<float>(kFrTickerW);
+          const float tipH = 0.42f * static_cast<float>(kGuestTipH) / static_cast<float>(kGuestTipW);
+          const XrVector3f down = q_rot(scene.screenPose.orientation,
+                                        XrVector3f{0.0f, -0.5f * scene.screenHeight - 0.08f - tipH - 0.5f * width * hw, 0.02f});
+          frTickerQuad.pose.position = {scene.screenPose.position.x + down.x, scene.screenPose.position.y + down.y,
+                                        scene.screenPose.position.z + down.z};
+          frTickerQuad.size.width = width;
+          frTickerQuad.size.height = width * hw;
+          showFrTicker = true;
+        }
+      }
+      const int page = static_cast<int>((nowNs / 7000000000ull) % 3);
+      request_panel(g_frTvP, g.frRoomGen * 10 + page, kFrTvW, kFrTvH, [page](uint8_t* px, int w, int h) {
+        FrRoom r;
+        {
+          std::lock_guard<std::mutex> lock(g_frMutex);
+          r = g_frRoom;
+        }
+        draw_room_tv(px, w, h, r, page);
+      });
+      if (show_panel(g_frTvP, g.frTv)) {
+        // left of the screen, past your banner there (home ground: size = 0.6 x the screen's height)
+        const float bannerSize = std::max(0.45f, std::min(1.6f, 0.6f * scene.screenHeight));
+        const float tvW = std::max(0.7f, std::min(1.1f, 0.42f * scene.screenWidth));
+        const float x = -(0.5f * scene.screenWidth + 0.6f * bannerSize + 0.1f + 0.5f * tvW);
+        place_panel(frTvQuad, g.frTv, scene.screenPose.position, tvW);
+        frTvQuad.pose.orientation = scene.screenPose.orientation;
+        const XrVector3f off = q_rot(scene.screenPose.orientation, XrVector3f{x, -0.1f * scene.screenHeight, 0.0f});
+        frTvQuad.pose.position = {scene.screenPose.position.x + off.x, scene.screenPose.position.y + off.y,
+                                  scene.screenPose.position.z + off.z};
+        frTvQuad.size.width = tvW;
+        frTvQuad.size.height = tvW * static_cast<float>(kFrTvH) / static_cast<float>(kFrTvW);
+        showFrTv = true;
+      }
+    }
+    // r70b: a franchise match's intro card (10 s from its intro: the round's logo, both clubs, the
+    // series; in the regular season the week and records), over the big screen's lower half like a TV
+    // graphic; then, through a playoff game, the series board under the screen.
+    bool frCardValid = false, frPlayoff = false;
+    {
+      std::lock_guard<std::mutex> lock(g_frMutex);
+      frCardValid = g_frCard.valid;
+      frPlayoff = g_frCard.round > 0;
+    }
+    const bool frIntroOn = frCardValid && nowNs < g.frIntroUntilNs && g.headValid && !g.paused;
+    if (frIntroOn) {
+      request_panel(g_frIntro, g.frCardGen, kFrIntroW, kFrIntroH, [](uint8_t* px, int w, int h) {
+        PortFranchiseCard c;
+        {
+          std::lock_guard<std::mutex> lock(g_frMutex);
+          c = g_frCard;
+        }
+        draw_franchise_intro(px, w, h, c);
+      });
+      if (show_panel(g_frIntro, g.frIntro)) {
+        const float hw = static_cast<float>(kFrIntroH) / static_cast<float>(kFrIntroW);
+        if (scene.screenValid) {
+          fr_place(frIntroQuad, g.frIntro, g.frIntroPos, g.frIntroPlaced, hw, false);
+          // over the lower half, 80% of the screen's width
+          const float width = 0.8f * scene.screenWidth;
+          const XrVector3f out =
+              q_rot(scene.screenPose.orientation, XrVector3f{0.0f, -0.18f * scene.screenHeight, 0.03f});
+          frIntroQuad.pose.position = {scene.screenPose.position.x + out.x, scene.screenPose.position.y + out.y,
+                                       scene.screenPose.position.z + out.z};
+          frIntroQuad.size.width = width;
+          frIntroQuad.size.height = width * hw;
+        } else {
+          fr_place(frIntroQuad, g.frIntro, g.frIntroPos, g.frIntroPlaced, hw, false);
+        }
+        showFrIntro = true;
+      }
+    } else {
+      g.frIntroPlaced = false;
+    }
+    if (frCardValid && frPlayoff && !frIntroOn && scene.screenValid && g.headValid) {
+      request_panel(g_frSeries, g.frCardGen, kFrSeriesW, kFrSeriesH, [](uint8_t* px, int w, int h) {
+        PortFranchiseCard c;
+        {
+          std::lock_guard<std::mutex> lock(g_frMutex);
+          c = g_frCard;
+        }
+        xrtext::guest_tip(px, w, h, franchise_series_text(c).c_str());
+      });
+      if (show_panel(g_frSeries, g.frSeries)) {
+        place_panel(frSeriesQuad, g.frSeries, scene.screenPose.position, 0.6f);
+        frSeriesQuad.pose.orientation = scene.screenPose.orientation;
+        const float width = std::max(0.6f, std::min(1.4f, 0.45f * scene.screenWidth));
+        const float hw = static_cast<float>(kFrSeriesH) / static_cast<float>(kFrSeriesW);
+        const XrVector3f down = q_rot(scene.screenPose.orientation,
+                                      XrVector3f{0.0f, -0.5f * scene.screenHeight - 0.5f * width * hw - 0.03f, 0.02f});
+        frSeriesQuad.pose.position = {scene.screenPose.position.x + down.x, scene.screenPose.position.y + down.y,
+                                      scene.screenPose.position.z + down.z};
+        frSeriesQuad.size.width = width;
+        frSeriesQuad.size.height = width * hw;
+        showFrSeries = true;
+      }
+    }
+    // r77: the live XP meter through your franchise match (not over the intro card, not while paused):
+    // under the big screen (under the series board in the playoffs); in Tabletop over the score bar
+    bool frLiveValid = false, frLiveCo = false;
+    {
+      std::lock_guard<std::mutex> lock(g_frMutex);
+      frLiveValid = g_frLiveData.valid;
+      frLiveCo = g_frLiveData.co;
+    }
+    if (frLiveValid && !frIntroOn && scene.screenValid && g.headValid && !g.paused) {
+      // r79: two meters high with a co-captain
+      request_panel(g_frLive, g.frLiveGen, kFrLiveW, frLiveCo ? 2 * kFrLiveH : kFrLiveH, [](uint8_t* px, int w, int h) {
+        PortFranchiseLive l;
+        FrLiveGlow glow;
+        {
+          std::lock_guard<std::mutex> lock(g_frMutex);
+          l = g_frLiveData;
+          glow = g_frLiveGlow;
+        }
+        draw_franchise_live(px, w, h, l, glow);
+      });
+      if (show_panel(g_frLive, g.frLive)) {
+        place_panel(frLiveQuad, g.frLive, scene.screenPose.position, 0.6f);
+        frLiveQuad.pose.orientation = scene.screenPose.orientation;
+        const bool table = g.tabletop && !g.stereoFailed;
+        const float width = table ? 0.6f : std::max(0.6f, std::min(1.2f, 0.4f * scene.screenWidth));
+        const float hw = g.frLive.width > 0 ? static_cast<float>(g.frLive.height) / static_cast<float>(g.frLive.width)
+                                            : static_cast<float>(kFrLiveH) / static_cast<float>(kFrLiveW);
+        float dy;
+        if (table) {
+          dy = 0.5f * scene.screenHeight + 0.5f * width * hw + 0.03f;
+        } else {
+          dy = -0.5f * scene.screenHeight - 0.5f * width * hw - 0.03f;
+          if (showFrSeries) dy -= frSeriesQuad.size.height + 0.02f;
+        }
+        const XrVector3f off = q_rot(scene.screenPose.orientation, XrVector3f{0.0f, dy, 0.02f});
+        frLiveQuad.pose.position = {scene.screenPose.position.x + off.x, scene.screenPose.position.y + off.y,
+                                    scene.screenPose.position.z + off.z};
+        frLiveQuad.size.width = width;
+        frLiveQuad.size.height = width * hw;
+        showFrLive = true;
+      }
+    }
+    if (!g.achOpen && (g.paused || nowNs < g.sliderShownUntilNs)) {
       if (!g.slider.hasImage) {
         std::vector<uint8_t> pixels(static_cast<size_t>(kSliderW) * kSliderH * 4);
         const int voice = !xrvoice::enabled() ? 0 : (xrvoice::mic_allowed() ? 1 : 2);  // r44
@@ -6422,26 +9803,59 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     }
     // The celebration over everything else.
     const uint64_t fxStart = now_ns();
+    if (g.fxReady && sceneViews) update_evo(scene, nowNs);  // r96: the 3D evolution
+    // r96: while a Pokemon evolves in 3D in front of the big screen, the evolution card is under the
+    // effects layer (its backdrop), not over it (it would hide the Pokemon standing before it)
+    const bool frUnder = showFrQuad && g.frMode == 3 && g_evoShow.live;
+    if (frUnder) {
+      layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
+      showFrQuad = false;
+    }
     if (g.fxReady && sceneViews && xrfx::update(scene) && xrfx::render(scene, &fxLayer)) {
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fxLayer);
     }
     g.fxNs += now_ns() - fxStart;
+    // r68g: the character select menu (and its tip) over everything, the effects layer's flags,
+    // pennants and controllers too.
+    if (showGuestQuad) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&guestQuad);
+    if (showGuestTip) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&guestTipQuad);
+    if (showFrQuad) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
+    if (showFrTip) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frTipQuad);
+    if (showFrIntro && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frIntroQuad);
+    if (showFrSeries && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frSeriesQuad);
+    if (showFrLive && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frLiveQuad);
+    if (showFrTicker && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frTickerQuad);
+    if (showFrTv && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frTvQuad);
     // r47: waiting for the online friend at the match start: who we wait for and how to stop, a
     // little over a metre out at about eye level, following your head lazily.
     // r64: the cup (co-op) wording, and a friend waiting at the other kind of match (never pairs).
     const int waiting = xrnet::waiting_for_friend();
-    const int waitShown = waiting == 0 ? 0 : waiting + (xrnet::waiting_in_cup() ? 10 : 0) + (xrnet::room_maker() ? 20 : 0);
+    const int waitShown = waiting == 0 ? 0
+                                       : waiting + (xrnet::waiting_in_cup() ? 10 : 0) + (xrnet::room_maker() ? 20 : 0) +
+                                             (xrnet::waiting_in_franchise() ? 40 : 0) + (xrnet::waiting_in_league() ? 80 : 0);
     if (waiting != 0 && g.headValid) {
       if (waitShown != g.netWaitDrawn || !g.netWait.hasImage) {
         std::vector<uint8_t> pixels(static_cast<size_t>(xrra::kToastW) * xrra::kToastH * 4);
         char header[48];
         const bool cup = xrnet::waiting_in_cup();
-        std::snprintf(header, sizeof(header), cup ? "CO-OP CUP  -  ROOM %s" : "ONLINE  -  ROOM %s", xrnet::room_code());
+        const bool fr = xrnet::waiting_in_franchise();  // r76
+        const bool lgWait = xrnet::waiting_in_league();  // r100
+        std::snprintf(header, sizeof(header),
+                      lgWait ? "ONLINE LEAGUE  -  ROOM %s"
+                             : (fr ? "CO-OP FRANCHISE  -  ROOM %s" : (cup ? "CO-OP CUP  -  ROOM %s" : "ONLINE  -  ROOM %s")),
+                      xrnet::room_code());
         const char* title = waiting == 1 ? "WAITING FOR YOUR FRIEND TO JOIN"
-                            : waiting == 3 ? (cup ? "YOUR FRIEND STARTED A GRUDGE MATCH" : "YOUR FRIEND STARTED A CUP MATCH")
+                            : waiting == 3 ? (fr ? "YOUR FRIEND WAITS AT ANOTHER MATCH"
+                                                 : (cup ? "YOUR FRIEND STARTED A GRUDGE MATCH" : "YOUR FRIEND STARTED A CUP MATCH"))
                                            : "YOUR FRIEND IS HERE";
         const char* body;
-        if (waiting == 3) {
+        if (lgWait) {
+          if (waiting != 3) title = waiting == 1 ? "WAITING FOR THE OTHER CLUB'S PERSON" : "THEY'RE HERE";
+          body = "YOUR LEAGUE GAME STARTS ON BOTH HEADSETS BY ITSELF. HOLD B TO CALL IT OFF (READY AGAIN LATER)";
+        } else if (fr) {
+          body = waiting == 3 ? "THEY BACK OUT OF IT: THEIR HEADSET THEN JOINS THIS ONE BY ITSELF. HOLD B TO PLAY ALONE"
+                              : "THEIR HEADSET JOINS THIS MATCH BY ITSELF (YOUR CO-OP CAREER). HOLD B TO PLAY ALONE";
+        } else if (waiting == 3) {
           body = cup ? "FOR CO-OP THEY GO INTO A CUP AND START ITS NEXT MATCH. HOLD B TO PLAY ALONE"
                      : "FOR A GRUDGE MATCH THEY BACK OUT AND START ONE. HOLD B TO PLAY THE CPU";
         } else if (cup) {
@@ -6528,6 +9942,17 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
   endInfo.displayTime = g.frameState.predictedDisplayTime;
   endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+  // r73: never more layers than the compositor takes (a frame over it fails whole): the last ones
+  // (the topmost extras) go, logged once a while
+  if (g.maxLayers > 0 && layerCount > g.maxLayers) {
+    static uint64_t s_loggedNs = 0;
+    if (now_ns() - s_loggedNs > 10000000000ull) {
+      s_loggedNs = now_ns();
+      XLOG("layers: %u this frame, the compositor takes %u: the last %u left out", layerCount, g.maxLayers,
+           layerCount - g.maxLayers);
+    }
+    layerCount = g.maxLayers;
+  }
   endInfo.layerCount = layerCount;
   endInfo.layers = layers;
   const uint64_t endStart = now_ns();
@@ -6622,6 +10047,8 @@ extern "C" void PortXrSetStsMeter(int, float, float, float, float, float) {}
 extern "C" void PortXrSetSuperStrike(int) {}
 extern "C" int PortXrTakeTestSts(void) { return 0; }
 extern "C" void PortXrScorerFrame(int, float, float, int, int, int) {}
+extern "C" void PortXrScorerPlayer(int) {}
+extern "C" void PortXrScorerFaceOff(int) {}
 extern "C" void PortXrScorerStats(int, int, int) {}
 extern "C" void PortXrSetPaused(int) {}
 extern "C" void PortXrNoteItemUse(int, int, int) {}

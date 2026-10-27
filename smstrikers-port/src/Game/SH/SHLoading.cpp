@@ -23,6 +23,7 @@
 #include "NL/nlString.h"
 #include "NL/gl/glState.h"
 #include "NL/gl/glTexture.h"
+#include "port/xr_guest.h"
 
 // PORT: SHCupTrophy.cpp declares this specialization and never defines it; explicit, it survives inlining.
 template WideBasicString Format<WideBasicString, unsigned short[16]>(
@@ -207,6 +208,8 @@ unsigned long SuperLoadingScene::LoadImage(BundleFile& bundlefile, eTeamID capta
     bundlefile.GetFileInfo(filename, &fileentry, true);
     u8* fileData = (u8*)nlMalloc(fileentry.m_length, 0x20, true);
     bundlefile.ReadFile(filename, fileData, fileentry.m_length);
+    // strikers-quest r67b: a guest captain's own picture on the VS screen (include/port/xr_guest.h).
+    PortGuestLoadingPicture(filename, fileData, fileentry.m_length);
     glTextureAdd(nlStringHash(filename), fileData, fileentry.m_length);
     texturehandle = glGetTexture(filename);
     delete[] fileData;

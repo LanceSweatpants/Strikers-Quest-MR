@@ -27,6 +27,7 @@
 #include "NL/nlString.h"
 #include "NL/nlDebug.h"
 #include "math.h"
+#include "port/lineup.h"  // strikers-quest r78: the co-captain
 
 static int gBobombAnticipationVoiceID = -1;
 static f32 CANT_COLLIDE = *(f32*)__float_max;
@@ -471,7 +472,8 @@ u8 PowerupCreateAndThrow(cFielder* pThrower, ePowerUpType eType, int nnumOfPower
             cFielder* pFielder = pThrower;
             if (pThrower->IsCaptain())
             {
-                pFielder = pThrower->m_pTeam->GetFielder(1);
+                // strikers-quest r78: the team's sidekick, past a co-captain (include/port/lineup.h)
+                pFielder = pThrower->m_pTeam->GetFielder(PortSecondCaptain(pThrower->m_pTeam->m_nSide) >= 0 ? 2 : 1);
             }
 
             switch (pFielder->m_eCharacterClass)
@@ -1164,7 +1166,7 @@ int PowerupBase::AwardPowerup(cTeam* pTeam)
     }
 
     cFielder* pCaptain = pTeam->GetCaptain();
-    cFielder* pSideKick = pTeam->GetFielder(1);
+    cFielder* pSideKick = pTeam->GetFielder(PortSecondCaptain(pTeam->m_nSide) >= 0 ? 2 : 1);  // r78: past a co-captain
 
     int nChanceForStar = ((nChanceForChainChomp) > 0 ? (nChanceForChainChomp) : 0);
     nChanceForStar = nChanceForStar + g_pGame->m_pGameTweaks->nChanceForStar - nDifference;

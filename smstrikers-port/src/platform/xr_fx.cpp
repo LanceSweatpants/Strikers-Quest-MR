@@ -25,6 +25,14 @@
 #include "xr_ctrl_model.h"  // r54: the controllers in your hands
 #include "xr_fx_shaders.h"
 
+#include <cstdlib>
+#include <string>
+
+// r68c (src/platform/xr_guest.cpp): a guest captain's team colours, by roster index.
+int PortGuestThemeColors(int index, unsigned* main, unsigned* trim, unsigned* patch);
+// r82: a guest's pack name by roster index (the themed celebrations are picked by it), NULL if none.
+const char* PortGuestRosterPack(int index);
+
 namespace xrfx {
 namespace {
 
@@ -42,7 +50,22 @@ enum Shape : uint8_t {
   kController = 21,  // r53: the controllers in your hands (mesh only)
   kTrophyShape = 22, kShelfShape = 23,  // r57: the trophy shelf (mesh only)
   kFrameShape = 24,  // r60: a glowing outline (Scene::frames), thickness in colour 2's alpha
-  kBooShape = 28     // r61: a Boo in Luigi's suite (mesh only, on the ball; params[1] = shy)
+  kBooShape = 28,    // r61: a Boo in Luigi's suite (mesh only, on the ball; params[1] = shy)
+  // r82: the themed celebrations (CELEBRATION-THEMES.md). Quads (xr_fx.frag): a fog puff, a streak
+  // (rain, a laser), a lightning segment, a glowing ring, a hypnotic spiral, a bubble, a music note, a
+  // "Z", a hexagon, a ghost's face, a snowflake; then a drop, Game & Watch shapes (variant = colour 2's
+  // alpha), a checkered flag, a wisp flame, a slash.
+  kPuff = 29, kStreak = 30, kBolt = 31, kRingFx = 32, kSpiral = 33, kBubble = 34, kNoteQuad = 35, kZzz = 36,
+  kHexFx = 37, kEyes = 38, kFlake = 39,
+  kDrop = 70, kLcd = 71, kChecker = 72, kWisp = 73, kSlash = 74,
+  // r89 (Lance: Pichu's falling "kebobs ... need to be lightning", Charmander's "orange starfish ... like
+  // flames"): a lightning bolt and a flame, glowing quads that face you and go out where they touch down.
+  kBoltPiece = 75, kFlame = 76,
+  kTwinkle = 77,  // r96: a shiny's twinkle (the 3D evolution)
+  // r82: themed 3D pieces (xr_fx_mesh.h, xr_fx_mesh.frag 40-60).
+  kSword = 40, kShield, kRod, kPokeBall, kDumbbell, kRock, kBone, kApple, kMissile, kPill,
+  kRupee, kTriforce, kIceBlock, kIcicle, kGlove, kNote, kBat, kShard, kNeedle, kYoyo,
+  kPearl = 60  // the ball mesh, plain and glossy
 };
 
 // The 3D mesh each piece is drawn with (xr_fx_mesh.h); sparks, flashes and the marker stay quads.
@@ -62,6 +85,28 @@ uint8_t mesh_for(Shape shape) {
   case kGarlic: return mesh::kGarlic;
   case kBow: return mesh::kBow;
   case kCap: return mesh::kCap;
+  // r82
+  case kSword: return mesh::kSword;
+  case kShield: return mesh::kShield;
+  case kRod: return mesh::kRod;
+  case kPokeBall: return mesh::kPokeBall;
+  case kDumbbell: return mesh::kDumbbell;
+  case kRock: return mesh::kRock;
+  case kBone: return mesh::kBone;
+  case kApple: return mesh::kApple;
+  case kMissile: return mesh::kMissile;
+  case kPill: return mesh::kPill;
+  case kRupee: return mesh::kRupee;
+  case kTriforce: return mesh::kTriforce;
+  case kIceBlock: return mesh::kIceBlock;
+  case kIcicle: return mesh::kIcicle;
+  case kGlove: return mesh::kGlove;
+  case kNote: return mesh::kNote;
+  case kBat: return mesh::kBat;
+  case kShard: return mesh::kShard;
+  case kNeedle: return mesh::kNeedle;
+  case kYoyo: return mesh::kYoyo;
+  case kPearl: return mesh::kBall;
   default: return kNoMesh;
   }
 }
@@ -87,12 +132,37 @@ Rest rest_for(uint8_t shape) {
   case kGarlic: return {1, 0.48f};
   case kBow: return {2, 0.1f};
   case kCap: return {1, 0.12f};       // crown up
-  default: return {2, 0.02f};         // paper, foil
+  // r82: lying the way each would
+  case kSword: return {2, 0.035f};
+  case kShield: return {2, 0.07f};
+  case kRod: return {0, 0.075f};
+  case kPokeBall: return {1, 0.5f};
+  case kDumbbell: return {1, 0.2f};
+  case kRock: return {1, 0.36f};
+  case kBone: return {2, 0.085f};
+  case kApple: return {1, 0.42f};
+  case kMissile: return {0, 0.12f};
+  case kPill: return {0, 0.17f};
+  case kRupee: return {0, 0.21f};
+  case kTriforce: return {2, 0.05f};
+  case kIceBlock: return {1, 0.32f};
+  case kIcicle: return {0, 0.12f};
+  case kGlove: return {2, 0.27f};
+  case kNote: return {2, 0.09f};
+  case kBat: return {0, 0.075f};
+  case kShard: return {0, 0.1f};
+  case kNeedle: return {0, 0.07f};
+  case kYoyo: return {2, 0.2f};
+  case kPearl: return {1, 0.5f};
+  default: return {2, 0.02f};         // paper, foil, flat quads
   }
 }
 
-// The Tabletop "that's you" marker colour, by the team captain's eCharacterClass.
+// The Tabletop "that's you" marker colour, by the team captain's eCharacterClass (r68c: 100 + a
+// guest's roster place = its own main colour).
 uint32_t marker_colour(int captain) {
+  unsigned gm, gt, gp;
+  if (captain >= 100 && PortGuestThemeColors(captain - 100, &gm, &gt, &gp)) return gm;
   switch (captain) {
   case 1: return 0xFF8C1A;   // Daisy
   case 2: return 0xFFC21F;   // Donkey Kong
@@ -132,17 +202,412 @@ const Theme kNeutral = {{0xFFD21F, 0xFFFFFF, 0xE4202A}, kStar, 0xFFD21F, 0xFFF2A
 const char* const kNames[12] = {"Birdo", "Daisy", "Donkey Kong", "Hammer Bro", "Koopa", "Luigi",
                                 "Mario", "Peach", "Toad", "Waluigi", "Wario", "Yoshi"};
 
+// r68c: the theme for a captain: a Strikers class (0-11), a guest (100 + roster place: its own team
+// colours, guests/colors.txt; confetti in them with stars; its own outline etched, xr_fx_mesh.frag),
+// or neutral.
+Theme theme_for(int captain) {
+  if (captain >= 0 && captain < 12) return kThemes[captain];
+  unsigned m, t, p;
+  if (captain >= 100 && PortGuestThemeColors(captain - 100, &m, &t, &p)) {
+    // the body in its main colour, the inlay pale (or in its trim when the main is pale already)
+    const unsigned luma = (((m >> 16) & 255) * 3 + ((m >> 8) & 255) * 6 + (m & 255)) / 10;
+    Theme th = kNeutral;
+    th.paper[0] = m;
+    th.paper[1] = luma > 170 ? t : p;
+    th.paper[2] = t;
+    th.piece = kStar;
+    th.pieceMain = m;
+    th.pieceDetail = p;
+    return th;
+  }
+  return kNeutral;
+}
+
+// ---------------------------------------------------------------------------------------------
+// r82: themed celebrations (Lance 2026-10-25, C:\StrikersMR\CELEBRATION-THEMES.md): each Pokemon /
+// Melee guest scorer gets, with the confetti, its own pieces falling, its own room effects and its own
+// show in place of the fireworks. An evolution line shares one; each stage bigger (Special::stage).
+// ---------------------------------------------------------------------------------------------
+enum RoomFx : uint8_t {
+  kRoomNone, kRoomFog, kRoomRain, kRoomLightning, kRoomEmbers, kRoomSnow, kRoomLeaves, kRoomDust, kRoomSparks,
+  kRoomFloorRings, kRoomPsyRings, kRoomSpiral, kRoomBubbles, kRoomNotes, kRoomZzz, kRoomWisps, kRoomBarrier,
+  kRoomLasers, kRoomHex, kRoomSlashes, kRoomLevitate, kRoomOrbs, kRoomEyes, kRoomMotes, kRoomFlashes,
+  kRoomMeteors, kRoomSmoke
+};
+enum PyroFx : uint8_t {
+  kPyroFireworks,  // the usual fireworks (in the theme's own colours when p1 / p2 are set)
+  kPyroNone, kPyroWater, kPyroFlame, kPyroBreath, kPyroBlast, kPyroSpout, kPyroSlash, kPyroMeteor,
+  kPyroPuffs, kPyroHearts, kPyroThrow, kPyroRings, kPyroLava
+};
+struct FallFx {
+  uint8_t shape;
+  uint32_t c1, c2;
+  float size;  // times the usual piece size
+  float glow;
+};
+struct RoomEntry {
+  RoomFx kind;
+  uint32_t c1, c2;
+};
+struct Special {
+  FallFx fall[3] = {};
+  int nFall = 0;
+  RoomEntry room[3] = {};
+  int nRoom = 0;
+  PyroFx pyro = kPyroFireworks;
+  uint32_t p1 = 0, p2 = 0;
+  float stage = 1.0f;  // 1 first form .. 3 last
+  const char* name = "";
+  Special& f(uint8_t shape, uint32_t c1, uint32_t c2, float size = 1.0f, float glow = 0.0f) {
+    if (nFall < 3) fall[nFall++] = FallFx{shape, c1, c2, size, glow};
+    return *this;
+  }
+  Special& r(RoomFx kind, uint32_t c1 = 0xFFFFFF, uint32_t c2 = 0xFFFFFF) {
+    if (nRoom < 3) room[nRoom++] = RoomEntry{kind, c1, c2};
+    return *this;
+  }
+  Special& py(PyroFx kind, uint32_t c1 = 0, uint32_t c2 = 0) {
+    pyro = kind;
+    p1 = c1;
+    p2 = c2;
+    return *this;
+  }
+};
+
+// The pack's place in a list (1-based: its stage), 0 if not in it.
+int stage_in(const char* pack, std::initializer_list<const char*> names) {
+  int i = 1;
+  for (const char* n : names) {
+    if (std::strcmp(pack, n) == 0) return i;
+    ++i;
+  }
+  return 0;
+}
+
+// The themes, by pack (CELEBRATION-THEMES.md). None (nRoom == 0 && nFall == 0) = the usual party.
+Special special_for_pack(const char* pack) {
+  Special sp;
+  if (pack == nullptr) return sp;
+  sp.name = pack;
+  int st = 0;
+  auto stage = [&](int s, int of) { sp.stage = of <= 1 ? 2.5f : 1.0f + 2.0f * (s - 1) / (of - 1); };
+  // --- ghosts, gas ---
+  // r89 (Lance: "we need to refine what falls for what ppl"): everyone has pieces of their own falling now
+  // (no generic stars in their colours): ghost fire, poison bubbles, water, orbs ... and the Charged guests.
+  if ((st = stage_in(pack, {"pk_gastly", "pk_haunter", "pk_gengar"})) != 0) {
+    stage(st, 3);
+    sp.f(kFlame, 0xE0B0FF, 0x6A20B0, 0.9f, 0.9f);  // ghost fire
+    sp.r(kRoomFog, 0xC07CFF, 0x5A1E8C);
+    if (st == 3) sp.r(kRoomEyes, 0xFF3A5A, 0xC040FF);
+    sp.py(kPyroFireworks, 0xB050FF, 0x6020C0);
+  } else if ((st = stage_in(pack, {"pk_koffing", "pk_weezing"})) != 0) {
+    stage(st, 2);
+    sp.f(kPearl, 0x9A6AC8, 0xC8F070, 0.7f, 0.2f).f(kPearl, 0xA8D040, 0xE0FFB0, 0.55f, 0.2f);  // poison bubbles
+    sp.r(kRoomFog, 0xB8D850, 0x6B3FA0).r(kRoomBubbles, 0xC890F0, 0xFFFFFF);
+    sp.py(kPyroPuffs, 0xA8D040, 0x8A4FC0);
+  } else if ((st = stage_in(pack, {"pk_shuppet", "pk_banette"})) != 0) {
+    stage(st, 2);
+    sp.f(kNeedle, 0x5A4A7A, 0xC8CCD4, 1.0f);
+    sp.r(kRoomFog, 0xA898C0, 0x3A3050).r(kRoomEyes, st == 1 ? 0x7FE0FF : 0xFF3030, 0x9A7AD0).r(kRoomWisps, 0xA8D8FF, 0x3060FF);
+    sp.py(kPyroNone);
+  } else if ((st = stage_in(pack, {"pk_dusclops"})) != 0) {
+    stage(2, 3);
+    sp.f(kFlame, 0xBFF0FF, 0x2060FF, 0.9f, 0.9f);  // ghost fire, blue
+    sp.r(kRoomFog, 0x808088, 0x202028).r(kRoomWisps, 0x9FE0FF, 0x2060FF).r(kRoomEyes, 0xFF2A2A, 0xFF8080);
+    sp.py(kPyroNone);
+  // --- electric ---
+  } else if ((st = stage_in(pack, {"pk_pichu", "pk_pikachu", "pk_raichu"})) != 0) {
+    stage(st, 3);
+    sp.f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.5f, 0.9f);  // r89: lightning bolts (were lightning rods: "kebobs")
+    sp.r(kRoomLightning, 0xFFFFFF, 0xFFE040).r(kRoomSparks, 0xFFFFE0, 0xFFD020);
+    sp.py(kPyroNone);
+  } else if ((st = stage_in(pack, {"pk_voltorb", "pk_electrode"})) != 0) {
+    stage(st, 2);
+    sp.f(kPokeBall, 0xE8242A, 0xF4F4F4, 1.1f);
+    sp.r(kRoomSparks, 0xFFFFE0, 0xFFE040);
+    sp.py(kPyroBlast, 0xFFFFFF, 0xFFE040);
+  // --- water ---
+  } else if ((st = stage_in(pack, {"pk_squirtle", "pk_wartortle", "pk_blastoise"})) != 0) {
+    stage(st, 3);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_poliwag", "pk_poliwhirl", "pk_poliwrath", "pk_politoed"})) != 0) {
+    stage(st, 4);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kPearl, 0xDFF4FF, 0x7FC0FF, 0.45f, 0.3f);  // water, bubbles
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(kPyroSpout, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_mudkip", "pk_marshtomp", "pk_swampert"})) != 0) {
+    stage(st, 3);
+    sp.f(kDrop, 0x8B5A2B, 0x4A2E14, 0.8f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  // --- fire ---
+  } else if ((st = stage_in(pack, {"pk_charmander", "pk_charmeleon", "pk_charizard"})) != 0) {
+    stage(st, 3);
+    sp.f(kFlame, 0xFFC830, 0xE8300A, 1.1f, 0.9f);  // r89: flames (were sparks, with stars in his colours)
+    sp.r(kRoomEmbers, 0xFFE070, 0xFF5A10);
+    sp.py(st == 3 ? kPyroBreath : kPyroFlame, 0xFFE9A0, 0xFF5A10);
+  } else if ((st = stage_in(pack, {"pk_torchic", "pk_combusken", "pk_blaziken"})) != 0) {
+    stage(st, 3);
+    sp.f(kFlame, 0xFFD848, 0xF04010, 1.0f, 0.9f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF4010).r(kRoomFloorRings, 0xFFE070, 0xFF5A10);
+    sp.py(kPyroFlame, 0xFFF0B0, 0xFF3A10);
+  } else if ((st = stage_in(pack, {"pk_magby", "pk_magmar"})) != 0) {
+    stage(st, 2);
+    sp.f(kDrop, 0xFFB030, 0xFF3A00, 0.8f, 0.8f).f(kFlame, 0xFFD040, 0xE8300A, 1.0f, 0.9f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF4010).r(kRoomSmoke, 0x707070, 0x303030);
+    sp.py(kPyroLava, 0xFFD060, 0xFF3A00);
+  } else if ((st = stage_in(pack, {"pk_houndour", "pk_houndoom"})) != 0) {
+    stage(st, 2);
+    sp.f(kBone, 0xEDE6D2, 0xC8C0A8, 1.2f).f(kFlame, 0xFF8A40, 0x8A0A0A, 1.0f, 0.9f);
+    sp.r(kRoomEmbers, 0xFF6040, 0x500808).r(kRoomSmoke, 0x404040, 0x101010);
+    sp.py(kPyroFlame, 0xFF7050, 0x400808);
+  } else if ((st = stage_in(pack, {"pk_bagon", "pk_shelgon", "pk_salamence"})) != 0) {
+    stage(st, 3);
+    if (st == 1) sp.f(kRock, 0x9A8F80, 0x6A6258, 0.9f);
+    else sp.f(kPetal, 0x5FA8E8, 0xD8E8F8, 1.0f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF5010);
+    sp.py(kPyroBreath, 0xFFE9A0, 0xFF5A10);
+  } else if ((st = stage_in(pack, {"pk_dratini", "pk_dragonair", "pk_dragonite"})) != 0) {
+    stage(st, 3);
+    sp.f(kPetal, 0x6A9FF0, 0xE0E8FF, 1.0f).f(kPearl, 0xF8F4FF, 0xC8D8FF, 0.6f);
+    sp.r(kRoomMotes, 0xBFD0FF, 0x7A4AE0);
+    sp.py(kPyroFlame, 0xE0F0FF, 0x3A6AFF);
+  // --- grass, bugs ---
+  } else if ((st = stage_in(pack, {"pk_bulbasaur", "pk_ivysaur", "pk_venusaur"})) != 0) {
+    stage(st, 3);
+    sp.f(kPetal, 0x5BC24A, 0xA8E070, 1.0f);
+    if (st == 3) sp.f(kPetal, 0xFF8FB8, 0xFFD0E0, 1.0f);
+    sp.r(kRoomMotes, 0xF0FF90, 0xA0D040);
+    sp.py(kPyroSlash, 0xD0FF90, 0x2E8B3A);
+  } else if ((st = stage_in(pack, {"pk_treecko", "pk_grovyle", "pk_sceptile"})) != 0) {
+    stage(st, 3);
+    sp.f(kPetal, 0x3FB050, 0xB0F080, 1.1f);
+    sp.r(kRoomLeaves, 0x3FB050, 0xB0F080);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_scyther", "pk_scizor"})) != 0) {
+    stage(st, 2);
+    if (st == 1) sp.f(kPetal, 0x7AC850, 0xC8F090, 0.9f);
+    else sp.f(kShard, 0xC82828, 0xD84040, 1.0f);
+    sp.r(kRoomSlashes, 0xFFFFFF, st == 1 ? 0x9AF07A : 0xFF4040);
+    sp.py(kPyroSlash, 0xFFFFFF, st == 1 ? 0x9AF07A : 0xFF4040);
+  // --- rock, ground, steel ---
+  } else if ((st = stage_in(pack, {"pk_geodude", "pk_graveler", "pk_golem"})) != 0) {
+    stage(st, 3);
+    sp.f(kRock, 0x8C8478, 0x5A544C, 1.0f + 0.3f * (st - 1));
+    sp.r(kRoomDust, 0xB8A890, 0x6A5A48);
+    sp.py(st == 3 ? kPyroBlast : kPyroThrow, 0xFFE0A0, 0xFF7A1A);
+  } else if ((st = stage_in(pack, {"pk_onix", "pk_steelix"})) != 0) {
+    stage(st, 2);
+    if (st == 1) sp.f(kRock, 0x9A9488, 0x5A544C, 1.3f);
+    else sp.f(kShard, 0x8A8E96, 0xB8BCC8, 1.1f).f(kRock, 0x7A7E86, 0x4A4E56, 1.2f);
+    sp.r(kRoomDust, 0xB8A890, 0x6A5A48);
+    if (st == 2) sp.r(kRoomSparks, 0xFFFFFF, 0xC8D8FF);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_cubone", "pk_marowak"})) != 0) {
+    stage(st, 2);
+    sp.f(kBone, 0xEDE6D2, 0xC8C0A8, 1.3f);
+    sp.r(kRoomDust, 0xC8B898, 0x7A6A58);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_machop", "pk_machoke", "pk_machamp"})) != 0) {
+    stage(st, 3);
+    sp.f(kDumbbell, 0x303038, 0xC8CCD4, 1.3f);
+    sp.r(kRoomFloorRings, 0xFFFFFF, 0xFFC040);
+    sp.py(kPyroFireworks, 0xFFFFFF, 0xFFC040);
+  } else if ((st = stage_in(pack, {"pk_mankey", "pk_primeape"})) != 0) {
+    stage(st, 2);
+    sp.f(kGlove, 0xE8242A, 0xFFFFFF, 1.1f);
+    sp.r(kRoomSparks, 0xFFFFFF, 0xFFE070).r(kRoomSmoke, 0xF0F0F0, 0xB0B0B0);
+    sp.py(kPyroFireworks, 0xFFFFFF, 0xFFD040);
+  } else if ((st = stage_in(pack, {"pk_beldum", "pk_metang", "pk_metagross"})) != 0) {
+    stage(st, 3);
+    sp.f(kShard, 0x6A8FC8, 0xB8C8E0, 1.0f);
+    sp.r(kRoomSparks, 0xE0F0FF, 0x6AA0FF);
+    if (st == 3) sp.r(kRoomMeteors, 0x8A9AB0, 0x5A6A80);
+    sp.py(st == 1 ? kPyroFireworks : kPyroMeteor, 0xE0F0FF, 0x6AA0FF);
+  // --- psychic, normal ---
+  } else if ((st = stage_in(pack, {"pk_mewtwo"})) != 0) {
+    sp.stage = 3.0f;
+    sp.f(kPearl, 0x6A20A0, 0xE0A0FF, 0.7f, 0.6f);  // shadow balls
+    sp.r(kRoomLevitate, 0xD8A0FF, 0x8A3FD1).r(kRoomPsyRings, 0xE0B0FF, 0x8A3FD1).r(kRoomMotes, 0xE8C8FF, 0x9A50E0);
+    sp.py(kPyroFireworks, 0xB050FF, 0x5A1A9A);
+  } else if ((st = stage_in(pack, {"pk_drowzee", "pk_hypno"})) != 0) {
+    stage(st, 2);
+    sp.f(kCoin, 0xE8E8F0, 0xC0C0D0, 1.0f);
+    sp.r(kRoomSpiral, 0xFF9AD8, 0x6A2AA0).r(kRoomZzz, 0xFFFFFF, 0xC8B0FF);
+    sp.py(kPyroRings, 0xFFB0E8, 0x8A3FD1);
+  } else if ((st = stage_in(pack, {"pk_mrmime"})) != 0) {
+    sp.stage = 2.0f;
+    sp.f(kHeart, 0xFF7FB8, 0xFFD0E4, 1.0f);
+    sp.r(kRoomBarrier, 0xBFF0FF, 0x7FD0FF).r(kRoomMotes, 0xFFD0F0, 0xFF8AC8);
+    sp.py(kPyroFireworks, 0xFFB0E0, 0xFFFFFF);
+  } else if ((st = stage_in(pack, {"pk_igglybuff", "pk_jigglypuff", "pk_wigglytuff"})) != 0) {
+    stage(st, 3);
+    sp.f(kNote, 0xFF8FC8, 0xFFFFFF, 1.0f);
+    sp.r(kRoomNotes, 0xFF8FC8, 0xFFD0E8).r(kRoomZzz, 0xFFFFFF, 0xFFC8E8);
+    sp.py(kPyroHearts, 0xFF6FB5, 0xFFC0DA);
+  } else if ((st = stage_in(pack, {"pk_snorlax"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kApple, 0xE0242A, 0x3FA03A, 1.0f);
+    sp.r(kRoomZzz, 0xFFFFFF, 0xBFD8FF).r(kRoomBubbles, 0xDFF0FF, 0xFFFFFF);
+    sp.py(kPyroNone);
+  // --- Melee ---
+  } else if ((st = stage_in(pack, {"link", "younglink"})) != 0) {
+    sp.stage = st == 1 ? 2.5f : 2.0f;
+    if (st == 1) sp.f(kSword, 0x4A3AB0, 0xD8DEE8, 1.6f).f(kShield, 0x2A50B0, 0xC82828, 1.4f);
+    else sp.f(kSword, 0x6B8E23, 0xD8DEE8, 1.4f).f(kShield, 0xA0723A, 0xC82828, 1.3f);
+    sp.f(kRupee, 0x30D050, 0xFFFFFF, 0.8f, 0.2f);  // (green, blue or red as it falls: add_themed_piece)
+    sp.py(kPyroHearts, 0xFF3A4A, 0xFFB0B8);
+  } else if ((st = stage_in(pack, {"marth"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kSword, 0xD8B040, 0xE0E6F0, 1.6f);
+    sp.r(kRoomSlashes, 0xFFFFFF, 0x4A8AFF);
+  } else if ((st = stage_in(pack, {"roy"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kSword, 0xC82828, 0xE0E6F0, 1.6f).f(kFlame, 0xFFC830, 0xE8300A, 1.0f, 0.9f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF4010).r(kRoomSlashes, 0xFFF0B0, 0xFF5A10);
+    sp.py(kPyroBlast, 0xFFE0A0, 0xFF5A10);
+  } else if ((st = stage_in(pack, {"zelda"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kTriforce, 0xFFD040, 0xFFE890, 1.2f);
+    sp.r(kRoomHex, 0xBFE8FF, 0x4AA0FF);
+    sp.py(kPyroFireworks, 0xFF7020, 0xFFD040);
+  } else if ((st = stage_in(pack, {"sheik"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kNeedle, 0x2A2A3A, 0xD0D4DC, 1.1f);
+    sp.r(kRoomFlashes, 0xFFFFFF, 0xE0E8FF).r(kRoomSmoke, 0xF0F0F0, 0xA0A0A8);
+  } else if ((st = stage_in(pack, {"ganondorf"})) != 0) {
+    sp.stage = 3.0f;
+    sp.f(kTriforce, 0x4A2A6A, 0x8A5AB0, 1.2f);
+    sp.r(kRoomEmbers, 0xD080FF, 0x4A0A6A).r(kRoomLightning, 0xF0D0FF, 0x8A2AD0);
+    sp.py(kPyroFlame, 0xE0A0FF, 0x5A1A8A);
+  } else if ((st = stage_in(pack, {"samus"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kMissile, 0xE07A30, 0xC8CCD4, 1.3f);
+    sp.r(kRoomOrbs, 0xFFF0A0, 0x80FF40);
+    sp.py(kPyroFireworks, 0xFFA040, 0xFFE070);
+  } else if ((st = stage_in(pack, {"fox", "falco"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kHexFx, 0xBFF8FF, 0x30C8FF, 1.1f, 0.8f);  // reflector hexagons
+    sp.r(kRoomLasers, 0xFFFFFF, st == 1 ? 0xFF3030 : 0x3080FF).r(kRoomHex, 0xBFF8FF, 0x30C8FF);
+  } else if ((st = stage_in(pack, {"falcon"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kChecker, 0xFFFFFF, 0x101010, 1.4f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF5010);
+    sp.py(kPyroBlast, 0xFFE0A0, 0xFF6A10);
+  } else if ((st = stage_in(pack, {"kirby"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kStar, 0xFFE040, 0xFFF8C0, 1.2f).f(kApple, 0xE82A2A, 0x3FA03A, 0.9f);
+    sp.py(kPyroFireworks, 0xFFE040, 0xFF8FC8);
+  } else if ((st = stage_in(pack, {"ness"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kBat, 0xC8A060, 0xA07840, 1.3f).f(kYoyo, 0xE0242A, 0xFFFFFF, 0.8f);
+    sp.r(kRoomOrbs, 0xFFFFFF, 0x6AB8FF);
+    sp.py(kPyroFireworks, 0xFF8FC8, 0x6AB8FF);
+  } else if ((st = stage_in(pack, {"popo", "nana"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kIceBlock, 0xCFF4FF, 0xFFFFFF, 0.9f).f(kIcicle, 0xE8FAFF, 0xFFFFFF, 1.1f);
+    sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+  } else if ((st = stage_in(pack, {"drmario"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kPill, 0xE8242A, 0xFFD21F, 1.0f).f(kPill, 0x2A6AE8, 0xE8242A, 1.0f).f(kPill, 0xFFD21F, 0x2A6AE8, 1.0f);
+  } else if ((st = stage_in(pack, {"gamewatch"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kLcd, 0x141414, 0x141414, 1.6f);
+  // --- r89: the Charged guests (their own pieces, the usual fireworks) ---
+  } else if ((st = stage_in(pack, {"bowser", "bowserjr"})) != 0) {
+    sp.stage = st == 1 ? 3.0f : 2.0f;
+    sp.f(kFlame, 0xFFC830, 0xE8300A, 1.1f, 0.9f).f(kShell, 0x2E8B3A, 0xF4E8C8, 1.1f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF4010);
+  } else if ((st = stage_in(pack, {"diddykong"})) != 0) {
+    sp.stage = 2.0f;
+    sp.f(kBanana, 0xFFD83A, 0x6B4423, 1.0f);
+  } else if ((st = stage_in(pack, {"petey"})) != 0) {
+    sp.stage = 2.5f;
+    sp.f(kPetal, 0x3FA03A, 0xB0E070, 1.2f).f(kDrop, 0x7A4A8A, 0x3A1A4A, 0.8f);
+  } else if ((st = stage_in(pack, {"boo"})) != 0) {
+    sp.stage = 2.0f;
+    sp.f(kWisp, 0xF4F4FF, 0x8A9AFF, 1.0f, 0.8f);
+    sp.r(kRoomWisps, 0xE8F0FF, 0x7A8AFF);
+  } else if ((st = stage_in(pack, {"drybones"})) != 0) {
+    sp.stage = 2.0f;
+    sp.f(kBone, 0xEDE6D2, 0xC8C0A8, 1.2f);
+  } else if ((st = stage_in(pack, {"montymole"})) != 0) {
+    sp.stage = 2.0f;
+    sp.f(kRock, 0x8A6A48, 0x5A4430, 0.9f);
+    sp.r(kRoomDust, 0xB89870, 0x6A5038);
+  } else if ((st = stage_in(pack, {"shyguy"})) != 0) {
+    sp.stage = 2.0f;
+    sp.f(kEgg, 0xFFFFFF, 0x3CC23C, 1.0f);  // Yoshi's Island eggs
+  } else {
+    sp.name = "";
+  }
+  return sp;
+}
+
+// r89: a home corner's theme: a guest's own celebration theme (a shiny one shares its normal pack's), or a
+// Strikers captain's (the life of its cup suite: Mario's coins, Luigi's green flames, Peach's hearts ...).
+Special corner_special(const char* pack, int cls) {
+  if (pack != nullptr && pack[0] != '\0') {
+    std::string base(pack);
+    const size_t shiny = base.find("_shiny");
+    if (shiny != std::string::npos) base.resize(shiny);
+    return special_for_pack(base.c_str());
+  }
+  Special sp;
+  switch (cls) {
+  case 6:  // Mario: coins and a Super Mushroom, coins glinting
+    sp.f(kCoin, 0xFFC21F, 0xFFE27A).f(kMushroom, 0xE4202A, 0xFFFFFF).r(kRoomMotes, 0xFFE27A, 0xFFC21F);
+    break;
+  case 5:  // Luigi: his mushroom, the green flames of his mansion
+    sp.f(kMushroom, 0x1FA83A, 0xFFFFFF).f(kFlame, 0xB8FFA8, 0x1F8A3A, 1.0f, 0.9f).r(kRoomWisps, 0xB0FFA0, 0x2E9A3A);
+    break;
+  case 7:  // Peach: hearts, pink sparkles
+    sp.f(kHeart, 0xFF4F9A, 0xFFB0D6).r(kRoomMotes, 0xFFC0E0, 0xFF6FB5);
+    break;
+  case 1:  // Daisy: petals drifting
+    sp.f(kPetal, 0xFFFFFF, 0xFFD21F).r(kRoomLeaves, 0xFF9A2A, 0xFFE070);
+    break;
+  case 11:  // Yoshi: eggs, pollen
+    sp.f(kEgg, 0xFFFFFF, 0x3CC23C).r(kRoomMotes, 0xE8FF90, 0x7AD040);
+    break;
+  case 10:  // Wario: garlic and gold
+    sp.f(kGarlic, 0xF6F0DC, 0xD9CDAE).f(kCoin, 0xFFC21F, 0xFFE27A).r(kRoomMotes, 0xFFE27A, 0xFFC21F);
+    break;
+  case 9:  // Waluigi: a rose, his purple brazier, rose petals
+    sp.f(kRose, 0xD81E3A, 0x2E8B3A).f(kFlame, 0xE0B0FF, 0x6B2FB3, 1.0f, 0.9f).r(kRoomLeaves, 0xD81E3A, 0x8A1020);
+    break;
+  case 2:  // Donkey Kong: bananas, jungle leaves
+    sp.f(kBanana, 0xFFD83A, 0x6B4423).r(kRoomLeaves, 0x3FA03A, 0x8AD060);
+    break;
+  default:
+    if (cls >= 0 && cls < 12) sp.f(kThemes[cls].piece, kThemes[cls].pieceMain, kThemes[cls].pieceDetail);
+    break;
+  }
+  return sp;
+}
+
 // 0xRRGGBB -> R8G8B8A8 in memory order (little-endian 0xAABBGGRR).
 uint32_t pack(uint32_t rgb, uint8_t a = 255) {
   return ((rgb >> 16) & 0xFF) | (((rgb >> 8) & 0xFF) << 8) | ((rgb & 0xFF) << 16) | (uint32_t(a) << 24);
 }
+// r82: and back (the colour only).
+uint32_t unpack_rgb(uint32_t c) { return ((c & 0xFF) << 16) | (((c >> 8) & 0xFF) << 8) | ((c >> 16) & 0xFF); }
 
 // ---------------------------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------------------------
 
 // r55: kKindEmber, an item blast's spark that falls for real and bounces on the floor / the field.
-enum Kind : uint8_t { kKindPaper, kKindPiece, kKindSpark, kKindRocket, kKindFlash, kKindEmber };
+// r82, the themed celebrations: a fog puff drifting round you (kKindFog), a tint over your whole view
+// (kKindVeil, the goal flash's quad), a lightning segment (kKindBolt), a raindrop / laser flying straight
+// (kKindDrop: splashes on the floor), something floating (kKindFloat: notes, bubbles, wisps, faces, orbs),
+// a ring growing (kKindRing).
+enum Kind : uint8_t {
+  kKindPaper, kKindPiece, kKindSpark, kKindRocket, kKindFlash, kKindEmber,
+  kKindFog, kKindVeil, kKindBolt, kKindDrop, kKindFloat, kKindRing
+};
 
 // Firework burst styles.
 enum Burst : uint8_t { kBurstSphere, kBurstRing, kBurstWillow, kBurstDouble };
@@ -168,6 +633,13 @@ struct Particle {
   bool onScorer;      // r42: resting on the life-size scorer's head (rides along, falls when it runs)
   float restOff[2];   // r42: where on the head, from its feet (x, z)
   float maxAge;       // r61: a suite piece still in the air is gone this old (fading out), 0 = 25 s
+  // r82: the themed kinds: their top opacity, fade-in time, growth (m/s of size), a swirl round you
+  // (m/s, pieces and fog), and a trail (1 fire, 2 sparkle; meteors, orbs).
+  float peak;
+  float fadeIn;
+  float grow;
+  float orbit;
+  uint8_t trail;
 };
 
 enum class Stage { Idle, Raining, Tapering };
@@ -222,6 +694,16 @@ struct State {
   float stageTime = 0.0f;
   float sinceGoal = 0.0f;
   Theme theme = kNeutral;
+  // r82: the scorer's themed celebration (spOn) and its live state: spawn accumulators and timers per
+  // room effect, the pyro's timer and its burst left, the room's tint made, whether the end was applied,
+  // the confetti floating (Mewtwo), the fireworks' colours.
+  Special sp;
+  bool spOn = false;
+  float spAcc[3] = {}, spTimer[3] = {}, spDone[3] = {};
+  float pyroTimer = 0.0f, pyroBurst = 0.0f, pyroAcc = 0.0f, pyroPhase = 0.0f;
+  bool spEnded = false;
+  bool levitate = false;
+  uint32_t burstMain = 0, burstOther = 0;
   float intensity = 1.0f;
   bool superStrike = false;
   int cannonWavesLeft = 0;  // waves still to fire, one every kWaveGap
@@ -300,6 +782,13 @@ struct State {
   Slot roomSlots[kSlots];  // their command buffers and fences
   uint32_t roomSlot = 0;
   Tex roomTex, outsideTex;
+  // r68c: each guest's own outline (guests/etch.r8, tools/outside/etchres.py), etched into your
+  // controllers when a guest is your captain (xr_fx_mesh.frag, set 0 of `layout`).
+  Tex etchTex;
+  VkDescriptorSetLayout etchSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool etchPool = VK_NULL_HANDLE;
+  VkDescriptorSet etchSet = VK_NULL_HANDLE;
+  VkSampler etchSampler = VK_NULL_HANDLE;
   VkDescriptorSetLayout texSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool texPool = VK_NULL_HANDLE;
   VkDescriptorSet roomSet = VK_NULL_HANDLE, outsideSet = VK_NULL_HANDLE;
@@ -320,6 +809,31 @@ struct State {
   float flashAccum = 0.0f, moteAccum = 0.0f, themeAccum = 0.0f;
   float rocketIn = 2.0f, popIn = 2.0f, dropIn = 1.5f;
   float booShy[5] = {};
+  // r96: the characters standing in your room (Scene::models, set_model): each one's pictures (a set
+  // each), texture coordinates and triangles, its posed vertices per frame slot, its parts.
+  struct CharModel {
+    std::vector<Tex> tex;
+    std::vector<VkDescriptorSet> sets;
+    VkBuffer uv = VK_NULL_HANDLE, indices = VK_NULL_HANDLE;
+    VkDeviceMemory uvMemory = VK_NULL_HANDLE, indexMemory = VK_NULL_HANDLE;
+    VkBuffer verts[kSlots] = {};
+    VkDeviceMemory vertMemory[kSlots] = {};
+    void* vertMapped[kSlots] = {};
+    std::vector<ModelPart> parts;
+    uint32_t vertexCount = 0;
+  };
+  CharModel charModels[2];
+  bool charTried = false, charReady = false;
+  VkDescriptorSetLayout charSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool charPool = VK_NULL_HANDLE;
+  VkSampler charSampler = VK_NULL_HANDLE;
+  VkPipelineLayout charLayout = VK_NULL_HANDLE;
+  VkPipeline charPipeline = VK_NULL_HANDLE, charSoftPipeline = VK_NULL_HANDLE;
+  // r96: the evolution's theme (evo_theme): round where, how strong; no confetti until it has tapered off
+  bool evoOn = false, evoNoPaper = false;
+  XrVector3f evoAt{0.0f, 0.0f, 0.0f};
+  float evoRadius = 0.6f, evoHeight = 2.0f, evoAcc = 0.0f, evoSparkAcc = 0.0f;
+  std::string evoPack;
 };
 State s;
 
@@ -442,8 +956,55 @@ void add_paper(const Scene& sc, const Scale& k, const XrVector3f& p, const float
   s.parts.push_back(q);
 }
 
+// r82: one of the scorer's themed pieces (Special::fall), falling with the confetti; `which` -1 = any.
+void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, const float v[3], int which = -1) {
+  if (room_full() || s.sp.nFall == 0) return;
+  const FallFx& f = s.sp.fall[which >= 0 && which < s.sp.nFall ? which : irand(s.sp.nFall)];
+  Particle q{};
+  q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+  std::memcpy(q.v, v, sizeof(q.v));
+  random_quat(q.q);
+  random_unit(q.axis);
+  q.spin = frand(1.2f, 3.5f);
+  q.size = k.piece * f.size * 1.25f * frand(0.85f, 1.15f);
+  q.aspect = 1.0f;
+  q.shape = f.shape;
+  q.mesh = mesh_for(static_cast<Shape>(f.shape));
+  uint32_t c1 = f.c1, c2 = f.c2;
+  uint8_t a2 = 255;
+  if (f.shape == kRupee) c1 = irand(3) == 0 ? 0x3A7AFF : (irand(2) ? 0x30D050 : 0xE03030);  // green, blue, red
+  if (f.shape == kLcd) a2 = static_cast<uint8_t>(irand(4) * 64 + 32);                        // which picture
+  if (f.shape == kFlame) a2 = static_cast<uint8_t>(irand(256));                              // its tongues' sway
+  q.c1 = pack(c1);
+  q.c2 = pack(c2, a2);
+  q.glow = f.glow;
+  q.kind = kKindPiece;
+  q.life = sc.mr ? 0.8f : 0.7f;
+  q.flutterPhase = frand(0.0f, 6.28f);
+  q.flutterFreq = frand(0.8f, 1.6f);
+  q.flutterAmp = k.flutter * (q.mesh == kNoMesh ? 0.6f : 0.35f);  // flat ones flutter like paper
+  q.fallSpeed = k.pieceFall * frand(0.85f, 1.15f) * (f.shape == kSpark ? 0.5f : 1.0f);
+  if (f.shape == kFlame || f.shape == kBoltPiece || f.shape == kWisp) {
+    // r89: upright, facing you (a zero turn: xr_fx.vert's camera-facing quad), drifting down and going out
+    // on the way (flames slower, a bolt taller and quicker)
+    std::memset(q.q, 0, sizeof(q.q));
+    q.spin = 0.0f;
+    q.aspect = f.shape == kBoltPiece ? 0.62f : 0.72f;
+    q.flutterAmp = k.flutter * 0.25f;
+    q.fallSpeed *= f.shape == kFlame ? 0.6f : 0.9f;
+    q.maxAge = frand(1.4f, 2.8f);
+  }
+  s.parts.push_back(q);
+}
+
 void add_piece(const Scene& sc, const Scale& k, const XrVector3f& p, const float v[3]) {
   if (room_full()) return;
+  // r82: a themed scorer's own pieces in place of its signature stars; r89 (Lance: "the generic stars falling
+  // for charmander needs to be like flames"): all of them (no star in its colours mixed in)
+  if (s.spOn && s.sp.nFall > 0) {
+    add_themed_piece(sc, k, p, v);
+    return;
+  }
   Particle q{};
   q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
   std::memcpy(q.v, v, sizeof(q.v));
@@ -538,8 +1099,12 @@ void spawn_blast(const Scene& sc, const State::Blast& b) {
 
 // A firework: sphere, ring, willow (long falling gold trails) or two-colour sphere.
 void add_burst(const Scale& k, const XrVector3f& p) {
-  const uint32_t main = s.theme.paper[irand(3)] == 0xFFFFFF ? s.theme.pieceMain : s.theme.paper[irand(3)];
-  const uint32_t other = s.theme.paper[irand(3)];
+  uint32_t main = s.theme.paper[irand(3)] == 0xFFFFFF ? s.theme.pieceMain : s.theme.paper[irand(3)];
+  uint32_t other = s.theme.paper[irand(3)];
+  if (s.burstMain != 0) {  // r82: a theme's own (shadow balls, Din's Fire, ...)
+    main = irand(3) == 0 ? s.burstOther : s.burstMain;
+    other = s.burstOther;
+  }
   const Burst style = static_cast<Burst>(irand(4));
   float ringAxis[3];
   random_unit(ringAxis);
@@ -775,6 +1340,999 @@ void add_flash(const Scene& sc) {
   s.parts.push_back(q);
 }
 
+// ---------------------------------------------------------------------------------------------
+// r82: the themed celebrations' effects (Special, special_for_pack), stepped by step_theme
+// ---------------------------------------------------------------------------------------------
+
+int spawn_n(float& acc, float rate, float dt) {
+  acc += rate * dt;
+  const int n = static_cast<int>(acc);
+  acc -= static_cast<float>(n);
+  return n;
+}
+
+// How big things are where you are: your room (MR), the cup suite (a VR room), the stadium (VR).
+struct Space {
+  float r;      // how far out effects reach round you, metres
+  float u;      // the size of things (1 = your room)
+  float floor, top;
+  XrVector3f head;
+};
+Space space_of(const Scene& sc, const Scale& k) {
+  Space sp;
+  sp.head = head_of(sc);
+  sp.floor = sc.floorY;
+  if (sc.mr) {
+    sp.r = 2.2f;
+    sp.u = 1.0f;
+    sp.top = rain_area(sc, k).top;
+  } else if (sc.roomShown) {
+    sp.r = 3.2f;
+    sp.u = 1.4f;
+    sp.top = sc.floorY + 3.2f;
+  } else {
+    sp.r = 9.0f;
+    sp.u = 4.0f;
+    sp.top = sc.floorY + 9.0f;
+  }
+  return sp;
+}
+
+// A point round you: rmin..rmax out (metres), between heights y0 and y1 above the floor.
+XrVector3f around(const Space& S, float rmin, float rmax, float y0, float y1) {
+  const float a = frand(0.0f, 6.2831853f);
+  const float r = std::sqrt(frand(rmin * rmin, rmax * rmax));
+  return XrVector3f{S.head.x + std::cos(a) * r, S.floor + frand(y0, y1), S.head.z + std::sin(a) * r};
+}
+
+// A rotation from its three axes (columns x, y, z), as xr_fx.vert's quaternion (x, y, z, w).
+void quat_from_basis(const float x[3], const float y[3], const float z[3], float q[4]) {
+  const float r00 = x[0], r01 = y[0], r02 = z[0];
+  const float r10 = x[1], r11 = y[1], r12 = z[1];
+  const float r20 = x[2], r21 = y[2], r22 = z[2];
+  const float tr = r00 + r11 + r22;
+  if (tr > 0.0f) {
+    const float t = std::sqrt(tr + 1.0f) * 2.0f;
+    q[3] = 0.25f * t; q[0] = (r21 - r12) / t; q[1] = (r02 - r20) / t; q[2] = (r10 - r01) / t;
+  } else if (r00 > r11 && r00 > r22) {
+    const float t = std::sqrt(1.0f + r00 - r11 - r22) * 2.0f;
+    q[3] = (r21 - r12) / t; q[0] = 0.25f * t; q[1] = (r01 + r10) / t; q[2] = (r02 + r20) / t;
+  } else if (r11 > r22) {
+    const float t = std::sqrt(1.0f + r11 - r00 - r22) * 2.0f;
+    q[3] = (r02 - r20) / t; q[0] = (r01 + r10) / t; q[1] = 0.25f * t; q[2] = (r12 + r21) / t;
+  } else {
+    const float t = std::sqrt(1.0f + r22 - r00 - r11) * 2.0f;
+    q[3] = (r10 - r01) / t; q[0] = (r02 + r20) / t; q[1] = (r12 + r21) / t; q[2] = 0.25f * t;
+  }
+}
+
+void normalize3(float v[3]) {
+  const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  if (l > 1e-6f) { v[0] /= l; v[1] /= l; v[2] /= l; }
+}
+
+// A quad whose long side (its local y) runs along `dir`, its face turned to `eye`.
+void orient_along(float q[4], const XrVector3f& at, const float dir[3], const XrVector3f& eye) {
+  float y[3] = {dir[0], dir[1], dir[2]};
+  normalize3(y);
+  float t[3] = {eye.x - at.x, eye.y - at.y, eye.z - at.z};
+  const float d = t[0] * y[0] + t[1] * y[1] + t[2] * y[2];
+  float z[3] = {t[0] - d * y[0], t[1] - d * y[1], t[2] - d * y[2]};
+  normalize3(z);
+  if (std::fabs(z[0]) + std::fabs(z[1]) + std::fabs(z[2]) < 0.5f) { z[0] = 0.0f; z[1] = 0.0f; z[2] = 1.0f; }
+  const float x[3] = {y[1] * z[2] - y[2] * z[1], y[2] * z[0] - y[0] * z[2], y[0] * z[1] - y[1] * z[0]};
+  quat_from_basis(x, y, z, q);
+}
+
+// A quad lying flat (face up), turned `yaw` about up.
+void orient_flat(float q[4], float yaw) {
+  const float x[3] = {std::cos(yaw), 0.0f, std::sin(yaw)};
+  const float z[3] = {0.0f, 1.0f, 0.0f};
+  const float y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+  quat_from_basis(x, y, z, q);
+}
+
+// A quad facing `eye`, turned `roll` in its own plane.
+void orient_facing(float q[4], const XrVector3f& at, const XrVector3f& eye, float roll) {
+  float z[3] = {eye.x - at.x, eye.y - at.y, eye.z - at.z};
+  normalize3(z);
+  float up[3] = {0.0f, 1.0f, 0.0f};
+  float x[3] = {up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]};
+  normalize3(x);
+  float y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+  const float c = std::cos(roll), sn = std::sin(roll);
+  const float xr[3] = {x[0] * c + y[0] * sn, x[1] * c + y[1] * sn, x[2] * c + y[2] * sn};
+  const float yr[3] = {y[0] * c - x[0] * sn, y[1] * c - x[1] * sn, y[2] * c - x[2] * sn};
+  quat_from_basis(xr, yr, z, q);
+}
+
+// A themed quad (fog, a bolt, a drop, a float, a ring), alive `life` seconds, fading in over fadeIn.
+Particle* add_fx(Kind kind, uint8_t shape, const XrVector3f& p, const float v[3], float size, float aspect,
+                 uint32_t c1, uint32_t c2, float peak, float glow, float life, float fadeIn) {
+  if (room_full()) return nullptr;
+  Particle q{};
+  q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+  if (v != nullptr) std::memcpy(q.v, v, sizeof(q.v));
+  q.size = size;
+  q.aspect = aspect;
+  q.c1 = pack(c1);
+  q.c2 = pack(c2, static_cast<uint8_t>(irand(256)));  // (a fog puff's / spiral's own seed)
+  q.shape = shape;
+  q.mesh = kNoMesh;
+  q.kind = kind;
+  q.peak = peak;
+  q.glow = glow;
+  q.life = life;
+  q.fadeIn = fadeIn;
+  q.flutterPhase = frand(0.0f, 6.28f);
+  s.parts.push_back(q);
+  return &s.parts.back();
+}
+
+// A mesh piece falling (or, fallSpeed < 0, rising) at its own pace, gone at maxAge (as add_suite_piece).
+Particle* add_drift_piece(const XrVector3f& p, const float v[3], Shape shape, float size, uint32_t c1, uint32_t c2,
+                          float fallSpeed, float maxAge, float flutter) {
+  if (room_full()) return nullptr;
+  Particle q{};
+  q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+  std::memcpy(q.v, v, sizeof(q.v));
+  random_quat(q.q);
+  random_unit(q.axis);
+  q.spin = frand(1.0f, 3.0f);
+  q.size = size;
+  q.aspect = 1.0f;
+  q.shape = shape;
+  q.mesh = mesh_for(shape);
+  q.c1 = pack(c1);
+  q.c2 = pack(c2);
+  q.kind = kKindPiece;
+  q.life = 0.6f;
+  q.flutterPhase = frand(0.0f, 6.28f);
+  q.flutterFreq = frand(0.8f, 1.6f);
+  q.flutterAmp = flutter;
+  q.fallSpeed = fallSpeed;
+  q.maxAge = maxAge;
+  s.parts.push_back(q);
+  return &s.parts.back();
+}
+
+// A tint over your whole view (the goal flash's quad held in front of you).
+void add_veil(const Scene& sc, uint32_t rgb, float peak, float glow, float life, float fadeIn) {
+  Particle* q = add_fx(kKindVeil, kFlash, head_of(sc), nullptr, 3.0f, 1.0f, rgb, rgb, peak, glow, life, fadeIn);
+  (void)q;
+}
+
+// A ring: flat on the floor (or level at `at`), or standing up facing you.
+void add_ring(const Space& S, const XrVector3f& at, bool flat, float size, float grow, float life, uint32_t c1,
+              uint32_t c2, float peak, float glow) {
+  Particle* q = add_fx(kKindRing, kRingFx, at, nullptr, size, 1.0f, c1, c2, peak, glow, life, 0.0f);
+  if (q == nullptr) return;
+  q->grow = grow;
+  if (flat) orient_flat(q->q, frand(0.0f, 6.28f));
+  else orient_facing(q->q, at, S.head, 0.0f);
+}
+
+// One lightning strike: a jagged bolt from under the ceiling to the floor (two branches off it), the
+// room lit up, sparks and a ring where it lands.
+void lightning_strike(const Scene& sc, const Space& S, uint32_t core, uint32_t glowC, float m) {
+  const XrVector3f top = around(S, 0.5f * S.u, S.r * 0.85f, S.top - S.floor - 0.05f, S.top - S.floor - 0.02f);
+  const XrVector3f bottom{top.x + frand(-0.5f, 0.5f) * S.u, S.floor + 0.01f, top.z + frand(-0.5f, 0.5f) * S.u};
+  constexpr int kPts = 11;
+  XrVector3f pts[kPts];
+  for (int i = 0; i < kPts; ++i) {
+    const float t = static_cast<float>(i) / (kPts - 1);
+    const float amp = (i == 0 || i == kPts - 1) ? 0.0f : 0.16f * S.u * std::sin(3.14159f * t);
+    pts[i] = XrVector3f{top.x + (bottom.x - top.x) * t + frand(-amp, amp), top.y + (bottom.y - top.y) * t,
+                        top.z + (bottom.z - top.z) * t + frand(-amp, amp)};
+  }
+  const float life = frand(0.18f, 0.3f);
+  auto segment = [&](const XrVector3f& a, const XrVector3f& b, float width) {
+    const XrVector3f c{0.5f * (a.x + b.x), 0.5f * (a.y + b.y), 0.5f * (a.z + b.z)};
+    const float d[3] = {b.x - a.x, b.y - a.y, b.z - a.z};
+    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len < 1e-3f) return;
+    Particle* q = add_fx(kKindBolt, kBolt, c, nullptr, len * 1.1f, width / (len * 1.1f), core, glowC, 1.0f, 1.0f, life, 0.0f);
+    if (q != nullptr) orient_along(q->q, c, d, S.head);
+  };
+  for (int i = 0; i + 1 < kPts; ++i) segment(pts[i], pts[i + 1], 0.09f * S.u);
+  for (int b = 0; b < 2; ++b) {
+    XrVector3f a = pts[3 + irand(4)];
+    const float ang = frand(0.0f, 6.28f);
+    for (int j = 0; j < 4; ++j) {
+      const XrVector3f nb{a.x + std::cos(ang) * 0.12f * S.u + frand(-0.05f, 0.05f) * S.u, a.y - frand(0.08f, 0.16f) * S.u,
+                          a.z + std::sin(ang) * 0.12f * S.u + frand(-0.05f, 0.05f) * S.u};
+      segment(a, nb, 0.05f * S.u);
+      a = nb;
+    }
+  }
+  add_veil(sc, glowC, std::min(0.4f, 0.22f * m), 0.5f, 0.2f, 0.0f);
+  for (int i = 0; i < 18; ++i) {
+    float d[3];
+    random_unit(d);
+    d[1] = std::fabs(d[1]);
+    const float sp = frand(0.6f, 1.6f) * S.u;
+    const float v[3] = {d[0] * sp, d[1] * sp, d[2] * sp};
+    add_spark(bottom, v, 0.012f * S.u * frand(0.7f, 1.3f), core, glowC, frand(0.3f, 0.6f), 2.0f, 0.5f);
+  }
+  add_ring(S, bottom, true, 0.12f * S.u, 2.4f * S.u, 0.45f, core, glowC, 0.9f, 1.0f);
+}
+
+// A meteor (Metagross): a burning rock falling slantwise; it lands with a blast (step_particles).
+void add_meteor(const Scale& k, const Space& S, uint32_t c1, uint32_t c2, float size) {
+  if (room_full()) return;
+  const XrVector3f p = around(S, 0.6f * S.u, S.r * 0.9f, S.top - S.floor - 0.1f, S.top - S.floor);
+  Particle q{};
+  q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+  const float a = frand(0.0f, 6.28f);
+  q.v[0] = std::cos(a) * 1.2f * S.u;
+  q.v[1] = -2.0f * S.u;
+  q.v[2] = std::sin(a) * 1.2f * S.u;
+  random_quat(q.q);
+  random_unit(q.axis);
+  q.spin = frand(2.0f, 5.0f);
+  q.size = k.piece * size;
+  q.aspect = 1.0f;
+  q.shape = kRock;
+  q.mesh = mesh::kRock;
+  q.c1 = pack(c1);
+  q.c2 = pack(c2);
+  q.glow = 0.25f;
+  q.kind = kKindPiece;
+  q.life = 0.5f;
+  q.fallSpeed = 2.6f * S.u;
+  q.trail = 1;
+  s.parts.push_back(q);
+}
+
+// Fire, water or lava going up from the launch points (the usual pyro's spots), `rate` a second.
+void pyro_jets(const Scene& sc, const Scale& k, const Space& S, float rate, float dt, uint32_t core, uint32_t outer,
+               int style /* 0 flame, 1 water arc, 2 water spout, 3 lava arc */) {
+  XrVector3f from[4], out[4];
+  launch_points(sc, from, out);
+  for (int i = spawn_n(s.pyroAcc, rate, dt); i > 0; --i) {
+    const int w = irand(4);
+    const XrVector3f& p = (style == 2) ? from[irand(2) * 3] : from[w];
+    if (style == 0) {
+      const float sp = k.jetSpeed;
+      const float v[3] = {frand(-0.08f, 0.08f) * sp, sp * frand(0.8f, 1.1f), frand(-0.08f, 0.08f) * sp};
+      add_spark(p, v, k.jetSpark * frand(0.8f, 1.3f), core, outer, frand(0.5f, 0.8f), 1.0f, 0.6f);
+      continue;
+    }
+    // Water / lava: real arcs (embers fall for real and bounce), in toward you for the cannons.
+    const float up = (sc.mr ? (style == 2 ? 4.4f : 3.8f) : (style == 2 ? 13.0f : 11.0f)) * frand(0.9f, 1.08f);
+    const float in = style == 2 ? 0.0f : (sc.mr ? 0.9f : 3.5f) * frand(0.8f, 1.2f);
+    float dx = S.head.x - p.x, dz = S.head.z - p.z;
+    const float dl = std::max(1e-3f, std::sqrt(dx * dx + dz * dz));
+    dx /= dl;
+    dz /= dl;
+    Particle q{};
+    if (room_full()) return;
+    q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+    q.v[0] = dx * in + frand(-0.1f, 0.1f) * S.u;
+    q.v[1] = up;
+    q.v[2] = dz * in + frand(-0.1f, 0.1f) * S.u;
+    const bool lava = style == 3;
+    q.size = (lava ? 0.02f : 0.022f) * S.u * frand(0.7f, 1.3f);
+    q.aspect = lava ? 1.0f : 0.6f;
+    q.c1 = pack(core);
+    q.c2 = pack(outer);
+    q.shape = lava ? kSpark : kDrop;
+    q.kind = kKindEmber;
+    q.glow = lava ? 1.0f : 0.3f;
+    q.life = frand(1.1f, 1.6f);
+    q.drag = 0.2f;
+    q.gravity = 1.0f;
+    s.parts.push_back(q);
+  }
+}
+
+// One room effect of the scorer's theme, this frame (index i: its own timers).
+void room_effect(const Scene& sc, const Scale& k, const Space& S, int i, const RoomEntry& e, float m, float dt) {
+  float& acc = s.spAcc[i];
+  float& timer = s.spTimer[i];
+  float& done = s.spDone[i];
+  const float st = s.sp.stage;
+  const float H = S.head.y - S.floor;  // your eyes above the floor
+  switch (e.kind) {
+  case kRoomFog: {
+    if (done == 0.0f) add_veil(sc, e.c2, std::min(0.24f, 0.09f + 0.035f * st) * std::min(1.0f, m), 0.0f, 40.0f, 2.0f);
+    const float n = std::min(26.0f, (sc.mr ? 12.0f : 18.0f) * m);
+    for (int j = spawn_n(acc, n / 1.5f, dt); j > 0 && done < n; --j) {
+      done += 1.0f;
+      const XrVector3f p = around(S, 0.45f * S.u, S.r, 0.15f * S.u, std::min(S.top - S.floor - 0.1f, H + 0.5f * S.u));
+      Particle* q = add_fx(kKindFog, kPuff, p, nullptr, S.u * frand(1.0f, 1.7f) * (0.85f + 0.12f * st), 1.0f, e.c1, e.c2,
+                           std::min(0.42f, frand(0.16f, 0.26f) * (0.8f + 0.15f * st)), 0.0f, 40.0f, 1.5f);
+      if (q != nullptr) {
+        q->orbit = S.u * frand(0.12f, 0.3f);
+        q->grow = 0.02f * S.u;
+      }
+    }
+    break;
+  }
+  case kRoomRain: {
+    if (done == 0.0f) {
+      add_veil(sc, 0x4A5A70, 0.08f * std::min(1.0f, m), 0.0f, 40.0f, 1.5f);
+      done = 1.0f;
+    }
+    for (int j = spawn_n(acc, (sc.mr ? 240.0f : 700.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.0f, S.r, S.top - S.floor - 0.05f, S.top - S.floor + 0.15f * S.u);
+      const float v[3] = {0.12f * S.u, -(sc.mr ? 5.2f : 11.0f) * frand(0.9f, 1.1f), 0.0f};
+      Particle* q = add_fx(kKindDrop, kStreak, p, v, S.u * frand(0.14f, 0.2f), 0.06f, e.c1, e.c2, 0.5f, 0.35f, 4.0f, 0.0f);
+      if (q != nullptr) q->trail = 3;  // splashes where it lands
+    }
+    break;
+  }
+  case kRoomLightning: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      lightning_strike(sc, S, e.c1, e.c2, m);
+      timer = (done == 0.0f ? 0.25f : 1.0f) * frand(0.7f, 1.4f) * std::max(0.7f, 2.6f - 0.55f * st) / std::max(0.3f, s.intensity);
+      done = 1.0f;
+    }
+    break;
+  }
+  case kRoomEmbers:
+    for (int j = spawn_n(acc, (sc.mr ? 70.0f : 220.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.2f * S.u, S.r, 0.0f, std::min(S.top - S.floor, H + 0.2f * S.u));
+      const float v[3] = {frand(-0.05f, 0.05f) * S.u, frand(0.15f, 0.45f) * S.u, frand(-0.05f, 0.05f) * S.u};
+      add_spark(p, v, S.u * frand(0.008f, 0.016f), e.c1, e.c2, frand(1.8f, 3.2f), 0.4f, -0.12f);
+    }
+    break;
+  case kRoomSnow:
+    for (int j = spawn_n(acc, (sc.mr ? 60.0f : 180.0f) * m, dt); j > 0 && !room_full(); --j) {
+      const XrVector3f p = around(S, 0.0f, S.r, S.top - S.floor - 0.05f, S.top - S.floor);
+      Particle q{};
+      q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+      random_quat(q.q);
+      random_unit(q.axis);
+      q.spin = frand(0.8f, 2.0f);
+      q.size = S.u * frand(0.025f, 0.045f);
+      q.aspect = 1.0f;
+      q.shape = kFlake;
+      q.mesh = kNoMesh;
+      q.c1 = pack(e.c1);
+      q.c2 = pack(e.c2);
+      q.glow = 0.35f;
+      q.kind = kKindPiece;
+      q.life = 1.0f;
+      q.flutterPhase = frand(0.0f, 6.28f);
+      q.flutterFreq = frand(0.6f, 1.2f);
+      q.flutterAmp = 0.15f * S.u;
+      q.fallSpeed = 0.3f * S.u * frand(0.8f, 1.2f);
+      s.parts.push_back(q);
+    }
+    break;
+  case kRoomLeaves:
+    for (int j = spawn_n(acc, (sc.mr ? 14.0f : 40.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.5f * S.u, S.r, 0.3f * S.u, std::min(S.top - S.floor - 0.2f, H + 0.4f * S.u));
+      const float v[3] = {0.0f, 0.0f, 0.0f};
+      Particle* q = add_drift_piece(p, v, kPetal, k.piece * frand(0.8f, 1.15f) * 1.1f, e.c1, e.c2, 0.12f * S.u, 5.0f, 0.1f * S.u);
+      if (q != nullptr) q->orbit = S.u * frand(0.6f, 1.0f);
+    }
+    break;
+  case kRoomDust: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = frand(0.5f, 0.9f) / std::max(0.3f, m);
+      const XrVector3f p = around(S, 0.5f * S.u, S.r, 0.0f, 0.02f);
+      s.pendingBlasts.push_back(State::Blast{p, XrVector3f{0.0f, 1.0f, 0.0f}, 1.0f, 1.5f, 1});
+      for (int j = 0; j < 2; ++j) {
+        const float v[3] = {0.0f, 0.1f * S.u, 0.0f};
+        Particle* q = add_fx(kKindFog, kPuff, p, v, 0.4f * S.u, 1.0f, e.c1, e.c2, 0.25f, 0.0f, 2.5f, 0.2f);
+        if (q != nullptr) { q->grow = 0.25f * S.u; q->fallSpeed = 0.1f * S.u; }
+      }
+    }
+    break;
+  }
+  case kRoomSparks: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = frand(0.12f, 0.24f) / std::max(0.3f, m);
+      const XrVector3f p = around(S, 0.5f * S.u, S.r, 0.3f * S.u, std::min(S.top - S.floor - 0.3f, H + 0.4f * S.u));
+      for (int j = 0; j < 8; ++j) {
+        float d[3];
+        random_unit(d);
+        const float sp = frand(0.6f, 1.4f) * S.u;
+        const float v[3] = {d[0] * sp, d[1] * sp, d[2] * sp};
+        add_spark(p, v, S.u * frand(0.005f, 0.009f), e.c1, e.c2, frand(0.18f, 0.34f), 3.0f, 0.3f);
+      }
+      for (int j = 0; j < 3; ++j) {
+        float d[3];
+        random_unit(d);
+        const XrVector3f c{p.x + d[0] * 0.04f * S.u, p.y + d[1] * 0.04f * S.u, p.z + d[2] * 0.04f * S.u};
+        Particle* q = add_fx(kKindBolt, kBolt, c, nullptr, 0.09f * S.u, 0.22f, e.c1, e.c2, 1.0f, 1.0f, 0.1f, 0.0f);
+        if (q != nullptr) orient_along(q->q, c, d, S.head);
+      }
+    }
+    break;
+  }
+  case kRoomFloorRings: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = std::max(0.5f, 1.3f - 0.2f * st) / std::max(0.3f, s.intensity);
+      XrVector3f at = sc.scorerValid ? sc.scorerFeet : around(S, 0.3f * S.u, 1.2f * S.u, 0.0f, 0.0f);
+      at.y = S.floor + 0.012f;
+      add_ring(S, at, true, 0.2f * S.u, (2.0f + 0.4f * st) * S.u, 0.9f, e.c1, e.c2, 0.85f, 0.7f);
+      s.pendingBlasts.push_back(State::Blast{at, XrVector3f{0.0f, 1.0f, 0.0f}, 1.0f, 1.2f, 1});
+    }
+    break;
+  }
+  case kRoomPsyRings: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 0.8f / std::max(0.3f, s.intensity);
+      const bool level = irand(2) == 0;
+      if (level) {
+        add_ring(S, XrVector3f{S.head.x, S.head.y - 0.3f * S.u, S.head.z}, true, 0.3f * S.u, 1.8f * S.u, 1.5f, e.c1, e.c2, 0.55f, 0.8f);
+      } else {
+        const XrVector3f at = around(S, 1.0f * S.u, 1.4f * S.u, H - 0.3f * S.u, H + 0.1f * S.u);
+        add_ring(S, at, false, 0.2f * S.u, 1.4f * S.u, 1.2f, e.c1, e.c2, 0.6f, 0.8f);
+      }
+    }
+    break;
+  }
+  case kRoomSpiral: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 0.9f / std::max(0.3f, m);
+      const XrVector3f p = around(S, 0.8f * S.u, 1.8f * S.u, H - 0.5f * S.u, H + 0.5f * S.u);
+      const float v[3] = {frand(-0.03f, 0.03f), frand(0.0f, 0.05f), frand(-0.03f, 0.03f)};
+      add_fx(kKindFloat, kSpiral, p, v, S.u * frand(0.35f, 0.6f), 1.0f, e.c1, e.c2, 0.7f, 0.5f, 3.0f, 0.4f);
+    }
+    break;
+  }
+  case kRoomBubbles:
+    for (int j = spawn_n(acc, (sc.mr ? 18.0f : 50.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.3f * S.u, S.r, 0.0f, std::min(S.top - S.floor, H));
+      const float v[3] = {0.0f, frand(0.15f, 0.4f) * S.u, 0.0f};
+      add_fx(kKindFloat, kBubble, p, v, S.u * frand(0.03f, 0.1f), 1.0f, e.c1, e.c2, 0.85f, 0.25f, frand(2.5f, 4.5f), 0.2f);
+    }
+    break;
+  case kRoomNotes:
+    for (int j = spawn_n(acc, (sc.mr ? 5.0f : 12.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.6f * S.u, S.r, H - 0.6f * S.u, H + 0.4f * S.u);
+      const float v[3] = {0.0f, 0.2f * S.u, 0.0f};
+      add_fx(kKindFloat, kNoteQuad, p, v, S.u * frand(0.07f, 0.12f), 1.0f, irand(2) ? e.c1 : e.c2, e.c2, 1.0f, 0.3f, 3.5f, 0.3f);
+    }
+    break;
+  case kRoomZzz:
+    for (int j = spawn_n(acc, 1.6f * m, dt); j > 0; --j) {
+      XrVector3f p;
+      if (sc.scorerValid) {
+        p = XrVector3f{sc.scorerFeet.x + frand(-0.1f, 0.1f), sc.scorerFeet.y + sc.scorerHeight + 0.1f, sc.scorerFeet.z + frand(-0.1f, 0.1f)};
+      } else {
+        p = around(S, 0.8f * S.u, 1.4f * S.u, H - 0.2f * S.u, H + 0.2f * S.u);
+      }
+      const float v[3] = {frand(-0.03f, 0.03f), 0.18f * S.u, frand(-0.03f, 0.03f)};
+      Particle* q = add_fx(kKindFloat, kZzz, p, v, S.u * 0.07f, 1.0f, e.c1, e.c2, 0.9f, 0.3f, 3.0f, 0.3f);
+      if (q != nullptr) q->grow = 0.05f * S.u;
+    }
+    break;
+  case kRoomWisps:
+    for (int j = spawn_n(acc, 2.5f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.5f * S.u, S.r, 0.4f * S.u, H + 0.3f * S.u);
+      const float v[3] = {frand(-0.08f, 0.08f) * S.u, frand(0.0f, 0.06f) * S.u, frand(-0.08f, 0.08f) * S.u};
+      add_fx(kKindFloat, kWisp, p, v, S.u * frand(0.06f, 0.12f), 0.7f, e.c1, e.c2, 0.9f, 1.0f, 6.0f, 0.8f);
+    }
+    break;
+  case kRoomBarrier: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 2.6f;
+      const float base = frand(0.0f, 6.28f);
+      for (int j = 0; j < 5; ++j) {
+        const float a = base + j * 1.2566f;
+        const XrVector3f p{S.head.x + std::cos(a) * 0.95f * S.u, S.head.y - 0.15f * S.u, S.head.z + std::sin(a) * 0.95f * S.u};
+        Particle* q = add_fx(kKindFloat, kFrameShape, p, nullptr, 1.1f * S.u, 0.75f, e.c1, e.c2, 0.9f, 0.6f, 2.4f, 0.15f);
+        if (q == nullptr) continue;
+        q->c2 = pack(e.c2, 12);  // the edge's width, in half-heights x 255
+        orient_facing(q->q, p, S.head, 0.0f);
+        for (int c = 0; c < 4; ++c) {
+          const float v[3] = {0.0f, frand(-0.05f, 0.05f), 0.0f};
+          const XrVector3f sp{p.x, p.y + ((c & 1) ? 0.55f : -0.55f) * S.u, p.z};
+          add_spark(sp, v, 0.015f * S.u, 0xFFFFFF, e.c2, 0.6f, 0.0f, 0.0f);
+        }
+      }
+    }
+    break;
+  }
+  case kRoomLasers:
+    for (int j = spawn_n(acc, (sc.mr ? 5.0f : 10.0f) * m, dt); j > 0; --j) {
+      const float a = frand(0.0f, 6.28f), b = a + 3.14159f + frand(-0.6f, 0.6f);
+      const float y = S.head.y + frand(-0.5f, 0.4f) * S.u;
+      const XrVector3f from{S.head.x + std::cos(a) * S.r, y, S.head.z + std::sin(a) * S.r};
+      const XrVector3f to{S.head.x + std::cos(b) * S.r, y + frand(-0.2f, 0.2f) * S.u, S.head.z + std::sin(b) * S.r};
+      float d[3] = {to.x - from.x, to.y - from.y, to.z - from.z};
+      const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+      normalize3(d);
+      const float speed = 7.0f * S.u;
+      const float v[3] = {d[0] * speed, d[1] * speed, d[2] * speed};
+      Particle* q = add_fx(kKindDrop, kStreak, from, v, 0.45f * S.u, 0.05f, e.c1, e.c2, 1.0f, 1.0f, dist / speed, 0.0f);
+      if (q != nullptr) orient_along(q->q, from, d, S.head);
+    }
+    break;
+  case kRoomHex:
+    for (int j = spawn_n(acc, 2.2f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.7f * S.u, 1.6f * S.u, H - 0.4f * S.u, H + 0.4f * S.u);
+      add_fx(kKindFloat, kHexFx, p, nullptr, S.u * frand(0.25f, 0.45f), 1.0f, e.c1, e.c2, 1.0f, 0.85f, 0.7f, 0.06f);
+    }
+    break;
+  case kRoomSlashes:
+    for (int j = spawn_n(acc, (2.5f + st) * s.intensity, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.7f * S.u, 1.5f * S.u, H - 0.5f * S.u, H + 0.3f * S.u);
+      const float roll = frand(0.0f, 6.28f);
+      for (int c = 0; c < (irand(10) < 3 ? 2 : 1); ++c) {
+        Particle* q = add_fx(kKindFloat, kSlash, p, nullptr, S.u * frand(0.5f, 0.85f), 1.0f, e.c1, e.c2, 1.0f, 1.0f, 0.32f, 0.03f);
+        if (q != nullptr) orient_facing(q->q, p, S.head, roll + c * 1.5708f);
+      }
+    }
+    break;
+  case kRoomLevitate:
+    s.levitate = true;
+    break;
+  case kRoomOrbs:
+    for (int j = spawn_n(acc, 1.2f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.6f * S.u, S.r * 0.8f, 0.6f * S.u, H + 0.3f * S.u);
+      const float a = frand(0.0f, 6.28f);
+      const float v[3] = {std::cos(a) * 1.6f * S.u, frand(-0.2f, 0.2f) * S.u, std::sin(a) * 1.6f * S.u};
+      Particle* q = add_fx(kKindFloat, kSpark, p, v, S.u * 0.07f, 1.0f, e.c1, e.c2, 1.0f, 1.0f, 3.0f, 0.1f);
+      if (q != nullptr) {
+        q->trail = 2;
+        q->spin = frand(-2.5f, 2.5f);  // how fast it curves (rad/s)
+      }
+    }
+    break;
+  case kRoomEyes:
+    for (int j = spawn_n(acc, 0.7f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.9f * S.u, S.r, H - 0.5f * S.u, H + 0.4f * S.u);
+      const float v[3] = {frand(-0.03f, 0.03f), frand(-0.02f, 0.02f), frand(-0.03f, 0.03f)};
+      add_fx(kKindFloat, kEyes, p, v, S.u * frand(0.3f, 0.5f), 1.0f, e.c1, e.c2, 0.95f, 0.8f, 3.2f, 0.7f);
+    }
+    break;
+  case kRoomMotes:
+    for (int j = spawn_n(acc, (sc.mr ? 35.0f : 90.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.3f * S.u, S.r, 0.1f * S.u, std::min(S.top - S.floor, H + 0.6f * S.u));
+      const float v[3] = {frand(-0.06f, 0.06f) * S.u, frand(-0.03f, 0.06f) * S.u, frand(-0.06f, 0.06f) * S.u};
+      add_spark(p, v, S.u * frand(0.006f, 0.012f), e.c1, e.c2, frand(2.0f, 3.5f), 0.0f, -0.02f);
+    }
+    break;
+  case kRoomFlashes: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = frand(1.2f, 2.0f);
+      add_veil(sc, e.c1, 0.3f, 0.5f, 0.15f, 0.0f);
+      const XrVector3f p = around(S, 1.0f * S.u, 1.5f * S.u, H - 0.6f * S.u, H);
+      for (int j = 0; j < 6; ++j) {
+        float d[3];
+        random_unit(d);
+        const float v[3] = {d[0] * 0.3f * S.u, std::fabs(d[1]) * 0.2f * S.u, d[2] * 0.3f * S.u};
+        Particle* q = add_fx(kKindFog, kPuff, p, v, 0.3f * S.u, 1.0f, e.c1, e.c2, 0.32f, 0.0f, 2.0f, 0.05f);
+        if (q != nullptr) q->grow = 0.4f * S.u;
+      }
+    }
+    break;
+  }
+  case kRoomMeteors: {
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = std::max(0.6f, 1.6f - 0.2f * st) / std::max(0.3f, s.intensity);
+      add_meteor(k, S, e.c1, e.c2, 2.2f);
+    }
+    break;
+  }
+  case kRoomSmoke:
+    for (int j = spawn_n(acc, 1.5f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.5f * S.u, S.r, 0.0f, 0.1f);
+      const float v[3] = {0.0f, 0.12f * S.u, 0.0f};
+      Particle* q = add_fx(kKindFog, kPuff, p, v, 0.5f * S.u, 1.0f, e.c1, e.c2, 0.22f, 0.0f, 4.0f, 0.6f);
+      if (q != nullptr) { q->grow = 0.3f * S.u; q->fallSpeed = 0.12f * S.u; }
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+// r89 (Lance: "a home ground for EVERY character"): the home corner's own little show, all the time
+// (Scene::corner*): round its display and over its rug, small and slow, from its captain's theme
+// (corner_special): what falls in its celebration burning, crackling or raining on the display, and its
+// room effects in miniature. Things that fill a room (lasers, slashes, barriers, levitation) stay out.
+void corner_ambient(const Scene& sc, float dt) {
+  static std::string s_key = "?";
+  static Special s_csp;
+  static float acc[8], timer[8];
+  if (!sc.cornerOn) return;
+  const std::string key = std::string(sc.cornerPack) + "#" + std::to_string(sc.cornerClass);
+  if (key != s_key) {
+    s_key = key;
+    s_csp = corner_special(sc.cornerPack, sc.cornerClass);
+    for (int i = 0; i < 8; ++i) acc[i] = timer[i] = 0.0f;
+  }
+  if (room_full()) return;
+  const XrVector3f top = sc.cornerTop, rug = sc.cornerRug;
+  const float R = sc.cornerRadius;
+  const XrVector3f head = head_of(sc);
+  auto on_rug = [&](float y0, float y1) {
+    const float a = frand(0.0f, 6.2831853f), r = R * std::sqrt(frand(0.0f, 1.0f));
+    return XrVector3f{rug.x + std::cos(a) * r, rug.y + frand(y0, y1), rug.z + std::sin(a) * r};
+  };
+  auto near_top = [&](float spread, float up) {
+    return XrVector3f{top.x + frand(-spread, spread), top.y + up, top.z + frand(-spread, spread)};
+  };
+  // a few sparks and little bolts round the display's top
+  auto crackle = [&](uint32_t c1, uint32_t c2) {
+    const XrVector3f p = near_top(0.06f, frand(0.05f, 0.2f));
+    for (int j = 0; j < 6; ++j) {
+      float d[3];
+      random_unit(d);
+      const float sp = frand(0.25f, 0.55f);
+      const float v[3] = {d[0] * sp, d[1] * sp, d[2] * sp};
+      add_spark(p, v, frand(0.003f, 0.006f), c1, c2, frand(0.15f, 0.3f), 3.0f, 0.3f);
+    }
+    for (int j = 0; j < 2; ++j) {
+      float d[3];
+      random_unit(d);
+      const XrVector3f c{p.x + d[0] * 0.02f, p.y + d[1] * 0.02f, p.z + d[2] * 0.02f};
+      Particle* q = add_fx(kKindBolt, kBolt, c, nullptr, 0.05f, 0.22f, c1, c2, 1.0f, 1.0f, 0.1f, 0.0f);
+      if (q != nullptr) orient_along(q->q, c, d, head);
+    }
+  };
+  // a little rain cloud over the display (water); one, though both its pieces and its room rain
+  bool rained = false;
+  auto rain_cloud = [&](float& a, uint32_t c1, uint32_t c2) {
+    if (rained) return;
+    rained = true;
+    const float cloudY = top.y + 0.5f;
+    for (int j = spawn_n(a, 2.0f, dt); j > 0; --j) {
+      const XrVector3f p{top.x + frand(-0.12f, 0.12f), cloudY + frand(-0.03f, 0.04f), top.z + frand(-0.12f, 0.12f)};
+      Particle* q = add_fx(kKindFog, kPuff, p, nullptr, frand(0.16f, 0.24f), 1.0f, 0xB8C4D4, 0x5A6A80, 0.5f, 0.0f, 2.2f, 0.4f);
+      if (q != nullptr) q->fallSpeed = 0.0f;
+    }
+    timer[7] -= dt;
+    while (timer[7] <= 0.0f) {
+      timer[7] += 0.07f;
+      const XrVector3f p{top.x + frand(-0.1f, 0.1f), cloudY - 0.04f, top.z + frand(-0.1f, 0.1f)};
+      const float v[3] = {0.0f, -1.4f, 0.0f};
+      add_fx(kKindDrop, kStreak, p, v, 0.05f, 0.06f, c1, c2, 0.6f, 0.35f, (cloudY - 0.04f - top.y) / 1.4f, 0.0f);
+    }
+  };
+  int slot = 0;
+  // What falls in its celebration, at home on the display (its solid pieces stand on it: corner_props).
+  for (int i = 0; i < s_csp.nFall && slot < 7; ++i) {
+    const FallFx& f = s_csp.fall[i];
+    float& a = acc[slot];
+    float& t = timer[slot];
+    ++slot;
+    if (f.shape == kFlame) {
+      // burning on it, like a brazier
+      for (int j = spawn_n(a, 14.0f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.02f, 0.02f), frand(0.12f, 0.22f), frand(-0.02f, 0.02f)};
+        Particle* q = add_fx(kKindFloat, kFlame, near_top(0.03f, 0.03f), v, frand(0.09f, 0.15f), 0.72f, f.c1, f.c2, 0.95f,
+                             0.9f, frand(0.45f, 0.7f), 0.06f);
+        if (q != nullptr) q->grow = -0.12f;  // smaller as it rises
+      }
+      if (irand(100) < 30) {
+        const float v[3] = {frand(-0.03f, 0.03f), frand(0.2f, 0.35f), frand(-0.03f, 0.03f)};
+        add_spark(near_top(0.04f, 0.12f), v, frand(0.004f, 0.008f), 0xFFF0B0, f.c2, frand(0.6f, 1.2f), 0.3f, -0.05f);
+      }
+    } else if (f.shape == kBoltPiece || f.shape == kHexFx) {
+      t -= dt;
+      if (t <= 0.0f) {
+        t = frand(0.35f, 1.0f);
+        crackle(0xFFFFFF, f.c1);
+      }
+    } else if (f.shape == kWisp) {
+      for (int j = spawn_n(a, 0.8f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.02f, 0.02f), frand(0.04f, 0.08f), frand(-0.02f, 0.02f)};
+        add_fx(kKindFloat, kWisp, near_top(0.05f, 0.05f), v, frand(0.05f, 0.09f), 0.7f, f.c1, f.c2, 0.9f, 1.0f, 4.0f, 0.6f);
+      }
+    } else if (f.shape == kDrop) {
+      // water and mud: rain from a little cloud (lava: the flame burning beside it does)
+      const uint32_t c = f.c2;
+      if (((c >> 16) & 255) < (c & 255) || ((c >> 8) & 255) > ((c >> 16) & 255)) rain_cloud(a, f.c1, f.c2);
+    }
+  }
+  // Its room effects, in miniature.
+  for (int i = 0; i < s_csp.nRoom && slot < 7; ++i) {
+    const RoomEntry& e = s_csp.room[i];
+    float& a = acc[slot];
+    float& t = timer[slot];
+    ++slot;
+    switch (e.kind) {
+    case kRoomFog:
+    case kRoomSmoke:
+      for (int j = spawn_n(a, e.kind == kRoomFog ? 1.4f : 0.8f, dt); j > 0; --j) {
+        Particle* q = add_fx(kKindFog, kPuff, on_rug(0.06f, 0.22f), nullptr, frand(0.32f, 0.52f), 1.0f, e.c1, e.c2,
+                             e.kind == kRoomFog ? 0.2f : 0.14f, 0.0f, frand(4.0f, 6.0f), 1.2f);
+        if (q != nullptr) {
+          q->grow = 0.04f;
+          q->fallSpeed = e.kind == kRoomFog ? 0.01f : 0.08f;  // (fog stays low, smoke rises)
+        }
+      }
+      break;
+    case kRoomEmbers:
+      for (int j = spawn_n(a, 7.0f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.03f, 0.03f), frand(0.15f, 0.35f), frand(-0.03f, 0.03f)};
+        add_spark(near_top(0.08f, frand(0.0f, 0.1f)), v, frand(0.006f, 0.011f), e.c1, e.c2, frand(1.4f, 2.4f), 0.4f, -0.1f);
+      }
+      break;
+    case kRoomSparks:
+    case kRoomLightning:
+      t -= dt;
+      if (t <= 0.0f) {
+        t = frand(0.6f, 1.4f);
+        crackle(e.c1, e.c2);
+      }
+      break;
+    case kRoomRain:
+      rain_cloud(a, e.c1, e.c2);
+      break;
+    case kRoomSnow:
+      for (int j = spawn_n(a, 5.0f, dt); j > 0 && !room_full(); --j) {
+        const XrVector3f p = on_rug(1.5f, 1.7f);
+        Particle q{};
+        q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
+        random_quat(q.q);
+        random_unit(q.axis);
+        q.spin = frand(0.8f, 2.0f);
+        q.size = frand(0.02f, 0.035f);
+        q.aspect = 1.0f;
+        q.shape = kFlake;
+        q.mesh = kNoMesh;
+        q.c1 = pack(e.c1);
+        q.c2 = pack(e.c2);
+        q.glow = 0.35f;
+        q.kind = kKindPiece;
+        q.life = 1.0f;
+        q.flutterPhase = frand(0.0f, 6.28f);
+        q.flutterFreq = frand(0.6f, 1.2f);
+        q.flutterAmp = 0.08f;
+        q.fallSpeed = 0.25f * frand(0.8f, 1.2f);
+        s.parts.push_back(q);
+      }
+      break;
+    case kRoomLeaves:
+      for (int j = spawn_n(a, 0.7f, dt); j > 0; --j) {
+        const float v[3] = {0.0f, 0.0f, 0.0f};
+        add_drift_piece(on_rug(1.4f, 1.7f), v, kPetal, frand(0.05f, 0.07f), e.c1, e.c2, 0.12f, 14.0f, 0.06f);
+      }
+      break;
+    case kRoomBubbles:
+      for (int j = spawn_n(a, 2.0f, dt); j > 0; --j) {
+        const float v[3] = {0.0f, frand(0.12f, 0.25f), 0.0f};
+        add_fx(kKindFloat, kBubble, on_rug(0.02f, 0.1f), v, frand(0.025f, 0.06f), 1.0f, e.c1, e.c2, 0.85f, 0.25f,
+               frand(3.0f, 5.0f), 0.2f);
+      }
+      break;
+    case kRoomNotes:
+      for (int j = spawn_n(a, 0.7f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.02f, 0.02f), 0.12f, frand(-0.02f, 0.02f)};
+        add_fx(kKindFloat, kNoteQuad, near_top(0.1f, 0.1f), v, frand(0.05f, 0.08f), 1.0f, irand(2) ? e.c1 : e.c2, e.c2, 1.0f,
+               0.3f, 3.5f, 0.3f);
+      }
+      break;
+    case kRoomZzz:
+      for (int j = spawn_n(a, 0.45f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.02f, 0.02f), 0.1f, frand(-0.02f, 0.02f)};
+        Particle* q = add_fx(kKindFloat, kZzz, near_top(0.05f, 0.25f), v, 0.05f, 1.0f, e.c1, e.c2, 0.9f, 0.3f, 3.0f, 0.3f);
+        if (q != nullptr) q->grow = 0.03f;
+      }
+      break;
+    case kRoomWisps:
+      for (int j = spawn_n(a, 0.6f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.04f, 0.04f), frand(0.0f, 0.04f), frand(-0.04f, 0.04f)};
+        add_fx(kKindFloat, kWisp, on_rug(0.4f, 1.3f), v, frand(0.05f, 0.09f), 0.7f, e.c1, e.c2, 0.9f, 1.0f, 5.0f, 0.8f);
+      }
+      break;
+    case kRoomDust:
+      t -= dt;
+      if (t <= 0.0f) {
+        t = frand(3.0f, 5.0f);
+        const XrVector3f p = on_rug(0.0f, 0.02f);
+        for (int j = 0; j < 2; ++j) {
+          const float v[3] = {0.0f, 0.05f, 0.0f};
+          Particle* q = add_fx(kKindFog, kPuff, p, v, 0.18f, 1.0f, e.c1, e.c2, 0.22f, 0.0f, 2.2f, 0.2f);
+          if (q != nullptr) { q->grow = 0.12f; q->fallSpeed = 0.05f; }
+        }
+      }
+      break;
+    case kRoomMotes:
+    case kRoomOrbs:
+    case kRoomBarrier:
+      for (int j = spawn_n(a, 3.0f, dt); j > 0; --j) {
+        const float v[3] = {frand(-0.02f, 0.02f), frand(0.0f, 0.04f), frand(-0.02f, 0.02f)};
+        add_spark(on_rug(0.15f, 1.3f), v, frand(0.005f, 0.01f), e.c1, e.c2, frand(2.0f, 3.5f), 0.0f, -0.01f);
+      }
+      break;
+    case kRoomEyes:
+      t -= dt;
+      if (t <= 0.0f) {
+        t = frand(4.0f, 7.0f);
+        // a pair of eyes in the corner's shadow, low down at the rug's edge, looking at you
+        const float ang = frand(0.0f, 6.2831853f);
+        const XrVector3f p{rug.x + std::cos(ang) * R * 0.9f, rug.y + frand(0.25f, 0.45f), rug.z + std::sin(ang) * R * 0.9f};
+        add_fx(kKindFloat, kEyes, p, nullptr, frand(0.14f, 0.2f), 1.0f, e.c1, e.c2, 0.95f, 0.8f, 2.2f, 0.4f);
+      }
+      break;
+    case kRoomSpiral:
+      t -= dt;
+      if (t <= 0.0f) {
+        t = 3.0f;
+        add_fx(kKindFloat, kSpiral, near_top(0.0f, 0.35f), nullptr, 0.24f, 1.0f, e.c1, e.c2, 0.7f, 0.5f, 3.0f, 0.4f);
+      }
+      break;
+    case kRoomHex:
+      for (int j = spawn_n(a, 0.8f, dt); j > 0; --j) {
+        add_fx(kKindFloat, kHexFx, near_top(0.15f, frand(0.05f, 0.35f)), nullptr, frand(0.1f, 0.16f), 1.0f, e.c1, e.c2, 1.0f,
+               0.85f, 0.7f, 0.06f);
+      }
+      break;
+    case kRoomFloorRings:
+    case kRoomPsyRings:
+      t -= dt;
+      if (t <= 0.0f) {
+        t = 2.6f;
+        const bool floor = e.kind == kRoomFloorRings;
+        const XrVector3f at = floor ? XrVector3f{rug.x, rug.y + 0.02f, rug.z} : near_top(0.0f, 0.1f);
+        Particle* q = add_fx(kKindRing, kRingFx, at, nullptr, 0.1f, 1.0f, e.c1, e.c2, floor ? 0.7f : 0.55f, 0.7f, 1.6f, 0.0f);
+        if (q != nullptr) {
+          q->grow = floor ? 0.8f * R : 0.35f;
+          orient_flat(q->q, frand(0.0f, 6.28f));
+        }
+      }
+      break;
+    default:  // lasers, slashes, levitation, meteors, flashes: a room's worth, not a corner's
+      break;
+    }
+  }
+}
+
+// The theme's show in place of the fireworks, this frame.
+void pyro_tick(const Scene& sc, const Scale& k, const Space& S, float m, float dt) {
+  const Special& sp = s.sp;
+  const float H = S.head.y - S.floor;
+  s.pyroTimer -= dt;
+  switch (sp.pyro) {
+  case kPyroWater:
+  case kPyroSpout:
+  case kPyroFlame:
+  case kPyroLava: {
+    // Bursts: 1.4 s on every 2.6 s.
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 2.6f;
+      s.pyroBurst = 1.4f + 0.2f * sp.stage;
+    }
+    if (s.pyroBurst > 0.0f) {
+      s.pyroBurst -= dt;
+      const int style = sp.pyro == kPyroFlame ? 0 : (sp.pyro == kPyroWater ? 1 : (sp.pyro == kPyroSpout ? 2 : 3));
+      const float rate = (style == 0 ? (sc.mr ? 240.0f : 900.0f) : (sc.mr ? 170.0f : 500.0f)) * m;
+      pyro_jets(sc, k, S, rate, dt, sp.p1, sp.p2, style);
+    }
+    break;
+  }
+  case kPyroBreath: {
+    // A sweep of fire across under the ceiling, 1.8 s every 3.6 s.
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 3.6f;
+      s.pyroBurst = 1.8f;
+      s.pyroPhase = frand(0.0f, 6.28f);
+    }
+    if (s.pyroBurst > 0.0f) {
+      s.pyroBurst -= dt;
+      const float a = s.pyroPhase + 3.14159f * (1.0f - s.pyroBurst / 1.8f);
+      const float R = 1.0f * S.u;
+      const XrVector3f p{S.head.x + std::cos(a) * R, std::min(S.top - 0.15f * S.u, S.head.y + 0.5f * S.u), S.head.z + std::sin(a) * R};
+      const float tx = -std::sin(a), tz = std::cos(a);
+      for (int j = spawn_n(s.pyroAcc, (sc.mr ? 420.0f : 1200.0f) * m, dt); j > 0; --j) {
+        const float sp2 = frand(1.0f, 1.8f) * S.u;
+        const float v[3] = {(tx * 0.5f + frand(-0.3f, 0.3f)) * sp2, -frand(0.3f, 0.8f) * sp2, (tz * 0.5f + frand(-0.3f, 0.3f)) * sp2};
+        add_spark(p, v, S.u * frand(0.025f, 0.045f), sp.p1, sp.p2, frand(0.5f, 0.9f), 1.2f, -0.05f);
+      }
+    }
+    break;
+  }
+  case kPyroBlast: {
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = frand(1.1f, 1.7f) / std::max(0.3f, s.intensity);
+      const XrVector3f p = around(S, 0.8f * S.u, S.r, 0.4f * S.u, std::min(S.top - S.floor - 0.2f, 1.6f * S.u));
+      s.pendingBlasts.push_back(State::Blast{p, XrVector3f{0.0f, 1.0f, 0.0f}, 1.0f, 2.5f, 0});
+      add_veil(sc, sp.p2 != 0 ? sp.p2 : 0xFFB040, 0.18f, 0.5f, 0.2f, 0.0f);
+      add_ring(S, p, false, 0.1f * S.u, 2.5f * S.u, 0.4f, sp.p1 != 0 ? sp.p1 : 0xFFFFFF, sp.p2 != 0 ? sp.p2 : 0xFF8A1A, 0.9f, 1.0f);
+    }
+    break;
+  }
+  case kPyroSlash: {
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 1.0f / std::max(0.3f, s.intensity);
+      const XrVector3f p = around(S, 1.1f * S.u, 1.4f * S.u, H - 0.3f * S.u, H + 0.1f * S.u);
+      const float roll = frand(0.0f, 6.28f);
+      for (int c = 0; c < 2; ++c) {
+        Particle* q = add_fx(kKindFloat, kSlash, p, nullptr, 1.1f * S.u, 1.0f, sp.p1, sp.p2, 1.0f, 1.0f, 0.35f, 0.03f);
+        if (q != nullptr) orient_facing(q->q, p, S.head, roll + c * 1.5708f);
+      }
+    }
+    break;
+  }
+  case kPyroMeteor: {
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 1.3f / std::max(0.3f, s.intensity);
+      add_meteor(k, S, 0x8A9AB0, 0x5A6A80, 2.6f);
+    }
+    break;
+  }
+  case kPyroPuffs: {
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 1.4f / std::max(0.3f, s.intensity);
+      XrVector3f from[4], out[4];
+      launch_points(sc, from, out);
+      const XrVector3f p = from[irand(4)];
+      for (int j = 0; j < 8; ++j) {
+        float d[3];
+        random_unit(d);
+        d[1] = std::fabs(d[1]) * 0.6f + 0.2f;
+        const float v[3] = {d[0] * 0.6f * S.u, d[1] * 0.6f * S.u, d[2] * 0.6f * S.u};
+        Particle* q = add_fx(kKindFog, kPuff, p, v, 0.25f * S.u, 1.0f, irand(2) ? sp.p1 : sp.p2, sp.p2, 0.35f, 0.0f, 2.6f, 0.1f);
+        if (q != nullptr) q->grow = 0.6f * S.u;
+      }
+    }
+    break;
+  }
+  case kPyroHearts:
+    for (int j = spawn_n(s.pyroAcc, 3.0f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.4f * S.u, S.r, 0.0f, 0.1f);
+      const float v[3] = {0.0f, 0.3f * S.u, 0.0f};
+      add_drift_piece(p, v, kHeart, k.piece * 1.6f, sp.p1, sp.p2, -0.35f * S.u, 6.0f, 0.15f * S.u);
+    }
+    break;
+  case kPyroThrow: {
+    if (s.pyroTimer <= 0.0f && s.sp.nFall > 0) {
+      s.pyroTimer = 0.45f / std::max(0.3f, s.intensity);
+      XrVector3f from[4], out[4];
+      launch_points(sc, from, out);
+      const int w = irand(4);
+      float dx = S.head.x - from[w].x, dz = S.head.z - from[w].z;
+      const float dl = std::max(1e-3f, std::sqrt(dx * dx + dz * dz));
+      const float v[3] = {dx / dl * 1.0f * S.u, 3.2f * S.u, dz / dl * 1.0f * S.u};
+      add_themed_piece(sc, k, from[w], v, 0);
+      if (!s.parts.empty()) s.parts.back().spin = frand(6.0f, 10.0f);  // spinning like a bonemerang
+    }
+    break;
+  }
+  case kPyroRings: {
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 0.9f / std::max(0.3f, s.intensity);
+      const XrVector3f at = around(S, 1.2f * S.u, 1.4f * S.u, H - 0.2f * S.u, H + 0.1f * S.u);
+      add_ring(S, at, false, 0.3f * S.u, 2.0f * S.u, 1.0f, sp.p1, sp.p2, 0.8f, 0.8f);
+      add_ring(S, XrVector3f{S.head.x, S.head.y - 0.25f * S.u, S.head.z}, true, 0.3f * S.u, 1.6f * S.u, 1.2f, sp.p1, sp.p2, 0.5f, 0.8f);
+    }
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+// r82: the scorer's theme this frame (while it rains, and a moment after).
+void step_theme(const Scene& sc, const Scale& k, float dt) {
+  if (!s.spOn) return;
+  const bool live = s.stage == Stage::Raining || (s.stage == Stage::Tapering && s.stageTime < 1.0f);
+  if (!live) {
+    // The party is over: what lingers (fog, the tint, floating things) fades out in 2.5 s.
+    if (!s.spEnded) {
+      s.spEnded = true;
+      s.levitate = false;
+      for (Particle& q : s.parts) {
+        if (q.kind == kKindFog || q.kind == kKindVeil || q.kind == kKindFloat) q.life = std::min(q.life, q.age + 2.5f);
+      }
+    }
+    return;
+  }
+  const Space S = space_of(sc, k);
+  const float m = (0.55f + 0.3f * s.sp.stage) * s.intensity;
+  for (int i = 0; i < s.sp.nRoom; ++i) room_effect(sc, k, S, i, s.sp.room[i], m, dt);
+  if (s.sp.pyro != kPyroFireworks && s.sp.pyro != kPyroNone) pyro_tick(sc, k, S, m, dt);
+}
+
 void step_particles(const Scene& sc, const Scale& k, float dt) {
   const float g = sc.mr ? 1.6f : 9.8f;
   // The Tabletop field top, to land on.
@@ -786,7 +2344,60 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
     Particle& q = s.parts[i];
     q.age += dt;
     bool keep = true;
-    if (q.kind == kKindFlash) {
+    if (q.kind == kKindFog) {
+      // r82: drifts round you (orbit m/s), bobbing, rising at fallSpeed (smoke), growing.
+      const float rx = q.p[0] - head.x, rz = q.p[2] - head.z;
+      const float rl = std::max(0.05f, std::sqrt(rx * rx + rz * rz));
+      const float ease = 1.0f - std::exp(-0.8f * dt);
+      const float tx = -rz / rl * q.orbit, tz = rx / rl * q.orbit;
+      q.v[0] += (tx - q.v[0]) * ease;
+      q.v[2] += (tz - q.v[2]) * ease;
+      q.v[1] += (q.fallSpeed + 0.04f * std::sin(q.age * 0.7f + q.flutterPhase) - q.v[1]) * ease;
+      for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
+      q.size += q.grow * dt;
+      keep = q.age < q.life;
+    } else if (q.kind == kKindBolt) {
+      keep = q.age < q.life;
+    } else if (q.kind == kKindRing) {
+      q.size += q.grow * dt;
+      keep = q.age < q.life;
+    } else if (q.kind == kKindDrop) {
+      // r82: rain (and lasers) fly straight; a raindrop splashes where it hits the floor.
+      for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
+      if (q.trail == 3 && q.p[1] <= sc.floorY + 0.003f) {
+        for (int j = 0; j < 2; ++j) {
+          const float sv[3] = {frand(-0.3f, 0.3f), frand(0.3f, 0.6f), frand(-0.3f, 0.3f)};
+          const float u = sc.mr ? 1.0f : 3.0f;
+          const float v2[3] = {sv[0] * u, sv[1] * u, sv[2] * u};
+          add_spark(XrVector3f{q.p[0], sc.floorY + 0.005f, q.p[2]}, v2, 0.006f * u, 0xFFFFFF, 0x9FD0FF, 0.25f, 1.0f, 1.0f);
+        }
+        keep = false;
+      } else {
+        keep = q.age < q.life && q.p[1] > sc.floorY - 0.5f;
+      }
+    } else if (q.kind == kKindFloat) {
+      // r82: notes, bubbles, wisps, faces, spirals float; orbs (trail 2) zip about in curves.
+      if (q.trail == 2) {
+        const float c = std::cos(q.spin * dt), sn = std::sin(q.spin * dt);
+        const float vx = q.v[0] * c - q.v[2] * sn, vz = q.v[0] * sn + q.v[2] * c;
+        q.v[0] = vx;
+        q.v[2] = vz;
+        const float dx = head.x - q.p[0], dz = head.z - q.p[2];
+        q.v[0] += dx * 0.6f * dt;  // stays in the room round you
+        q.v[2] += dz * 0.6f * dt;
+        if (irand(2) == 0) {
+          const float tv[3] = {0.0f, 0.0f, 0.0f};
+          add_spark(XrVector3f{q.p[0], q.p[1], q.p[2]}, tv, q.size * 0.45f, unpack_rgb(q.c1), unpack_rgb(q.c2), 0.35f, 0.0f, 0.0f);
+        }
+      } else {
+        q.v[0] += std::sin(q.age * 1.7f + q.flutterPhase) * 0.04f * dt;
+        q.v[2] += std::cos(q.age * 1.3f + q.flutterPhase) * 0.04f * dt;
+      }
+      for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
+      q.size += q.grow * dt;
+      if (q.shape == kSpiral) q.c2 = (q.c2 & 0x00FFFFFFu) | (static_cast<uint32_t>(static_cast<int>(q.age * 40.0f) & 255) << 24);
+      keep = q.age < q.life;
+    } else if (q.kind == kKindFlash || q.kind == kKindVeil) {
       // Stays in front of you while it fades.
       const XrQuaternionf& o = sc.views[0].pose.orientation;
       q.p[0] = head.x - 0.3f * (2 * (o.x * o.z + o.w * o.y));
@@ -836,10 +2447,28 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
     } else if (!q.landed) {
       // Falls at its own pace, drifting side to side, tumbling.
       const float settle = 1.0f - std::exp(-2.6f * dt);
-      q.v[1] += (-q.fallSpeed - q.v[1]) * settle;
-      if (q.v[1] > 0.0f && q.fallSpeed > 0.0f) q.v[1] -= g * dt;  // still rising (knocked off the scorer's head)
+      // r82: Mewtwo's: the confetti floats (hangs and bobs) while his party lasts, circling you.
+      const bool floating = s.levitate && q.maxAge == 0.0f && q.trail == 0;
+      const float targetVy = floating ? 0.08f * std::sin(q.age * 1.2f + q.flutterPhase) : -q.fallSpeed;
+      q.v[1] += (targetVy - q.v[1]) * settle;
+      if (!floating && q.v[1] > 0.0f && q.fallSpeed > 0.0f) q.v[1] -= g * dt;  // still rising (knocked off the scorer's head)
       const float t = q.age * q.flutterFreq + q.flutterPhase;
-      const float tx = std::sin(t) * q.flutterAmp, tz = std::cos(t * 0.8f + 1.3f) * q.flutterAmp * 0.7f;
+      float tx = std::sin(t) * q.flutterAmp, tz = std::cos(t * 0.8f + 1.3f) * q.flutterAmp * 0.7f;
+      // r82: a swirl round you (leaf storms; the floating confetti)
+      const float orbit = q.orbit != 0.0f ? q.orbit : (floating ? (sc.mr ? 0.45f : 1.6f) : 0.0f);
+      if (orbit != 0.0f) {
+        const float rx = q.p[0] - head.x, rz = q.p[2] - head.z;
+        const float rl = std::max(0.05f, std::sqrt(rx * rx + rz * rz));
+        tx += -rz / rl * orbit;
+        tz += rx / rl * orbit;
+      }
+      // r82: a meteor's fire behind it
+      if (q.trail == 1) {
+        for (int j = 0; j < 2; ++j) {
+          const float tv[3] = {-q.v[0] * 0.15f + frand(-0.05f, 0.05f), -q.v[1] * 0.15f, -q.v[2] * 0.15f + frand(-0.05f, 0.05f)};
+          add_spark(XrVector3f{q.p[0], q.p[1], q.p[2]}, tv, q.size * frand(0.3f, 0.5f), 0xFFE070, 0xFF5A10, frand(0.3f, 0.5f), 1.5f, -0.1f);
+        }
+      }
       const float side = 1.0f - std::exp(-1.6f * dt);
       q.v[0] += (tx - q.v[0]) * side;
       q.v[2] += (tz - q.v[2]) * side;
@@ -921,9 +2550,16 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
           }
         }
       }
-      if (q.p[1] <= landY || onHead || onBanner) {
+      if ((q.p[1] <= landY || onHead || onBanner) && (q.shape == kBoltPiece || q.shape == kFlame || q.shape == kWisp)) {
+        // r89: a falling flame or bolt goes out where it touches down (nothing to lie there)
+        keep = false;
+      } else if (q.p[1] <= landY || onHead || onBanner) {
         q.p[1] = landY;
         q.landed = true;
+        if (q.trail == 1) {  // r82: a meteor lands with a blast
+          s.pendingBlasts.push_back(State::Blast{XrVector3f{q.p[0], q.p[1], q.p[2]}, XrVector3f{0.0f, 1.0f, 0.0f}, 1.0f, 2.5f, 0});
+          q.trail = 0;
+        }
         q.onScorer = onHead;
         q.restOff[0] = q.p[0] - sc.scorerFeet.x;
         q.restOff[1] = q.p[2] - sc.scorerFeet.z;
@@ -935,7 +2571,7 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
         quat_axis_angle(yAxis, frand(0.0f, 6.2831853f), yaw);
         quat_mul(yaw, lay, q.q);
       }
-      keep = q.age < (q.maxAge > 0.0f ? q.maxAge : 25.0f) && q.p[1] > sc.floorY - 1.0f;
+      keep = keep && q.age < (q.maxAge > 0.0f ? q.maxAge : 25.0f) && q.p[1] > sc.floorY - 1.0f;
     } else if (q.onScorer) {
       // r42: rides on the scorer's head; once it runs (or is gone) the piece falls off.
       if (sc.scorerValid && sc.scorerStill) {
@@ -1086,8 +2722,20 @@ struct RoomPush {
 };
 
 bool make_pipelines() {
+  // r68c: one texture for the 3D pieces' shader (the guests' outlines, make_etch).
+  VkDescriptorSetLayoutBinding etchBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                           nullptr};
+  VkDescriptorSetLayoutCreateInfo etchInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  etchInfo.bindingCount = 1;
+  etchInfo.pBindings = &etchBinding;
+  if (!vk_ok(vkCreateDescriptorSetLayout(s.dev.device, &etchInfo, nullptr, &s.etchSetLayout),
+             "vkCreateDescriptorSetLayout(etch)")) {
+    return false;
+  }
   VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants)};
   VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  layoutInfo.setLayoutCount = 1;
+  layoutInfo.pSetLayouts = &s.etchSetLayout;
   layoutInfo.pushConstantRangeCount = 1;
   layoutInfo.pPushConstantRanges = &range;
   if (!vk_ok(vkCreatePipelineLayout(s.dev.device, &layoutInfo, nullptr, &s.layout), "vkCreatePipelineLayout")) {
@@ -1273,17 +2921,14 @@ bool make_meshes() {
   const uint32_t vbase = static_cast<uint32_t>(set.verts.size());
   const uint32_t ibase = static_cast<uint32_t>(set.indices.size());
   set.verts.insert(set.verts.end(), far.verts.begin(), far.verts.end());
-  for (uint16_t i : far.indices) set.indices.push_back(static_cast<uint16_t>(vbase + i));
+  for (uint32_t i : far.indices) set.indices.push_back(vbase + i);
   for (uint32_t m = 0; m < mesh::kCount; ++m) {
     s.meshRanges[1][m] = mesh::Range{far.ranges[m].firstIndex + ibase, far.ranges[m].indexCount};
   }
-  if (set.verts.size() > 65535) {
-    FXERR("fx: piece meshes too large (%zu vertices)", set.verts.size());
-    return false;
-  }
+  // r82: 32-bit indices (bound as VK_INDEX_TYPE_UINT32): no 65535-vertex cap on the set any more
   void* mapped = nullptr;
   const VkDeviceSize vbytes = sizeof(mesh::Vertex) * set.verts.size();
-  const VkDeviceSize ibytes = sizeof(uint16_t) * set.indices.size();
+  const VkDeviceSize ibytes = sizeof(uint32_t) * set.indices.size();
   if (!make_host_buffer(vbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &s.meshVerts, &s.meshVertMemory, &mapped)) {
     return false;
   }
@@ -1664,13 +3309,15 @@ bool make_filled_buffer(const void* data, VkDeviceSize bytes, VkBufferUsageFlags
 }
 
 // A picture as an sRGB texture with its whole chain of mipmaps (each level filtered on the GPU from
-// the one above), bound to `set`. Waits for the upload.
-bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t w, uint32_t h) {
+// the one above), bound to `set`. Waits for the upload. r68c: or as plain values (`format`), one
+// level, with a sampler of its own (the etch outlines: distances, not colours).
+bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t w, uint32_t h,
+              VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, VkSampler sampler = VK_NULL_HANDLE, bool mips = true) {
   uint32_t levels = 1;
-  while ((std::max(w, h) >> levels) > 0) ++levels;
+  while (mips && (std::max(w, h) >> levels) > 0) ++levels;
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType = VK_IMAGE_TYPE_2D;
-  ii.format = VK_FORMAT_R8G8B8A8_SRGB;
+  ii.format = format;
   ii.extent = {w, h, 1};
   ii.mipLevels = levels;
   ii.arrayLayers = 1;
@@ -1693,7 +3340,7 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   vi.image = t.image;
   vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  vi.format = VK_FORMAT_R8G8B8A8_SRGB;
+  vi.format = format;
   vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
   if (!vk_ok(vkCreateImageView(s.dev.device, &vi, nullptr, &t.view), "vkCreateImageView(room)")) return false;
 
@@ -1764,7 +3411,7 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   if (cmd) vkFreeCommandBuffers(s.dev.device, s.pool, 1, &cmd);
   destroy_buffer(staging, stagingMemory);
   if (!ok) return false;
-  VkDescriptorImageInfo di{s.sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo di{sampler != VK_NULL_HANDLE ? sampler : s.sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
   wr.dstSet = set;
   wr.dstBinding = 0;
@@ -1773,6 +3420,45 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   wr.pImageInfo = &di;
   vkUpdateDescriptorSets(s.dev.device, 1, &wr, 0, nullptr);
   return true;
+}
+
+// r68c: the guests' outlines for the etching (STRIKERS_HOME/guests/etch.r8: 8 x 8 cells of 64 x 64,
+// one per guest in roster order, 128 = the outline). Without the file a single "far outside" texel:
+// nothing is etched for a guest. The set is bound for every pass (the 3D pieces' shader reads it).
+bool make_etch() {
+  VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+  VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  pi.maxSets = 1;
+  pi.poolSizeCount = 1;
+  pi.pPoolSizes = &ps;
+  if (!vk_ok(vkCreateDescriptorPool(s.dev.device, &pi, nullptr, &s.etchPool), "vkCreateDescriptorPool(etch)")) return false;
+  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ai.descriptorPool = s.etchPool;
+  ai.descriptorSetCount = 1;
+  ai.pSetLayouts = &s.etchSetLayout;
+  if (!vk_ok(vkAllocateDescriptorSets(s.dev.device, &ai, &s.etchSet), "vkAllocateDescriptorSets(etch)")) return false;
+  VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  si.magFilter = VK_FILTER_LINEAR;
+  si.minFilter = VK_FILTER_LINEAR;
+  si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  if (!vk_ok(vkCreateSampler(s.dev.device, &si, nullptr, &s.etchSampler), "vkCreateSampler(etch)")) return false;
+  constexpr uint32_t kSide = 512;
+  std::vector<uint8_t> rgba(4, 255);
+  uint32_t side = 1;
+  const char* home = std::getenv("STRIKERS_HOME");
+  const std::string path = std::string(home != nullptr && *home ? home : "/storage/emulated/0/Strikers") + "/guests/etch.r8";
+  if (FILE* f = std::fopen(path.c_str(), "rb")) {
+    std::vector<uint8_t> r(kSide * kSide);
+    if (std::fread(r.data(), 1, r.size(), f) == r.size()) {
+      rgba.resize(r.size() * 4);
+      for (size_t i = 0; i < r.size(); ++i) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = r[i];
+      side = kSide;
+    }
+    std::fclose(f);
+  }
+  FXLOG("fx: guest etch outlines %s", side > 1 ? "loaded" : "not there (no guest etching)");
+  return make_tex(s.etchTex, s.etchSet, rgba.data(), side, side, VK_FORMAT_R8G8B8A8_UNORM, s.etchSampler, false);
 }
 
 // The room layer's own things, made the first time a suite shows: the textured pipeline, the sky
@@ -1995,6 +3681,202 @@ void take_room(bool canUpload) {
         next.height, next.outsideWidth, next.outsideHeight);
 }
 
+// r96: the characters standing in your room (xr_fx_model.vert / .frag).
+struct CharPush {
+  float viewProj[16];
+  float camPos[4];
+  float look[4];     // white, alpha, glow, soft
+  float glowRgb[4];  // w: the light from below
+};
+static_assert(sizeof(CharPush) <= 128, "push constants");
+
+// Their pipelines (solid parts: alpha-tested, depth written; soft parts: blended over them), made the first
+// time a model is put up, in the effects' own render pass.
+bool make_char_pipelines() {
+  if (s.charTried) return s.charReady;
+  s.charTried = true;
+  VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+  VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  li.bindingCount = 1;
+  li.pBindings = &binding;
+  constexpr uint32_t kSets = 192;  // two characters' pictures
+  VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSets};
+  VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  pi.maxSets = kSets;
+  pi.poolSizeCount = 1;
+  pi.pPoolSizes = &ps;
+  if (!vk_ok(vkCreateDescriptorSetLayout(s.dev.device, &li, nullptr, &s.charSetLayout), "vkCreateDescriptorSetLayout(char)") ||
+      !vk_ok(vkCreateDescriptorPool(s.dev.device, &pi, nullptr, &s.charPool), "vkCreateDescriptorPool(char)")) {
+    return false;
+  }
+  // Trilinear, repeating (the games' pictures tile), anisotropic where the device has it.
+  VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  si.magFilter = VK_FILTER_LINEAR;
+  si.minFilter = VK_FILTER_LINEAR;
+  si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  si.maxLod = VK_LOD_CLAMP_NONE;
+  si.anisotropyEnable = s.dev.maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
+  si.maxAnisotropy = std::min(8.0f, std::max(1.0f, s.dev.maxAnisotropy));
+  if (!vk_ok(vkCreateSampler(s.dev.device, &si, nullptr, &s.charSampler), "vkCreateSampler(char)")) return false;
+  VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(CharPush)};
+  VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  pl.setLayoutCount = 1;
+  pl.pSetLayouts = &s.charSetLayout;
+  pl.pushConstantRangeCount = 1;
+  pl.pPushConstantRanges = &range;
+  if (!vk_ok(vkCreatePipelineLayout(s.dev.device, &pl, nullptr, &s.charLayout), "vkCreatePipelineLayout(char)")) return false;
+  VkShaderModule vert = make_shader(kXrFxModelVert, sizeof(kXrFxModelVert));
+  VkShaderModule frag = make_shader(kXrFxModelFrag, sizeof(kXrFxModelFrag));
+  if (!vert || !frag) return false;
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+  // binding 0: the posed vertices (position, normal), this frame's; binding 1: the texture coordinates
+  const VkVertexInputBindingDescription vb[2] = {{0, sizeof(float) * 6, VK_VERTEX_INPUT_RATE_VERTEX},
+                                                 {1, sizeof(float) * 2, VK_VERTEX_INPUT_RATE_VERTEX}};
+  const VkVertexInputAttributeDescription va[3] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+                                                   {1, 0, VK_FORMAT_R32G32B32_SFLOAT, sizeof(float) * 3},
+                                                   {2, 1, VK_FORMAT_R32G32_SFLOAT, 0}};
+  VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  input.vertexBindingDescriptionCount = 2;
+  input.pVertexBindingDescriptions = vb;
+  input.vertexAttributeDescriptionCount = 3;
+  input.pVertexAttributeDescriptions = va;
+  VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+  ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+  viewport.viewportCount = 1;
+  viewport.scissorCount = 1;
+  const VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic.dynamicStateCount = 2;
+  dynamic.pDynamicStates = dyn;
+  VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;  // the games' sheets (wings, ears, flames) are drawn two-sided
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+  ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  depth.depthTestEnable = VK_TRUE;
+  depth.depthWriteEnable = VK_TRUE;
+  depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+  VkPipelineColorBlendAttachmentState blend{};
+  blend.blendEnable = VK_TRUE;  // premultiplied (a fading one, the soft parts)
+  blend.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+  blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  blend.colorBlendOp = VK_BLEND_OP_ADD;
+  blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  blend.alphaBlendOp = VK_BLEND_OP_ADD;
+  blend.colorWriteMask = 0xF;
+  VkPipelineColorBlendStateCreateInfo blendState{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+  blendState.attachmentCount = 1;
+  blendState.pAttachments = &blend;
+  VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+  info.stageCount = 2;
+  info.pStages = stages;
+  info.pVertexInputState = &input;
+  info.pInputAssemblyState = &ia;
+  info.pViewportState = &viewport;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &ms;
+  info.pDepthStencilState = &depth;
+  info.pColorBlendState = &blendState;
+  info.pDynamicState = &dynamic;
+  info.layout = s.charLayout;
+  info.renderPass = s.renderPass;
+  VkPipelineDepthStencilStateCreateInfo softDepth = depth;
+  softDepth.depthWriteEnable = VK_FALSE;
+  VkGraphicsPipelineCreateInfo softInfo = info;
+  softInfo.pDepthStencilState = &softDepth;
+  const bool ok = vk_ok(vkCreateGraphicsPipelines(s.dev.device, VK_NULL_HANDLE, 1, &info, nullptr, &s.charPipeline),
+                        "vkCreateGraphicsPipelines(char)") &&
+                  vk_ok(vkCreateGraphicsPipelines(s.dev.device, VK_NULL_HANDLE, 1, &softInfo, nullptr, &s.charSoftPipeline),
+                        "vkCreateGraphicsPipelines(char soft)");
+  vkDestroyShaderModule(s.dev.device, vert, nullptr);
+  vkDestroyShaderModule(s.dev.device, frag, nullptr);
+  s.charReady = ok;
+  if (ok) FXLOG("fx: character models ready");
+  return ok;
+}
+
+// Lets a slot's model go (waiting for the frames that draw it).
+void drop_char(int slot) {
+  State::CharModel& c = s.charModels[slot];
+  if (c.vertexCount == 0 && c.tex.empty() && c.uv == VK_NULL_HANDLE) return;
+  wait_frames();
+  for (State::Tex& t : c.tex) destroy_tex(t);
+  if (!c.sets.empty() && s.charPool != VK_NULL_HANDLE) {
+    vkFreeDescriptorSets(s.dev.device, s.charPool, static_cast<uint32_t>(c.sets.size()), c.sets.data());
+  }
+  destroy_buffer(c.uv, c.uvMemory);
+  destroy_buffer(c.indices, c.indexMemory);
+  for (uint32_t k = 0; k < kSlots; ++k) {
+    if (c.vertMapped[k] != nullptr) vkUnmapMemory(s.dev.device, c.vertMemory[k]);
+    destroy_buffer(c.verts[k], c.vertMemory[k]);
+  }
+  c = State::CharModel{};
+}
+
+bool chars_shown(const Scene& sc) {
+  for (int i = 0; i < 2; ++i) {
+    if (sc.models[i].on && sc.models[i].posNrm != nullptr && s.charModels[i].vertexCount > 0) return true;
+  }
+  return false;
+}
+
+// The characters in this eye: solid parts first (they write depth, so the pieces falling round them go
+// behind and in front of them as they should), then the soft ones. Leaves the pieces' set bound again.
+void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const float viewProj[16], const XrVector3f& eye) {
+  for (int pass = 0; pass < 2; ++pass) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass == 0 ? s.charPipeline : s.charSoftPipeline);
+    for (int i = 0; i < 2; ++i) {
+      const Scene::ModelDraw& md = sc.models[i];
+      const State::CharModel& c = s.charModels[i];
+      if (!md.on || md.posNrm == nullptr || c.vertexCount == 0 || md.alpha <= 0.0f) continue;
+      CharPush pc{};
+      std::memcpy(pc.viewProj, viewProj, sizeof(pc.viewProj));
+      pc.camPos[0] = eye.x;
+      pc.camPos[1] = eye.y;
+      pc.camPos[2] = eye.z;
+      pc.look[0] = md.white;
+      pc.look[1] = md.alpha;
+      pc.look[2] = md.glow;
+      pc.look[3] = static_cast<float>(pass);
+      pc.glowRgb[0] = ((md.glowRgb >> 16) & 0xFF) / 255.0f;
+      pc.glowRgb[1] = ((md.glowRgb >> 8) & 0xFF) / 255.0f;
+      pc.glowRgb[2] = (md.glowRgb & 0xFF) / 255.0f;
+      pc.glowRgb[3] = md.under;
+      vkCmdPushConstants(cmd, s.charLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+      const VkBuffer buffers[2] = {c.verts[slotIndex], c.uv};
+      const VkDeviceSize offsets[2] = {0, 0};
+      vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
+      vkCmdBindIndexBuffer(cmd, c.indices, 0, VK_INDEX_TYPE_UINT32);
+      int bound = -2;
+      for (const ModelPart& part : c.parts) {
+        if (part.soft != (pass == 1) || part.indexCount == 0) continue;
+        if (part.flameFrame >= 0 && md.flameFrame >= 0 && part.flameFrame != md.flameFrame) continue;
+        if (part.tex < 0 || part.tex >= static_cast<int>(c.sets.size())) continue;
+        if (bound != part.tex) {
+          bound = part.tex;
+          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.charLayout, 0, 1, &c.sets[part.tex], 0, nullptr);
+        }
+        vkCmdDrawIndexed(cmd, part.indexCount, 1, part.firstIndex, 0, 0);
+      }
+    }
+  }
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.etchSet, 0, nullptr);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -2007,7 +3889,7 @@ bool init(const DeviceInfo& device) {
   s.dev = device;
   s.ready = s.dev.device != VK_NULL_HANDLE && s.dev.width > 0 && choose_format() && make_render_pass() &&
             make_pipelines() && make_meshes() && make_eye(s.eyes[0], s.dev.width, s.dev.height) &&
-            make_eye(s.eyes[1], s.dev.width, s.dev.height) && make_slots();
+            make_eye(s.eyes[1], s.dev.width, s.dev.height) && make_slots() && make_etch();
   if (s.ready) {
     FXLOG("fx: celebration renderer ready (%ux%u per eye, format %d)", s.dev.width, s.dev.height,
           static_cast<int>(s.colorFormat));
@@ -2024,6 +3906,14 @@ void shutdown() {
   if (s.dev.device == VK_NULL_HANDLE) return;
   vkDeviceWaitIdle(s.dev.device);
   destroy_models();  // r54
+  drop_char(0);      // r96: the characters in your room
+  drop_char(1);
+  if (s.charPipeline) vkDestroyPipeline(s.dev.device, s.charPipeline, nullptr);
+  if (s.charSoftPipeline) vkDestroyPipeline(s.dev.device, s.charSoftPipeline, nullptr);
+  if (s.charLayout) vkDestroyPipelineLayout(s.dev.device, s.charLayout, nullptr);
+  if (s.charSampler) vkDestroySampler(s.dev.device, s.charSampler, nullptr);
+  if (s.charPool) vkDestroyDescriptorPool(s.dev.device, s.charPool, nullptr);
+  if (s.charSetLayout) vkDestroyDescriptorSetLayout(s.dev.device, s.charSetLayout, nullptr);
   for (Slot& slot : s.slots) {
     if (slot.instanceMapped) vkUnmapMemory(s.dev.device, slot.instanceMemory);
     if (slot.occluderMapped) vkUnmapMemory(s.dev.device, slot.occluderMemory);
@@ -2063,6 +3953,10 @@ void shutdown() {
   destroy_buffer(s.skyIndices, s.skyIndexMemory);
   destroy_tex(s.roomTex);
   destroy_tex(s.outsideTex);
+  destroy_tex(s.etchTex);  // r68c
+  if (s.etchSampler) vkDestroySampler(s.dev.device, s.etchSampler, nullptr);
+  if (s.etchPool) vkDestroyDescriptorPool(s.dev.device, s.etchPool, nullptr);
+  if (s.etchSetLayout) vkDestroyDescriptorSetLayout(s.dev.device, s.etchSetLayout, nullptr);
   if (s.sampler) vkDestroySampler(s.dev.device, s.sampler, nullptr);
   if (s.texPool) vkDestroyDescriptorPool(s.dev.device, s.texPool, nullptr);
   if (s.texSetLayout) vkDestroyDescriptorSetLayout(s.dev.device, s.texSetLayout, nullptr);
@@ -2090,7 +3984,7 @@ void shutdown() {
 constexpr float kWaveGap = 0.45f;
 
 void goal(int team, int character, bool superStrike, bool hyper, bool ownGoal) {
-  s.theme = (character >= 0 && character < 12) ? kThemes[character] : kNeutral;
+  s.theme = theme_for(character);  // r68c: a guest scorer's own colours
   s.superStrike = superStrike || hyper;
   s.intensity = ownGoal ? 0.45f : (superStrike ? 1.4f : 1.0f);
   s.stage = Stage::Raining;
@@ -2104,9 +3998,165 @@ void goal(int team, int character, bool superStrike, bool hyper, bool ownGoal) {
   s.rocketTimer = 0.0f;
   s.jetTime = ownGoal ? 0.0f : (superStrike ? 4.0f : 2.6f);
   s.pendingFlash = !ownGoal;
+  // r82: a Pokemon / Melee scorer's own celebration (CELEBRATION-THEMES.md), with the confetti
+  s.sp = character >= 100 ? special_for_pack(PortGuestRosterPack(character - 100)) : Special{};
+  s.spOn = s.sp.nFall > 0 || s.sp.nRoom > 0 || s.sp.pyro != kPyroFireworks || s.sp.p1 != 0;
+  for (int i = 0; i < 3; ++i) s.spAcc[i] = s.spTimer[i] = s.spDone[i] = 0.0f;
+  s.pyroTimer = s.pyroBurst = s.pyroAcc = s.pyroPhase = 0.0f;
+  s.spEnded = false;
+  s.levitate = false;
+  s.burstMain = s.spOn && s.sp.pyro == kPyroFireworks ? s.sp.p1 : 0u;
+  s.burstOther = s.sp.p2 != 0 ? s.sp.p2 : s.sp.p1;
+  if (s.spOn && s.sp.pyro != kPyroFireworks) {
+    // its own show takes the place of the fireworks and the fire jets
+    s.pendingRockets = 0;
+    s.jetTime = 0.0f;
+  }
   FXLOG("fx: goal for team %d, %s theme%s%s", team,
-        (character >= 0 && character < 12) ? kNames[character] : "neutral", superStrike ? ", Super Strike" : "",
+        (character >= 0 && character < 12) ? kNames[character] : (character >= 100 ? "guest" : "neutral"),
+        superStrike ? ", Super Strike" : "",
         ownGoal ? ", own goal (toned down)" : "");
+  if (s.spOn) {
+    FXLOG("fx: themed celebration for %s (stage %.1f): %d falling, %d room effects, show %d", s.sp.name, s.sp.stage,
+          s.sp.nFall, s.sp.nRoom, static_cast<int>(s.sp.pyro));
+  }
+  s.evoOn = s.evoNoPaper = false;  // r96
+}
+
+// r96: the 3D evolution's models and its theme (xr_fx.h).
+void set_model(int slot, Model&& m) {
+  if (!s.ready || slot < 0 || slot > 1) return;
+  drop_char(slot);
+  if (m.vertexCount == 0 || m.indices.empty() || m.uv.size() < size_t(m.vertexCount) * 2) return;
+  if (!make_char_pipelines()) return;
+  const auto t0 = std::chrono::steady_clock::now();
+  State::CharModel& c = s.charModels[slot];
+  const size_t n = m.texRgba.size();
+  c.tex.resize(n);
+  c.sets.resize(n, VK_NULL_HANDLE);
+  bool ok = true;
+  for (size_t i = 0; i < n && ok; ++i) {
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = s.charPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &s.charSetLayout;
+    ok = vk_ok(vkAllocateDescriptorSets(s.dev.device, &ai, &c.sets[i]), "vkAllocateDescriptorSets(char)");
+    if (!ok) break;
+    const uint32_t w = i < m.texW.size() ? m.texW[i] : 0, h = i < m.texH.size() ? m.texH[i] : 0;
+    static const uint8_t kGrey[4] = {160, 160, 160, 255};
+    const bool have = w > 0 && h > 0 && m.texRgba[i].size() >= size_t(w) * h * 4;
+    ok = make_tex(c.tex[i], c.sets[i], have ? m.texRgba[i].data() : kGrey, have ? w : 1, have ? h : 1,
+                  VK_FORMAT_R8G8B8A8_SRGB, s.charSampler, true);
+  }
+  ok = ok &&
+       make_filled_buffer(m.uv.data(), sizeof(float) * 2 * m.vertexCount, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &c.uv,
+                          &c.uvMemory) &&
+       make_filled_buffer(m.indices.data(), sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          &c.indices, &c.indexMemory);
+  for (uint32_t k = 0; k < kSlots && ok; ++k) {
+    ok = make_host_buffer(VkDeviceSize(sizeof(float)) * 6 * m.vertexCount, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &c.verts[k],
+                          &c.vertMemory[k], &c.vertMapped[k]);
+  }
+  if (!ok) {
+    FXERR("fx: character model %d upload failed", slot);
+    c.vertexCount = 1;  // (so drop_char lets the half of it go)
+    drop_char(slot);
+    return;
+  }
+  c.parts = std::move(m.parts);
+  c.vertexCount = m.vertexCount;
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  FXLOG("fx: character model %d up in %.0f ms: %u vertices, %zu triangles, %zu pictures, %zu parts", slot, ms, c.vertexCount,
+        m.indices.size() / 3, n, c.parts.size());
+}
+
+void evo_theme(const char* pack, const XrVector3f& at, float radius, float height, float intensity) {
+  if (pack == nullptr || pack[0] == '\0' || !s.ready) return;
+  std::string base(pack);
+  const size_t shiny = base.find("_shiny");
+  if (shiny != std::string::npos) base.resize(shiny);
+  if (!s.evoOn || base != s.evoPack) {
+    s.evoPack = base;
+    s.sp = special_for_pack(base.c_str());
+    s.spOn = s.sp.nFall > 0 || s.sp.nRoom > 0 || s.sp.pyro != kPyroFireworks || s.sp.p1 != 0;
+    for (int i = 0; i < 3; ++i) s.spAcc[i] = s.spTimer[i] = s.spDone[i] = 0.0f;
+    s.pyroTimer = s.pyroBurst = s.pyroAcc = s.pyroPhase = 0.0f;
+    s.spEnded = false;
+    s.levitate = false;
+    s.superStrike = false;
+    s.burstMain = s.spOn && s.sp.pyro == kPyroFireworks ? s.sp.p1 : 0u;
+    s.burstOther = s.sp.p2 != 0 ? s.sp.p2 : s.sp.p1;
+    // no confetti: no cannons, no rockets barrage, no flash of the goal kind, no generic fire jets
+    s.cannonWavesLeft = 0;
+    s.pendingRockets = 0;
+    s.jetTime = 0.0f;
+    s.pendingFlash = false;
+    s.hatsLeft = 0;
+    s.stageTime = 0.0f;
+    s.evoAcc = 0.0f;
+    FXLOG("fx: evolution theme for %s: %d falling, %d room effects, show %d (no confetti)", base.c_str(), s.sp.nFall,
+          s.sp.nRoom, static_cast<int>(s.sp.pyro));
+  }
+  s.evoOn = true;
+  s.evoNoPaper = true;
+  s.evoAt = at;
+  s.evoRadius = radius;
+  s.evoHeight = height;
+  s.intensity = std::max(0.0f, intensity);
+  s.stage = Stage::Raining;
+}
+
+void evo_burst(const Scene& sc, const XrVector3f& at, float height, uint32_t rgb) {
+  if (!s.ready) return;
+  add_veil(sc, 0xFFFFFF, 0.85f, 1.0f, 0.9f, 0.06f);  // your view goes white, as in the games
+  Space S;
+  S.head = at;
+  S.floor = at.y;
+  S.top = at.y + height * 2.0f;
+  S.r = 2.0f;
+  S.u = 1.0f;
+  const uint32_t c2 = s.evoOn && s.sp.nFall > 0 ? s.sp.fall[0].c2 : rgb;
+  add_ring(S, XrVector3f{at.x, at.y + 0.02f, at.z}, true, 0.2f, 3.2f, 1.1f, 0xFFFFFF, rgb, 1.0f, 1.0f);
+  add_ring(S, XrVector3f{at.x, at.y + 0.5f * height, at.z}, false, 0.3f, 2.6f, 0.8f, 0xFFFFFF, c2, 0.9f, 1.0f);
+  // a shower of its pieces flung out from it, and white sparks
+  if (s.evoOn && s.sp.nFall > 0) {
+    const Scale k = scale_for(sc);
+    for (int j = 0; j < 36; ++j) {
+      const float a = frand(0.0f, 6.2831853f), sp = frand(0.8f, 1.8f);
+      const float v[3] = {std::cos(a) * sp, frand(1.2f, 2.6f), std::sin(a) * sp};
+      add_themed_piece(sc, k, XrVector3f{at.x, at.y + 0.6f * height, at.z}, v);
+    }
+  }
+  for (int j = 0; j < 90; ++j) {
+    float d[3];
+    random_unit(d);
+    const float sp = frand(0.6f, 2.2f);
+    const float v[3] = {d[0] * sp, d[1] * sp + 0.6f, d[2] * sp};
+    add_spark(XrVector3f{at.x, at.y + 0.55f * height, at.z}, v, frand(0.012f, 0.03f), 0xFFFFFF, rgb, frand(0.5f, 1.1f), 1.4f,
+              0.4f);
+  }
+  FXLOG("fx: evolution burst");
+}
+
+void evo_end() {
+  if (!s.evoOn) return;
+  s.evoOn = false;
+  if (s.stage == Stage::Raining) {
+    s.stage = Stage::Tapering;
+    s.stageTime = 0.0f;
+  }
+}
+
+void evo_sparkle(const XrVector3f& at, float radius, float height, float dt) {
+  if (!s.ready || room_full()) return;
+  for (int j = spawn_n(s.evoSparkAcc, 7.0f, std::min(std::max(dt, 0.0f), 0.1f)); j > 0; --j) {
+    const float a = frand(0.0f, 6.2831853f), r = radius * frand(0.75f, 1.2f);
+    const XrVector3f p{at.x + std::cos(a) * r, at.y + height * frand(0.0f, 1.08f), at.z + std::sin(a) * r};
+    const float v[3] = {0.0f, frand(0.03f, 0.08f), 0.0f};
+    Particle* q = add_fx(kKindFloat, kTwinkle, p, v, height * frand(0.1f, 0.19f), 1.0f, 0xC8F0FF, 0x7FC8FF, 1.0f, 1.0f,
+                         frand(0.6f, 0.9f), 0.25f);
+    if (q != nullptr) q->grow = -0.08f;
+  }
 }
 
 void phase(int p) {
@@ -2115,8 +4165,10 @@ void phase(int p) {
     s.dropTarget = 1.0f;
     if (s.stage == Stage::Raining && s.intensity > 0.5f) {
       s.cannonWavesLeft += 2;
-      s.pendingRockets += 8;
-      s.jetTime = std::max(s.jetTime, 1.6f);
+      if (!(s.spOn && s.sp.pyro != kPyroFireworks)) {  // r82: a theme with its own show keeps it
+        s.pendingRockets += 8;
+        s.jetTime = std::max(s.jetTime, 1.6f);
+      }
     }
     break;
   case 2:  // replay played out: taper off, a few stragglers
@@ -2137,6 +4189,8 @@ void phase(int p) {
     s.pendingFlash = false;
     s.drop = s.dropTarget = s.dropVel = 0.0f;
     s.hatsLeft = 0;
+    s.spOn = false;  // r82
+    s.levitate = false;
     break;
   default:
     break;
@@ -2254,8 +4308,10 @@ struct HandDraw {
 // button in the detail colour; pressed ones move and light up in the team's bright colour (white where
 // that is too close to the detail colour).
 static uint32_t write_hands(const Scene& sc, Instance* inst, HandDraw* draws) {
-  const bool themed = sc.skinCaptain >= 0 && sc.skinCaptain < 12;
-  const Theme& th = themed ? kThemes[sc.skinCaptain] : kNeutral;
+  // r68c: a guest captain (100 + roster place): its own colours and its own outline etched
+  const bool guest = sc.skinCaptain >= 100;
+  const bool themed = (sc.skinCaptain >= 0 && sc.skinCaptain < 12) || guest;
+  const Theme th = theme_for(sc.skinCaptain);
   const uint32_t bright = marker_colour(themed ? sc.skinCaptain : -1);
   // r54b: the stick, buttons, trigger and grip in the team's third colour (Mario's blue on his red),
   // the body's inlay in the second (his white).
@@ -2265,7 +4321,8 @@ static uint32_t write_hands(const Scene& sc, Instance* inst, HandDraw* draws) {
   const uint32_t litRgb = diff > 120 ? bright : 0xFFFFFF;
   const uint32_t body = pack(th.paper[0]);
   const uint32_t inlay = pack(th.paper[1]);
-  const float theme = static_cast<float>(themed ? sc.skinCaptain + 1 : 0);
+  const float theme =
+      static_cast<float>(guest ? (sc.skinEtch >= 0 ? sc.skinEtch : sc.skinCaptain) : (themed ? sc.skinCaptain + 1 : 0));
   uint32_t n = 0;
   for (int h = 0; h < 2; ++h) {
     const Scene::Hand& hd = sc.hands[h];
@@ -2472,9 +4529,9 @@ static uint32_t write_shelf(const Scene& sc, Instance* inst, uint8_t* meshOf) {
   return n;
 }
 
-// r61: the home ground's pieces (Scene::homePieces), solid like the shelf.
-constexpr uint32_t kHomeParts = 24;
-enum : uint8_t { kBannerShape = 25, kPennantShape = 26, kBallShape = 27 };
+// r61: the home ground's pieces (Scene::homePieces), solid like the shelf. r89: 40 (the home corner).
+constexpr uint32_t kHomeParts = 40;
+enum : uint8_t { kBannerShape = 25, kPennantShape = 26, kBallShape = 27, kRugShape = 61 };
 static uint32_t write_home(const Scene& sc, Instance* inst, uint8_t* meshOf) {
   uint32_t n = 0;
   for (int i = 0; i < sc.homeCount && i < static_cast<int>(kHomeParts); ++i) {
@@ -2486,6 +4543,12 @@ static uint32_t write_home(const Scene& sc, Instance* inst, uint8_t* meshOf) {
     case 2: meshId = mesh::kBall; shape = kBallShape; break;
     case 4: meshId = mesh::kPedestal; shape = kShelfShape; break;
     case 5: meshId = mesh::kTrophy; shape = kTrophyShape; break;  // theme 1 = a ghost (not won yet)
+    case 6:  // r89: a prop on the home corner's display, drawn as that celebration piece
+      shape = static_cast<uint8_t>(hp.theme);
+      meshId = mesh_for(static_cast<Shape>(shape));
+      if (meshId == kNoMesh) continue;
+      break;
+    case 7: meshId = mesh::kRug; shape = kRugShape; break;  // r89: the home corner's rug
     default: meshId = mesh::kShelf; shape = kShelfShape; break;
     }
     const bool wood = hp.kind == 3 || hp.kind == 4;
@@ -2501,7 +4564,7 @@ static uint32_t write_home(const Scene& sc, Instance* inst, uint8_t* meshOf) {
     o.color1 = pack(wood ? 0x9A6A3A : hp.rgb1);
     o.color2 = pack(wood ? 0xFFD21F : hp.rgb2);
     o.params[0] = static_cast<float>(shape);
-    o.params[1] = static_cast<float>(hp.theme);
+    o.params[1] = hp.kind == 6 ? 1.0f : static_cast<float>(hp.theme);  // (a prop: its aspect, as a piece's)
     o.params[2] = 1.0f;
     o.params[3] = hp.glow;
     meshOf[n++] = meshId;
@@ -2996,8 +5059,42 @@ void cup_colours(int trophy, uint32_t* cup, uint32_t* base) {
   *base = look.base;
 }
 
+int corner_props(const char* pack, int captainClass, int shapes[3], uint32_t c1[3], uint32_t c2[3]) {
+  const Special sp = corner_special(pack, captainClass);
+  int n = 0;
+  for (int i = 0; i < sp.nFall && n < 3; ++i) {
+    const FallFx& f = sp.fall[i];
+    if (mesh_for(static_cast<Shape>(f.shape)) == kNoMesh) continue;  // (flames, bolts: the corner's show)
+    bool twice = false;
+    for (int j = 0; j < n; ++j) twice = twice || shapes[j] == f.shape;
+    if (twice) continue;
+    shapes[n] = f.shape;
+    c1[n] = f.c1;
+    c2[n] = f.c2;
+    ++n;
+  }
+  // every Pokemon's corner has its Poke Ball
+  if (pack != nullptr && std::strncmp(pack, "pk_", 3) == 0 && n < 3) {
+    bool has = false;
+    for (int j = 0; j < n; ++j) has = has || shapes[j] == kPokeBall;
+    if (!has) {
+      shapes[n] = kPokeBall;
+      c1[n] = 0xE8242A;
+      c2[n] = 0xF4F4F4;
+      ++n;
+    }
+  }
+  if (n == 0) {  // nothing solid in its theme (Fox, Falco): a glowing orb in its colours
+    shapes[0] = kPearl;
+    c1[0] = sp.nFall > 0 ? sp.fall[0].c1 : 0xFFD21F;
+    c2[0] = sp.nFall > 0 ? sp.fall[0].c2 : 0xFFF2A0;
+    n = 1;
+  }
+  return n;
+}
+
 void team_colours(int captain, uint32_t* main, uint32_t* accent) {
-  const Theme& t = captain >= 0 && captain < 12 ? kThemes[captain] : kNeutral;
+  const Theme t = theme_for(captain);
   *main = t.paper[0];
   *accent = t.paper[1] != 0xFFFFFF ? t.paper[1] : t.paper[2];
   if (*accent == 0xFFFFFF) *accent = 0xFFD21F;
@@ -3068,8 +5165,9 @@ bool update(const Scene& sc) {
   // else flying they never began.
   home_sparks(sc, dt);
   suite_live(sc, dt);
+  corner_ambient(sc, dt);  // r89: the home corner's own little show
   const bool steady = marker_active(sc) || washing || sc.tableUnderside || hands_shown(sc) || shelf_shown(sc) ||
-                      ui_shown(sc) || sc.homeCount > 0 || sc.roomShown;
+                      ui_shown(sc) || sc.homeCount > 0 || sc.roomShown || sc.cornerOn || chars_shown(sc);
   if (s.stage == Stage::Idle && s.parts.empty() && s.hatsLeft == 0) {
     return s.drop > 0.0f || steady;
   }
@@ -3085,9 +5183,19 @@ bool update(const Scene& sc) {
     }
   }
 
-  if (s.stage == Stage::Raining && s.stageTime > 30.0f) {  // in case the replay never reports
+  if (s.stage == Stage::Raining && s.stageTime > 30.0f && !s.evoOn) {  // in case the replay never reports
     s.stage = Stage::Tapering;
     s.stageTime = 0.0f;
+  }
+  // r96: an evolution's theme: its own pieces falling round it (no confetti at all)
+  if (s.evoOn && s.sp.nFall > 0) {
+    const float rate = (sc.mr ? 22.0f : 60.0f) * s.intensity;
+    for (int j = spawn_n(s.evoAcc, rate, dt); j > 0; --j) {
+      const float a = frand(0.0f, 6.2831853f), r = s.evoRadius * std::sqrt(frand(0.0f, 1.0f));
+      const XrVector3f p{s.evoAt.x + std::cos(a) * r, s.evoAt.y + s.evoHeight + frand(0.0f, 0.3f), s.evoAt.z + std::sin(a) * r};
+      const float v[3] = {0.0f, -k.pieceFall * 0.5f, 0.0f};
+      add_themed_piece(sc, k, p, v);
+    }
   }
 
   if (s.pendingFlash) {
@@ -3116,6 +5224,10 @@ bool update(const Scene& sc) {
     if (s.stageTime < 8.0f) rate += (sc.mr ? 2.0f : 8.0f) * (1.0f - s.stageTime / 8.0f);  // stragglers
     if (s.stageTime > 8.0f) s.stage = Stage::Idle;
   }
+  if (s.evoNoPaper) {  // r96: an evolution's theme: no confetti, not even as it tapers off
+    rate = 0.0f;
+    if (s.stage == Stage::Idle) s.evoNoPaper = false;
+  }
   s.rainAccum += rate * dt;
   const XrVector3f head = head_of(sc);
   const RainArea area = rain_area(sc, k);
@@ -3132,7 +5244,7 @@ bool update(const Scene& sc) {
   }
   // A few signature pieces drift down close around you, where their shape reads best (never
   // closer than 40 cm to your head).
-  if (s.stage == Stage::Raining) {
+  if (s.stage == Stage::Raining && !s.evoNoPaper) {
     s.nearAccum += (sc.mr ? 6.0f : 10.0f) * s.intensity * dt;
     while (s.nearAccum >= 1.0f) {
       s.nearAccum -= 1.0f;
@@ -3143,8 +5255,12 @@ bool update(const Scene& sc) {
     }
   }
 
-  // Fireworks: a barrage at the goal, then steadily while the party lasts.
-  if (s.stage == Stage::Raining || (s.stage == Stage::Tapering && s.stageTime < 1.0f)) {
+  // r82: the scorer's themed celebration (its room effects, its show)
+  step_theme(sc, k, dt);
+  // Fireworks: a barrage at the goal, then steadily while the party lasts (r82: not where a theme
+  // brings its own show).
+  const bool ownShow = s.spOn && s.sp.pyro != kPyroFireworks;
+  if (!ownShow && (s.stage == Stage::Raining || (s.stage == Stage::Tapering && s.stageTime < 1.0f))) {
     s.rocketTimer -= dt;
     if (s.rocketTimer <= 0.0f) {
       launch_firework(sc, k);
@@ -3172,16 +5288,28 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   const bool home = sc.homeCount > 0;  // r61
   const bool suite = sc.roomShown;     // r61: the cup suite's live things
   if (s.ready) take_room(false);       // r61: a room let go (render_room puts new ones up)
+  const bool chars = s.ready && chars_shown(sc);  // r96: characters standing in your room
   if (!s.ready ||
-      (s.parts.empty() && !marker && !washing && !sc.tableUnderside && !hands && !shelf && !ui && !home && !suite)) {
+      (s.parts.empty() && !marker && !washing && !sc.tableUnderside && !hands && !shelf && !ui && !home && !suite &&
+       !chars)) {
     return false;
   }
-  Slot& slot = s.slots[s.slot];
+  const uint32_t slotIndex = s.slot;
+  Slot& slot = s.slots[slotIndex];
   s.slot = (s.slot + 1) % kSlots;
   if (slot.pending) {
     vkWaitForFences(s.dev.device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
     vkResetFences(s.dev.device, 1, &slot.fence);
     slot.pending = false;
+  }
+  // r96: the characters' posed vertices into this frame slot's buffers
+  if (chars) {
+    for (int i = 0; i < 2; ++i) {
+      const State::CharModel& c = s.charModels[i];
+      if (sc.models[i].on && sc.models[i].posNrm != nullptr && c.vertexCount > 0 && c.vertMapped[slotIndex] != nullptr) {
+        std::memcpy(c.vertMapped[slotIndex], sc.models[i].posNrm, sizeof(float) * 6 * c.vertexCount);
+      }
+    }
   }
 
   // Instances, grouped: the 3D pieces mesh by mesh, then the quads (sparks, rockets, the goal
@@ -3215,7 +5343,25 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   for (const Particle& q : s.parts) {
     if (written++ >= count) break;
     float alpha = 1.0f;
-    if (q.kind == kKindSpark || q.kind == kKindEmber) {
+    if (q.kind == kKindFog || q.kind == kKindVeil || q.kind == kKindFloat || q.kind == kKindRing) {
+      // r82: in over fadeIn, out over its last moments (a ring as it grows), up to its peak.
+      const float in = q.fadeIn > 0.0f ? std::min(1.0f, q.age / q.fadeIn) : 1.0f;
+      const float out = q.kind == kKindRing ? 1.0f - q.age / std::max(q.life, 0.05f)
+                                            : std::min(1.0f, (q.life - q.age) / (q.kind == kKindFog ? 1.5f : 0.5f));
+      alpha = q.peak * in * std::max(0.0f, out);
+      if (q.kind == kKindFog) {
+        // thinner right at your eyes (no wall of fog in your face, and less to draw)
+        const float dx = q.p[0] - head.x, dy = q.p[1] - head.y, dz = q.p[2] - head.z;
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        alpha *= std::min(1.0f, std::max(0.15f, (d - 0.3f) / std::max(0.2f, 0.6f * q.size)));
+      }
+    } else if (q.kind == kKindBolt) {
+      // r82: lightning flickers as it dies
+      const float t = q.age / std::max(q.life, 0.05f);
+      alpha = q.peak * (1.0f - t * t) * frand(0.55f, 1.0f);
+    } else if (q.kind == kKindDrop) {
+      alpha = q.peak;
+    } else if (q.kind == kKindSpark || q.kind == kKindEmber) {
       const float t = q.age / q.life;
       alpha = 1.0f - t * t;
     } else if (q.landed) {
@@ -3223,13 +5369,30 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     } else if (q.maxAge > 0.0f) {
       alpha = std::max(0.0f, std::min(1.0f, (q.maxAge - q.age) / 0.6f));  // r61: a suite piece's last moments
     }
+    // r89 (his r88 clip, Jumbotron · Stadium: a confetti piece at the stadium's 4x size fell past his eyes and
+    // filled the view): a piece whose reach comes near your eyes shrinks away to nothing there (the 3D pieces
+    // are solid, so alpha alone would not do). Not what is meant to be round you (fog, veils, rings).
+    float nearShrink = 1.0f;
+    // r91 (Lance: the goal's colour flash was "a damn index card sized color"): not the flash either, a 3 m
+    // sheet 0.3 m before your eyes on purpose (r89 had shrunk it to 22 cm)
+    if (q.kind != kKindFog && q.kind != kKindVeil && q.kind != kKindRing && q.kind != kKindFlash && q.shape != kFlash &&
+        q.shape != kWash) {
+      const float dx = q.p[0] - head.x, dy = q.p[1] - head.y, dz = q.p[2] - head.z;
+      const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+      nearShrink = std::min(1.0f, std::max(0.0f, (d - 0.15f) / (0.25f + 0.6f * q.size)));
+      if (nearShrink <= 0.0f) {
+        alpha = 0.0f;
+      } else {
+        alpha *= std::min(1.0f, 1.5f * nearShrink);
+      }
+    }
     const uint32_t b = bucket_of(q);
     Instance& o = inst[first[b] + filled[b]++];
     o.posSize[0] = q.p[0];
     o.posSize[1] = q.p[1];
     o.posSize[2] = q.p[2];
     // r44: and shrinks as it fades (the 3D pieces write depth, so alpha alone reads as a pop).
-    o.posSize[3] = (q.landed || q.maxAge > 0.0f) ? q.size * (0.3f + 0.7f * alpha) : q.size;
+    o.posSize[3] = ((q.landed || q.maxAge > 0.0f) ? q.size * (0.3f + 0.7f * alpha) : q.size) * nearShrink;
     std::memcpy(o.quat, q.q, sizeof(o.quat));
     o.color1 = q.c1;
     o.color2 = q.c2;
@@ -3355,6 +5518,8 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     const VkRect2D scissor{{0, 0}, {s.dev.width, s.dev.height}};
     vkCmdSetViewport(slot.cmd, 0, 1, &vp);
     vkCmdSetScissor(slot.cmd, 0, 1, &scissor);
+    // r68c: the guests' outlines, for the 3D pieces' shader (every pipeline here shares `layout`).
+    vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.etchSet, 0, nullptr);
 
     PushConstants pc{};
     float proj[16], view[16];
@@ -3368,6 +5533,8 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     pc.camPos[1] = sc.views[e].pose.position.y;
     pc.camPos[2] = sc.views[e].pose.position.z;
     const VkDeviceSize zero = 0;
+    // r96: the characters standing in your room, first: what falls round them is drawn against them
+    if (chars) draw_chars(sc, slot.cmd, slotIndex, pc.viewProj, sc.views[e].pose.position);
     // r53: the controllers first, so the stand-in solids (the table's box, the banner) never hide a
     // hand that reaches into them.
     if (handCount > 0) {
@@ -3413,7 +5580,7 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
       const VkBuffer buffers[2] = {s.meshVerts, slot.instances};
       const VkDeviceSize offsets[2] = {0, 0};
       vkCmdBindVertexBuffers(slot.cmd, 0, 2, buffers, offsets);
-      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT16);
+      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT32);
       for (uint32_t i = 0; i < shelfCount; ++i) {
         const mesh::Range& range = s.meshRanges[0][shelfMesh[i]];
         if (range.indexCount == 0) continue;
@@ -3427,7 +5594,7 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
       const VkBuffer buffers[2] = {s.meshVerts, slot.instances};
       const VkDeviceSize offsets[2] = {0, 0};
       vkCmdBindVertexBuffers(slot.cmd, 0, 2, buffers, offsets);
-      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT16);
+      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT32);
       for (uint32_t i = 0; i < homeCount; ++i) {
         const mesh::Range& range = s.meshRanges[0][homeMesh[i]];
         if (range.indexCount == 0) continue;
@@ -3441,7 +5608,7 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
       const VkBuffer buffers[2] = {s.meshVerts, slot.instances};
       const VkDeviceSize offsets[2] = {0, 0};
       vkCmdBindVertexBuffers(slot.cmd, 0, 2, buffers, offsets);
-      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT16);
+      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT32);
       for (uint32_t i = 0; i < suiteCount; ++i) {
         const mesh::Range& range = s.meshRanges[0][suiteMesh[i]];
         if (range.indexCount == 0) continue;
@@ -3455,7 +5622,7 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
       const VkBuffer buffers[2] = {s.meshVerts, slot.instances};
       const VkDeviceSize offsets[2] = {0, 0};
       vkCmdBindVertexBuffers(slot.cmd, 0, 2, buffers, offsets);
-      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT16);
+      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT32);
       for (uint32_t b = 0; b < kQuadBucket; ++b) {
         const mesh::Range& range = s.meshRanges[b / mesh::kCount][b % mesh::kCount];
         if (filled[b] == 0 || range.indexCount == 0) continue;

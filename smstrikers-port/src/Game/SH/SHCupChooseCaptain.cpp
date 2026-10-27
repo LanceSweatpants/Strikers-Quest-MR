@@ -6,6 +6,7 @@
 #include "NL/nlFormat.h"
 #include "NL/nlLocalization.h"
 #include "NL/nlAlgorithm.h"
+#include "port/xr_guest.h"
 
 static inline const unsigned short* LookupCupCaptainLoc(unsigned long hash)
 {
@@ -115,6 +116,8 @@ void CupChooseCaptainSceneV2::UpdateImages()
  */
 void CupChooseCaptainSceneV2::SceneCreated()
 {
+    // strikers-quest r67: a new cup picks its team again, guests included (include/port/xr_guest.h).
+    PortGuestClearPicks();
     FEPresentation* presentation = m_pFEScene->m_pFEPackage->GetPresentation();
     TLSlide* slide = presentation->GetActiveSlide();
 
@@ -289,6 +292,55 @@ void CupChooseCaptainSceneV2::Update(float fDeltaT)
         return;
     }
 
+    // strikers-quest r67: the guest picker (include/port/xr_guest.h) over this screen: a guest picked
+    // on it goes in its slot, and the screen moves on as an A press would.
+    if (mState == CUP_STATE_CAPTAIN || mState == CUP_STATE_SK)
+    {
+        const int role = mState == CUP_STATE_CAPTAIN ? PORT_GUEST_CAPTAIN : PORT_GUEST_SIDEKICK;
+        bool freeCaptains[8];
+        for (int t = 0; t < 8; t++)
+        {
+            freeCaptains[t] = true;  // the cup's other teams are drawn after this pick
+        }
+        PortGuestPickerOffer(0, role, freeCaptains);
+        int guest = -1;
+        if (PortGuestPickerTake(0, role, &guest))
+        {
+            const int slot = PortGuestSlotFor(guest, freeCaptains);
+            if (slot >= 0 && role == PORT_GUEST_CAPTAIN)
+            {
+                mCaptainGrid->MoveHighlightToTarget((eTeamID)slot);
+                mCurrentCaptain = (eTeamID)slot;
+                PortGuestSetPick(slot, PORT_GUEST_CAPTAIN, guest);
+                PortGuestSetPick(slot, PORT_GUEST_SIDEKICK, -1);
+                mComponents[0]->SetActiveSlide("Slide1");
+                UpdateCaptainName();
+                mComponents[0]->Update(0.0f);
+                ChangeState(mState, CUP_STATE_SK);
+                FEAudio::PlayAnimAudioEvent("sfx_accept_no_screen_change", false);
+                lastCaptainSelectSoundStrPlayed = NULL;
+                return;
+            }
+            if (slot >= 0 && role == PORT_GUEST_SIDEKICK)
+            {
+                mSKGrid->MoveHighlightToTarget((eSidekickID)slot);
+                mCurrentSK = (eSidekickID)slot;
+                PortGuestSetPick(mCurrentCaptain, PORT_GUEST_SIDEKICK, guest);
+                mComponents[0]->SetActiveSlide("Slide2");
+                UpdateSKName();
+                mComponents[0]->Update(0.0f);
+                ChangeState(mState, CUP_STATE_READY);
+                FEAudio::PlayAnimAudioEvent("sfx_accept_no_screen_change", false);
+                if (lastCaptainSelectSoundStrPlayed)
+                {
+                    FEAudio::StopAnimAudioEvent(lastCaptainSelectSoundStrPlayed);
+                    lastCaptainSelectSoundStrPlayed = NULL;
+                }
+                return;
+            }
+        }
+    }
+
     switch (mState)
     {
     case CUP_STATE_CAPTAIN:
@@ -297,6 +349,9 @@ void CupChooseCaptainSceneV2::Update(float fDeltaT)
         {
             if (mCurrentCaptain != TEAM_MYSTERY)
             {
+                // strikers-quest r67: the game's own captain: no guest on that team.
+                PortGuestSetPick(mCurrentCaptain, PORT_GUEST_CAPTAIN, -1);
+                PortGuestSetPick(mCurrentCaptain, PORT_GUEST_SIDEKICK, -1);
                 ChangeState(mState, CUP_STATE_SK);
                 FEAudio::PlayAnimAudioEvent("sfx_accept_no_screen_change", false);
                 lastCaptainSelectSoundStrPlayed = FECharacterSound::PlayCaptainName(mCurrentCaptain);
@@ -341,6 +396,8 @@ void CupChooseCaptainSceneV2::Update(float fDeltaT)
     {
         if (g_pFEInput->JustPressed(FE_ALL_PADS, 0x100, false, NULL))
         {
+            // strikers-quest r67: the game's own sidekick: none of the guests for this team.
+            PortGuestSetPick(mCurrentCaptain, PORT_GUEST_SIDEKICK, -1);
             ChangeState(mState, CUP_STATE_READY);
             FEAudio::PlayAnimAudioEvent("sfx_accept_no_screen_change", false);
             if (lastCaptainSelectSoundStrPlayed)
@@ -448,12 +505,19 @@ void CupChooseCaptainSceneV2::UpdateCaptainName()
         captainDescText->m_LocStrId = CAPTAIN_DESCRIPTIONS[mCurrentCaptain];
         captainDescText->m_OverloadFlags |= 0x8;
     }
+    // strikers-quest r68b: a guest captain: where it's from, and no Strikers captain's emblem.
+    if (unsigned long desc = PortGuestLocTeamDesc((int)mCurrentCaptain))
+    {
+        captainDescText->m_LocStrId = desc;
+        captainDescText->m_OverloadFlags |= 0x8;
+    }
 
     TLComponentInstance* teamComp = FEFinder<TLComponentInstance, 4>::Find<TLSlide>(
         slide,
         InlineHasher(nlStringLowerHash("COMPONENT")));
 
     teamComp->SetActiveSlide(GetTeamName(mCurrentCaptain));
+    teamComp->m_bVisible = !PortGuestTeamHasGuestCaptain((int)mCurrentCaptain);
 }
 
 /**
@@ -475,7 +539,7 @@ void CupChooseCaptainSceneV2::UpdateSKName()
         slide,
         InlineHasher(nlStringLowerHash("SIDEKICK_NAME")));
 
-    sidekickNameText->m_LocStrId = GetLOCSidekickName(mCurrentSK);
+    sidekickNameText->m_LocStrId = GetLOCSidekickNameForTeam(mCurrentSK, (int)mCurrentCaptain);
     sidekickNameText->m_OverloadFlags |= 0x8;
 
     TLTextInstance* captainDescText = FEFinder<TLTextInstance, 3>::Find<TLSlide>(
@@ -491,12 +555,18 @@ void CupChooseCaptainSceneV2::UpdateSKName()
         captainDescText->m_LocStrId = CAPTAIN_DESCRIPTIONS[mCurrentCaptain];
         captainDescText->m_OverloadFlags |= 0x8;
     }
+    if (unsigned long desc = PortGuestLocTeamDesc((int)mCurrentCaptain))  // strikers-quest r68b
+    {
+        captainDescText->m_LocStrId = desc;
+        captainDescText->m_OverloadFlags |= 0x8;
+    }
 
     TLComponentInstance* teamComp = FEFinder<TLComponentInstance, 4>::Find<TLSlide>(
         slide,
         InlineHasher(nlStringLowerHash("COMPONENT")));
 
     teamComp->SetActiveSlide(GetTeamName(mCurrentCaptain));
+    teamComp->m_bVisible = !PortGuestTeamHasGuestCaptain((int)mCurrentCaptain);
 }
 
 static inline void UpdateImages(CupChooseCaptainSceneV2* self)

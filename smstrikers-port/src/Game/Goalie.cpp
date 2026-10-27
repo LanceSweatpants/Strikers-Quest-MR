@@ -1,4 +1,5 @@
 #include "Game/Goalie.h"
+#include "port/lineup.h"  // strikers-quest r79
 #include "Game/AI/GoalieLooseBall.h"
 #include "Game/AI/AiUtil.h"
 #include "Game/Ball.h"
@@ -2194,8 +2195,9 @@ void Goalie::HandleSTSContact(cBall* pBall)
         {
             if (pPrevOwner->m_eClassType == 2)
             {
-                BasicString<char, Detail::TempStringAllocator> effectName(
-                    GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)pPrevOwner->m_pTeam->m_nSide)));
+                BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName((eTeamID)PortStsTeam(
+                    pPrevOwner->m_pTeam->m_nSide, (int)pPrevOwner->m_eCharacterClass,
+                    (int)nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)pPrevOwner->m_pTeam->m_nSide))));  // r79
                 effectName.AppendInPlace("_shoot_to_score_catch");
                 EmitGoalieCatch(this, effectName.c_str(), true);
             }

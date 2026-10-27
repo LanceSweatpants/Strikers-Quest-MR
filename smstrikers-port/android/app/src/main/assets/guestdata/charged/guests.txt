@@ -1,0 +1,14 @@
+# Mario Strikers Charged guests, made on the headset from the player's own Charged disc (guests/charged/Charged.java;
+# PC originals: tools/outside/guestpack.py, build_portraits.py). Names only, no game data. Tab-separated.
+# guest <pack = the Charged character's name> <bundle holding its portrait> <portrait texture path (key = its hash)> <name shown>
+guest	bowser	Art/fe/mainui.dmn	fe/screens/images/captain_10_Bowser_S	Bowser
+guest	bowserjr	Art/fe/mainui.dmn	fe/screens/images/captain_7_Bjr_S	Bowser Jr.
+guest	diddykong	Art/fe/mainui.dmn	fe/screens/images/captain_6_diddy_S	Diddy Kong
+guest	petey	Art/fe/mainui.dmn	fe/screens/images/captain_9_PETEY_S	Petey Piranha
+guest	boo	Art/fe/mainui.dmn	fe/screens/images/sidekick_3_boo_S	Boo
+guest	drybones	Art/fe/mainui.dmn	fe/screens/images/sidekick_4_drybones_S	Dry Bones
+guest	montymole	Art/fe/mainui.dmn	fe/screens/images/sidekick_8_monty_S	Monty Mole
+guest	shyguy	Art/fe/mainui.dmn	fe/screens/images/sidekick_9_shy_S	Shy Guy
+# animations left out of the packs (Lance: no Mega Strikes in Strikers; a Super Strike plays windup_kick)
+skip	captain_shoot_to_score
+skip	super

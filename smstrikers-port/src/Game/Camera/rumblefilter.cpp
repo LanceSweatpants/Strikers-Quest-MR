@@ -3,6 +3,25 @@
 #include "NL/nlTask.h"
 #include "Game/Sys/eventman.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
+// strikers-quest r102 (Lance: "removing the camera shake for ME, not the github publish"): with
+// `camera_shake = 0` in strikers.ini the view never jumps (the game's shake on Super Strikes, one-timers,
+// hits, items, Chain Chomps, Bowser). Without the key the game shakes as it always has.
+static bool CameraShakeOff()
+{
+    static int s_off = -1;
+    if (s_off < 0)
+    {
+        const char* e = getenv("STRIKERS_CAMERA_SHAKE");
+        s_off = e != NULL && e[0] == '0' ? 1 : 0;
+        fprintf(stderr, "[port] camera shake %s\n", s_off ? "off (strikers.ini camera_shake = 0)" : "on (the game's own)");
+        fflush(stderr);
+    }
+    return s_off == 1;
+}
+
 /**
  * Offset/Address/Size: 0x3D8 | 0x801A65F4 | size: 0x60
  */
@@ -24,6 +43,8 @@ cRumbleFilter::cRumbleFilter()
 void cRumbleFilter::Filter(const nlMatrix4& matViewIn, nlMatrix4& matViewOut)
 {
     matViewOut = matViewIn;
+    if (CameraShakeOff())
+        return;
     matViewOut.m41 += v2Pos1.x;
     matViewOut.m42 += v2Pos1.y;
 }

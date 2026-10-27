@@ -36,7 +36,9 @@ import javax.net.ssl.SSLSocketFactory;
  */
 final class NetWs {
     private static final String TAG = "strikers_net";
-    private static final int MAX_MESSAGE = 64 * 1024;  // r39b: the size of xr_net.cpp's receive buffer
+    // r39b: the size of xr_net.cpp's receive buffer. r100: 4 MiB, a league's career text (xr_league.cpp's
+    // buffer; the relay's game messages stay small, and a bigger one there still ends the link in recv).
+    private static final int MAX_MESSAGE = 4 * 1024 * 1024;
     // strikers-quest r39b: how long one server address gets to take the connection before the next
     // one is tried; the last address tried gets whatever is left of the caller's timeout.
     private static final int CONNECT_EACH_MS = 2500;

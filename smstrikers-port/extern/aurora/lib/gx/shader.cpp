@@ -569,6 +569,12 @@ std::string vtx_attr(const ShaderConfig& config, GXAttr attr) {
     if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
       return "vec4f(0.0, 0.0, 0.0, 0.0)"s;
     }
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
+      // strikers-quest r66e: a texgen reading a coordinate the mesh doesn't carry gets (0,0)
+      // instead of killing the game (guest characters, r65 crash).
+      Log.warn("unmapped vtx attr {} -> (0,0)", underlying(attr));
+      return "vec2f(0.0, 0.0)"s;
+    }
     UNLIKELY FATAL("unmapped vtx attr {}", underlying(attr));
   }
   if (attr == GX_VA_POS) {

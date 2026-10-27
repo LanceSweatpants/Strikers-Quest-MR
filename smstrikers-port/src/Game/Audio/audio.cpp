@@ -102,6 +102,7 @@ extern SoundPropAccessor* gpCROWDSoundPropAccessor;
 // PORT: was a local `namespace AudioScriptEventMgr { void Update(); }`.
 #include "Game/Audio/AudioScriptEventMgr.h"
 #include "port/living_crowd.h" // strikers-quest r42
+#include "port/xr_guest.h"     // strikers-quest r68: guest voices
 
 namespace Audio
 {
@@ -1705,6 +1706,7 @@ void ResetForNewGame()
 void Silence()
 {
     PlatAudio::StopAllSound();
+    PortGuestVoiceStopAll();  // strikers-quest r68
 }
 
 void SilenceIn(float fSeconds)
@@ -2676,6 +2678,7 @@ static inline void Update3DSFXListenerPos()
     }
 
     PlatAudio::Update3DSFXListener(&gListener, vCameraPos, vDir, vHeading, vUp, 1.0f);
+    PortGuestVoiceListener(&vCameraPos.x, &vHeading.x, &vUp.x);  // strikers-quest r68
 }
 
 /**

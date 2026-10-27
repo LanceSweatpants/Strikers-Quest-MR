@@ -7,6 +7,8 @@ StatsTracker* nlSingleton<StatsTracker>::s_pInstance;
 
 #include "Game/DB/StatsTracker.h"
 #include "port/xr_quest.h" // strikers-quest r57: a cup won, for the trophy shelf
+#include "port/franchise.h" // strikers-quest r70: franchise results
+#include "port/lineup.h"    // strikers-quest r78: the co-captain
 #include "Game/AI/FielderActions.h"
 #include "Game/AI/Fielder.h" // strikers-quest r61: the captains, for the home ground
 #include "Game/Team.h"
@@ -153,6 +155,13 @@ void StatsTracker::SetBasicGameInfoPointer(BasicGameInfo* pGameInfo, bool initia
         i++;
     } while (i < 5);
 
+    // strikers-quest r78: a co-captain in slot 1 (include/port/lineup.h) keeps its own class's record
+    for (int side = 0; side < 2; side++)
+    {
+        if (PortSecondCaptain(side) >= 0)
+            mCurrentPlayerStats[side][1].mRecordType.mCharacterClass = (eCharacterClass)PortSecondCaptain(side);
+    }
+
     j = 0;
     do
     {
@@ -272,10 +281,20 @@ void StatsTracker::eventHandler(Event* event, void* userData)
 
         assistplayer = data->pAssister;
 
+        // strikers-quest r84 (Lance: a sidekick got "credit for 2 goals" after scoring once, and the
+        // other's real second goal "only counted as his first"): an own goal (type 5) has its scorer on
+        // the conceding team, so its number credited whoever on the scoring team shares it. It is the
+        // scoring team's last toucher's, as the goal cut-scene, the goal pop-up and the scorer show have it.
+        int scorerId = data->pScorer->m_ID;
+        if (data->uGoalType == 5 && data->pLastTouch[data->uTeamIndex] != 0)
+        {
+            scorerId = data->pLastTouch[data->uTeamIndex]->m_ID;
+        }
+
         Instance()->TrackStat(
             STATS_GOALS_FOR,
             data->uTeamIndex,
-            data->pScorer->m_ID,
+            scorerId,
             (assistplayer != 0) ? assistplayer->m_ID : -1,
             data->uGoalType,
             data->uNumGoalsScored,
@@ -1831,6 +1850,8 @@ void StatsTracker::TrackWinner(int forfeitSide)
             }
             PortHomeMatchEnd(scoreLeft, scoreRight, mIsOvertime ? 1 : 0, (forfeitSide == 0 || forfeitSide == 1) ? forfeitSide : -1,
                              nlSingleton<GameInfoManager>::Instance()->IsInCupOrTournamentMode() ? 1 : 0, captains[0], captains[1]);
+            // strikers-quest r70: a franchise match's result (team 0 = the home club)
+            PortFranchiseMatchEnd(scoreLeft < 0 ? 0 : scoreLeft, scoreRight < 0 ? 0 : scoreRight, mIsOvertime);
         }
         if (nlSingleton<GameInfoManager>::Instance()->IsInCupOrTournamentMode())
         {

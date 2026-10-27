@@ -1,0 +1,33 @@
+# id	place	mascot	conference	division	c1 c2 c3	stadium (tools/outside/franchise_data.py)
+deathmountain	Death Mountain	Dodongos	Crown	Inferno	8E1B1B 2B2B2B F07A2A	6
+cinnabar	Cinnabar Island	Volcanoes	Crown	Inferno	C8282E 3A1A1A F2C230	6
+norfair	Norfair	Lava Divers	Crown	Inferno	E8641E 3A1F4A F8D040	6
+archanea	Archanea	Fire Emblems	Crown	Inferno	2A3F9A D8A830 E8402A	0
+thunderisland	Thunder Island	Storm	Crown	Thunder	1F2A5A F8D830 8AA0C8	5
+mutecity	Mute City	Blue Falcons	Crown	Thunder	1E5AC8 F2C230 EDEDED	5
+vermilion	Vermilion City	Thunderbolts	Crown	Thunder	E34234 F8D830 2A2A2A	0
+mauville	Mauville City	Dynamos	Crown	Thunder	1E9A9A F8D830 2A3A4A	5
+konga	Konga Coliseum	Barrels	Crown	Boulder	7A4A20 3A7A2A E8C060	2
+pewter	Pewter City	Boulders	Crown	Boulder	6A6A72 8A6A4A D8D0C0	2
+pyrite	Pyrite Town	Miners	Crown	Boulder	C8A040 2A2A2A 8A5A2A	3
+onett	Onett	Meteorites	Crown	Boulder	3A2A6A F08A30 F8E070	0
+pipelinecentral	Pipeline Central	Warp Pipes	Crown	Tidal	2E9A3A EDEDED 1F5A2A	1
+lakehylia	Lake Hylia	Zoras	Crown	Tidal	2AA8C8 C8D8E0 1F4A7A	4
+cerulean	Cerulean City	Cascades	Crown	Tidal	2A7BD8 EDEDED 1F3A7A	1
+phenac	Phenac City	Fountains	Crown	Tidal	3AC8B8 E8D8A8 1F6A7A	4
+lavender	Lavender Town	Ghosts	Star	Phantom	9A7AC8 2A2040 EDE0F8	3
+mtpyre	Mt. Pyre	Spirits	Star	Phantom	2A5A5A A8E8C8 1A2A2A	3
+realgar	Realgar Tower	Shadows	Star	Phantom	1A1A1A 8A2AB8 C82A3A	6
+underground	The Underground	Lurkers	Star	Phantom	1F3A2A 8AE83A 0A140F	3
+corneria	Corneria	Arwings	Star	Cyclone	EDEDED 2A5FC8 D8303A	5
+galactic	Galactic Stadium	Comets	Star	Cyclone	1A1A4A 5AD8F8 F0F0FF	5
+dreamland	Dream Land	Warp Stars	Star	Cyclone	F5A0C8 F8D830 8A3A6A	1
+fortree	Fortree City	Flyers	Star	Cyclone	6AB8E8 5AA84A F0F0E0	4
+infiniteglacier	Infinite Glacier	Climbers	Star	Glacier	9AD0F0 2A3A6A E84A6A	2
+crystalcanyon	Crystal Canyon	Shards	Star	Glacier	8A6AE8 F0F0FF 3A2A7A	5
+icepath	Ice Path	Avalanche	Star	Glacier	F0F4F8 5A7A9A 2A3A5A	2
+snowpeak	Snowpeak	Freezards	Star	Glacier	5AC8E8 1F3A7A F0FAFF	1
+mushroomkingdom	Mushroom Kingdom	Super Stars	Star	Bloom	D8282E F8D030 EDEDED	0
+celadon	Celadon City	Gardens	Star	Bloom	3AA84A E87AA8 F8F0D0	4
+agate	Agate Village	Groves	Star	Bloom	2A6A3A D87A3A E8D8B0	4
+lostwoods	Lost Woods	Wanderers	Star	Bloom	1F4A2A C8A840 6AA84A	4

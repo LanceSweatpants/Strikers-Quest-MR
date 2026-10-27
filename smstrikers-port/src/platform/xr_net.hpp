@@ -34,6 +34,10 @@ int waiting_for_friend();
 // r64: 3 from waiting_for_friend = they wait at the other kind of match start (Grudge vs cup).
 // The match this headset waits at is a cup match (co-op), and whether this headset made the room.
 bool waiting_in_cup();
+// r76: the match this headset waits at is a co-op franchise match.
+bool waiting_in_franchise();
+// r100: ... an online league's game between two people (each on their own club).
+bool waiting_in_league();
 bool room_maker();
 // The player stops waiting: this match goes ahead offline, against the computer.
 void cancel_wait();

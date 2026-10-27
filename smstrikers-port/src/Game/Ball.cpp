@@ -1,4 +1,5 @@
 #include "Game/WorldManager.h"
+#include "port/lineup.h"  // strikers-quest r79
 #include "NL/platqmath.h"
 
 #include "Game/Ball.h"
@@ -731,8 +732,9 @@ void cBall::CollideWithWallCallback()
             {
                 if (m_pPrevOwner != NULL && m_pPrevOwner->m_eClassType == FIELDER)
                 {
-                    BasicString<char, Detail::TempStringAllocator> effectName(
-                        GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)m_pPrevOwner->m_pTeam->m_nSide)));
+                    BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName((eTeamID)PortStsTeam(
+                        m_pPrevOwner->m_pTeam->m_nSide, (int)m_pPrevOwner->m_eCharacterClass,
+                        (int)nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)m_pPrevOwner->m_pTeam->m_nSide))));  // r79
                     effectName.AppendInPlace("_shoot_to_score_catch");
                     cPlayer* prevOwner = m_pPrevOwner;
                     EmissionController* pController = EmitGeneric(prevOwner, effectName.c_str(), NULL);

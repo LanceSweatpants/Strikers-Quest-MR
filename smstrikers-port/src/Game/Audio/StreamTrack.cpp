@@ -433,6 +433,11 @@ void AudioStreamTrack::StreamTrack::QueueStream(
         lookupMgr.m_FileLookup.m_ParamCB(StreamParam, dest, remainLen);
         unsigned long cbLen = nlStrLen(dest);
         nlStrNCpy<char>(dest + cbLen, percentPos + 3, remainLen - cbLen);
+        // strikers-quest r68: a line naming a guest captain by a Strikers name plays silent.
+        if (Audio::TrackMgrTakeGuestNameCall())
+        {
+            queuedStream->StartVolume = 0;
+        }
     }
     else
     {

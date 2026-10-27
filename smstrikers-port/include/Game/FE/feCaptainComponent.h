@@ -11,6 +11,7 @@
 #include "Game/FE/feFinder.h"
 #include "Game/FE/feMapMenu.h"
 #include "Game/FE/tlTextInstance.h"
+#include "port/xr_guest.h"  // strikers-quest r67: guest picks
 
 class TLComponentInstance;
 class TLInstance;
@@ -166,6 +167,8 @@ inline void IChooseCaptain::ComponentState::GotoNextPhase()
         FEAudio::PlayAnimAudioEvent((mHomeAway == 0) ? "sfx_character_group_left_exit" : "sfx_character_group_right_exit", false);
 
         mParent->mHomeAwayTeam[mHomeAway] = captaingrid->GetSelectedItem();
+        // strikers-quest r67: the guest held for this slot (guest picker) becomes the team's, or none.
+        PortGuestCaptainChosen(mHomeAway, mParent->mHomeAwayTeam[mHomeAway]);
 
         {
             FEMapMenu* mapmenu = mParent->mCaptainGridComponents[mHomeAway ^ 1]->mMapMenu;
@@ -194,12 +197,12 @@ inline void IChooseCaptain::ComponentState::GotoNextPhase()
             namecomponent->mComponent->Update(0.0f);
             mParent->mNameComponents[mHomeAway].SetCaptainName(GetLOCCharacterName((eTeamID)mParent->mHomeAwayTeam[mHomeAway], false, false));
             mParent->mNameComponents[mHomeAway].SetCaptainLogo(GetTeamName((eTeamID)mParent->mHomeAwayTeam[mHomeAway]));
-            mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickName(sidekickgrid->GetSelectedItem()));
+            mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickNameForTeam(sidekickgrid->GetSelectedItem(), mParent->mHomeAwayTeam[mHomeAway]));
 
             if (g_e3_Build)
             {
                 mParent->mSidekickGridComponents[mHomeAway]->MoveHighlightToTarget((eSidekickID)(mHomeAway ? 1 : 0));
-                mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickName(sidekickgrid->GetSelectedItem()));
+                mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickNameForTeam(sidekickgrid->GetSelectedItem(), mParent->mHomeAwayTeam[mHomeAway]));
                 GotoNextPhase();
             }
         }
@@ -222,7 +225,15 @@ inline void IChooseCaptain::ComponentState::GotoNextPhase()
         }
 
         FEAudio::PlayAnimAudioEvent("sfx_accept_no_screen_change", false);
-        mParent->mLastCaptainSelectSoundStrPlayed[mHomeAway] = (char*)FECharacterSound::PlayCaptainName((eTeamID)mParent->mHomeAwayTeam[mHomeAway]);
+        // strikers-quest r67: no announcer calling out the slot's name for a guest.
+        if (PortGuestGetPick(mParent->mHomeAwayTeam[mHomeAway], PORT_GUEST_CAPTAIN) < 0)
+        {
+            mParent->mLastCaptainSelectSoundStrPlayed[mHomeAway] = (char*)FECharacterSound::PlayCaptainName((eTeamID)mParent->mHomeAwayTeam[mHomeAway]);
+        }
+        else
+        {
+            mParent->mLastCaptainSelectSoundStrPlayed[mHomeAway] = NULL;
+        }
         break;
 
     case PHASE_CHOOSING_SIDEKICK:
@@ -244,6 +255,8 @@ inline void IChooseCaptain::ComponentState::GotoNextPhase()
         }
 
         mParent->mHomeAwaySidekicks[mHomeAway] = sidekickgrid2->GetSelectedItem();
+        // strikers-quest r67: as for the captain.
+        PortGuestSidekickChosen(mHomeAway, mParent->mHomeAwayTeam[mHomeAway], mParent->mHomeAwaySidekicks[mHomeAway]);
         {
             IChooseCaptain* parent = mParent;
             int homeaway = mHomeAway;
@@ -272,7 +285,10 @@ inline void IChooseCaptain::ComponentState::GotoNextPhase()
                 mParent->mLastCaptainSelectSoundStrPlayed[mHomeAway] = NULL;
             }
 
-            FECharacterSound::PlaySidekickName((eSidekickID)mParent->mHomeAwaySidekicks[mHomeAway]);
+            if (PortGuestGetPick(mParent->mHomeAwayTeam[mHomeAway], PORT_GUEST_SIDEKICK) < 0)
+            {
+                FECharacterSound::PlaySidekickName((eSidekickID)mParent->mHomeAwaySidekicks[mHomeAway]);
+            }
         }
         break;
     }
@@ -541,7 +557,7 @@ inline void IChooseCaptain::ComponentState::SetCurrentPhase(Phase phase)
         namecomponent->mComponent->SetActiveSlide("Slide2");
         namecomponent->mComponent->Update(0.0f);
         mParent->mNameComponents[mHomeAway].SetCaptainName(GetLOCCharacterName((eTeamID)mParent->mHomeAwayTeam[mHomeAway], false, false));
-        mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickName(gridcomponent->GetSelectedItem()));
+        mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickNameForTeam(gridcomponent->GetSelectedItem(), mParent->mHomeAwayTeam[mHomeAway]));
         mParent->mNameComponents[mHomeAway].SetCaptainLogo(GetTeamName((eTeamID)mParent->mHomeAwayTeam[mHomeAway]));
 
         mParent->mCaptainComponents[mHomeAway]->m_bVisible = false;
@@ -575,7 +591,7 @@ inline void IChooseCaptain::ComponentState::SetCurrentPhase(Phase phase)
             namecomponent = &mParent->mNameComponents[mHomeAway];
             namecomponent->mComponent->SetActiveSlide("Slide2");
             namecomponent->mComponent->Update(0.0f);
-            mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickName((eSidekickID)mParent->mHomeAwaySidekicks[mHomeAway]));
+            mParent->mNameComponents[mHomeAway].SetSidekickName(GetLOCSidekickNameForTeam((eSidekickID)mParent->mHomeAwaySidekicks[mHomeAway], mParent->mHomeAwayTeam[mHomeAway]));
         }
 
         mParent->mNameComponents[mHomeAway].SetCaptainName(GetLOCCharacterName((eTeamID)mParent->mHomeAwayTeam[mHomeAway], false, false));
@@ -639,7 +655,8 @@ inline void IChooseCaptain::NameComponent::SetCaptainLogo(const char* name)
         mComponent->GetActiveSlide(),
         InlineHasher(nlStringLowerHash("component")));
 
-    if (name != NULL)
+    // strikers-quest r68b: no Strikers captain's emblem beside a guest captain's name.
+    if (name != NULL && !PortGuestTeamNameHasGuestCaptain(name))
     {
         comp->SetActiveSlide(name);
         comp->m_bVisible = true;

@@ -22,6 +22,7 @@
 #include "Game/DB/StatsTracker.h"
 #include "Game/Player.h"
 #include "Game/Drawable/DrawableCharacter.h"
+#include "port/xr_guest.h"  // r77: PortGuestScorerPose
 #include "Game/GL/ShaderSkinMesh.h"
 #include "Game/NisPlayer.h"
 #include "Game/PoseAccumulator.h"
@@ -67,6 +68,10 @@ struct Show
     bool logged;
     int procedural;      // r53: the celebration it does (Celebration), -1 none
     bool poseLogged;     // r53: its main pose written to the log
+    // r73: a franchise nemesis's face-off before kick-off (XrScorerFaceOff): timed by the clock from
+    // the intro, not by a goal script; runs back early when the intro ends
+    bool faceoff;
+    double faceoffStart;
 };
 
 Show s_show;
@@ -920,6 +925,11 @@ void pose_celebration(cCharacter* ch, float seconds, float height)
 }
 
 // `flip`: mirrored from how the inventory plays it (r43: the wave with the other hand).
+// r77: what the copy was last posed with from a clip (and where in it, 0..1), for a guest drawn on it
+// from its own clips (Charged guests don't follow the copy's bones: PortGuestScorerPose)
+const cSAnim* s_posedClip = NULL;
+float s_posedNorm = 0.0f;
+
 void pose_inventory(cCharacter* ch, int id, float seconds, bool loop, bool flip = false)
 {
     cAnimInventory* inv = ch->m_pAnimInventory;
@@ -929,6 +939,11 @@ void pose_inventory(cCharacter* ch, int id, float seconds, bool loop, bool flip 
     const AnimRetarget* retarget =
         ch->m_pAnimRetargetList != NULL ? ch->m_pAnimRetargetList->GetAnimRetargetWithSignature(anim) : NULL;
     pose(ch, anim, retarget, inv->GetPlayMode(id), inv->GetMirrored(id) != flip, seconds, loop);
+    const float d = anim->GetDuration();
+    float n = d > 0.0f ? seconds / d : 0.0f;
+    n = loop ? n - floorf(n) : (n > 1.0f ? 1.0f : (n < 0.0f ? 0.0f : n));
+    s_posedClip = anim;
+    s_posedNorm = n;
 }
 
 // r43d: whether the copy's last pose looks like a character on its spot: the head joint finite,
@@ -1020,11 +1035,44 @@ void take_celebration(const Presentation& pres)
 
 } // namespace
 
+namespace
+{
+double now_seconds()
+{
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+} // namespace
+
+void XrScorerFaceOff(const cCharacter* who, int side)
+{
+    release_copy();
+    memset(&s_show, 0, sizeof(s_show));
+    s_show.index = -1;
+    const int index = who != NULL ? GetCharacterIndex(who) : -1;
+    if (index < 0 || index >= 8 || g_pCharacters[index] == NULL)
+        return;
+    const cCharacter* captain = captain_of(side);
+    s_show.armed = true;
+    s_show.faceoff = true;
+    s_show.faceoffStart = now_seconds();
+    s_show.who = g_pCharacters[index];
+    s_show.index = index;
+    s_show.side = side;
+    s_show.captainClass = captain != NULL ? (int)captain->m_eCharacterClass : -1;
+    s_show.leaveAt = PORT_SCORER_ARRIVE + 4.5f;
+    s_show.procedural = next_celebration();  // it shows off in front of you
+    PortXrScorerFaceOff(1);
+    fprintf(stderr, "[port] scorer: nemesis face-off, index %d side %d\n", index, side);
+}
+
 void XrScorerGoal(const cCharacter* scorer, int side, bool superStrike)
 {
     release_copy();
     memset(&s_show, 0, sizeof(s_show));
     s_show.index = -1;
+    PortXrScorerFaceOff(0);  // r73
     if (superStrike)
         return;
     int index = scorer != NULL ? GetCharacterIndex(scorer) : -1;
@@ -1056,7 +1104,45 @@ void XrScorerRender()
     int phase = 0;
     float phaseTime = 0.0f;
 
-    if (s_show.armed && goalFn && frames >= 0)
+    if (s_show.armed && s_show.faceoff)
+    {
+        // r73: the nemesis face-off: up to you, its show-off, back to the pitch; back at once when the
+        // intro is over (kick-off) or skipped
+        const float t = (float)(now_seconds() - s_show.faceoffStart);
+        const bool intro = strcmp(pres.mCurrentFunction, "GameBegin") == 0;
+        if (s_show.who != g_pCharacters[s_show.index])
+            s_show.armed = false;
+        else
+        {
+            if (!intro && t < s_show.leaveAt)
+            {
+                if (t < PORT_SCORER_APPEAR)
+                    s_show.armed = false;
+                s_show.leaveAt = t;
+            }
+            if (t >= PORT_SCORER_APPEAR)
+            {
+                if (t < PORT_SCORER_ARRIVE && t < s_show.leaveAt)
+                {
+                    phase = 1;
+                    phaseTime = t - PORT_SCORER_APPEAR;
+                }
+                else if (t < s_show.leaveAt)
+                {
+                    phase = 2;
+                    phaseTime = t - PORT_SCORER_ARRIVE;
+                }
+                else if (t < s_show.leaveAt + PORT_SCORER_RUNOUT)
+                {
+                    phase = 3;
+                    phaseTime = t - s_show.leaveAt;
+                }
+                else
+                    s_show.armed = false;
+            }
+        }
+    }
+    else if (s_show.armed && goalFn && frames >= 0)
     {
         s_show.started = true;
         if (s_show.who != g_pCharacters[s_show.index])
@@ -1116,6 +1202,9 @@ void XrScorerRender()
         s_copy->mPoseAccumulator = new cPoseAccumulator(ch->m_pPoseAccumulator->m_BaseSHierarchy, false);
     const int cls = (int)ch->m_eCharacterClass;
     const float height = measure_height(ch, cls);
+    s_posedClip = NULL;  // r77: set by pose_inventory / the cut-scene clip below; null = a port dance
+    s_posedNorm = 0.0f;
+    float danceSeconds = 0.0f;
 
     if (phase == 1 || phase == 3)
     {
@@ -1151,6 +1240,8 @@ void XrScorerRender()
                 if (pose_sane(ch, height))
                 {
                     posed = true;
+                    danceSeconds = t;  // r77: a port dance (ensure_rig's first idle pose doesn't count)
+                    s_posedClip = NULL;
                     if (!s_show.poseLogged && t >= kCelebrationMainPose[which])
                     {
                         s_show.poseLogged = true;
@@ -1176,6 +1267,8 @@ void XrScorerRender()
                 if (pose_sane(ch, height))
                 {
                     posed = true;
+                    s_posedClip = s_show.celebrate;  // r77
+                    s_posedNorm = cd > 0.0f ? t / cd : 0.0f;
                 }
                 else
                 {
@@ -1212,7 +1305,11 @@ void XrScorerRender()
     DrawableCharacter::sXrIdentity.SetIdentity();
     DrawableCharacter::sXrOwnMatrix = true;
     ch->PoseSkinMesh(s_copy->mPoseAccumulator);
+    // r77: a guest drawn from its own clips gets what the copy was posed with (its own run, wave,
+    // celebration) instead of the field character's frozen frame
+    PortGuestScorerPose(true, s_posedClip, s_posedNorm, danceSeconds);
     s_copy->SendToGl(*ch);
+    PortGuestScorerPose(false, NULL, 0.0f, 0.0f);
     DrawableCharacter::sXrOwnMatrix = false;
     DrawableCharacter::sShadowRenderingDisabled = shadows;
     const GLSkinMesh* mesh = ch->GetSkinMesh();
@@ -1246,5 +1343,6 @@ void XrScorerRender()
         }
     }
     PortXrScorerStats(goals, assists, hatTrick);
+    PortXrScorerPlayer(player != NULL ? player->m_ID : -1);  // r68h: a sidekick's own name
     PortXrScorerFrame(phase, phaseTime, height, cls, s_show.side, s_show.captainClass);
 }

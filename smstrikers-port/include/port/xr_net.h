@@ -35,6 +35,22 @@ typedef struct PortNetMatch {
     int cupSize;
     /* How far the cup is (games played), so the headset further along hosts it. */
     int cupProgress;
+    /* strikers-quest r67 (protocol 8): each side's guest characters, captain and sidekick, by pack
+     * name ("" none; include/port/xr_guest.h). Online they are drawn and named as themselves on both
+     * headsets that have the pack, and play on their slot's stats (both simulate the same match). */
+    char guests[2][2][24];
+    /* strikers-quest r67b (protocol 9): those guests' own stats as their own headset read them
+     * (PORT_GUEST_STATS = 28 values, mask = the keys set; 0 = none, the slot's). Both headsets play
+     * each side's guests on these, so the match is the same on both. */
+    float guestStats[2][2][28];
+    unsigned guestStatMask[2][2];
+    /* strikers-quest r78 (protocol 11, the franchise's 'F' tail): each side's co-captain
+     * (include/port/lineup.h): its captain character class (-1 none), its guest (pack, "" none) and that
+     * guest's own stats. */
+    int coCaptains[2];
+    char coGuests[2][24];
+    float coStats[2][28];
+    unsigned coStatMask[2];
 } PortNetMatch;
 
 /* SuperLoadingScene, every frame its intro slide is done, with this headset's picks and the side
@@ -72,6 +88,48 @@ int PortNetOnline(void);
 /* strikers-quest r45: Game.cpp, every online frame while both teams exist: the score (home, away).
  * A tournament match (the panel's match id, nativeSetTourney) reports it when the match ends. */
 void PortNetNoteScore(int home, int away);
+
+/* strikers-quest r76, franchise co-op (Lance: online on their own headsets, the SAME club, both keep the
+ * career). The co-op career is run by one headset (the one that made the room, Host an online match;
+ * else the lower id): its hub's actions and its matches' start. Its career file goes to the friend after
+ * every change (in pieces: the room server takes 4 KB a message) and both save the same one; a match
+ * starts on both from the same career and plays in lockstep with both players on that club (like the
+ * co-op Cup: the host the captain and a sidekick, the friend the other two).
+ *
+ * PortNetMatch.mode for a co-op franchise match (no eGameModes value): both sides' teams, sidekicks,
+ * stadium and guests (with their stats) come from the host; coopSide = the club's side (-1: watching a
+ * CPU v CPU game together). */
+enum { PORT_NET_MODE_FRANCHISE = 200 };
+/* r100: coopSide for an online league's game between two people (include/port/xr_league.h): each on their own
+ * club, pad 0 the host (the home club), pad 1 the other (the away club). */
+enum { PORT_NET_COOP_VERSUS = 2 };
+/* r100: the league's match room (its go) and whether this headset hosts it (the home club's); null: back to
+ * the launcher's room as it was. */
+void PortNetLeagueRoom(const char* room, int host);
+/* 1 once the connection has moved to that room (the match start can wait for the other person there). */
+int PortNetLeagueRoomReady(void);
+int PortNetCoopFriend(void);         /* 1: in a room with the friend there (same build and Version) */
+int PortNetCoopHost(void);           /* 1: this headset runs the co-op career */
+const char* PortNetCoopFriendName(void);  /* their team name ("" unknown) */
+/* What this headset has (franchise.cpp, every frame): a co-op career saved (its id = its seed, and its
+ * version, counted up on every save), and whether it is open in the hub. Told to the friend each second. */
+void PortNetCoopSetMine(int has, unsigned careerId, unsigned version, int inHub);
+/* The friend's, from their last status: 0 nothing heard yet, else 1 (has / id / version / in the hub). */
+int PortNetCoopFriendCareer(int* has, unsigned* careerId, unsigned* version, int* inHub);
+/* Send this headset's co-op career (the save file's text) to the friend; resent until they have it all. */
+void PortNetCoopSendCareer(const char* text, int size, unsigned careerId, unsigned version);
+/* A whole career from the friend, once: the text (valid until the next poll) and its size, or null. */
+const char* PortNetCoopTakeCareer(int* size, unsigned* careerId, unsigned* version);
+/* Ask the friend for their co-op career / whether they asked for this headset's (once). */
+void PortNetCoopRequestCareer(void);
+int PortNetCoopTakeRequest(void);
+/* The host starts a match of the co-op career (its version as saved; watchGame -1 = the club's own match,
+ * else the CPU v CPU game being watched); the friend's franchise takes it once and starts the same. */
+void PortNetCoopSendPlay(unsigned careerId, unsigned version, int watchGame);
+int PortNetCoopTakePlay(unsigned* careerId, unsigned* version, int* watchGame);
+/* Game.cpp: the host's match settings as the online start carries them (gameplay, power-ups, cheats,
+ * difficulty), for the franchise's own match start. */
+int PortNetPackOptions(unsigned char* out);
 
 #ifdef __cplusplus
 }

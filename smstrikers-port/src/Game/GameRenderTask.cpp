@@ -34,6 +34,7 @@
 #include "NL/gl/glState.h"
 #include "NL/gl/glTexture.h"
 #include "port/xr_scorer.h" // strikers-quest r42
+#include "port/franchise.h" // strikers-quest r70b
 
 class PhotoFlash
 {
@@ -287,6 +288,8 @@ void GameRenderTask::Run(float fDeltaT)
     }
 
     gl_ModifyClearMappings();
+
+    PortFranchiseRenderPitch(); // strikers-quest r70b: the playoff round's logo + banners (franchise_show.cpp)
 
     nlTaskManager* taskMgr = nlTaskManager::m_pInstance;
     if (taskMgr->m_CurrState == 2 || (taskMgr->m_CurrState == 1 && taskMgr->m_PrevState == 2))

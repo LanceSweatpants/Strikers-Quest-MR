@@ -169,8 +169,13 @@ final class StrikersHome {
         // strikers-quest r41: the file picked in the launcher panel comes first.
         String chosen = GameFile.chosen(context);
         String elsewhere = chosen != null ? null : findInPublicFolders();
+        File inHome = chosen != null ? null : firstDiscImage(home);
         if (chosen != null) {
             setenv("STRIKERS_DATA", chosen);
+        } else if (!new File(home, "files/common.ini").exists() && inHome != null) {
+            // strikers-quest 1.14: named, not left to DVDInit's lowest-name pick in the home directory, which
+            // could take a guest game's image (Melee, Colosseum, Charged) put there beside this one
+            setenv("STRIKERS_DATA", inHome.getAbsolutePath());
         } else if (!hasGameDataInHome(home) && elsewhere != null) {
             setenv("STRIKERS_DATA", elsewhere);
         }
@@ -323,6 +328,12 @@ final class StrikersHome {
         return findInPublicFolders();
     }
 
+    /** strikers-quest 1.14: the Super Mario Strikers disc image the game reads, null when it reads an extracted folder or none. */
+    static String strikersImage(Context context) {
+        String d = describeGameData(context);
+        return d != null && new File(d).isFile() ? d : null;
+    }
+
     static boolean hasGameDataInHome(File home) {
         return new File(home, "files/common.ini").exists() || firstDiscImage(home) != null;
     }
@@ -355,6 +366,11 @@ final class StrikersHome {
             // strikers-quest r61: the cup suites' baked rooms, a mesh and two pictures each
             // (src/platform/xr_quest.cpp request_suite_room reads them).
             copyAssetTree(context.getAssets(), "suites", new File(home, "suites"));
+            // strikers-quest 1.14: our own franchise data (src/platform/franchise.cpp) and the club / playoff /
+            // league logos beside the guests' portraits; the guests themselves are made on the headset from the
+            // player's own game files (guests/GuestSetup).
+            copyAssetTree(context.getAssets(), "franchise", new File(home, "franchise"));
+            copyAssetTree(context.getAssets(), "guestart/portraits", new File(home, "guests/portraits"));
             prefs.edit().putLong(KEY_STAGED_VERSION, installed).apply();
         } catch (IOException e) {
             // Not fatal: the game says so on stderr and keeps the GameCube prompts.
@@ -497,6 +513,11 @@ final class StrikersHome {
                     && !name.endsWith(".ciso") && !name.endsWith(".gcz")
                     && !name.endsWith(".rvz")       // strikers-quest: Dolphin's .rvz too
                     && !name.endsWith(".wia")) {    // and (r41) its .wia
+                continue;
+            }
+            // strikers-quest 1.14: only Super Mario Strikers itself (disc code G4Q): the guests' Melee /
+            // Colosseum / Charged files may sit beside it, and "Mario Strikers Charged" sorts first.
+            if (!GameFile.check(entry).usable) {
                 continue;
             }
             // Lowest name wins, the same rule src/platform/dvd.c uses, so the two agree on which of

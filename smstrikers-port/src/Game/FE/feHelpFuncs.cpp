@@ -36,6 +36,8 @@ using TakeGameMemSnapshot::LexicalCast;
 #include "NL/MemAlloc.h"
 #include <stdio.h>
 #include "Game/main.h"
+#include "port/xr_guest.h"
+#include "port/lineup.h"
 
 namespace DoubleHighlite
 {
@@ -204,6 +206,23 @@ unsigned long GetLOCCharacterName(eTeamID teamid, bool useShortSuperTeam, bool u
 /**
  * Offset/Address/Size: 0x11F4 | 0x800A42B0 | size: 0x88
  */
+unsigned long GetLOCSidekickNameForTeam(eSidekickID sidekickid, int captainTeam)
+{
+    const unsigned long guest = PortGuestLocSidekickName(captainTeam, (int)sidekickid);
+    return guest != 0 ? guest : GetLOCSidekickName(sidekickid);
+}
+
+unsigned long GetLOCCoCaptainName(int side)
+{
+    const int cls = PortSecondCaptain(side);
+    if (cls < 0 || cls >= 13)
+    {
+        return 0;
+    }
+    const unsigned long guest = PortGuestLocCoCaptainName(side);
+    return guest != 0 ? guest : CCToStringName[cls];
+}
+
 unsigned long GetLOCSidekickName(eSidekickID sidekickid)
 {
     s32 cc;
@@ -256,6 +275,11 @@ static inline eCharacterClass TeamIDToCharacterClass(const eTeamID& teamID)
  */
 unsigned long GetLOCTeamName(eTeamID teamID)
 {
+    // strikers-quest r67: a team whose captain is a guest is named after the guest, everywhere.
+    if (unsigned long guest = PortGuestLocTeamName((int)teamID))
+    {
+        return guest;
+    }
     eCharacterClass cc = TeamIDToCharacterClass(teamID);
     if (cc != CHARACTER_CLASS_INVALID)
     {
@@ -639,7 +663,11 @@ const char* FECharacterSound::PlayCaptainName(eTeamID teamID)
         "sfx_accept_mystery",
     };
 
-    FEAudio::PlayAnimAudioEvent(CHARACTER_ACCEPT_SOUNDS[teamID], true);
+    // strikers-quest r68: a guest captain is never called by the Strikers captain's name.
+    if (!PortGuestTeamHasGuestCaptain((int)teamID))
+    {
+        FEAudio::PlayAnimAudioEvent(CHARACTER_ACCEPT_SOUNDS[teamID], true);
+    }
     return CHARACTER_ACCEPT_SOUNDS[teamID];
 }
 
@@ -675,7 +703,10 @@ void FECharacterSound::PlayCaptainSlideIn(eTeamID teamID)
         "sfx_focus_mystery",
     };
 
-    FEAudio::PlayAnimAudioEvent(CAPTAIN_SLIDE_SOUNDS[teamID], false);
+    if (!PortGuestTeamHasGuestCaptain((int)teamID))  // strikers-quest r68
+    {
+        FEAudio::PlayAnimAudioEvent(CAPTAIN_SLIDE_SOUNDS[teamID], false);
+    }
 }
 
 static unsigned long GetLargestFreeBlock()

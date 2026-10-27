@@ -15,9 +15,15 @@
 // 4 and one for 8, and the brackets. Each tournament match is an ordinary room code on the relay;
 // the headsets report the result here afterwards. JSON text messages; see the Tourneys class.
 //
+// Leagues (r100): one Durable Object per league code keeps an online franchise league for 2-8 headsets:
+// its members (a headset's pid, name and club), the shared career (the franchise's save text, with a
+// version: an upload only lands on the version it was made from), and who is ready to play whom; two
+// members ready for their game get a fresh relay room code. JSON text; see the League class.
+//
 //   wss://<worker>/room/<CODE>     CODE = 3-8 letters/digits, upper case
 //   wss://<worker>/quick/<KEY>     KEY  = 2-12 letters/digits, upper case
 //   wss://<worker>/tourney/<KEY>   KEY  = 2-12 letters/digits, upper case
+//   wss://<worker>/league/<CODE>   CODE = 4-8 letters/digits, upper case (the game makes 6)
 //
 // Quick-match messages are text. Headset -> server: "ping" every ~5 s. Server -> headset:
 // "waiting <n>" (headsets searching, itself included) after any change and in answer to a ping,
@@ -37,7 +43,8 @@ export default {
     const room = url.pathname.match(/^\/room\/([A-Z0-9]{3,8})$/);
     const quick = url.pathname.match(/^\/quick\/([A-Z0-9]{2,12})$/);
     const tourney = url.pathname.match(/^\/tourney\/([A-Z0-9]{2,12})$/);
-    if (!room && !quick && !tourney) {
+    const league = url.pathname.match(/^\/league\/([A-Z0-9]{4,8})$/); // r100
+    if (!room && !quick && !tourney && !league) {
       return new Response("Super Mario Strikers Quest room server\n", {
         headers: { "content-type": "text/plain" },
       });
@@ -45,8 +52,8 @@ export default {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected a WebSocket upgrade\n", { status: 426 });
     }
-    const ns = room ? env.ROOMS : quick ? env.QUEUES : env.TOURNEYS;
-    return ns.get(ns.idFromName((room || quick || tourney)[1])).fetch(request);
+    const ns = room ? env.ROOMS : quick ? env.QUEUES : tourney ? env.TOURNEYS : env.LEAGUES;
+    return ns.get(ns.idFromName((room || quick || tourney || league)[1])).fetch(request);
   },
 };
 
@@ -784,6 +791,274 @@ export class Tourneys {
       if (text) send(ws, text);
     }
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Leagues (r100)
+// ---------------------------------------------------------------------------------------------
+//
+// One object per league code: an online franchise league for 2-8 headsets (Lance: "UP TO 8 player
+// online ... leagues"). The game (src/platform/franchise.cpp, xr_league.cpp) runs the league: this only
+// keeps what they share and hands out match rooms.
+//
+// Headset -> server (JSON text):
+//   {"t":"hello","pid":"<16 hex>","name":"...","proto":N}   who this socket is; answered with a state
+//   {"t":"create","club":C,"career":"<text>","max":M}       a new league here (none yet): you own it, on club C
+//   {"t":"claim","club":C}                                  join on club C (a free one), or move to it
+//   {"t":"leave"}                                           out of the league (your club goes back to the CPU)
+//   {"t":"get"}                                             the career: {"t":"career","v":V,"text":"..."}
+//   {"t":"put","base":V,"text":"...","op":"..."}            a new career made from version V: "put_ok" with its
+//                                                           version, or "put_conflict" (V is old: get, redo, put)
+//   {"t":"ready","game":G,"home":H,"away":A}               ready to play the league's game G (clubs H v A, both
+//                                                           a member's); both members ready: "go" to each
+//   {"t":"unready"}
+// Server -> headset:
+//   {"t":"state","exists":B,"code":"...","max":M,"v":V,"me":{"club":C,"owner":B},"members":[{"name","club",
+//     "online","ready"}]}   after every change
+//   {"t":"career","v":V,"text":"..."}  {"t":"put_ok","v":V}  {"t":"put_conflict","v":V}
+//   {"t":"go","game":G,"room":"L.....","host":B}   your match's relay room; host = the home club's member
+//   {"t":"error","msg":"..."}
+// Storage: "s" (members, owner, version, ready), "career" (the text).
+
+const LEAGUE_MAX_MEMBERS = 8;
+const LEAGUE_MAX_SOCKETS = 64; // 8 members' menus and their reconnects
+const LEAGUE_MAX_TEXT = 1000000; // a career is ~20-60 KB
+const LEAGUE_READY_MS = 15 * 60000; // a "ready" with its socket gone this long is dropped
+
+export class League {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.s = { exists: false, owner: null, max: LEAGUE_MAX_MEMBERS, members: {}, v: 0, ready: {}, created: 0 };
+    this.career = "";
+    state.blockConcurrencyWhile(async () => {
+      const s = await state.storage.get("s");
+      if (s) this.s = JSON.parse(s);
+      const c = await state.storage.get("career");
+      if (typeof c === "string") this.career = c;
+    });
+    try {
+      state.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping"}', '{"t":"pong"}'));
+    } catch (e) {}
+  }
+
+  async fetch(request) {
+    if (this.state.getWebSockets().length >= LEAGUE_MAX_SOCKETS) {
+      return new Response("league full\n", { status: 503 });
+    }
+    const code = (new URL(request.url).pathname.match(/^\/league\/([A-Z0-9]{4,8})$/) || [])[1] || "";
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ pid: null, since: Date.now(), seen: Date.now(), code });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage(ws, message) {
+    if (typeof message !== "string" || message.length > LEAGUE_MAX_TEXT) return;
+    let m;
+    try {
+      m = JSON.parse(message);
+    } catch (e) {
+      return;
+    }
+    if (!m || typeof m !== "object" || typeof m.t !== "string") return;
+    const a = attachment(ws);
+    a.seen = Date.now();
+    ws.serializeAttachment(a);
+    if (m.t === "ping") {
+      send(ws, '{"t":"pong"}');
+      return;
+    }
+    if (m.t === "hello") {
+      const pid = typeof m.pid === "string" ? m.pid.toLowerCase() : "";
+      if (!/^[0-9a-f]{16}$/.test(pid)) return void refuse(ws, "pid must be 16 hex characters");
+      a.pid = pid;
+      a.name = cleanName(m.name, pid);
+      ws.serializeAttachment(a);
+      const me = this.s.members[pid];
+      if (me && me.name !== a.name) {
+        me.name = a.name;
+        this.save();
+      }
+      this.broadcast(); // its state, and everyone sees it online
+      return;
+    }
+    if (!a.pid) return void refuse(ws, "say hello first");
+    const pid = a.pid;
+    const me = this.s.members[pid];
+    if (m.t === "create") {
+      if (this.s.exists) return void refuse(ws, "this league already exists");
+      const club = Number(m.club);
+      const text = typeof m.career === "string" ? m.career : "";
+      if (!Number.isInteger(club) || club < 0 || club > 63 || text.length < 16) return void refuse(ws, "bad league");
+      const max = Number.isInteger(m.max) && m.max >= 2 && m.max <= LEAGUE_MAX_MEMBERS ? m.max : LEAGUE_MAX_MEMBERS;
+      this.s = { exists: true, owner: pid, max, members: {}, v: 1, ready: {}, created: Date.now() };
+      this.s.members[pid] = { name: a.name || cleanName("", pid), club, joined: Date.now() };
+      this.career = text;
+      this.save(true);
+      this.broadcast();
+      return;
+    }
+    if (!this.s.exists) return void refuse(ws, "no league with this code");
+    if (m.t === "claim") {
+      const club = Number(m.club);
+      if (!Number.isInteger(club) || club < 0 || club > 63) return void refuse(ws, "bad club");
+      for (const [p, mm] of Object.entries(this.s.members)) {
+        if (p !== pid && mm.club === club) return void refuse(ws, "that club is taken");
+      }
+      if (!me && Object.keys(this.s.members).length >= this.s.max) return void refuse(ws, "the league is full");
+      if (me) me.club = club;
+      else this.s.members[pid] = { name: a.name || cleanName("", pid), club, joined: Date.now() };
+      delete this.s.ready[pid];
+      this.save();
+      this.broadcast();
+      return;
+    }
+    if (m.t === "get") {
+      send(ws, JSON.stringify({ t: "career", v: this.s.v, text: this.career }));
+      return;
+    }
+    if (!me) return void refuse(ws, "not a member of this league");
+    if (m.t === "leave") {
+      delete this.s.members[pid];
+      delete this.s.ready[pid];
+      if (this.s.owner === pid) {
+        // the league goes to the longest-standing member left (none: it stays, ownerless, as it is)
+        const next = Object.entries(this.s.members).sort((x, y) => x[1].joined - y[1].joined)[0];
+        this.s.owner = next ? next[0] : null;
+      }
+      this.save();
+      this.broadcast();
+      return;
+    }
+    if (m.t === "put") {
+      const text = typeof m.text === "string" ? m.text : "";
+      if (text.length < 16) return void refuse(ws, "bad career");
+      if (m.base !== this.s.v) {
+        send(ws, JSON.stringify({ t: "put_conflict", v: this.s.v }));
+        return;
+      }
+      this.s.v += 1;
+      this.career = text;
+      this.save(true);
+      send(ws, JSON.stringify({ t: "put_ok", v: this.s.v }));
+      this.broadcast(); // everyone's state carries the new version: they get it
+      return;
+    }
+    if (m.t === "ready") {
+      const game = Number(m.game), home = Number(m.home), away = Number(m.away);
+      if (![game, home, away].every((x) => Number.isInteger(x) && x >= 0)) return void refuse(ws, "bad game");
+      if (me.club !== home && me.club !== away) return void refuse(ws, "not your game");
+      this.s.ready[pid] = { game, home, away, at: Date.now() };
+      // the other club's member, ready for the same game: the match
+      const otherClub = me.club === home ? away : home;
+      const other = Object.entries(this.s.members).find(([p, mm]) => mm.club === otherClub);
+      const or = other ? this.s.ready[other[0]] : null;
+      if (other && or && or.game === game) {
+        const room = leagueRoom();
+        const live = this.liveByPid();
+        for (const [p, club] of [[pid, me.club], [other[0], otherClub]]) {
+          for (const sock of live.get(p) || []) send(sock, JSON.stringify({ t: "go", game, room, host: club === home }));
+          delete this.s.ready[p];
+        }
+      }
+      this.save();
+      this.broadcast();
+      return;
+    }
+    if (m.t === "unready") {
+      if (this.s.ready[pid]) {
+        delete this.s.ready[pid];
+        this.save();
+        this.broadcast();
+      }
+      return;
+    }
+  }
+
+  webSocketClose(ws, code, reason, wasClean) {
+    try {
+      ws.close(1000, "bye");
+    } catch (e) {}
+    this.closed(ws);
+  }
+
+  webSocketError(ws, error) {
+    try {
+      ws.close(1011, "error");
+    } catch (e) {}
+    this.closed(ws);
+  }
+
+  // A member whose last socket closed is offline: its "ready" goes too.
+  closed(ws) {
+    const pid = attachment(ws).pid;
+    if (!pid) return;
+    const still = (this.liveByPid(ws).get(pid) || []).length > 0;
+    if (!still && this.s.ready[pid]) {
+      delete this.s.ready[pid];
+      this.save();
+    }
+    this.broadcast(ws);
+  }
+
+  save(withCareer = false) {
+    const put = { s: JSON.stringify(this.s) };
+    if (withCareer) put.career = this.career;
+    this.state.storage.put(put);
+  }
+
+  liveByPid(except) {
+    const live = new Map();
+    for (const ws of this.state.getWebSockets()) {
+      if (ws === except || ws.readyState !== WebSocket.OPEN) continue;
+      const pid = attachment(ws).pid;
+      if (!pid) continue;
+      if (!live.has(pid)) live.set(pid, []);
+      live.get(pid).push(ws);
+    }
+    return live;
+  }
+
+  broadcast(except) {
+    const live = this.liveByPid(except);
+    const now = Date.now();
+    for (const [p, r] of Object.entries(this.s.ready)) {
+      if (!live.has(p) && now - r.at > LEAGUE_READY_MS) delete this.s.ready[p];
+    }
+    const members = Object.entries(this.s.members)
+      .sort((x, y) => x[1].joined - y[1].joined)
+      .map(([p, mm]) => ({
+        name: mm.name,
+        club: mm.club,
+        online: live.has(p),
+        owner: p === this.s.owner,
+        ready: this.s.ready[p] ? this.s.ready[p].game : -1,
+      }));
+    for (const ws of this.state.getWebSockets()) {
+      if (ws === except || ws.readyState !== WebSocket.OPEN) continue;
+      const a = attachment(ws);
+      if (!a.pid) continue;
+      const me = this.s.members[a.pid];
+      send(ws, JSON.stringify({
+        t: "state",
+        exists: this.s.exists,
+        code: a.code || "",
+        max: this.s.max,
+        v: this.s.v,
+        me: { club: me ? me.club : -1, owner: a.pid === this.s.owner },
+        members,
+      }));
+    }
+  }
+}
+
+// "L" (for league) + 5 random characters: a league match's relay room.
+function leagueRoom() {
+  let code = "L";
+  for (const b of crypto.getRandomValues(new Uint8Array(5))) code += CODE_CHARS[b % CODE_CHARS.length];
+  return code;
 }
 
 function attachment(ws) {

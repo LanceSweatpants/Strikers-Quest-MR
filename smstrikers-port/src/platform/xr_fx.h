@@ -84,6 +84,9 @@ struct Scene {
   };
   Hand hands[2];
   int skinCaptain = -1;  // your team's captain (eCharacterClass), -1 before a match
+  // r70c: the etched outline's theme for a guest captain (100 + its cell in etch.r8): an evolved
+  // Pokemon (no cell of its own) wears its first form's; 0 = none
+  int skinEtch = -1;
   // r57 (Lance: "every cup you've won appears as a little 3D trophy on a shelf you place in MR"): the
   // shelf in your room (Living Room modes only): its board's middle (LOCAL), turned by yaw about +Y
   // (its front faces +Z at 0); the cups won (eTrophyType bits 0-7: Mushroom, Flower, Star, Bowser,
@@ -121,6 +124,9 @@ struct Scene {
   // `size` tall), a trophy (5, `size` tall; theme 1 = a ghost of one not won yet). rgb1 / rgb2: the
   // team's colours (a trophy's cup and base); theme: the captain's class + 1 (20 = the comeback
   // arrow); glow 0..1.
+  // r89 (Lance: "a home ground for EVERY character": its own corner in your room): a prop on the corner's
+  // display (6: theme = the piece's shape, as the celebrations' pieces, `size` tall) and the corner's rug
+  // (7: `size` across, lying on the floor, theme = the captain's emblem as a banner's).
   struct HomePiece {
     int kind = 0;
     XrPosef pose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
@@ -129,8 +135,17 @@ struct Scene {
     int theme = 0;
     float glow = 0.0f;
   };
-  HomePiece homePieces[24];
+  HomePiece homePieces[40];
   int homeCount = 0;
+  // r89: the home captain's corner (by the trophy shelf, in your room): whose it is (a guest pack, or a
+  // Strikers captain's class with the pack empty) and where its display's top and its rug are (LOCAL), for
+  // its own little effects there (embers, a flame burning, sparks, fog on the rug, falling petals ...).
+  bool cornerOn = false;
+  XrVector3f cornerTop{0.0f, 0.0f, 0.0f};
+  XrVector3f cornerRug{0.0f, 0.0f, 0.0f};
+  float cornerRadius = 0.7f;
+  int cornerClass = -1;
+  char cornerPack[48] = {};
   bool suite = false;  // r61: the cup suite (VR): the shelf shows there too
   // r61: little electric sparks crackling round these points (the Super Strike ball), in `sparkRgb`.
   XrVector3f sparkAt[2] = {};
@@ -154,7 +169,56 @@ struct Scene {
   };
   Panel panels[4];
   int panelCount = 0;
+  // r96 (Lance: "i want to watch that shit occur in 3D"): characters standing in your room (the 3D
+  // evolution, xr_evo.cpp): the model set_model put in slot i, its vertices posed this frame (LOCAL, 6
+  // floats each: position, normal; set_model's vertexCount of them), how white it is (the evolution's
+  // silhouette, 0..1), how see-through (alpha 0..1), its glow and the glow's colour, the light from
+  // below in that colour, and which frame of a flame flipbook shows (-1 all).
+  struct ModelDraw {
+    bool on = false;
+    const float* posNrm = nullptr;
+    float white = 0.0f, alpha = 1.0f, glow = 0.0f, under = 0.0f;
+    uint32_t glowRgb = 0xFFFFFF;
+    int flameFrame = -1;
+  };
+  ModelDraw models[2];
 };
+
+// r96: a character model for Scene::models (xr_evo.cpp builds it from a guest pack): its pictures (RGBA,
+// rows top first), its texture coordinates (2 floats a vertex) and triangles, in parts by picture. A soft
+// part is blended with its picture's alpha (gas, fire), drawn after the solid ones; flameFrame >= 0: one
+// frame of a flame flipbook (shown only on its turn, ModelDraw::flameFrame).
+struct ModelPart {
+  int tex = -1;
+  bool soft = false;
+  int flameFrame = -1;
+  uint32_t firstIndex = 0, indexCount = 0;
+};
+struct Model {
+  std::vector<std::vector<uint8_t>> texRgba;
+  std::vector<uint32_t> texW, texH;
+  std::vector<float> uv;
+  std::vector<uint32_t> indices;
+  std::vector<ModelPart> parts;
+  uint32_t vertexCount = 0;
+};
+// Render thread only: puts a model in slot 0 / 1 (its pictures go up to the GPU now, waiting for it), or
+// with an empty one lets that slot's go.
+void set_model(int slot, Model&& model);
+
+// r96 (Lance: "their celebration stuff minus the confetti to fall during that process ... for pichu, it
+// should JUST be lightning that falls, for squirtle it should be water that falls/water cannons,
+// charmander -- fire"): a character's own celebration theme (special_for_pack: what falls, its room
+// effects, its show: water cannons, fire jets, lightning) WITHOUT any confetti, its pieces falling round
+// `at` (LOCAL, on the floor) within `radius` from `height` above it. Called every frame while it lasts
+// (intensity 0.3 calm .. 2 the peak); evo_burst = the moment it evolves (a ring of light and a shower of
+// its pieces); evo_end lets it taper off. pack null / unknown: nothing.
+void evo_theme(const char* pack, const XrVector3f& at, float radius, float height, float intensity);
+void evo_burst(const Scene& scene, const XrVector3f& at, float height, uint32_t rgb);
+void evo_end();
+// r96: a shiny one's twinkle round a standing model: stars popping round `at` (its feet), `height` tall,
+// for this frame's `dt` seconds.
+void evo_sparkle(const XrVector3f& at, float radius, float height, float dt);
 
 // r61: the cup suite's room, baked in Blender (tools/suites): one mesh with its light in one picture,
 // and the world outside as a 360 picture all round, infinitely far.
@@ -225,6 +289,11 @@ void screen_flash(float r, float g, float b, float a);
 void team_colours(int captain, uint32_t* main, uint32_t* accent);
 // r61: a cup's (eTrophyType 0-7) colours on the shelf: the cup and its base.
 void cup_colours(int trophy, uint32_t* cup, uint32_t* base);
+
+// r89: the props on a home corner's display: up to 3 solid pieces (their shape for HomePiece kind 6, and
+// colours) from the captain's theme: a guest pack (its celebration's falling pieces; a Pokemon without solid
+// ones a Poke Ball), or a Strikers captain's class (pack null / empty). Returns how many (at least 1).
+int corner_props(const char* pack, int captainClass, int shapes[3], uint32_t c1[3], uint32_t c2[3]);
 
 // Self-test: dump the effects layer (xr_fx.ppm) when the next screen flash is at its height.
 void dump_at_flash();

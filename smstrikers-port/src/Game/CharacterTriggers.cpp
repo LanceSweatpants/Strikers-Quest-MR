@@ -1,4 +1,5 @@
 #include "Game/CharacterTriggers.h"
+#include "port/lineup.h"  // strikers-quest r79
 #include "Game/AnimInventory.h"
 #include "Game/Player.h"
 #include "Game/Ball.h"
@@ -1108,7 +1109,8 @@ void EmitBallShot(cPlayer* pCharacter, eBallShotEffectType eNewBallEffect, cPlay
     {
         if (pCharacter->IsCaptain() || nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)pCharacter->m_pTeam->m_nSide) == 8)
         {
-            BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)pCharacter->m_pTeam->m_nSide)));
+            BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName((eTeamID)PortStsTeam(pCharacter->m_pTeam->m_nSide,
+                (int)pCharacter->m_eCharacterClass, (int)nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)pCharacter->m_pTeam->m_nSide))));  // r79
             effectName.AppendInPlace("_shoot_to_score_shot");
 
             if (fxGetGroup(effectName.c_str()) != NULL)

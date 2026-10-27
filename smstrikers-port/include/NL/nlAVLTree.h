@@ -208,7 +208,10 @@ template <typename KeyType, typename ValueType, typename AllocatorType, typename
 inline ValueType* AVLTreeBase<KeyType, ValueType, AllocatorType, CompareType>::FindGet(
     const KeyType& key) const
 {
-    ValueType* foundValue;
+    // strikers-quest r68e: nullptr when the key isn't there. Left unset, a miss returned garbage and
+    // clang (that being undefined) dropped the loop's own null check: a lookup of a missing key walked
+    // off the tree (Lance's Mewtwo on Waluigi's slot, r68d: a guest bone Waluigi's skin doesn't have).
+    ValueType* foundValue = nullptr;
     AVLTreeEntry<KeyType, ValueType>* node = m_Root;
 
     while (node != nullptr)

@@ -66,6 +66,8 @@ void IChooseCaptain::Initialize(const char* captainfilename, const char* sidekic
     mHomeAwayTeam[1] = nlSingleton<GameInfoManager>::Instance()->GetTeam(1);
     mHomeAwaySidekicks[0] = nlSingleton<GameInfoManager>::Instance()->GetSidekick(0);
     mHomeAwaySidekicks[1] = nlSingleton<GameInfoManager>::Instance()->GetSidekick(1);
+    // strikers-quest r67: both sides pick again here, guests included.
+    PortGuestClearPicks();
 
     mDidSwapCaptains[1] = false;
     mDidSwapCaptains[0] = false;
@@ -114,6 +116,60 @@ UpdateResult IChooseCaptain::Update(float dt)
     FindAliveHumanPlayers();
 
     UpdateSinglePlayerState();
+
+    // strikers-quest r67: the guest picker over this screen (include/port/xr_guest.h). Offered to
+    // the side choosing; a guest picked on it moves that side's grid to the guest's slot and
+    // confirms it once the grid has finished coming in, as an A press there would.
+    for (int s = 0; s < 2; s++)
+    {
+        const int phase = mComponentState[s].mCurrentPhase;
+        if (phase != PHASE_CHOOSING_CAPTAIN && phase != PHASE_CHOOSING_SIDEKICK)
+        {
+            continue;
+        }
+        const int role = phase == PHASE_CHOOSING_CAPTAIN ? PORT_GUEST_CAPTAIN : PORT_GUEST_SIDEKICK;
+        bool freeCaptains[8];
+        for (int t = 0; t < 8; t++)
+        {
+            freeCaptains[t] = mCaptainGridComponents[s]->IsValid((eTeamID)t);
+        }
+        PortGuestPickerOffer(s, role, freeCaptains);
+        int guest = -1;
+        if (PortGuestPickerTake(s, role, &guest))
+        {
+            const int slot = PortGuestSlotFor(guest, freeCaptains);
+            if (slot >= 0)
+            {
+                PortGuestPickerHold(s, role, guest, slot);
+            }
+        }
+        const int held = PortGuestPendingSlot(s, role);
+        if (held < 0)
+        {
+            continue;
+        }
+        TLSlide* heldSlide;
+        if (role == PORT_GUEST_CAPTAIN)
+        {
+            mCaptainGridComponents[s]->MoveHighlightToTarget((eTeamID)held);
+            heldSlide = mCaptainGridComponents[s]->mParentComponent->GetActiveSlide();
+        }
+        else
+        {
+            mSidekickGridComponents[s]->MoveHighlightToTarget((eSidekickID)held);
+            heldSlide = mSidekickGridComponents[s]->mParentComponent->GetActiveSlide();
+        }
+        if (heldSlide != NULL && heldSlide->m_time < heldSlide->m_start + heldSlide->m_duration)
+        {
+            continue;
+        }
+        mComponentState[s].GotoNextPhase();
+        if (mIsSinglePlayerInput && mComponentState[0].mCurrentPhase == PHASE_READY && mComponentState[1].mCurrentPhase == PHASE_IDLE)
+        {
+            mComponentState[1].SetCurrentPhase(PHASE_CHOOSING_CAPTAIN);
+        }
+        break;
+    }
 
     unsigned char goback;
     unsigned char isdoneanimating;
@@ -251,7 +307,7 @@ UpdateResult IChooseCaptain::Update(float dt)
                     mNameComponents[side].mComponent->SetActiveSlide("Slide2");
                     mNameComponents[side].mComponent->Update(0.0f);
                     mNameComponents[side].SetCaptainName(GetLOCCharacterName((eTeamID)mHomeAwayTeam[side], false, false));
-                    mNameComponents[side].SetSidekickName(GetLOCSidekickName(mSidekickGridComponents[side]->GetSelectedItem()));
+                    mNameComponents[side].SetSidekickName(GetLOCSidekickNameForTeam(mSidekickGridComponents[side]->GetSelectedItem(), mHomeAwayTeam[side]));
                     mNameComponents[side].SetCaptainLogo(GetTeamName((eTeamID)mHomeAwayTeam[side]));
                 }
                 break;

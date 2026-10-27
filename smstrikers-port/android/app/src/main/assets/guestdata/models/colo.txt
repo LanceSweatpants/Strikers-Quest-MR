@@ -1,0 +1,1229 @@
+# Colosseum Pokemon on the guest roster -> GPK2 (tools/outside/colo_guests.py -> colopack.py -> meleepack.py
+# --model-space-env --subdivide 1 [--matanim] --height --map colo-bone-map.json --ground, then
+# colo_resize_finish.py's fixes; shiny: colo_shiny.py). Our tuning only, no game data.
+#   pack <pack> <pkx name>       the model archive pkx_<name>.fsys
+#   height_m / game_height       Pokedex height (m) / our size override (m)
+#   hover / gas_color / gas_opacity / yaw / class / flap_l / flap_r / map: colo-bone-map.json
+#   shiny rare | map             Colosseum's own shiny model (pkx_rare_<name>) or our colour map
+#   flame <joint> <size>         the Charmander line's tail fire (colo_flame.py)
+#   drop <packet>                a packet left out (gpk_drop.py: Weezing's helper boxes)
+#   retex <data offset>          that texture record made again from its picture as it is
+#                                (Sceptile: its gas card's recolour had taken the shared picture)
+pack pk_bulbasaur fushigidane
+height_m 0.7
+hover 0
+class quad
+map 1 bip01
+map 2 bip01 pelvis
+map 15 bip01 head
+map 27 bip01 l upperarm
+map 28 bip01 l forearm
+map 29 bip01 l hand
+map 3 bip01 l thigh
+map 4 bip01 l calf
+map 5 bip01 l foot
+map 33 bip01 r upperarm
+map 34 bip01 r forearm
+map 35 bip01 r hand
+map 9 bip01 r thigh
+map 10 bip01 r calf
+map 11 bip01 r foot
+shiny map
+pack pk_charmander hitokage
+height_m 0.6
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 15 bip01 head
+map 4 bip01 l upperarm
+map 5 bip01 l forearm
+map 6 bip01 l hand
+map 24 bip01 l thigh
+map 25 bip01 l calf
+map 27 bip01 l foot
+map 30 bip01 l toe0
+map 9 bip01 r upperarm
+map 10 bip01 r forearm
+map 11 bip01 r hand
+map 32 bip01 r thigh
+map 33 bip01 r calf
+map 35 bip01 r foot
+map 38 bip01 r toe0
+shiny map
+flame 48 0.30
+pack pk_squirtle zenigame
+height_m 0.5
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 4 bip01 head
+map 18 bip01 l upperarm
+map 19 bip01 l forearm
+map 20 bip01 l hand
+map 12 bip01 l thigh
+map 13 bip01 l calf
+map 14 bip01 l foot
+map 29 bip01 r upperarm
+map 30 bip01 r forearm
+map 31 bip01 r hand
+map 23 bip01 r thigh
+map 24 bip01 r calf
+map 25 bip01 r foot
+shiny map
+pack pk_mrmime barrierd
+height_m 1.3
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 24 bip01 spine
+map 49 bip01 head
+map 26 bip01 l upperarm
+map 27 bip01 l forearm
+map 28 bip01 l hand
+map 4 bip01 l calf
+map 5 bip01 l foot
+map 6 bip01 l toe0
+map 38 bip01 r upperarm
+map 39 bip01 r forearm
+map 40 bip01 r hand
+map 15 bip01 r calf
+map 16 bip01 r foot
+map 17 bip01 r toe0
+shiny map
+pack pk_mankey mankey
+height_m 0.5
+hover 0
+yaw -45
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 10 bip01 l upperarm
+map 11 bip01 l forearm
+map 13 bip01 l hand
+map 33 bip01 l thigh
+map 34 bip01 l calf
+map 35 bip01 l foot
+map 16 bip01 r upperarm
+map 17 bip01 r forearm
+map 19 bip01 r hand
+map 24 bip01 r thigh
+map 25 bip01 r calf
+map 26 bip01 r foot
+shiny map
+pack pk_machop wanriky
+height_m 0.8
+hover 0
+class biped
+map 1 bip01
+map 3 bip01 pelvis
+map 2 bip01 spine
+map 21 bip01 head
+map 32 bip01 l upperarm
+map 33 bip01 l forearm
+map 34 bip01 l hand
+map 7 bip01 l thigh
+map 9 bip01 l calf
+map 10 bip01 l foot
+map 43 bip01 r upperarm
+map 44 bip01 r forearm
+map 45 bip01 r hand
+map 14 bip01 r thigh
+map 16 bip01 r calf
+map 17 bip01 r foot
+shiny map
+pack pk_geodude ishitsubute
+height_m 0.4
+hover 0.4
+class float
+map 0 bip01
+map 11 bip01 l upperarm
+map 13 bip01 l forearm
+map 14 bip01 l hand
+map 26 bip01 r upperarm
+map 28 bip01 r forearm
+map 29 bip01 r hand
+shiny map
+pack pk_gastly ghos
+height_m 1.3
+game_height 0.95
+hover 0.2
+gas_color 5C38C8
+class float
+map 2 bip01
+map 3 bip01 pelvis
+map 19 bip01 head
+shiny map
+pack pk_onix iwark
+height_m 8.8
+hover 0
+class slither
+map 0 bip01
+map 11 bip01 head
+shiny map
+pack pk_voltorb biriridama
+height_m 0.5
+hover 0
+class nolimb
+map 0 bip01
+map 1 bip01 pelvis
+map 2 bip01 spine
+shiny map
+pack pk_dratini miniryu
+height_m 1.8
+hover 0
+class slither
+map 0 bip01
+map 2 bip01 pelvis
+map 30 bip01 head
+shiny map
+pack pk_pichu pichu
+height_m 0.3
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 2 bip01 spine
+map 16 bip01 head
+map 4 bip01 l upperarm
+map 5 bip01 l forearm
+map 6 bip01 l hand
+map 10 bip01 r upperarm
+map 11 bip01 r forearm
+map 12 bip01 r hand
+map 27 bip01 l thigh
+map 28 bip01 l calf
+map 29 bip01 l foot
+map 30 bip01 l toe0
+map 34 bip01 r thigh
+map 35 bip01 r calf
+map 36 bip01 r foot
+map 37 bip01 r toe0
+shiny map
+pack pk_igglybuff pupurin
+height_m 0.3
+hover 0
+class stub
+map 0 bip01
+map 1 bip01 pelvis
+map 9 bip01 head
+map 21 bip01 l upperarm
+map 24 bip01 r upperarm
+map 11 bip01 l foot
+map 13 bip01 l toe0
+map 16 bip01 r foot
+map 18 bip01 r toe0
+shiny map
+pack pk_torchic achamo
+height_m 0.4
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 61 bip01 head
+map 33 bip01 l thigh
+map 34 bip01 l calf
+map 36 bip01 l foot
+map 7 bip01 r thigh
+map 8 bip01 r calf
+map 10 bip01 r foot
+shiny rare
+pack pk_dusclops samayouru
+height_m 1.6
+hover 0.25
+class float
+map 0 bip01
+map 2 bip01 pelvis
+map 14 bip01 spine
+map 15 bip01 head
+map 31 bip01 l upperarm
+map 32 bip01 l forearm
+map 33 bip01 l hand
+map 37 bip01 r upperarm
+map 38 bip01 r forearm
+map 39 bip01 r hand
+shiny map
+pack pk_drowzee sleepe
+height_m 1.0
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 15 bip01 spine
+map 16 bip01 head
+map 30 bip01 l upperarm
+map 31 bip01 l forearm
+map 33 bip01 l hand
+map 44 bip01 r upperarm
+map 45 bip01 r forearm
+map 47 bip01 r hand
+map 3 bip01 l thigh
+map 4 bip01 l foot
+map 6 bip01 l toe0
+map 9 bip01 r thigh
+map 10 bip01 r foot
+map 12 bip01 r toe0
+shiny map
+pack pk_cubone karakara
+height_m 0.4
+hover 0
+class biped
+map 0 bip01
+map 4 bip01 pelvis
+map 5 bip01 spine
+map 6 bip01 spine1
+map 7 bip01 head
+map 26 bip01 l upperarm
+map 28 bip01 l forearm
+map 29 bip01 l hand
+map 15 bip01 r upperarm
+map 17 bip01 r forearm
+map 18 bip01 r hand
+map 43 bip01 l thigh
+map 44 bip01 l calf
+map 45 bip01 l foot
+map 49 bip01 r thigh
+map 50 bip01 r calf
+map 51 bip01 r foot
+shiny map
+pack pk_koffing dogars
+height_m 0.6
+hover 0.25
+class float
+map 1 bip01
+map 2 bip01 pelvis
+shiny map
+pack pk_mewtwo mewtwo
+height_m 2.0
+hover 0
+class biped
+map 3 bip01
+map 74 bip01 pelvis
+map 18 bip01 spine
+map 44 bip01 neck
+map 47 bip01 head
+map 32 bip01 l upperarm
+map 33 bip01 l forearm
+map 35 bip01 l hand
+map 20 bip01 r upperarm
+map 21 bip01 r forearm
+map 23 bip01 r hand
+map 5 bip01 l thigh
+map 6 bip01 l calf
+map 10 bip01 l foot
+map 11 bip01 l toe0
+map 61 bip01 r thigh
+map 62 bip01 r calf
+map 66 bip01 r foot
+map 67 bip01 r toe0
+shiny rare
+pack pk_snorlax kabigon
+height_m 2.1
+hover 0
+class biped
+map 4 bip01
+map 5 bip01 pelvis
+map 10 bip01 spine
+map 15 bip01 spine1
+map 27 bip01 head
+map 38 bip01 l upperarm
+map 39 bip01 l forearm
+map 43 bip01 l hand
+map 17 bip01 r upperarm
+map 18 bip01 r forearm
+map 22 bip01 r hand
+map 59 bip01 l thigh
+map 61 bip01 l foot
+map 49 bip01 r thigh
+map 51 bip01 r foot
+shiny map
+pack pk_magby buby
+height_m 0.7
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 5 bip01 neck
+map 6 bip01 head
+map 26 bip01 l upperarm
+map 27 bip01 l forearm
+map 28 bip01 l hand
+map 19 bip01 r upperarm
+map 20 bip01 r forearm
+map 21 bip01 r hand
+map 38 bip01 l thigh
+map 39 bip01 l calf
+map 40 bip01 l foot
+map 42 bip01 l toe0
+map 46 bip01 r thigh
+map 47 bip01 r calf
+map 48 bip01 r foot
+map 50 bip01 r toe0
+shiny map
+pack pk_treecko kimori
+height_m 0.5
+hover 0
+class biped
+map 13 bip01
+map 15 bip01 pelvis
+map 57 bip01 spine
+map 69 bip01 head
+map 58 bip01 l upperarm
+map 59 bip01 l forearm
+map 61 bip01 l hand
+map 75 bip01 r upperarm
+map 76 bip01 r forearm
+map 78 bip01 r hand
+map 17 bip01 l thigh
+map 18 bip01 l calf
+map 20 bip01 l foot
+map 22 bip01 l toe0
+map 30 bip01 r thigh
+map 31 bip01 r calf
+map 33 bip01 r foot
+map 35 bip01 r toe0
+shiny rare
+pack pk_mudkip mizugorou
+height_m 0.4
+hover 0
+class quad
+map 4 bip01
+map 5 bip01 pelvis
+map 32 bip01 spine
+map 53 bip01 neck
+map 55 bip01 head
+map 34 bip01 l upperarm
+map 35 bip01 l forearm
+map 36 bip01 l hand
+map 44 bip01 r upperarm
+map 45 bip01 r forearm
+map 46 bip01 r hand
+map 7 bip01 l thigh
+map 9 bip01 l calf
+map 13 bip01 l foot
+map 17 bip01 r thigh
+map 19 bip01 r calf
+map 23 bip01 r foot
+shiny rare
+pack pk_shuppet kagebouzu
+height_m 0.6
+hover 0.25
+class float
+map 6 bip01
+map 8 bip01 pelvis
+shiny map
+pack pk_bagon tatsubay
+height_m 0.6
+hover 0
+class biped
+map 15 bip01
+map 16 bip01 pelvis
+map 17 bip01 spine
+map 18 bip01 spine1
+map 28 bip01 neck
+map 30 bip01 head
+map 19 bip01 l upperarm
+map 20 bip01 l forearm
+map 21 bip01 l hand
+map 23 bip01 r upperarm
+map 24 bip01 r forearm
+map 25 bip01 r hand
+map 45 bip01 l thigh
+map 46 bip01 l calf
+map 48 bip01 l foot
+map 57 bip01 r thigh
+map 58 bip01 r calf
+map 60 bip01 r foot
+shiny map
+pack pk_poliwag nyoromo
+height_m 0.6
+hover 0
+class stub
+map 6 bip01
+map 8 bip01 pelvis
+map 31 bip01 spine
+map 33 bip01 head
+map 18 bip01 l thigh
+map 24 bip01 r thigh
+shiny map
+pack pk_scyther strike
+height_m 1.5
+hover 0.4
+class fly
+flap_l 15 18
+flap_r 19 22
+map 0 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 23 bip01 neck
+map 24 bip01 head
+map 4 bip01 l upperarm
+map 5 bip01 l forearm
+map 9 bip01 r upperarm
+map 10 bip01 r forearm
+shiny map
+pack pk_houndour delvil
+height_m 0.6
+hover 0
+class quad
+map 1 bip01
+map 2 bip01 pelvis
+map 42 bip01 head
+map 23 bip01 l upperarm
+map 24 bip01 l forearm
+map 27 bip01 l hand
+map 31 bip01 r upperarm
+map 32 bip01 r forearm
+map 35 bip01 r hand
+map 4 bip01 l thigh
+map 5 bip01 l calf
+map 6 bip01 l foot
+map 9 bip01 l toe0
+map 13 bip01 r thigh
+map 14 bip01 r calf
+map 15 bip01 r foot
+map 18 bip01 r toe0
+shiny map
+pack pk_beldum dumbber
+height_m 0.6
+hover 0.2
+class float
+map 0 bip01
+map 2 bip01 pelvis
+map 10 bip01 head
+shiny map
+pack pk_ivysaur fushigisou
+height_m 1.0
+hover 0
+class quad
+map 2 bip01
+map 3 bip01 pelvis
+map 30 bip01 head
+map 18 bip01 l upperarm
+map 19 bip01 l forearm
+map 20 bip01 l hand
+map 5 bip01 l thigh
+map 6 bip01 l calf
+map 7 bip01 l foot
+map 24 bip01 r upperarm
+map 25 bip01 r forearm
+map 26 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 14 bip01 r foot
+shiny map
+pack pk_venusaur fushigibana
+height_m 2.0
+hover 0
+class quad
+map 12 bip01 head
+map 32 bip01 l upperarm
+map 26 bip01 l thigh
+map 45 bip01 r upperarm
+map 39 bip01 r thigh
+shiny rare
+pack pk_charmeleon lizardo
+height_m 1.1
+hover 0
+class biped
+map 1 bip01
+map 2 bip01 pelvis
+map 35 bip01 spine
+map 37 bip01 head
+map 49 bip01 l upperarm
+map 50 bip01 l forearm
+map 52 bip01 l hand
+map 4 bip01 l thigh
+map 5 bip01 l calf
+map 7 bip01 l foot
+map 59 bip01 r upperarm
+map 60 bip01 r forearm
+map 62 bip01 r hand
+map 24 bip01 r thigh
+map 25 bip01 r calf
+map 27 bip01 r foot
+shiny map
+flame 22 0.26
+pack pk_charizard lizardon
+height_m 1.7
+hover 0.4
+class fly
+flap_l 18
+flap_r 22
+map 0 bip01
+map 16 bip01 spine
+map 26 bip01 neck
+map 27 bip01 head
+map 39 bip01 l upperarm
+map 40 bip01 l forearm
+map 43 bip01 l hand
+map 45 bip01 r upperarm
+map 46 bip01 r forearm
+map 49 bip01 r hand
+shiny rare
+flame 55 0.16
+pack pk_wartortle kameil
+height_m 1.0
+hover 0
+class biped
+map 5 bip01
+map 6 bip01 pelvis
+map 11 bip01 head
+map 49 bip01 l upperarm
+map 50 bip01 l forearm
+map 51 bip01 l hand
+map 32 bip01 l thigh
+map 33 bip01 l calf
+map 36 bip01 l foot
+map 74 bip01 r upperarm
+map 75 bip01 r forearm
+map 76 bip01 r hand
+map 56 bip01 r thigh
+map 57 bip01 r calf
+map 60 bip01 r foot
+shiny map
+pack pk_blastoise kamex
+height_m 1.6
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 spine1
+map 26 bip01 head
+map 37 bip01 l upperarm
+map 38 bip01 l forearm
+map 39 bip01 l hand
+map 4 bip01 l thigh
+map 5 bip01 l calf
+map 6 bip01 l foot
+map 42 bip01 r upperarm
+map 43 bip01 r forearm
+map 44 bip01 r hand
+map 10 bip01 r thigh
+map 11 bip01 r calf
+map 12 bip01 r foot
+shiny rare
+pack pk_primeape okorizaru
+height_m 1.0
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 18 bip01 l upperarm
+map 19 bip01 l forearm
+map 21 bip01 l hand
+map 32 bip01 l thigh
+map 33 bip01 l calf
+map 35 bip01 l foot
+map 36 bip01 l toe0
+map 12 bip01 r upperarm
+map 13 bip01 r forearm
+map 15 bip01 r hand
+map 24 bip01 r thigh
+map 25 bip01 r calf
+map 27 bip01 r foot
+map 28 bip01 r toe0
+shiny map
+pack pk_machoke goriky
+height_m 1.5
+hover 0
+class biped
+map 1 bip01
+map 2 bip01 pelvis
+map 26 bip01 spine
+map 60 bip01 head
+map 30 bip01 l upperarm
+map 32 bip01 l forearm
+map 34 bip01 l hand
+map 4 bip01 l thigh
+map 5 bip01 l calf
+map 7 bip01 l foot
+map 46 bip01 r upperarm
+map 48 bip01 r forearm
+map 50 bip01 r hand
+map 15 bip01 r thigh
+map 16 bip01 r calf
+map 18 bip01 r foot
+shiny map
+pack pk_machamp kairiky
+height_m 1.6
+hover 0
+class biped
+map 1 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 5 bip01 head
+map 36 bip01 l upperarm
+map 37 bip01 l forearm
+map 39 bip01 l hand
+map 46 bip01 r upperarm
+map 47 bip01 r forearm
+map 49 bip01 r hand
+map 59 bip01 l calf
+map 60 bip01 l foot
+map 66 bip01 r calf
+map 67 bip01 r foot
+shiny map
+pack pk_graveler golone
+height_m 1.0
+hover 0
+class stub
+map 0 bip01
+map 2 bip01 pelvis
+map 80 bip01 l upperarm
+map 81 bip01 l forearm
+map 83 bip01 l hand
+map 61 bip01 r upperarm
+map 62 bip01 r forearm
+map 64 bip01 r hand
+map 51 bip01 l thigh
+map 52 bip01 l calf
+map 54 bip01 l foot
+map 41 bip01 r thigh
+map 42 bip01 r calf
+map 44 bip01 r foot
+shiny map
+pack pk_golem golonya
+height_m 1.4
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 2 bip01 spine
+map 30 bip01 neck
+map 32 bip01 head
+map 4 bip01 l upperarm
+map 6 bip01 l forearm
+map 8 bip01 l hand
+map 59 bip01 r upperarm
+map 61 bip01 r forearm
+map 63 bip01 r hand
+map 19 bip01 l calf
+map 21 bip01 l foot
+map 48 bip01 r calf
+map 50 bip01 r foot
+shiny map
+pack pk_haunter ghost
+height_m 1.6
+hover 0.2
+class float
+map 1 bip01
+map 2 bip01 pelvis
+map 33 bip01 l hand
+map 24 bip01 r hand
+shiny map
+pack pk_gengar gangar
+height_m 1.5
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 19 bip01 head
+map 3 bip01 l upperarm
+map 6 bip01 l forearm
+map 8 bip01 l hand
+map 11 bip01 r upperarm
+map 14 bip01 r forearm
+map 16 bip01 r hand
+map 34 bip01 l calf
+map 36 bip01 l foot
+map 41 bip01 r calf
+map 43 bip01 r foot
+shiny map
+pack pk_steelix haganeil
+height_m 9.2
+hover 0
+class slither
+map 0 bip01
+map 1 bip01 pelvis
+shiny map
+pack pk_electrode marumine
+height_m 1.2
+hover 0
+class nolimb
+map 0 bip01
+map 1 bip01 pelvis
+shiny map
+pack pk_dragonair hakuryu
+height_m 4.0
+hover 0.25
+class float
+map 0 bip01
+map 2 bip01 pelvis
+map 11 bip01 head
+shiny map
+pack pk_dragonite kairyu
+height_m 2.2
+hover 0.4
+class fly
+flap_l 29
+flap_r 33
+map 0 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 4 bip01 spine1
+map 5 bip01 neck
+map 6 bip01 head
+map 18 bip01 l upperarm
+map 19 bip01 l forearm
+map 20 bip01 l hand
+map 23 bip01 r upperarm
+map 24 bip01 r forearm
+map 25 bip01 r hand
+shiny map
+pack pk_pikachu pikachu
+height_m 0.4
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 18 bip01 spine
+map 19 bip01 head
+map 32 bip01 l upperarm
+map 33 bip01 l forearm
+map 35 bip01 l hand
+map 38 bip01 r upperarm
+map 39 bip01 r forearm
+map 41 bip01 r hand
+map 2 bip01 l thigh
+map 3 bip01 l calf
+map 4 bip01 l foot
+map 5 bip01 l toe0
+map 9 bip01 r thigh
+map 10 bip01 r calf
+map 11 bip01 r foot
+map 12 bip01 r toe0
+shiny map
+pack pk_raichu raichu
+height_m 0.8
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 10 bip01 spine
+map 12 bip01 head
+map 27 bip01 l upperarm
+map 28 bip01 l forearm
+map 30 bip01 l hand
+map 32 bip01 r upperarm
+map 33 bip01 r forearm
+map 35 bip01 r hand
+map 2 bip01 l thigh
+map 3 bip01 l calf
+map 5 bip01 l foot
+map 8 bip01 l toe0
+map 37 bip01 r thigh
+map 38 bip01 r calf
+map 40 bip01 r foot
+map 43 bip01 r toe0
+shiny map
+pack pk_jigglypuff purin
+height_m 0.5
+hover 0
+class stub
+map 0 bip01
+map 1 bip01 pelvis
+map 21 bip01 l upperarm
+map 22 bip01 l forearm
+map 25 bip01 r upperarm
+map 26 bip01 r forearm
+map 9 bip01 l foot
+map 13 bip01 r foot
+shiny map
+pack pk_wigglytuff pukurin
+height_m 1.0
+hover 0
+class biped
+map 0 bip01
+map 1 bip01 pelvis
+map 14 bip01 spine
+map 15 bip01 spine1
+map 16 bip01 head
+map 30 bip01 l upperarm
+map 32 bip01 l forearm
+map 34 bip01 r upperarm
+map 36 bip01 r forearm
+map 2 bip01 l thigh
+map 3 bip01 l foot
+map 4 bip01 l toe0
+map 8 bip01 r thigh
+map 9 bip01 r foot
+map 10 bip01 r toe0
+shiny map
+pack pk_combusken wakasyamo
+height_m 0.9
+hover 0
+class biped
+map 0 bip01
+map 3 bip01 pelvis
+map 5 bip01 spine
+map 35 bip01 neck
+map 37 bip01 head
+map 7 bip01 l upperarm
+map 8 bip01 l forearm
+map 21 bip01 r upperarm
+map 22 bip01 r forearm
+map 59 bip01 l thigh
+map 60 bip01 l calf
+map 62 bip01 l foot
+map 78 bip01 r thigh
+map 79 bip01 r calf
+map 81 bip01 r foot
+shiny rare
+pack pk_blaziken bursyamo
+height_m 1.9
+hover 0
+class biped
+map 0 bip01
+map 14 bip01 pelvis
+map 42 bip01 spine
+map 45 bip01 spine1
+map 85 bip01 head
+map 66 bip01 l upperarm
+map 67 bip01 l forearm
+map 71 bip01 l hand
+map 47 bip01 r upperarm
+map 48 bip01 r forearm
+map 52 bip01 r hand
+map 30 bip01 l thigh
+map 31 bip01 l calf
+map 32 bip01 l foot
+map 17 bip01 r thigh
+map 18 bip01 r calf
+map 19 bip01 r foot
+shiny rare
+pack pk_hypno sleeper
+height_m 1.6
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 4 bip01 head
+map 39 bip01 l upperarm
+map 40 bip01 l forearm
+map 41 bip01 l hand
+map 54 bip01 r upperarm
+map 55 bip01 r forearm
+map 56 bip01 r hand
+map 62 bip01 l calf
+map 63 bip01 l foot
+map 69 bip01 r calf
+map 70 bip01 r foot
+shiny map
+pack pk_marowak garagara
+height_m 1.0
+hover 0
+class biped
+map 0 bip01
+map 2 bip01 pelvis
+map 3 bip01 spine
+map 4 bip01 spine1
+map 6 bip01 head
+map 24 bip01 l upperarm
+map 26 bip01 l forearm
+map 27 bip01 l hand
+map 13 bip01 r upperarm
+map 15 bip01 r forearm
+map 16 bip01 r hand
+map 39 bip01 l thigh
+map 40 bip01 l calf
+map 41 bip01 l foot
+map 46 bip01 r thigh
+map 47 bip01 r calf
+map 48 bip01 r foot
+shiny map
+pack pk_weezing matadogas
+height_m 1.2
+hover 0.3
+class float
+map 2 bip01
+map 16 bip01 pelvis
+map 3 bip01 head
+shiny map
+drop 0
+pack pk_magmar boober
+height_m 1.3
+hover 0
+class biped
+map 9 bip01
+map 59 bip01 pelvis
+map 11 bip01 spine
+map 35 bip01 neck
+map 37 bip01 head
+map 26 bip01 l upperarm
+map 28 bip01 l forearm
+map 30 bip01 l hand
+map 15 bip01 r upperarm
+map 17 bip01 r forearm
+map 19 bip01 r hand
+map 77 bip01 l thigh
+map 78 bip01 l calf
+map 80 bip01 l foot
+map 82 bip01 l toe0
+map 63 bip01 r thigh
+map 64 bip01 r calf
+map 66 bip01 r foot
+map 68 bip01 r toe0
+shiny map
+pack pk_grovyle juptile
+height_m 0.9
+hover 0
+class biped
+map 1 bip01
+map 16 bip01 pelvis
+map 52 bip01 spine
+map 53 bip01 spine1
+map 84 bip01 neck
+map 85 bip01 head
+map 55 bip01 l upperarm
+map 56 bip01 l forearm
+map 65 bip01 l hand
+map 70 bip01 r upperarm
+map 71 bip01 r forearm
+map 74 bip01 r hand
+map 18 bip01 l thigh
+map 19 bip01 l calf
+map 21 bip01 l foot
+map 31 bip01 r thigh
+map 32 bip01 r calf
+map 34 bip01 r foot
+shiny rare
+pack pk_sceptile jukain
+height_m 1.7
+hover 0
+class biped
+map 18 bip01
+map 19 bip01 pelvis
+map 57 bip01 spine
+map 58 bip01 spine1
+map 85 bip01 neck
+map 86 bip01 head
+map 60 bip01 l upperarm
+map 61 bip01 l forearm
+map 64 bip01 l hand
+map 73 bip01 r upperarm
+map 74 bip01 r forearm
+map 77 bip01 r hand
+map 21 bip01 l thigh
+map 22 bip01 l calf
+map 26 bip01 l foot
+map 36 bip01 r thigh
+map 37 bip01 r calf
+map 41 bip01 r foot
+shiny rare
+retex 41d20
+pack pk_marshtomp numacraw
+height_m 0.7
+hover 0
+class biped
+map 3 bip01
+map 5 bip01 pelvis
+map 33 bip01 spine
+map 35 bip01 spine1
+map 57 bip01 head
+map 37 bip01 l upperarm
+map 38 bip01 l forearm
+map 39 bip01 l hand
+map 47 bip01 r upperarm
+map 48 bip01 r forearm
+map 49 bip01 r hand
+map 7 bip01 l thigh
+map 8 bip01 l calf
+map 12 bip01 l foot
+map 16 bip01 r thigh
+map 17 bip01 r calf
+map 21 bip01 r foot
+shiny rare
+pack pk_swampert laglarge
+height_m 1.5
+hover 0
+class biped
+map 3 bip01
+map 5 bip01 pelvis
+map 7 bip01 spine
+map 8 bip01 spine1
+map 40 bip01 head
+map 10 bip01 l upperarm
+map 11 bip01 l forearm
+map 15 bip01 l hand
+map 24 bip01 r upperarm
+map 25 bip01 r forearm
+map 29 bip01 r hand
+map 61 bip01 l thigh
+map 81 bip01 l foot
+map 68 bip01 r thigh
+map 84 bip01 r foot
+shiny rare
+pack pk_banette juppeta
+height_m 1.1
+hover 0.2
+class float
+map 3 bip01
+map 12 bip01 pelvis
+map 29 bip01 spine
+map 31 bip01 spine1
+map 32 bip01 neck
+map 33 bip01 head
+map 58 bip01 l upperarm
+map 60 bip01 l forearm
+map 63 bip01 l hand
+map 69 bip01 r upperarm
+map 71 bip01 r forearm
+map 74 bip01 r hand
+shiny map
+pack pk_shelgon komoruu
+height_m 1.1
+hover 0
+class quad
+map 0 bip01
+map 2 bip01 pelvis
+map 16 bip01 l upperarm
+map 18 bip01 l forearm
+map 23 bip01 r upperarm
+map 25 bip01 r forearm
+map 4 bip01 l thigh
+map 6 bip01 l calf
+map 10 bip01 r thigh
+map 12 bip01 r calf
+shiny map
+pack pk_salamence bohmander
+height_m 1.5
+hover 0.4
+class fly
+flap_l 35
+flap_r 28
+map 1 bip01
+map 2 bip01 pelvis
+map 43 bip01 head
+shiny map
+pack pk_poliwhirl nyorozo
+height_m 1.0
+hover 0
+class biped
+map 3 bip01
+map 5 bip01 pelvis
+map 28 bip01 spine
+map 30 bip01 l upperarm
+map 32 bip01 l forearm
+map 34 bip01 l hand
+map 40 bip01 r upperarm
+map 42 bip01 r forearm
+map 44 bip01 r hand
+map 7 bip01 l thigh
+map 9 bip01 l calf
+map 11 bip01 l foot
+map 17 bip01 r thigh
+map 19 bip01 r calf
+map 21 bip01 r foot
+shiny map
+pack pk_poliwrath nyorobon
+height_m 1.3
+hover 0
+class biped
+map 4 bip01
+map 5 bip01 pelvis
+map 20 bip01 spine
+map 40 bip01 l upperarm
+map 43 bip01 l forearm
+map 46 bip01 l hand
+map 28 bip01 r upperarm
+map 31 bip01 r forearm
+map 34 bip01 r hand
+map 7 bip01 l thigh
+map 9 bip01 l calf
+map 11 bip01 l foot
+map 13 bip01 l toe0
+map 58 bip01 r thigh
+map 60 bip01 r calf
+map 62 bip01 r foot
+map 64 bip01 r toe0
+shiny map
+pack pk_politoed nyorotono
+height_m 1.1
+hover 0
+class biped
+map 1 bip01
+map 48 bip01 pelvis
+map 3 bip01 spine
+map 12 bip01 head
+map 40 bip01 l upperarm
+map 41 bip01 l forearm
+map 42 bip01 l hand
+map 5 bip01 r upperarm
+map 6 bip01 r forearm
+map 7 bip01 r hand
+map 50 bip01 l thigh
+map 51 bip01 l calf
+map 53 bip01 l foot
+map 55 bip01 l toe0
+map 63 bip01 r thigh
+map 64 bip01 r calf
+map 66 bip01 r foot
+map 68 bip01 r toe0
+shiny map
+pack pk_scizor hassam
+height_m 1.8
+hover 0
+class biped
+map 14 bip01
+map 15 bip01 pelvis
+map 29 bip01 spine
+map 30 bip01 spine1
+map 42 bip01 neck
+map 43 bip01 head
+map 53 bip01 l upperarm
+map 54 bip01 l forearm
+map 56 bip01 l hand
+map 32 bip01 r upperarm
+map 33 bip01 r forearm
+map 35 bip01 r hand
+map 74 bip01 l thigh
+map 75 bip01 l calf
+map 17 bip01 r thigh
+map 18 bip01 r calf
+shiny map
+pack pk_houndoom hellgar
+height_m 1.4
+hover 0
+class quad
+map 15 bip01
+map 23 bip01 pelvis
+map 65 bip01 head
+map 53 bip01 l upperarm
+map 54 bip01 l forearm
+map 57 bip01 l hand
+map 45 bip01 r upperarm
+map 46 bip01 r forearm
+map 49 bip01 r hand
+map 25 bip01 l thigh
+map 26 bip01 l calf
+map 27 bip01 l foot
+map 30 bip01 l toe0
+map 34 bip01 r thigh
+map 35 bip01 r calf
+map 36 bip01 r foot
+map 39 bip01 r toe0
+shiny map
+pack pk_metang metang
+height_m 1.2
+hover 0.2
+class float
+map 0 bip01
+map 2 bip01 pelvis
+map 10 bip01 l upperarm
+map 11 bip01 l forearm
+map 12 bip01 l hand
+map 18 bip01 r upperarm
+map 19 bip01 r forearm
+map 20 bip01 r hand
+shiny map
+pack pk_metagross metagross
+height_m 1.6
+hover 0
+class quad
+map 0 bip01
+shiny map

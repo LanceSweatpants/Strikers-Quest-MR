@@ -20,6 +20,8 @@
 
 #include "NL/nlMath.h"
 #include <stdlib.h>
+#include "port/lineup.h"  // strikers-quest r78: the co-captain
+#include "port/xr_guest.h"  // strikers-quest r80: guest sidekicks' own stats
 
 cTeam* g_pTeams[2] = { NULL, NULL };
 cTeam* g_pCurrentlyUpdatingTeam;
@@ -465,6 +467,10 @@ bool PortPadMayControl(cTeam* team, int pad, cPlayer* player)
     }
     if (index < 0 || index == 4)
         return true;  // the goalie: whoever's turn it is
+    // r78: with a co-captain in slot 1 (include/port/lineup.h) each person has a captain: pad 0 the
+    // captain and slot 2, pad 1 the co-captain and slot 3
+    if (PortSecondCaptain(team->m_nSide) >= 0)
+        return index % 2 == pad;
     return (index < 2 ? 0 : 1) == pad;
 }
 
@@ -662,17 +668,40 @@ void cTeam::ResetCharacters()
             if (pFielder->IsCaptain() == false)
             {
                 cPlayer* pCaptain = m_pPlayers[0];
-                ((FielderTweaks*)pFielder->m_pTweaks)->fAggression = ((FielderTweaks*)pCaptain->m_pTweaks)->fAggression;
-                ((FielderTweaks*)pFielder->m_pTweaks)->fDekeing = ((FielderTweaks*)pCaptain->m_pTweaks)->fDekeing;
-                ((FielderTweaks*)pFielder->m_pTweaks)->fPassing = ((FielderTweaks*)pCaptain->m_pTweaks)->fPassing;
-                ((FielderTweaks*)pFielder->m_pTweaks)->fShotMinSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotMinSpeed;
-                ((FielderTweaks*)pFielder->m_pTweaks)->fShotMaxSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotMaxSpeed;
-                ((FielderTweaks*)pFielder->m_pTweaks)->fShotChipMinSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotChipMinSpeed;
-                ((FielderTweaks*)pFielder->m_pTweaks)->fShotChipMaxSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotChipMaxSpeed;
-                pFielder->m_pTweaks->fPassGroundSpeedMin = pCaptain->m_pTweaks->fPassGroundSpeedMin;
-                pFielder->m_pTweaks->fPassGroundSpeedMax = pCaptain->m_pTweaks->fPassGroundSpeedMax;
-                pFielder->m_pTweaks->fPassVolleySpeedMin = pCaptain->m_pTweaks->fPassVolleySpeedMin;
-                pFielder->m_pTweaks->fPassVolleySpeedMax = pCaptain->m_pTweaks->fPassVolleySpeedMax;
+                // strikers-quest r80 (Lance: "let the sidekicks keep their own"): a guest sidekick keeps the
+                // values its own stats file gave it (bits as xr_guest.cpp kStatKeys: aggression 20, passing
+                // 22, dekeing 23, pass speeds 5-8, shot 24-25, chip 26-27; a min/max pair goes together);
+                // the Strikers sidekicks take their captain's, as the game always did
+                const unsigned own = PortGuestOwnStats(pFielder->m_pTweaks);
+                const bool keep = own != 0;
+                const bool keepPassGround = (own & (3u << 5)) != 0, keepPassVolley = (own & (3u << 7)) != 0;
+                const bool keepShot = (own & (3u << 24)) != 0, keepChip = (own & (3u << 26)) != 0;
+                if (!keep || (own & (1u << 20)) == 0)
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fAggression = ((FielderTweaks*)pCaptain->m_pTweaks)->fAggression;
+                if (!keep || (own & (1u << 23)) == 0)
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fDekeing = ((FielderTweaks*)pCaptain->m_pTweaks)->fDekeing;
+                if (!keep || (own & (1u << 22)) == 0)
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fPassing = ((FielderTweaks*)pCaptain->m_pTweaks)->fPassing;
+                if (!keepShot)
+                {
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fShotMinSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotMinSpeed;
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fShotMaxSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotMaxSpeed;
+                }
+                if (!keepChip)
+                {
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fShotChipMinSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotChipMinSpeed;
+                    ((FielderTweaks*)pFielder->m_pTweaks)->fShotChipMaxSpeed = ((FielderTweaks*)pCaptain->m_pTweaks)->fShotChipMaxSpeed;
+                }
+                if (!keepPassGround)
+                {
+                    pFielder->m_pTweaks->fPassGroundSpeedMin = pCaptain->m_pTweaks->fPassGroundSpeedMin;
+                    pFielder->m_pTweaks->fPassGroundSpeedMax = pCaptain->m_pTweaks->fPassGroundSpeedMax;
+                }
+                if (!keepPassVolley)
+                {
+                    pFielder->m_pTweaks->fPassVolleySpeedMin = pCaptain->m_pTweaks->fPassVolleySpeedMin;
+                    pFielder->m_pTweaks->fPassVolleySpeedMax = pCaptain->m_pTweaks->fPassVolleySpeedMax;
+                }
             }
         }
     }

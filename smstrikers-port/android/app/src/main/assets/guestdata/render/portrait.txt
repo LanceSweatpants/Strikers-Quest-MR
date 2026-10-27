@@ -1,0 +1,19 @@
+# Quest 3 Strikers: the on-headset portraits (guests/render Portrait.java): our numbers for drawing them the way
+# tools/outside/portrait_render.py's Blender Cycles renders looked (fitted to its pictures, least squares on the
+# light's parts). Framing, camera and light places are that script's own (in the code).
+supersample 4            # samples per pixel per axis (Blender rendered 4x and scaled down)
+sky_rgb 0.275 0.3 0.35   # the world: (0.55, 0.6, 0.7) x strength 0.5, linear
+sky 1.123                # the sky's light where the sky is seen (x sky_rgb x albedo)
+bounce 0.717             # ... where it is hidden, as a share of that (light bounced about)
+key 0.0966               # the key and rim area lights: their watts x this x cos x cos / distance^2 (in heights)
+rim 0.0963               #   (Cycles: about 1 / 4 pi)
+spec 0.0                 # a GGX highlight (roughness, F0 0.04) x this: the fit found none worth having
+roughness 0.7
+energy_full 380 220      # key, rim watts / height^2 (--full; portrait_render.py)
+energy_bust 900 500      # head and shoulders
+sky_rays 16              # per picture pixel: rays at the sky (cosine-weighted)
+light_rays 9             # per picture pixel and light: points on the light (3 x 3)
+vertex_rays 12 4         # per vertex (see-through layers, bits too thin for a pixel): sky, points per light
+denoise 2                # the pixels' light smoothed over this radius, edge-aware (Cycles' denoiser)
+exposure 1.0
+flames 0                 # 1: the Charmander line's tail flame (frame 0) in the picture (Blender's had none)

@@ -8,6 +8,7 @@
 
 #include "NL/gl/gl.h"
 #include "NL/gl/glTexture.h"
+#include "port/xr_guest.h"
 
 extern unsigned int nlDefaultSeed;
 
@@ -71,6 +72,13 @@ void AsyncImage::QueueLoad(const char* path, bool isblocking)
         {
             m_loadBuffer = (u8*)nlMalloc(info.m_length, 0x20, true);
             mTextureSize = info.m_length;
+        }
+
+        // strikers-quest r67b: a guest captain's own picture in its slot's place (include/port/xr_guest.h).
+        if (PortGuestLoadingPicture(path, m_loadBuffer, mTextureSize))
+        {
+            mLoadState = LS_LOAD_COMPLETE;
+            return;
         }
 
         mLoadState = LS_ISSUED_LOAD;

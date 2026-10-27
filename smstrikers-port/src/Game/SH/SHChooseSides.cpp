@@ -17,6 +17,7 @@
 #include "NL/nlPrint.h"
 #include "NL/nlString.h"
 #include "NL/gl/glStruct.h"
+#include "port/xr_guest.h"  // strikers-quest r68b
 
 extern bool g_e3_Build;
 
@@ -221,6 +222,8 @@ void SHChooseSides2::SceneCreated()
             InlineHasher(nlStringLowerHash("COMPONENT")));
 
         pIconComp->SetActiveSlide(GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((short)0)));
+        // strikers-quest r68b: no Strikers captain's emblem beside a guest captain
+        pIconComp->m_bVisible = !PortGuestTeamHasGuestCaptain((int)nlSingleton<GameInfoManager>::Instance()->GetTeam((short)0));
 
         pNameComp = FEFinder<TLComponentInstance, 4>::Find<TLSlide>(
             currentSlide,
@@ -232,6 +235,7 @@ void SHChooseSides2::SceneCreated()
             InlineHasher(nlStringLowerHash("COMPONENT")));
 
         pIconComp->SetActiveSlide(GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((short)1)));
+        pIconComp->m_bVisible = !PortGuestTeamHasGuestCaptain((int)nlSingleton<GameInfoManager>::Instance()->GetTeam((short)1));
     }
     else
     {

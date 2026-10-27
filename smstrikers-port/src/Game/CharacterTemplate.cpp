@@ -23,6 +23,8 @@
 #include "NL/gl/glRenderList.h"
 #include "NL/gl/glTexture.h"
 #include "NL/glx/glxTexture.h"
+#include "port/xr_guest.h"
+#include "port/lineup.h"  // strikers-quest r78: the co-captain
 
 extern SoundPropAccessor* gpBIRDOSoundPropAccessor;
 extern SoundPropAccessor* gpDAISYSoundPropAccessor;
@@ -329,6 +331,11 @@ cPlayer* CreateCharacter(int nPlayerID, int nTeamID, eCharacterClass cc, bool bF
     }
 
     pTweaks = new (nlMalloc(sizeof(FielderTweaks), 8, false)) FielderTweaks(g_aCharacterTemplateInfo[cc].szTweaksFilename);
+    // strikers-quest r67: a guest character plays on its own stats (include/port/xr_guest.h).
+    if (!bForViewer)
+    {
+        PortGuestApplyTweaks(nTeamID, (int)cc, pTweaks);
+    }
 
     cPlayer* pChar;
     if (!bForViewer)
@@ -624,9 +631,16 @@ void CreateCharacters()
 
         charIdx = plrindex * 4 + 1;
 
+        // strikers-quest r78: a co-captain (include/port/lineup.h): a second captain class in slot 1 (never
+        // with the Super Team, which already fields its captain class everywhere)
+        const int coCaptain = captain[plrindex] != MYSTERY ? PortSecondCaptain(plrindex) : -1;
         for (int index = 1; index < 4; index++)
         {
-            if (SameCharacterClass(sidekick, captain, plrindex))
+            if (index == 1 && coCaptain >= 0)
+            {
+                g_pCharacters[charIdx] = CreateCharacter(index, plrindex, (eCharacterClass)coCaptain, false);
+            }
+            else if (SameCharacterClass(sidekick, captain, plrindex))
             {
                 g_pCharacters[charIdx] = CreateCharacter(index, plrindex, captain[plrindex], false);
             }

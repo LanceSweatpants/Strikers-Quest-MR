@@ -239,6 +239,9 @@ list(REMOVE_ITEM PLATFORM_SOURCES
 # strikers-quest r41: its own library without the prelude (port_disc_codecs, below).
 list(REMOVE_ITEM PLATFORM_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/disc_codecs.c")
+# strikers-quest 1.14: the launcher's disc reader for the guest converter, its own library (guestdisc, below).
+list(REMOVE_ITEM PLATFORM_SOURCES
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/guest_disc_jni.c")
 
 # strikers-quest: src/platform/xr_quest.cpp is built on its own (strikers_xr, below): C++17 and
 # without the port prelude, which the Vulkan and OpenXR headers do not survive.
@@ -247,6 +250,8 @@ list(REMOVE_ITEM PLATFORM_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_fx.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_ctrl_model.cpp"  # r54: the controllers' models
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_home.cpp"  # r61: the home ground
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_evo.cpp"   # r96: the 3D evolution
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_league.cpp" # r100: online franchise leagues
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_net.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_text.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_voice.cpp"   # r44: Quest only, with Opus (below)
@@ -630,6 +635,24 @@ target_link_libraries(strikers_platform PRIVATE port_disc_codecs)
 target_link_libraries(strikers PRIVATE port_disc_codecs)
 message(STATUS "Disc images: also .rvz/.wia with LZMA, LZMA2, bzip2 or purge")
 
+# strikers-quest 1.14: the guest converter's disc reader (android/.../guests/DiscSource.java): disc.c with its
+# codecs and a JNI face (src/platform/guest_disc_jni.c), a library of its own because the launcher never loads
+# the game's. Players' Melee / Colosseum (GameCube) and Charged (Wii .rvz) images, read where they are.
+if(ANDROID)
+    add_library(guestdisc SHARED
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/disc.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/guest_disc_jni.c")
+    target_include_directories(guestdisc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    # (disc.c's strcmpi comes from the game's prelude, which this library goes without)
+    target_compile_definitions(guestdisc PRIVATE STRIKERS_ZSTD=1 STRIKERS_LZMA_BZIP2=1 strcmpi=strcasecmp)
+    target_compile_options(guestdisc PRIVATE -include strings.h)
+    target_link_libraries(guestdisc PRIVATE port_zstd port_disc_codecs)
+    if(TARGET ZLIB::ZLIB)
+        target_compile_definitions(guestdisc PRIVATE STRIKERS_ZLIB=1)
+        target_link_libraries(guestdisc PRIVATE ZLIB::ZLIB)
+    endif()
+endif()
+
 # Dead-strip the debug classes (StatsGatherer, cFuzzyDebugger) whose vtables reference methods
 # defined only in files the decomp excludes, and which nothing ever constructs.
 if(APPLE)
@@ -679,6 +702,8 @@ if(STRIKERS_AURORA)
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_fx.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_ctrl_model.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_home.cpp"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_evo.cpp"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_league.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_net.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_text.cpp")
     set_target_properties(strikers_xr PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

@@ -22,6 +22,9 @@ struct Record {
 struct Match {
   bool valid = false;
   int myCaptain = -1, theirCaptain = -1;  // eCharacterClass
+  // r87 (his r86 clip: the board read "WARIO 5 - 1 PEACH" for Geodude's win): the imported character
+  // (guest pack, "pk_geodude") captaining in that class's place, "" = the Strikers captain itself
+  std::string myGuest, theirGuest;
   int mine = 0, theirs = 0;
   bool overtime = false, online = false, cup = false, forfeit = false;
   std::string theirName;  // online: the friend's team name
@@ -31,6 +34,7 @@ struct Match {
 struct Rival {
   bool valid = false;
   int captain = -1;   // CPU rival: their captain
+  std::string guest;  // r87: ... an imported one ("" = the Strikers captain)
   std::string name;   // online rival: their name ("" = unnamed)
   Record record;
 };
@@ -39,6 +43,7 @@ struct Rival {
 struct View {
   int generation = 0;
   int captain = 6;  // the home captain (Mario until you have played)
+  std::string captainGuest;  // r87: the home captain is this imported one ("" none)
   Match last;
   Rival cpu, online;
   Match ticket;  // the first win (valid once you have one)

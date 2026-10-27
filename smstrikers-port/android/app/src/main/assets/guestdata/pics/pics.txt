@@ -1,0 +1,111 @@
+# Quest 3 Strikers guest pictures (io.github.newcoke.strikers.guests.pics.Tables): our own tables, names and
+# numbers only, no game pixels. Fields split on spaces / tabs; # starts a comment line. Hex = HSD data offsets.
+#
+# Melee select portraits (tools/outside/build_portraits.py): MnSlChr.usd's CSPs are the frames of one TexAnim,
+# in Melee's character order; Popo and Nana share the Ice Climbers' picture. (Sheik has none: rendered.)
+csp MnSlChr.usd 362BAC
+order falcon dk fox gamewatch kirby bowser link luigi mario marth mewtwo ness peach pikachu iceclimbers jigglypuff samus yoshi zelda falco younglink drmario roy pichu ganondorf
+alias popo iceclimbers
+alias nana iceclimbers
+# Melee's Poke Ball Pokemon (trophy display art, for "Melee Pokemon" roster lines): pack file texanim frame
+# (texanim "-": the frame field is an image descriptor offset instead)
+poke chikorita TyPokeA.dat 4650 0
+poke scizor TyPokeA.dat 4650 1
+poke charizard TyPokeA.dat 4650 4
+poke goldeen TyPokeA.dat 4650 5
+poke unown TyPokeA.dat 4650 6
+poke snorlax TyPokeA.dat 4650 8
+poke moltres TyPokeA.dat 4650 9
+poke zapdos TyPokeA.dat 4650 10
+poke articuno TyPokeA.dat 4650 11
+poke venusaur TyPokeA.dat 4650 12
+poke staryu TyPokeA.dat 4650 13
+poke entei TyPokeC.dat 2CA0 0
+poke wobbuffet TyPokeC.dat 2CA0 1
+poke celebi TyPokeC.dat 2CA0 2
+poke weezing TyPokeD.dat 2B28 0
+poke cyndaquil TyPokeD.dat 2B28 1
+poke blastoise TyPokeD.dat 2B28 2
+poke bellossom TyPokeD.dat 2B28 3
+poke chansey TyPokeD.dat 2B28 4
+poke lugia TyPokeD.dat 2B28 5
+poke marill TyPokeD.dat 2B28 6
+poke porygon2 TyPokeD.dat 2B28 8
+poke raikou TyPokeD.dat 2B28 9
+poke suicune TyPokeD.dat 2B28 10
+poke togepi TyPokeD.dat 2B28 11
+poke clefairy TyPokeD.dat 2B28 12
+poke electrode TyPokeD.dat 2B28 13
+poke mew TyPokeD.dat 2B28 14
+poke hooh TyPokeE.dat - 28
+#
+# The Strikers characters' own pictures for the select menu (portraits/strikers_<name>.png, loadres.py dump):
+# name, bundle on the Strikers disc, entry (its name, or #hash). Captains: their loading picture (left);
+# sidekicks: their cup picture.
+strikers daisy art/fe/LoadingScreensUI.Res fe/loadingscreens/daisy_l
+strikers donkeykong art/fe/LoadingScreensUI.Res fe/loadingscreens/donkeykong_l
+strikers luigi art/fe/LoadingScreensUI.Res fe/loadingscreens/luigi_l
+strikers mario art/fe/LoadingScreensUI.Res fe/loadingscreens/mario_l
+strikers peach art/fe/LoadingScreensUI.Res fe/loadingscreens/peach_l
+strikers waluigi art/fe/LoadingScreensUI.Res fe/loadingscreens/waluigi_l
+strikers wario art/fe/LoadingScreensUI.Res fe/loadingscreens/wario_l
+strikers yoshi art/fe/LoadingScreensUI.Res fe/loadingscreens/yoshi_l
+strikers toad art/fe/CupLoadingScreensSidekicksUI.Res #6cba4ce4
+strikers koopa art/fe/CupLoadingScreensSidekicksUI.Res #34df2717
+strikers hammerbro art/fe/CupLoadingScreensSidekicksUI.Res #292ed158
+strikers birdo art/fe/CupLoadingScreensSidekicksUI.Res #165bd43f
+#
+# Score-bar banners (tools/outside/iconres.py): each series' emblem = an IfAll.usd image descriptor (the
+# in-match HUD's symbol behind a fighter's damage), drawn filled + outlined in its colours (fill RGB, outline RGB).
+emblem fzero 5554
+emblem dk 61BC
+emblem starfox 61D4
+emblem gamewatch 61EC
+emblem kirby 6204
+emblem mario 621C
+emblem fireemblem 6234
+emblem pokemon 624C
+emblem earthbound 6264
+emblem iceclimber 627C
+emblem metroid 6294
+emblem yoshi 62AC
+emblem zelda 62C4
+colour mario 225 40 35 40 10 10
+colour fzero 245 140 30 50 20 5
+colour starfox 235 235 245 20 30 60
+colour zelda 245 200 40 60 40 5
+colour metroid 235 95 30 50 15 5
+colour kirby 250 215 60 90 40 60
+colour pokemon 230 40 40 30 10 10
+colour earthbound 250 175 60 60 30 10
+colour iceclimber 175 115 230 35 15 60
+colour fireemblem 250 230 150 60 40 10
+colour gamewatch 35 35 35 235 235 235
+colour dk 210 40 40 30 10 10
+colour yoshi 80 200 70 10 40 10
+# a captain's series by pack (Colosseum and Melee Pokemon captains: pokemon, by their game)
+series drmario mario
+series falcon fzero
+series fox starfox
+series falco starfox
+series link zelda
+series younglink zelda
+series zelda zelda
+series sheik zelda
+series ganondorf zelda
+series samus metroid
+series kirby kirby
+series pikachu pokemon
+series pichu pokemon
+series jigglypuff pokemon
+series mewtwo pokemon
+series ness earthbound
+series popo iceclimber
+series nana iceclimber
+series marth fireemblem
+series roy fireemblem
+series gamewatch gamewatch
+series bowser mario
+series bowserjr mario
+series petey mario
+series diddykong dk

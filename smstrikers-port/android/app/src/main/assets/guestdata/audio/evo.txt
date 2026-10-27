@@ -1,0 +1,6 @@
+# Quest 3 Strikers: the franchise evolution's music, guests/evo/<out> (Audio.java), from the player's own Melee disc
+# as r99's tools/outside/hps2evm.py evm made it: the track's [start, start + length) seconds ("end": the whole track),
+# at 32 kHz, faded in / out over those seconds.
+# <out> <Melee track> <start> <length> <fade in> <fade out>
+music_build.evm audio/pstadium.hps 0 8.7 0.05 0.5
+music_fanfare.evm audio/ff_poke.hps 0 end 0.02 0.3

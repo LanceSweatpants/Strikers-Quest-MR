@@ -1,0 +1,1001 @@
+# Quest 3 Strikers: which sounds of the player's own discs make each guests/voices/<pack>.gvo (Audio.java).
+# Numbers and names only, no sound. Made by tools/guestconv/test/AudioGenData.java from the PC tools' work:
+# outside/voices/voices.json (melee_voices.py, charged_voices.py) as voicepack.py packs it, then r87
+# colo_voices_melee.py and r88 gvo_edit.py.
+#
+# pack <name> <game>                 game: melee | charged | colo (the player needs it, else no file)
+# <label> <file> <index> <rate> <samples> [silence]
+#     one clip, in the file's order. Melee: audio/us/<bank>.ssm and the sound's place in that bank;
+#     Charged: audio/<bank> (.resbun + .nlxwb) and the bank's resident sample. rate / samples: what that
+#     sound is on the disc the list was made from (another disc: the clip is left out).
+#     silence (r88): kept, but 10 ms of nothing (rate / 100 samples).
+# same <pack>      (r87) the same file as that Melee guest's; an empty one when the player has no Melee
+# empty            no clips: silent
+# (celebi, moltres: no sound anywhere in Melee: no file)
+
+pack articuno melee
+attack audio/us/pokemon.ssm 43 32000 50400
+flap audio/us/pokemon.ssm 34 16000 14742
+
+pack bellossom melee
+attack audio/us/pokemon.ssm 16 16000 17619
+cry audio/us/pokemon.ssm 15 16000 14924
+
+pack blastoise melee
+attack audio/us/pokemon.ssm 7 32000 25548
+cry audio/us/pokemon.ssm 8 16000 20935
+
+pack boo charged
+dazed audio/CHAR_BOO_Sfx 11 44100 30418
+deke audio/CHAR_BOO_Sfx 0 44100 19539
+deke audio/CHAR_BOO_Sfx 2 44100 23872
+deke audio/CHAR_BOO_Sfx 18 44100 58858
+extra_014bd7c4 audio/CHAR_BOO_Sfx 14 44100 25514
+extra_014bd7c4 audio/CHAR_BOO_Sfx 15 44100 11321
+extra_014bd7c4 audio/CHAR_BOO_Sfx 16 44100 15040
+extra_014bd7c4 audio/CHAR_BOO_Sfx 9 44100 14130
+extra_014bd7c4 audio/CHAR_BOO_Sfx 10 44100 24033
+hurt audio/CHAR_BOO_Sfx 5 44100 12800
+hurt audio/CHAR_BOO_Sfx 6 44100 7361
+hurt_big audio/CHAR_BOO_Sfx 7 44100 13792
+hurt_big audio/CHAR_BOO_Sfx 8 44100 14429
+kick audio/CHAR_BOO_Sfx 3 44100 6408
+kick audio/CHAR_BOO_Sfx 4 44100 11321
+ko audio/CHAR_BOO_Sfx 17 44100 61256
+select audio/FE_GEN_Sfx 47 44100 19539
+shock audio/CHAR_BOO_Sfx 12 44100 91454
+shock audio/CHAR_BOO_Sfx 13 44100 70352
+skillshot audio/CHAR_BOO_Sfx 1 44100 113114
+skillshot audio/CHAR_BOO_Sfx 2 44100 23872
+
+pack bowser charged
+cheer audio/CHAR_BOWSER_Sfx 9 32000 23307
+cheer audio/CHAR_BOWSER_Sfx 10 32000 33717
+cheer audio/CHAR_BOWSER_Sfx 11 32000 21037
+dazed audio/CHAR_BOWSER_Sfx 12 32000 49254
+dazed audio/CHAR_BOWSER_Sfx 13 32000 62617
+dazed audio/CHAR_BOWSER_Sfx 25 32000 12512
+dazed audio/CHAR_BOWSER_Sfx 26 32000 15400
+deke audio/CHAR_BOWSER_Sfx 15 32000 30855
+deke audio/CHAR_BOWSER_Sfx 14 32000 31426
+extra_c88c29ed audio/CHAR_BOWSER_Sfx 3 44100 39283
+hurt audio/CHAR_BOWSER_Sfx 16 32000 23027
+hurt audio/CHAR_BOWSER_Sfx 17 32000 19357
+hurt audio/CHAR_BOWSER_Sfx 18 32000 11165
+hurt_big audio/CHAR_BOWSER_Sfx 19 32000 20879
+hurt_big audio/CHAR_BOWSER_Sfx 20 32000 24474
+hurt_big audio/CHAR_BOWSER_Sfx 21 32000 14858
+item_get audio/CHAR_BOWSER_Sfx 3 44100 39283
+item_use audio/CHAR_BOWSER_Sfx 5 32000 38400
+kick audio/CHAR_BOWSER_Sfx 8 32000 13956
+kick audio/CHAR_BOWSER_Sfx 7 32000 16449
+kick audio/CHAR_BOWSER_Sfx 6 32000 16727
+ko audio/CHAR_BOWSER_Sfx 22 32000 45163
+ko audio/CHAR_BOWSER_Sfx 23 32000 45338
+select audio/FE_GEN_Sfx 39 22050 47809
+shock audio/CHAR_BOWSER_Sfx 0 32000 28026
+shock audio/CHAR_BOWSER_Sfx 1 32000 32812
+shock audio/CHAR_BOWSER_Sfx 2 32000 36848
+super audio/CHAR_BOWSER_Sfx 24 32000 58014
+super_tank audio/CHAR_BOWSER_Sfx 4 32000 124572
+
+pack bowserjr charged
+cheer audio/CHAR_BOWSERJR_Sfx 1 32000 18945
+cheer audio/CHAR_BOWSERJR_Sfx 0 32000 11232
+cheer audio/CHAR_BOWSERJR_Sfx 2 32000 26086
+dazed audio/CHAR_BOWSERJR_Sfx 17 32000 17612
+dazed audio/CHAR_BOWSERJR_Sfx 18 32000 44039
+dazed audio/CHAR_BOWSERJR_Sfx 19 32000 31821
+dazed audio/CHAR_BOWSERJR_Sfx 20 32000 61365
+deke audio/CHAR_BOWSERJR_Sfx 13 44100 70700
+hurt audio/CHAR_BOWSERJR_Sfx 7 32000 6501
+hurt audio/CHAR_BOWSERJR_Sfx 8 32000 12418
+hurt audio/CHAR_BOWSERJR_Sfx 9 32000 14110
+hurt_big audio/CHAR_BOWSERJR_Sfx 12 32000 22456
+hurt_big audio/CHAR_BOWSERJR_Sfx 10 32000 10830
+hurt_big audio/CHAR_BOWSERJR_Sfx 11 32000 11526
+item_use audio/CHAR_BOWSERJR_Sfx 14 44100 74706
+kick audio/CHAR_BOWSERJR_Sfx 5 32000 8717
+kick audio/CHAR_BOWSERJR_Sfx 6 32000 9477
+ko audio/CHAR_BOWSERJR_Sfx 15 32000 51859
+ko audio/CHAR_BOWSERJR_Sfx 16 32000 34314
+select audio/FE_GEN_Sfx 64 32000 31271
+select audio/FE_GEN_Sfx 61 32000 22181
+shock audio/CHAR_BOWSERJR_Sfx 3 32000 24836
+shock audio/CHAR_BOWSERJR_Sfx 4 32000 33392
+shrink audio/CHAR_BOWSERJR_Sfx 23 32000 12014
+shrink_end audio/CHAR_BOWSERJR_Sfx 22 32000 17141
+super audio/CHAR_BOWSERJR_Sfx 21 32000 43981
+
+pack chansey melee
+attack audio/us/pokemon.ssm 31 32000 2554
+cry audio/us/pokemon.ssm 30 16000 11517
+
+pack charizard melee
+attack audio/us/pokemon.ssm 4 32000 16907
+cry audio/us/pokemon.ssm 5 16000 26263
+
+pack chikorita melee
+attack audio/us/pokemon.ssm 0 32000 13280
+cry audio/us/pokemon.ssm 1 16000 8827
+
+pack clefairy melee
+cry audio/us/pokemon.ssm 19 16000 15819
+
+pack cyndaquil melee
+attack audio/us/pokemon.ssm 4 32000 16907
+cry audio/us/pokemon.ssm 27 16000 13556
+
+pack diddykong charged
+cheer audio/CHAR_DIDDY_Sfx 4 44100 29268
+cheer audio/CHAR_DIDDY_Sfx 2 44100 45439
+cheer audio/CHAR_DIDDY_Sfx 3 44100 52586
+dazed audio/CHAR_DIDDY_Sfx 20 32000 60436
+deke audio/CHAR_DIDDY_Sfx 1 44100 30861
+deke audio/CHAR_DIDDY_Sfx 17 44100 23674
+deke audio/CHAR_DIDDY_Sfx 18 44100 50295
+hurt audio/CHAR_DIDDY_Sfx 8 44100 27764
+hurt audio/CHAR_DIDDY_Sfx 9 44100 29376
+hurt audio/CHAR_DIDDY_Sfx 10 44100 25728
+hurt_big audio/CHAR_DIDDY_Sfx 11 44100 32787
+hurt_big audio/CHAR_DIDDY_Sfx 12 44100 32595
+hurt_big audio/CHAR_DIDDY_Sfx 13 44100 28575
+item_use audio/CHAR_DIDDY_Sfx 0 22050 73049
+kick audio/CHAR_DIDDY_Sfx 5 44100 16357
+kick audio/CHAR_DIDDY_Sfx 6 44100 17424
+kick audio/CHAR_DIDDY_Sfx 7 44100 17457
+ko audio/CHAR_DIDDY_Sfx 19 44100 112471
+select audio/FE_GEN_Sfx 62 44100 61578
+shock audio/CHAR_DIDDY_Sfx 14 44100 65296
+shock audio/CHAR_DIDDY_Sfx 15 44100 108649
+shock audio/CHAR_DIDDY_Sfx 16 44100 92924
+super audio/CHAR_DIDDY_Sfx 21 32000 50025
+
+pack drmario melee
+attack audio/us/drmario.ssm 15 32000 7253
+attack audio/us/drmario.ssm 16 32000 34453
+attack audio/us/drmario.ssm 17 32000 11360
+attack audio/us/drmario.ssm 18 32000 20320
+attack audio/us/drmario.ssm 19 32000 24533
+cheer audio/us/drmario.ssm 32 32000 45493
+dizzy audio/us/drmario.ssm 23 32000 18613
+hurt audio/us/drmario.ssm 33 32000 9973
+hurt_big audio/us/drmario.ssm 34 32000 19680
+hurt_big audio/us/drmario.ssm 35 32000 29600
+jump audio/us/drmario.ssm 24 32000 7200
+jump audio/us/drmario.ssm 25 32000 19840
+ko audio/us/drmario.ssm 31 32000 18240
+ko_star audio/us/drmario.ssm 22 32000 88000
+ledge audio/us/drmario.ssm 20 32000 7093
+lift audio/us/drmario.ssm 27 32000 15840
+sleep audio/us/drmario.ssm 28 32000 29653
+sleep audio/us/drmario.ssm 29 32000 10880
+special audio/us/drmario.ssm 21 32000 32587
+special audio/us/drmario.ssm 26 32000 29600
+teeter audio/us/drmario.ssm 30 32000 6987
+
+pack drybones charged
+deke audio/CHAR_DRYBONES_Sfx 1 32000 14411
+extra_2e95fbd4 audio/CHAR_DRYBONES_Sfx 5 44100 32640
+extra_2e95fbd4 audio/CHAR_DRYBONES_Sfx 3 44100 56835
+extra_2e95fbd4 audio/CHAR_DRYBONES_Sfx 4 44100 24474
+extra_77a278fe audio/CHAR_DRYBONES_Sfx 2 32000 55353
+hurt audio/CHAR_DRYBONES_Sfx 12 44100 13122
+hurt audio/CHAR_DRYBONES_Sfx 10 44100 10969
+hurt audio/CHAR_DRYBONES_Sfx 11 44100 6517
+hurt_big audio/CHAR_DRYBONES_Sfx 15 44100 24889
+hurt_big audio/CHAR_DRYBONES_Sfx 13 44100 36867
+hurt_big audio/CHAR_DRYBONES_Sfx 14 44100 40695
+kick audio/CHAR_DRYBONES_Sfx 8 44100 10969
+kick audio/CHAR_DRYBONES_Sfx 9 44100 19163
+ko audio/CHAR_DRYBONES_Sfx 16 44100 61382
+select audio/FE_GEN_Sfx 44 44100 39128
+shock audio/CHAR_DRYBONES_Sfx 6 44100 71178
+shock audio/CHAR_DRYBONES_Sfx 7 44100 67063
+skillshot audio/CHAR_DRYBONES_Sfx 0 44100 43969
+skillshot_goalie audio/CHAR_DRYBONES_Sfx 2 32000 55353
+
+pack electrode melee
+attack audio/us/pokemon.ssm 10 32000 68586
+charge audio/us/pokemon.ssm 9 16000 30052
+
+pack entei melee
+attack audio/us/pokemon.ssm 36 16000 7527
+cry audio/us/pokemon.ssm 35 16000 21342
+
+pack falco melee
+attack audio/us/falco.ssm 7 32000 9280
+attack audio/us/falco.ssm 8 32000 4266
+attack audio/us/falco.ssm 9 32000 8160
+attack audio/us/falco.ssm 10 32000 12107
+attack audio/us/falco.ssm 11 32000 14133
+cheer audio/us/falco.ssm 6 32000 47360
+cheer audio/us/falco.ssm 5 32000 7573
+dizzy audio/us/falco.ssm 15 32000 18773
+hurt audio/us/falco.ssm 25 32000 7413
+hurt_big audio/us/falco.ssm 16 32000 12320
+hurt_big audio/us/falco.ssm 17 32000 21280
+jump audio/us/falco.ssm 19 32000 4693
+ko audio/us/falco.ssm 23 32000 17867
+ko_star audio/us/falco.ssm 14 32000 69189
+ledge audio/us/falco.ssm 13 32000 7253
+lift audio/us/falco.ssm 20 32000 8533
+sleep audio/us/falco.ssm 21 32000 50133
+special audio/us/falco.ssm 12 32000 18880
+special audio/us/falco.ssm 18 32000 4853
+taunt audio/us/falco.ssm 5 32000 7573
+tech audio/us/falco.ssm 24 32000 8160
+teeter audio/us/falco.ssm 22 32000 5866
+
+pack falcon melee
+attack audio/us/captain.ssm 4 32000 6986
+attack audio/us/captain.ssm 5 32000 20693
+attack audio/us/captain.ssm 6 32000 10240
+attack audio/us/captain.ssm 7 32000 4426
+attack audio/us/captain.ssm 8 32000 20320
+attack audio/us/captain.ssm 11 32000 17867
+dizzy audio/us/captain.ssm 13 32000 30027
+hurt_big audio/us/captain.ssm 14 32000 12853
+hurt_big audio/us/captain.ssm 15 32000 23466
+jump audio/us/captain.ssm 16 32000 4906
+ko audio/us/captain.ssm 19 32000 41066
+ko_star audio/us/captain.ssm 12 32000 54240
+lift audio/us/captain.ssm 17 32000 5760
+quote audio/us/captain.ssm 22 32000 48533
+sleep audio/us/captain.ssm 20 48000 64463
+sleep audio/us/captain.ssm 21 48000 47535
+special audio/us/captain.ssm 9 32000 25333
+special audio/us/captain.ssm 10 32000 29813
+special audio/us/captain.ssm 18 32000 34827
+special audio/us/captain.ssm 24 32000 27360
+taunt audio/us/captain.ssm 2 32000 61866
+taunt audio/us/captain.ssm 3 32000 40746
+taunt audio/us/captain.ssm 23 32000 25013
+
+pack fox melee
+attack audio/us/fox.ssm 5 32000 8540
+attack audio/us/fox.ssm 6 32000 6505
+attack audio/us/fox.ssm 7 32000 20431
+attack audio/us/fox.ssm 8 32000 7417
+attack audio/us/fox.ssm 9 32000 10881
+cheer audio/us/fox.ssm 4 32000 43620
+dizzy audio/us/fox.ssm 14 32000 26108
+hurt audio/us/fox.ssm 23 32000 10884
+hurt audio/us/fox.ssm 24 32000 8424
+hurt_big audio/us/fox.ssm 15 32000 26542
+hurt_big audio/us/fox.ssm 16 32000 17019
+jump audio/us/fox.ssm 18 32000 5278
+ko audio/us/fox.ssm 22 32000 20076
+ko_star audio/us/fox.ssm 13 32000 83441
+ledge audio/us/fox.ssm 12 32000 4382
+lift audio/us/fox.ssm 19 32000 8681
+sleep audio/us/fox.ssm 20 32000 54531
+special audio/us/fox.ssm 11 32000 22529
+special audio/us/fox.ssm 17 32000 8066
+taunt audio/us/fox.ssm 10 32000 16513
+teeter audio/us/fox.ssm 21 32000 9314
+
+pack gamewatch melee
+empty
+
+pack ganondorf melee
+attack audio/us/ganon.ssm 8 32000 12098
+attack audio/us/ganon.ssm 9 32000 14347
+attack audio/us/ganon.ssm 10 32000 18080
+attack audio/us/ganon.ssm 11 32000 10666
+attack audio/us/ganon.ssm 12 32000 5973
+dizzy audio/us/ganon.ssm 14 32000 37192
+hurt_big audio/us/ganon.ssm 21 32000 17813
+hurt_big audio/us/ganon.ssm 22 32000 23337
+jump audio/us/ganon.ssm 11 32000 10666
+ko audio/us/ganon.ssm 19 32000 16134
+ko_star audio/us/ganon.ssm 20 32000 54240
+ledge audio/us/ganon.ssm 15 32000 18400
+lift audio/us/ganon.ssm 13 32000 7893
+sleep audio/us/ganon.ssm 17 48000 64463
+sleep audio/us/ganon.ssm 18 48000 47535
+special audio/us/ganon.ssm 16 32000 21973
+special audio/us/ganon.ssm 3 32000 70138
+special audio/us/ganon.ssm 23 32000 18080
+special audio/us/ganon.ssm 24 32000 23680
+taunt audio/us/ganon.ssm 7 32000 23680
+tech audio/us/ganon.ssm 12 32000 5973
+teeter audio/us/ganon.ssm 15 32000 18400
+
+pack goldeen melee
+cry audio/us/pokemon.ssm 23 16000 16198
+
+pack hooh melee
+flap audio/us/pokemon.ssm 34 16000 14742
+
+pack jigglypuff melee
+attack audio/us/purin.ssm 2 32000 7362
+attack audio/us/purin.ssm 3 32000 13610
+attack audio/us/purin.ssm 4 32000 15631
+attack audio/us/purin.ssm 5 32000 10820
+attack audio/us/purin.ssm 6 32000 10946
+dizzy audio/us/purin.ssm 8 32000 62555
+hurt audio/us/purin.ssm 9 32000 27850
+hurt_big audio/us/purin.ssm 9 32000 27850
+hurt_big audio/us/purin.ssm 10 32000 35754
+ko audio/us/purin.ssm 11 32000 16030
+ko_star audio/us/purin.ssm 7 32000 63027
+ledge audio/us/purin.ssm 6 32000 10946
+lift audio/us/purin.ssm 5 32000 10820
+sleep audio/us/purin.ssm 15 32000 66705
+sleep audio/us/purin.ssm 16 32000 36731
+sleep audio/us/purin.ssm 17 32000 15165
+special audio/us/purin.ssm 12 32000 18592
+special audio/us/purin.ssm 13 32000 48059
+special audio/us/purin.ssm 14 32000 15470
+taunt audio/us/purin.ssm 1 32000 26380
+teeter audio/us/purin.ssm 8 32000 62555
+
+pack kirby melee
+attack audio/us/kirby.ssm 21 32000 9066
+attack audio/us/kirby.ssm 22 32000 12586
+attack audio/us/kirby.ssm 23 32000 10986
+attack audio/us/kirby.ssm 24 32000 6560
+attack audio/us/kirby.ssm 25 32000 22826
+attack audio/us/kirby.ssm 26 32000 13897
+dizzy audio/us/kirby.ssm 43 48000 32427
+hurt audio/us/kirby.ssm 51 32000 14773
+hurt_big audio/us/kirby.ssm 44 32000 32000
+hurt_big audio/us/kirby.ssm 45 32000 30720
+ko audio/us/kirby.ssm 49 32000 23947
+ko_star audio/us/kirby.ssm 42 32000 73227
+ledge audio/us/kirby.ssm 41 32000 5070
+lift audio/us/kirby.ssm 46 32000 13333
+sleep audio/us/kirby.ssm 47 16000 33807
+special audio/us/kirby.ssm 27 32000 32320
+special audio/us/kirby.ssm 28 32000 32267
+special audio/us/kirby.ssm 29 32000 25920
+special audio/us/kirby.ssm 30 32000 23093
+special audio/us/kirby.ssm 31 32000 6720
+special audio/us/kirby.ssm 32 32000 26514
+special audio/us/kirby.ssm 33 32000 11147
+special audio/us/kirby.ssm 34 32000 56053
+special audio/us/kirby.ssm 35 32000 22453
+special audio/us/kirby.ssm 36 32000 36266
+special audio/us/kirby.ssm 37 32000 37173
+special audio/us/kirby.ssm 38 32000 5013
+special audio/us/kirby.ssm 39 32000 22453
+special audio/us/kirby.ssm 40 32000 20053
+special audio/us/kirby.ssm 50 32000 16267
+taunt audio/us/kirby.ssm 20 32000 41051
+teeter audio/us/kirby.ssm 48 32000 12053
+
+pack link melee
+attack audio/us/link.ssm 6 32000 7786
+attack audio/us/link.ssm 7 32000 8587
+attack audio/us/link.ssm 8 32000 16800
+attack audio/us/link.ssm 9 32000 11733
+attack audio/us/link.ssm 10 44100 13211
+dizzy audio/us/link.ssm 15 32000 49867
+hurt audio/us/link.ssm 12 32000 6027
+hurt_big audio/us/link.ssm 16 32000 23413
+jump audio/us/link.ssm 17 32000 8746
+jump audio/us/link.ssm 18 32000 4173
+ko audio/us/link.ssm 21 32000 36000
+ko_star audio/us/link.ssm 14 32000 69813
+ledge audio/us/link.ssm 11 32000 10400
+lift audio/us/link.ssm 19 32000 9653
+special audio/us/link.ssm 13 32000 28747
+taunt audio/us/link.ssm 5 32000 21506
+tech audio/us/link.ssm 22 32000 13493
+teeter audio/us/link.ssm 20 32000 8426
+
+pack lugia melee
+attack audio/us/pokemon.ssm 42 16000 5468
+flap audio/us/pokemon.ssm 34 16000 14742
+
+pack marill melee
+cry audio/us/pokemon.ssm 32 16000 15696
+
+pack marth melee
+attack audio/us/mars.ssm 7 32000 8746
+attack audio/us/mars.ssm 8 32000 8693
+attack audio/us/mars.ssm 9 32000 6453
+attack audio/us/mars.ssm 10 32000 5600
+attack audio/us/mars.ssm 11 32000 12320
+attack audio/us/mars.ssm 12 32000 10133
+attack audio/us/mars.ssm 13 32000 11467
+attack audio/us/mars.ssm 14 32000 11467
+attack audio/us/mars.ssm 15 32000 5707
+cheer audio/us/mars.ssm 16 32000 59040
+cheer audio/us/mars.ssm 27 32000 49066
+cheer audio/us/mars.ssm 28 32000 59040
+dizzy audio/us/mars.ssm 23 32000 10240
+hurt audio/us/mars.ssm 36 32000 10187
+hurt_big audio/us/mars.ssm 24 32000 9959
+hurt_big audio/us/mars.ssm 25 32000 17386
+jump audio/us/mars.ssm 26 32000 5067
+ko audio/us/mars.ssm 34 32000 10814
+ko_star audio/us/mars.ssm 22 32000 69920
+ledge audio/us/mars.ssm 21 32000 6347
+lift audio/us/mars.ssm 31 32000 3360
+quote audio/us/mars.ssm 29 32000 25493
+sleep audio/us/mars.ssm 32 32000 58827
+special audio/us/mars.ssm 17 32000 14667
+special audio/us/mars.ssm 18 32000 28640
+special audio/us/mars.ssm 19 32000 15307
+special audio/us/mars.ssm 20 32000 16640
+special audio/us/mars.ssm 35 32000 21866
+taunt audio/us/mars.ssm 30 32000 50293
+teeter audio/us/mars.ssm 33 32000 14933
+
+pack mew melee
+cry audio/us/pokemon.ssm 18 16000 9680
+
+pack mewtwo melee
+attack audio/us/mewtwo.ssm 2 16000 2693
+attack audio/us/mewtwo.ssm 3 16000 4586
+attack audio/us/mewtwo.ssm 4 16000 3067
+attack audio/us/mewtwo.ssm 5 16000 9706
+attack audio/us/mewtwo.ssm 6 16000 4693
+attack audio/us/mewtwo.ssm 7 16000 5253
+attack audio/us/mewtwo.ssm 8 16000 3440
+cheer audio/us/mewtwo.ssm 13 16000 36213
+cheer audio/us/mewtwo.ssm 14 16000 45893
+dizzy audio/us/mewtwo.ssm 10 16000 8523
+hurt audio/us/mewtwo.ssm 20 16000 4107
+hurt_big audio/us/mewtwo.ssm 11 16000 5653
+hurt_big audio/us/mewtwo.ssm 12 16000 9833
+ko audio/us/mewtwo.ssm 17 16000 12312
+ko_star audio/us/mewtwo.ssm 9 16000 32533
+lift audio/us/mewtwo.ssm 15 16000 3493
+sleep audio/us/mewtwo.ssm 16 16000 23803
+special audio/us/mewtwo.ssm 18 16000 9919
+special audio/us/mewtwo.ssm 19 16000 2853
+taunt audio/us/mewtwo.ssm 1 16000 33787
+
+pack montymole charged
+dazed audio/CHAR_MONTYMOLE_Sfx 11 44100 25888
+dazed audio/CHAR_MONTYMOLE_Sfx 12 44100 16104
+deke audio/CHAR_MONTYMOLE_Sfx 1 32000 60534
+extra_2e95fbd4 audio/CHAR_MONTYMOLE_Sfx 8 44100 30778
+extra_2e95fbd4 audio/CHAR_MONTYMOLE_Sfx 9 44100 19391
+extra_2e95fbd4 audio/CHAR_MONTYMOLE_Sfx 10 44100 21726
+hurt audio/CHAR_MONTYMOLE_Sfx 2 44100 10304
+hurt audio/CHAR_MONTYMOLE_Sfx 3 44100 13730
+hurt audio/CHAR_MONTYMOLE_Sfx 4 44100 34110
+hurt_big audio/CHAR_MONTYMOLE_Sfx 5 44100 16668
+hurt_big audio/CHAR_MONTYMOLE_Sfx 6 44100 20102
+hurt_big audio/CHAR_MONTYMOLE_Sfx 7 44100 26822
+kick audio/CHAR_MONTYMOLE_Sfx 16 44100 9568
+kick audio/CHAR_MONTYMOLE_Sfx 17 44100 10607
+kick audio/CHAR_MONTYMOLE_Sfx 18 44100 10700
+ko audio/CHAR_MONTYMOLE_Sfx 19 44100 46028
+select audio/FE_GEN_Sfx 45 16000 3671
+shock audio/CHAR_MONTYMOLE_Sfx 13 44100 50961 silence
+shock audio/CHAR_MONTYMOLE_Sfx 14 44100 51616 silence
+shock audio/CHAR_MONTYMOLE_Sfx 15 44100 41984 silence
+skillshot audio/CHAR_MONTYMOLE_Sfx 0 44100 82683
+
+pack nana melee
+attack audio/us/ice.ssm 12 32000 6347
+attack audio/us/ice.ssm 13 32000 14553
+attack audio/us/ice.ssm 14 32000 10080
+attack audio/us/ice.ssm 15 32000 5813
+attack audio/us/ice.ssm 16 32000 10346
+dizzy audio/us/ice.ssm 19 32000 20640
+hurt audio/us/ice.ssm 27 32000 7220
+hurt_big audio/us/ice.ssm 20 32000 16587
+hurt_big audio/us/ice.ssm 21 32000 19399
+ko audio/us/ice.ssm 25 32000 20800
+ko_star audio/us/ice.ssm 18 32000 61765
+lift audio/us/ice.ssm 22 32000 12427
+sleep audio/us/ice.ssm 23 32000 35040
+special audio/us/ice.ssm 17 32000 14453
+special audio/us/ice.ssm 26 32000 4166
+taunt audio/us/ice.ssm 3 32000 5399
+teeter audio/us/ice.ssm 24 32000 8089
+
+pack ness melee
+attack audio/us/ness.ssm 5 32000 3306
+attack audio/us/ness.ssm 6 32000 8106
+attack audio/us/ness.ssm 7 32000 10560
+attack audio/us/ness.ssm 8 32000 8160
+attack audio/us/ness.ssm 9 32000 12693
+dizzy audio/us/ness.ssm 12 32000 27520
+hurt audio/us/ness.ssm 23 32000 7040
+hurt_big audio/us/ness.ssm 13 32000 21493
+hurt_big audio/us/ness.ssm 14 32000 24160
+ko audio/us/ness.ssm 22 32000 17867
+ko_star audio/us/ness.ssm 11 32000 74880
+ledge audio/us/ness.ssm 10 32000 10293
+lift audio/us/ness.ssm 15 32000 12747
+sleep audio/us/ness.ssm 16 32000 59147
+special audio/us/ness.ssm 18 32000 35520
+special audio/us/ness.ssm 19 32000 38347
+special audio/us/ness.ssm 20 32000 28213
+special audio/us/ness.ssm 21 32000 40373
+taunt audio/us/ness.ssm 4 32000 23146
+teeter audio/us/ness.ssm 17 32000 13866
+
+pack petey charged
+cheer audio/CHAR_PETEY_Sfx 2 44100 18648
+cheer audio/CHAR_PETEY_Sfx 0 44100 22270
+cheer audio/CHAR_PETEY_Sfx 1 44100 14495
+dazed audio/CHAR_PETEY_Sfx 4 44100 28134
+deke audio/CHAR_PETEY_Sfx 17 32000 28925
+extra_4df77a2d audio/CHAR_PETEY_Sfx 15 44100 28942
+hurt audio/CHAR_PETEY_Sfx 4 44100 28134
+hurt audio/CHAR_PETEY_Sfx 5 44100 23109
+hurt audio/CHAR_PETEY_Sfx 6 44100 35859
+hurt_big audio/CHAR_PETEY_Sfx 7 44100 19060
+hurt_big audio/CHAR_PETEY_Sfx 8 44100 21666
+hurt_big audio/CHAR_PETEY_Sfx 9 44100 18016
+item_use audio/CHAR_PETEY_Sfx 14 44100 59994
+item_use audio/CHAR_PETEY_Sfx 15 44100 28942
+kick audio/CHAR_PETEY_Sfx 13 44100 25276
+kick audio/CHAR_PETEY_Sfx 3 44100 41443
+ko audio/CHAR_PETEY_Sfx 16 44100 46456
+select audio/FE_GEN_Sfx 63 44100 24888
+shock audio/CHAR_PETEY_Sfx 10 44100 41602
+shock audio/CHAR_PETEY_Sfx 11 44100 46456
+shock audio/CHAR_PETEY_Sfx 12 44100 41602
+super audio/CHAR_PETEY_Sfx 18 32000 47674
+super_tank audio/CHAR_PETEY_Sfx 14 44100 59994
+super_tank audio/CHAR_PETEY_Sfx 15 44100 28942
+
+pack pichu melee
+attack audio/us/pichu.ssm 2 32000 18720
+attack audio/us/pichu.ssm 3 32000 16106
+attack audio/us/pichu.ssm 4 32000 12213
+attack audio/us/pichu.ssm 5 32000 17760
+attack audio/us/pichu.ssm 6 32000 16640
+dizzy audio/us/pichu.ssm 12 32000 51946
+hurt audio/us/pichu.ssm 22 32000 15947
+hurt_big audio/us/pichu.ssm 13 32000 27626
+hurt_big audio/us/pichu.ssm 14 32000 29866
+ko audio/us/pichu.ssm 18 32000 22560
+ko_star audio/us/pichu.ssm 11 32000 108320
+ledge audio/us/pichu.ssm 10 32000 3840
+lift audio/us/pichu.ssm 16 32000 5120
+sleep audio/us/pichu.ssm 17 32000 39040
+special audio/us/pichu.ssm 7 32000 24373
+special audio/us/pichu.ssm 8 32000 5760
+special audio/us/pichu.ssm 9 32000 6027
+special audio/us/pichu.ssm 15 32000 32587
+special audio/us/pichu.ssm 19 32000 39840
+special audio/us/pichu.ssm 20 32000 17493
+special audio/us/pichu.ssm 21 32000 45440
+taunt audio/us/pichu.ssm 1 32000 21440
+teeter audio/us/pichu.ssm 31 32000 12136
+
+pack pikachu melee
+attack audio/us/pikachu.ssm 7 32000 13173
+attack audio/us/pikachu.ssm 8 32000 11893
+attack audio/us/pikachu.ssm 9 32000 14133
+attack audio/us/pikachu.ssm 10 32000 21387
+attack audio/us/pikachu.ssm 11 32000 30773
+dizzy audio/us/pikachu.ssm 17 32000 71301
+hurt audio/us/pikachu.ssm 27 32000 9653
+hurt_big audio/us/pikachu.ssm 18 32000 35946
+hurt_big audio/us/pikachu.ssm 19 32000 32480
+ko audio/us/pikachu.ssm 23 32000 10133
+ko_star audio/us/pikachu.ssm 16 32000 78400
+ledge audio/us/pikachu.ssm 15 32000 6027
+lift audio/us/pikachu.ssm 21 32000 21440
+sleep audio/us/pikachu.ssm 6 32000 48800
+special audio/us/pikachu.ssm 12 32000 37280
+special audio/us/pikachu.ssm 13 32000 4354
+special audio/us/pikachu.ssm 14 32000 5333
+special audio/us/pikachu.ssm 20 32000 22773
+special audio/us/pikachu.ssm 24 32000 50720
+special audio/us/pikachu.ssm 25 32000 13707
+special audio/us/pikachu.ssm 26 32000 36213
+taunt audio/us/pikachu.ssm 4 32000 43147
+teeter audio/us/pikachu.ssm 22 32000 11093
+
+pack pk_bagon colo
+empty
+
+pack pk_banette colo
+empty
+
+pack pk_beldum colo
+empty
+
+pack pk_blastoise colo
+same blastoise
+
+pack pk_blaziken colo
+empty
+
+pack pk_bulbasaur colo
+empty
+
+pack pk_charizard colo
+same charizard
+
+pack pk_charmander colo
+empty
+
+pack pk_charmeleon colo
+empty
+
+pack pk_combusken colo
+empty
+
+pack pk_cubone colo
+empty
+
+pack pk_dragonair colo
+empty
+
+pack pk_dragonite colo
+empty
+
+pack pk_dratini colo
+empty
+
+pack pk_drowzee colo
+empty
+
+pack pk_dusclops colo
+empty
+
+pack pk_electrode colo
+empty
+
+pack pk_gastly colo
+empty
+
+pack pk_gengar colo
+empty
+
+pack pk_geodude colo
+empty
+
+pack pk_golem colo
+empty
+
+pack pk_graveler colo
+empty
+
+pack pk_grovyle colo
+empty
+
+pack pk_haunter colo
+empty
+
+pack pk_houndoom colo
+empty
+
+pack pk_houndour colo
+empty
+
+pack pk_hypno colo
+empty
+
+pack pk_igglybuff colo
+empty
+
+pack pk_ivysaur colo
+empty
+
+pack pk_jigglypuff colo
+same jigglypuff
+
+pack pk_koffing colo
+empty
+
+pack pk_machamp colo
+empty
+
+pack pk_machoke colo
+empty
+
+pack pk_machop colo
+empty
+
+pack pk_magby colo
+empty
+
+pack pk_magmar colo
+empty
+
+pack pk_mankey colo
+empty
+
+pack pk_marowak colo
+empty
+
+pack pk_marshtomp colo
+empty
+
+pack pk_metagross colo
+empty
+
+pack pk_metang colo
+empty
+
+pack pk_mewtwo colo
+same mewtwo
+
+pack pk_mrmime colo
+empty
+
+pack pk_mudkip colo
+empty
+
+pack pk_onix colo
+empty
+
+pack pk_pichu colo
+same pichu
+
+pack pk_pikachu colo
+same pikachu
+
+pack pk_politoed colo
+empty
+
+pack pk_poliwag colo
+empty
+
+pack pk_poliwhirl colo
+empty
+
+pack pk_poliwrath colo
+empty
+
+pack pk_primeape colo
+empty
+
+pack pk_raichu colo
+empty
+
+pack pk_salamence colo
+empty
+
+pack pk_sceptile colo
+empty
+
+pack pk_scizor colo
+same scizor
+
+pack pk_scyther colo
+empty
+
+pack pk_shelgon colo
+empty
+
+pack pk_shuppet colo
+empty
+
+pack pk_snorlax colo
+same snorlax
+
+pack pk_squirtle colo
+empty
+
+pack pk_steelix colo
+empty
+
+pack pk_swampert colo
+empty
+
+pack pk_torchic colo
+empty
+
+pack pk_treecko colo
+empty
+
+pack pk_venusaur colo
+same venusaur
+
+pack pk_voltorb colo
+empty
+
+pack pk_wartortle colo
+empty
+
+pack pk_weezing colo
+same weezing
+
+pack pk_wigglytuff colo
+empty
+
+pack popo melee
+attack audio/us/ice.ssm 28 32000 7944
+attack audio/us/ice.ssm 29 32000 15067
+attack audio/us/ice.ssm 30 32000 10929
+attack audio/us/ice.ssm 31 32000 24640
+attack audio/us/ice.ssm 32 32000 8746
+dizzy audio/us/ice.ssm 35 32000 27308
+hurt audio/us/ice.ssm 43 32000 7119
+hurt_big audio/us/ice.ssm 36 32000 26400
+hurt_big audio/us/ice.ssm 37 32000 27893
+ko audio/us/ice.ssm 41 32000 21973
+ko_star audio/us/ice.ssm 34 32000 93225
+lift audio/us/ice.ssm 38 32000 10986
+sleep audio/us/ice.ssm 39 32000 52053
+special audio/us/ice.ssm 33 32000 20617
+special audio/us/ice.ssm 42 32000 13920
+taunt audio/us/ice.ssm 4 32000 7035
+teeter audio/us/ice.ssm 40 32000 6937
+
+pack porygon2 melee
+cry audio/us/pokemon.ssm 33 16000 9888
+exit audio/us/pokemon.ssm 33 16000 9888
+
+pack raikou melee
+attack audio/us/pokemon.ssm 38 16000 4248
+attack audio/us/pokemon.ssm 39 16000 12767
+cry audio/us/pokemon.ssm 37 16000 22482
+
+pack roy melee
+attack audio/us/emblem.ssm 6 32000 9706
+attack audio/us/emblem.ssm 7 32000 8426
+attack audio/us/emblem.ssm 8 32000 5493
+attack audio/us/emblem.ssm 9 32000 11840
+attack audio/us/emblem.ssm 10 32000 11733
+attack audio/us/emblem.ssm 11 32000 20160
+attack audio/us/emblem.ssm 12 32000 16267
+attack audio/us/emblem.ssm 13 32000 8000
+attack audio/us/emblem.ssm 14 32000 12213
+attack audio/us/emblem.ssm 15 32000 10240
+cheer audio/us/emblem.ssm 16 32000 26827
+cheer audio/us/emblem.ssm 27 32000 41440
+cheer audio/us/emblem.ssm 28 32000 78186
+cheer audio/us/emblem.ssm 33 32000 66400
+dizzy audio/us/emblem.ssm 20 32000 13653
+hurt audio/us/emblem.ssm 35 32000 6826
+hurt_big audio/us/emblem.ssm 21 32000 9600
+hurt_big audio/us/emblem.ssm 22 32000 11147
+jump audio/us/emblem.ssm 26 32000 7360
+ko audio/us/emblem.ssm 31 32000 24053
+ko_star audio/us/emblem.ssm 19 32000 80887
+ledge audio/us/emblem.ssm 18 32000 7733
+lift audio/us/emblem.ssm 29 32000 3626
+sleep audio/us/emblem.ssm 34 32000 44586
+special audio/us/emblem.ssm 17 32000 23200
+special audio/us/emblem.ssm 23 32000 16267
+special audio/us/emblem.ssm 24 32000 9600
+special audio/us/emblem.ssm 25 32000 10453
+special audio/us/emblem.ssm 32 32000 19787
+teeter audio/us/emblem.ssm 30 32000 5067
+
+pack samus melee
+attack audio/us/samus.ssm 2 32000 10851
+attack audio/us/samus.ssm 3 32000 6629
+attack audio/us/samus.ssm 19 32000 9108
+attack audio/us/samus.ssm 1 32000 14187
+dizzy audio/us/samus.ssm 22 32000 11837
+jump audio/us/samus.ssm 23 32000 8270
+ko audio/us/samus.ssm 24 32000 30503
+ko_star audio/us/samus.ssm 21 32000 49818
+ledge audio/us/samus.ssm 20 32000 8074
+taunt audio/us/samus.ssm 5 32000 7698
+
+pack scizor melee
+attack audio/us/pokemon.ssm 12 32000 24150
+cry audio/us/pokemon.ssm 11 16000 20846
+
+pack sheik melee
+attack audio/us/zs.ssm 23 32000 6880
+attack audio/us/zs.ssm 24 32000 8853
+attack audio/us/zs.ssm 25 32000 8746
+attack audio/us/zs.ssm 26 32000 5813
+attack audio/us/zs.ssm 27 32000 6186
+cheer audio/us/zs.ssm 30 32000 35630
+cheer audio/us/zs.ssm 37 32000 16533
+dizzy audio/us/zs.ssm 32 32000 12266
+hurt audio/us/zs.ssm 43 32000 5226
+hurt_big audio/us/zs.ssm 33 32000 12213
+hurt_big audio/us/zs.ssm 34 32000 13333
+jump audio/us/zs.ssm 35 32000 6400
+ko audio/us/zs.ssm 40 32000 18133
+ko_star audio/us/zs.ssm 31 32000 88960
+ledge audio/us/zs.ssm 29 32000 3893
+lift audio/us/zs.ssm 36 32000 5120
+sleep audio/us/zs.ssm 38 32000 64907
+special audio/us/zs.ssm 28 32000 41485
+special audio/us/zs.ssm 41 32000 6293
+special audio/us/zs.ssm 42 32000 7627
+taunt audio/us/zs.ssm 22 32000 5973
+teeter audio/us/zs.ssm 39 32000 5280
+
+pack shyguy charged
+dazed audio/CHAR_SHYGUY_Sfx 8 32000 32838
+deke audio/CHAR_SHYGUY_Sfx 4 32000 14547
+deke audio/CHAR_SHYGUY_Sfx 21 44100 17220
+extra_2e95fbd4 audio/CHAR_SHYGUY_Sfx 7 32000 8570
+extra_2e95fbd4 audio/CHAR_SHYGUY_Sfx 5 32000 14874
+extra_2e95fbd4 audio/CHAR_SHYGUY_Sfx 6 32000 9547
+hurt audio/CHAR_SHYGUY_Sfx 16 32000 11758
+hurt audio/CHAR_SHYGUY_Sfx 15 32000 9058
+hurt audio/CHAR_SHYGUY_Sfx 14 32000 7345
+hurt_big audio/CHAR_SHYGUY_Sfx 17 32000 11321
+hurt_big audio/CHAR_SHYGUY_Sfx 18 32000 17848
+hurt_big audio/CHAR_SHYGUY_Sfx 19 32000 13189
+kick audio/CHAR_SHYGUY_Sfx 13 32000 4995
+kick audio/CHAR_SHYGUY_Sfx 12 32000 4591
+kick audio/CHAR_SHYGUY_Sfx 11 32000 6285
+ko audio/CHAR_SHYGUY_Sfx 20 32000 29584
+select audio/FE_GEN_Sfx 46 44100 23200
+shock audio/CHAR_SHYGUY_Sfx 9 32000 33871
+shock audio/CHAR_SHYGUY_Sfx 10 32000 18196
+skillshot audio/CHAR_SHYGUY_Sfx 2 44100 116786
+skillshot_goalie audio/CHAR_SHYGUY_Sfx 3 44100 10448
+skillshot_hit audio/CHAR_SHYGUY_Sfx 0 44100 47683
+special audio/CHAR_SHYGUY_Sfx 1 44100 15773
+
+pack snorlax melee
+cry audio/us/pokemon.ssm 13 16000 32283
+cry audio/us/pokemon.ssm 14 16000 26739
+
+pack staryu melee
+attack audio/us/pokemon.ssm 29 16000 4779
+cry audio/us/pokemon.ssm 28 16000 19228
+
+pack suicune melee
+attack audio/us/pokemon.ssm 41 16000 9278
+cry audio/us/pokemon.ssm 40 16000 16377
+
+pack togepi melee
+attack audio/us/pokemon.ssm 22 16000 8675
+cry audio/us/pokemon.ssm 21 16000 15573
+
+pack unown melee
+attack audio/us/pokemon.ssm 6 16000 56013
+
+pack venusaur melee
+attack audio/us/pokemon.ssm 25 8000 4786
+attack audio/us/pokemon.ssm 26 8000 3226
+cry audio/us/pokemon.ssm 24 16000 25080
+
+pack weezing melee
+attack audio/us/pokemon.ssm 2 32000 4373
+cry audio/us/pokemon.ssm 3 16000 19540
+
+pack wobbuffet melee
+cry audio/us/pokemon.ssm 20 16000 24701
+
+pack younglink melee
+attack audio/us/clink.ssm 5 32000 13835
+attack audio/us/clink.ssm 6 32000 5493
+attack audio/us/clink.ssm 7 32000 3893
+attack audio/us/clink.ssm 8 32000 15947
+attack audio/us/clink.ssm 9 32000 12000
+dizzy audio/us/clink.ssm 12 32000 11816
+hurt_big audio/us/clink.ssm 13 32000 11413
+jump audio/us/clink.ssm 14 32000 4373
+jump audio/us/clink.ssm 15 32000 3200
+ko audio/us/clink.ssm 20 32000 42613
+ko_star audio/us/clink.ssm 11 32000 42613
+lift audio/us/clink.ssm 18 32000 3200
+sleep audio/us/clink.ssm 21 32000 36480
+special audio/us/clink.ssm 10 32000 21013
+taunt audio/us/clink.ssm 16 32000 9333
+taunt audio/us/clink.ssm 17 32000 23307
+tech audio/us/clink.ssm 22 32000 4373
+teeter audio/us/clink.ssm 19 32000 18169
+
+pack zapdos melee
+flap audio/us/pokemon.ssm 34 16000 14742
+
+pack zelda melee
+attack audio/us/zs.ssm 2 32000 4853
+attack audio/us/zs.ssm 3 32000 5600
+attack audio/us/zs.ssm 4 32000 8456
+attack audio/us/zs.ssm 5 32000 6126
+attack audio/us/zs.ssm 6 32000 7248
+dizzy audio/us/zs.ssm 12 32000 5141
+hurt audio/us/zs.ssm 21 32000 2400
+hurt_big audio/us/zs.ssm 13 32000 13760
+hurt_big audio/us/zs.ssm 14 32000 16693
+ko audio/us/zs.ssm 20 32000 11200
+ko_star audio/us/zs.ssm 11 32000 94080
+lift audio/us/zs.ssm 15 32000 4506
+sleep audio/us/zs.ssm 16 32000 34666
+special audio/us/zs.ssm 7 32000 43616
+special audio/us/zs.ssm 8 32000 10554
+special audio/us/zs.ssm 9 32000 7936
+special audio/us/zs.ssm 10 32000 14338
+special audio/us/zs.ssm 17 32000 6187
+special audio/us/zs.ssm 18 32000 12107
+teeter audio/us/zs.ssm 19 32000 5226

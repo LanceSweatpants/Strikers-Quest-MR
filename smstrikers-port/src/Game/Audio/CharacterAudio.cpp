@@ -9,6 +9,7 @@
 
 #include "NL/nlMath.h"
 #include "NL/nlSingleton.h"
+#include "port/lineup.h"  // strikers-quest r78: the co-captain
 
 extern cTeam* g_pTeams[2];
 
@@ -840,6 +841,14 @@ cCharacter* cCharacterSFX::GetCharacterFromNisCharClass(NisCharacterClass charId
                 break;
             }
         }
+        // strikers-quest r79: or a side's co-captain (slot 1, include/port/lineup.h)
+        for (int team = 0; pChar == NULL && team < 2; team++)
+        {
+            if (PortSecondCaptain(team) == (int)charIdentifier)
+            {
+                pChar = g_pTeams[team]->GetFielder(1);
+            }
+        }
         break;
     case NIS_CHAR_CLASS_BIRDO:
     case NIS_CHAR_CLASS_HAMMERBROS:
@@ -849,7 +858,7 @@ cCharacter* cCharacterSFX::GetCharacterFromNisCharClass(NisCharacterClass charId
         {
             if ((u32)ConvertToCharacterClass(GameInfoManager::Instance()->GetSidekick((short)team)) == (u32)charIdentifier)
             {
-                pChar = g_pTeams[team]->GetFielder(1);
+                pChar = g_pTeams[team]->GetFielder(PortSecondCaptain(team) >= 0 ? 2 : 1);  // r78: past a co-captain
                 break;
             }
         }

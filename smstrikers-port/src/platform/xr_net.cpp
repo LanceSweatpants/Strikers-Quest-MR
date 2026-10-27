@@ -75,7 +75,13 @@ constexpr int kServerPort = 443;
 // the game's own numbers differ from an r49 headset's whenever a crowd chant or voice line picks one.
 // strikers-quest r63: 7, online co-op Cup: the hello says Friendly or cup (and how far the cup is),
 // the start can carry the host's whole cup.
-constexpr uint8_t kProtocol = 7;
+// r67: 8, guest characters in Choice; r67b: 9, and their own stats. r76: 10, franchise co-op (the kCoop
+// message, the start's 'F' tail, Choice.mode PORT_NET_MODE_FRANCHISE pairing only with its own kind).
+// r78: 11, the 'F' tail carries each side's co-captain (class, guest, stats). r79: 12, so does the choice
+// (a Grudge Match's co-captain, at its end). r80: 13, guest sidekicks keep their own stats at kick-off
+// (Team.cpp ResetCharacters): an r79 headset would play the same match differently. r86: 14, franchise
+// matches are 4 minutes (GameTweaks).
+constexpr uint8_t kProtocol = 14;
 
 uint64_t now_ms() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -389,7 +395,13 @@ void net_thread(uint64_t myId) {
 // Messages: [type][protocol][sender id: 8 bytes] then the body, little-endian.
 // ---------------------------------------------------------------------------------------------
 
-enum Type : uint8_t { kHello = 1, kStart = 2, kInput = 3, kHash = 4, kPing = 5, kPong = 6 };
+enum Type : uint8_t { kHello = 1, kStart = 2, kInput = 3, kHash = 4, kPing = 5, kPong = 6, kCoop = 7 };
+// r76: kCoop's first byte, franchise co-op: a status each second ([maker][has][in hub][id u32][version u32]),
+// a piece of a career file ([transfer u32][piece u32][pieces u32][total u32][id u32][version u32][size u32]
+// [bytes]), its receipt ([transfer u32]), a request for the friend's career, a match start ([id u32]
+// [version u32][watch game i32][serial u32]).
+enum CoopOp : uint8_t { kCoopStatus = 1, kCoopPiece = 2, kCoopGot = 3, kCoopAsk = 4, kCoopPlay = 5 };
+constexpr size_t kCoopPieceBytes = 3500;  // a piece + headers under the room server's 4096
 
 struct Writer {
   std::vector<uint8_t> v;
@@ -450,11 +462,58 @@ struct Choice {
   uint8_t mode = 0;
   uint32_t progress = 0;
   uint8_t maker = 0;  // r64: 1 = this headset made the room (Host an online match)
+  char guests[2][24] = {};  // r67: this side's guest captain and sidekick (pack names, "" none)
+  uint32_t statMask[2] = {};  // r67b: their own stats (bits = keys set), as this headset read them
+  float stats[2][28] = {};
+  // r79 (protocol 12): this side's Grudge Match co-captain (include/port/lineup.h): its class (-1 none), its
+  // guest (pack name, "" none) and that guest's own stats
+  int coCaptain = -1;
+  char coGuest[24] = {};
+  uint32_t coMask = 0;
+  float coStats[28] = {};
 };
 
 // r63, co-op Cup: this headset's cup at its match start (Game.cpp port_net_pack_cup) and its team's side.
 std::vector<uint8_t> g_localCup;
 int g_localCoopSide = 0;
+// r76, franchise co-op: this headset's whole match at its start (both sides, from its career), sent by
+// the host in the start's 'F' tail.
+PortNetMatch g_localFull{};
+
+// r76: franchise co-op between the matches (game thread): what each headset has, the career files
+// going over, and the host's match starts.
+struct Coop {
+  bool mineHas = false, mineInHub = false;
+  uint32_t mineId = 0, mineVersion = 0;
+  bool friendHeard = false, friendHas = false, friendInHub = false, friendMaker = false;
+  uint32_t friendId = 0, friendVersion = 0;
+  uint64_t lastStatusMs = 0;
+  // the career going to the friend: resent whole until they say they have it
+  std::string outText;
+  uint32_t outTransfer = 0, outId = 0, outVersion = 0;
+  bool outGot = true;
+  int outTries = 0;
+  uint64_t outLastMs = 0;
+  // one coming in, piece by piece
+  uint32_t inTransfer = 0, inPieces = 0, inTotal = 0, inId = 0, inVersion = 0, inDone = 0;
+  std::vector<std::string> inParts;
+  std::vector<bool> inHave;
+  bool taken = true;  // the last whole one handed to the franchise
+  std::string received;
+  uint32_t receivedId = 0, receivedVersion = 0;
+  std::string handedOut;  // what PortNetCoopTakeCareer's pointer shows
+  bool asked = false;     // the friend asked for this headset's career
+  // the host's match start
+  bool playIn = false;
+  uint32_t playId = 0, playVersion = 0, playSerial = 0, lastPlaySerial = 0;
+  int playWatch = -1;
+  bool playOut = false;
+  uint32_t outPlayId = 0, outPlayVersion = 0, outPlaySerial = 0;
+  int outPlayWatch = -1;
+  uint64_t outPlaySinceMs = 0, outPlayLastMs = 0;
+  std::string friendName;  // their team name, from their hello
+};
+Coop co;
 
 struct State {
   bool threadStarted = false;
@@ -562,6 +621,46 @@ void write_choice(Writer& w, const Choice& c) {
   w.u8(c.mode);  // r63
   w.u32(c.progress);
   w.u8(c.maker);  // r64
+  for (int g = 0; g < 2; ++g) {  // r67
+    const size_t n = strnlen(c.guests[g], sizeof(c.guests[g]) - 1);
+    w.u8(static_cast<uint8_t>(n));
+    w.bytes(c.guests[g], n);
+  }
+  for (int g = 0; g < 2; ++g) {  // r67b: the set keys' values, in key order
+    const uint32_t mask = c.statMask[g] & ((1u << 28) - 1u);
+    w.u32(mask);
+    for (int i = 0; i < 28; ++i) {
+      if ((mask & (1u << i)) == 0) continue;
+      uint32_t bits;
+      std::memcpy(&bits, &c.stats[g][i], 4);
+      w.u32(bits);
+    }
+  }
+  // r79: the co-captain: [class + 1 (0 none)][guest name][stat mask][the set keys' values]
+  w.u8(static_cast<uint8_t>(c.coCaptain >= 0 && c.coCaptain < 255 ? c.coCaptain + 1 : 0));
+  const size_t coN = strnlen(c.coGuest, sizeof(c.coGuest) - 1);
+  w.u8(static_cast<uint8_t>(coN));
+  w.bytes(c.coGuest, coN);
+  const uint32_t coMask = c.coMask & ((1u << 28) - 1u);
+  w.u32(coMask);
+  for (int i = 0; i < 28; ++i) {
+    if ((coMask & (1u << i)) == 0) continue;
+    uint32_t bits;
+    std::memcpy(&bits, &c.coStats[i], 4);
+    w.u32(bits);
+  }
+}
+
+// r79: a Friendly's co-captains, home from `home`'s pick and away from `away`'s
+void fill_co_captains(PortNetMatch& m, const Choice& home, const Choice& away) {
+  const Choice* side[2] = {&home, &away};
+  for (int s = 0; s < 2; ++s) {
+    m.coCaptains[s] = side[s]->coCaptain;
+    std::memcpy(m.coGuests[s], side[s]->coGuest, sizeof(m.coGuests[s]));
+    m.coGuests[s][sizeof(m.coGuests[s]) - 1] = '\0';
+    m.coStatMask[s] = side[s]->coMask;
+    std::memcpy(m.coStats[s], side[s]->coStats, sizeof(m.coStats[s]));
+  }
 }
 
 Choice read_choice(Reader& r) {
@@ -574,11 +673,39 @@ Choice read_choice(Reader& r) {
   c.mode = r.u8();  // r63
   c.progress = r.u32();
   c.maker = r.u8();  // r64
+  for (int g = 0; g < 2; ++g) {  // r67
+    const size_t n = std::min<size_t>(r.u8(), sizeof(c.guests[g]) - 1);
+    r.bytes(c.guests[g], n);
+    c.guests[g][n] = '\0';
+  }
+  for (int g = 0; g < 2; ++g) {  // r67b
+    c.statMask[g] = r.u32() & ((1u << 28) - 1u);
+    for (int i = 0; i < 28; ++i) {
+      if ((c.statMask[g] & (1u << i)) == 0) continue;
+      const uint32_t bits = r.u32();
+      std::memcpy(&c.stats[g][i], &bits, 4);
+    }
+  }
+  {  // r79: the co-captain
+    const uint8_t cls = r.u8();
+    c.coCaptain = cls == 0 ? -1 : static_cast<int>(cls) - 1;
+    const size_t n = std::min<size_t>(r.u8(), sizeof(c.coGuest) - 1);
+    r.bytes(c.coGuest, n);
+    c.coGuest[n] = '\0';
+    c.coMask = r.u32() & ((1u << 28) - 1u);
+    for (int i = 0; i < 28; ++i) {
+      if ((c.coMask & (1u << i)) == 0) continue;
+      const uint32_t bits = r.u32();
+      std::memcpy(&c.coStats[i], &bits, 4);
+    }
+  }
   return c;
 }
 
-// r63: a Friendly pairs only with a Friendly, a cup only with a cup (co-op).
-bool same_kind(const Choice& a, const Choice& b) { return (a.mode == 0) == (b.mode == 0); }
+// r63: a Friendly pairs only with a Friendly, a cup only with a cup (co-op). r76: a co-op franchise match
+// only with one.
+int kind_of(uint8_t mode) { return mode == 0 ? 0 : (mode == PORT_NET_MODE_FRANCHISE ? 2 : 1); }
+bool same_kind(const Choice& a, const Choice& b) { return kind_of(a.mode) == kind_of(b.mode); }
 
 void send_hello() {
   Writer w = header(kHello);
@@ -668,6 +795,87 @@ void compare_hash(uint32_t f) {
   }
 }
 
+// r76, franchise co-op: the start's 'F' tail, the host's whole match: [side both play on + 1 (0 = none,
+// watching)] [home team, sidekick, away team, sidekick, stadium: u32 each] then per side and role the
+// guest's pack name ([size u8][bytes]) and its stats ([mask u32][the set values]).
+void write_full(Writer& w, const PortNetMatch& m) {
+  w.u8('F');
+  // r100: 3 = an online league's game between two people (PORT_NET_COOP_VERSUS: each on their own club)
+  w.u8(static_cast<uint8_t>(m.coopSide == 0 || m.coopSide == 1 ? m.coopSide + 1 : (m.coopSide == PORT_NET_COOP_VERSUS ? 3 : 0)));
+  for (int s = 0; s < 2; ++s) {
+    w.u32(static_cast<uint32_t>(m.teams[s]));
+    w.u32(static_cast<uint32_t>(m.sidekicks[s]));
+  }
+  w.u32(static_cast<uint32_t>(m.stadium));
+  for (int s = 0; s < 2; ++s) {
+    for (int role = 0; role < 2; ++role) {
+      const size_t n = strnlen(m.guests[s][role], sizeof(m.guests[s][role]) - 1);
+      w.u8(static_cast<uint8_t>(n));
+      w.bytes(m.guests[s][role], n);
+      const uint32_t mask = m.guestStatMask[s][role] & ((1u << 28) - 1u);
+      w.u32(mask);
+      for (int i = 0; i < 28; ++i) {
+        if ((mask & (1u << i)) == 0) continue;
+        uint32_t bits;
+        std::memcpy(&bits, &m.guestStats[s][role][i], 4);
+        w.u32(bits);
+      }
+    }
+  }
+  // r78 (protocol 11): each side's co-captain: [class + 1 u8 (0 none)][guest: size u8, bytes][mask u32][values]
+  for (int s = 0; s < 2; ++s) {
+    w.u8(static_cast<uint8_t>(m.coCaptains[s] >= 0 && m.coCaptains[s] < 255 ? m.coCaptains[s] + 1 : 0));
+    const size_t n = strnlen(m.coGuests[s], sizeof(m.coGuests[s]) - 1);
+    w.u8(static_cast<uint8_t>(n));
+    w.bytes(m.coGuests[s], n);
+    const uint32_t mask = m.coStatMask[s] & ((1u << 28) - 1u);
+    w.u32(mask);
+    for (int i = 0; i < 28; ++i) {
+      if ((mask & (1u << i)) == 0) continue;
+      uint32_t bits;
+      std::memcpy(&bits, &m.coStats[s][i], 4);
+      w.u32(bits);
+    }
+  }
+}
+
+bool read_full(Reader& r, PortNetMatch* m) {
+  const uint8_t side = r.u8();
+  m->coopSide = side == 1 || side == 2 ? side - 1 : (side == 3 ? PORT_NET_COOP_VERSUS : -1);
+  for (int s = 0; s < 2; ++s) {
+    m->teams[s] = static_cast<int>(r.u32());
+    m->sidekicks[s] = static_cast<int>(r.u32());
+  }
+  m->stadium = static_cast<int>(r.u32());
+  for (int s = 0; s < 2; ++s) {
+    for (int role = 0; role < 2; ++role) {
+      const size_t n = std::min<size_t>(r.u8(), sizeof(m->guests[s][role]) - 1);
+      std::memset(m->guests[s][role], 0, sizeof(m->guests[s][role]));
+      r.bytes(m->guests[s][role], n);
+      m->guestStatMask[s][role] = r.u32() & ((1u << 28) - 1u);
+      for (int i = 0; i < 28; ++i) {
+        if ((m->guestStatMask[s][role] & (1u << i)) == 0) continue;
+        const uint32_t bits = r.u32();
+        std::memcpy(&m->guestStats[s][role][i], &bits, 4);
+      }
+    }
+  }
+  for (int s = 0; s < 2; ++s) {  // r78: the co-captains
+    const uint8_t cls = r.u8();
+    m->coCaptains[s] = cls == 0 ? -1 : static_cast<int>(cls) - 1;
+    const size_t n = std::min<size_t>(r.u8(), sizeof(m->coGuests[s]) - 1);
+    std::memset(m->coGuests[s], 0, sizeof(m->coGuests[s]));
+    r.bytes(m->coGuests[s], n);
+    m->coStatMask[s] = r.u32() & ((1u << 28) - 1u);
+    for (int i = 0; i < 28; ++i) {
+      if ((m->coStatMask[s] & (1u << i)) == 0) continue;
+      const uint32_t bits = r.u32();
+      std::memcpy(&m->coStats[s][i], &bits, 4);
+    }
+  }
+  return r.ok;
+}
+
 // The host has both choices: home = the host's pick, away = the guest's, the host's stadium and
 // settings, a fresh seed, and an input delay that covers the trip through the broker.
 void host_start() {
@@ -688,7 +896,9 @@ void host_start() {
   w.u8(local_edition());  // r43: the guest checks it too
   write_choice(w, st.localChoice);
   write_choice(w, st.peerChoice);
-  const bool coop = st.localChoice.mode != 0;
+  // r76: a co-op franchise match is no cup: its 'F' tail instead (below)
+  const bool franchise = st.localChoice.mode == PORT_NET_MODE_FRANCHISE;
+  const bool coop = st.localChoice.mode != 0 && !franchise;
   if (coop) {
     // r63, co-op Cup: 'C', the side both play on, the host's cup (the room server takes up to 4096
     // bytes a message; the biggest cup, a Super Bowser Cup with its knockout, is about 2.8 KB).
@@ -697,6 +907,7 @@ void host_start() {
     w.u32(static_cast<uint32_t>(g_localCup.size()));
     w.bytes(g_localCup.data(), g_localCup.size());
   }
+  if (franchise) write_full(w, g_localFull);  // r76
   st.startMsg = w.v;
   st.match = PortNetMatch{};
   st.match.teams[0] = st.localChoice.team;
@@ -707,10 +918,28 @@ void host_start() {
   st.match.optionsSize = st.localChoice.optionsSize;
   std::memcpy(st.match.options, st.localChoice.options, sizeof(st.match.options));
   st.match.mode = st.localChoice.mode;
+  std::memcpy(st.match.guests[0], st.localChoice.guests, sizeof(st.match.guests[0]));  // r67
+  std::memcpy(st.match.guests[1], st.peerChoice.guests, sizeof(st.match.guests[1]));
+  for (int g = 0; g < 2; ++g) {  // r67b
+    st.match.guestStatMask[0][g] = st.localChoice.statMask[g];
+    st.match.guestStatMask[1][g] = st.peerChoice.statMask[g];
+    std::memcpy(st.match.guestStats[0][g], st.localChoice.stats[g], sizeof(st.match.guestStats[0][g]));
+    std::memcpy(st.match.guestStats[1][g], st.peerChoice.stats[g], sizeof(st.match.guestStats[1][g]));
+  }
+  fill_co_captains(st.match, st.localChoice, st.peerChoice);  // r79 (a franchise start's come from 'F')
   if (coop) {
     st.match.coopSide = g_localCoopSide;
     st.match.cupSize = static_cast<int>(std::min(g_localCup.size(), sizeof(st.match.cup)));
     std::memcpy(st.match.cup, g_localCup.data(), static_cast<size_t>(st.match.cupSize));
+  }
+  if (franchise) {
+    // r76: the whole match from this headset's career (both sides), the host's settings
+    const PortNetMatch options = st.match;
+    st.match = g_localFull;
+    st.match.mode = PORT_NET_MODE_FRANCHISE;
+    st.match.optionsSize = options.optionsSize;
+    std::memcpy(st.match.options, options.options, sizeof(st.match.options));
+    st.match.cupSize = 0;
   }
   st.frame = 0;  // the friend's first inputs may arrive before this headset's frame 0
   std::memset(st.remoteTag, 0, sizeof(st.remoteTag));
@@ -718,7 +947,13 @@ void host_start() {
   st.startPending = true;
   send(st.startMsg);
   st.lastStartSendMs = now_ms();
-  if (coop) {
+  if (franchise && g_localFull.coopSide == PORT_NET_COOP_VERSUS) {
+    NLOG("net: starting the online league game as host: you the home club, the other person the away club "
+         "(round trip %u ms, input delay %d frames)", st.rttMs, st.delay);
+  } else if (franchise) {
+    NLOG("net: starting the co-op franchise match as host: you the captain and a sidekick, the friend the other "
+         "two (side %d, round trip %u ms, input delay %d frames)", g_localFull.coopSide, st.rttMs, st.delay);
+  } else if (coop) {
     NLOG("net: starting the online co-op cup match as host: your cup, you the captain and a sidekick, the "
          "friend the other two (round trip %u ms, input delay %d frames, cup %zu bytes)", st.rttMs, st.delay,
          g_localCup.size());
@@ -737,6 +972,177 @@ bool i_host() {
     if (st.localChoice.progress != st.peerChoice.progress) return st.localChoice.progress > st.peerChoice.progress;
   }
   return st.myId < st.peerId;
+}
+
+// ---------------------------------------------------------------------------------------------
+// r76, franchise co-op between the matches (include/port/xr_net.h PortNetCoop*)
+// ---------------------------------------------------------------------------------------------
+
+bool made_room() {
+  std::lock_guard<std::mutex> lock(sh.m);
+  return sh.roomMaker;
+}
+
+// Who runs the co-op career: the headset that made the room; else (both or neither did) the lower id.
+// The same rule as i_host's for the match start, so the career's host is the lockstep's host (pad 0:
+// the captain and a sidekick).
+bool coop_host() {
+  const bool mine = made_room();
+  if (co.friendHeard && mine != co.friendMaker) return mine;
+  return st.peerId == 0 || st.myId < st.peerId;
+}
+
+void send_coop_status() {
+  Writer w = header(kCoop);
+  w.u8(kCoopStatus);
+  w.u8(made_room() ? 1 : 0);
+  w.u8(co.mineHas ? 1 : 0);
+  w.u8(co.mineInHub ? 1 : 0);
+  w.u32(co.mineId);
+  w.u32(co.mineVersion);
+  send(std::move(w.v));
+  co.lastStatusMs = now_ms();
+}
+
+// The career going over, all its pieces (the friend says when it has them all).
+void send_career_pieces() {
+  const size_t total = co.outText.size();
+  const uint32_t pieces = static_cast<uint32_t>(std::max<size_t>(1, (total + kCoopPieceBytes - 1) / kCoopPieceBytes));
+  for (uint32_t i = 0; i < pieces; ++i) {
+    const size_t at = std::min(total, static_cast<size_t>(i) * kCoopPieceBytes);
+    const size_t n = std::min(kCoopPieceBytes, total - at);
+    Writer w = header(kCoop);
+    w.u8(kCoopPiece);
+    w.u32(co.outTransfer);
+    w.u32(i);
+    w.u32(pieces);
+    w.u32(static_cast<uint32_t>(total));
+    w.u32(co.outId);
+    w.u32(co.outVersion);
+    w.u32(static_cast<uint32_t>(n));
+    w.bytes(co.outText.data() + at, n);
+    send(std::move(w.v));
+  }
+  co.outLastMs = now_ms();
+  ++co.outTries;
+}
+
+void send_coop_got(uint32_t transfer) {
+  Writer w = header(kCoop);
+  w.u8(kCoopGot);
+  w.u32(transfer);
+  send(std::move(w.v));
+}
+
+void send_coop_play() {
+  Writer w = header(kCoop);
+  w.u8(kCoopPlay);
+  w.u32(co.outPlayId);
+  w.u32(co.outPlayVersion);
+  w.u32(static_cast<uint32_t>(co.outPlayWatch));
+  w.u32(co.outPlaySerial);
+  send(std::move(w.v));
+  co.outPlayLastMs = now_ms();
+}
+
+void handle_coop(Reader& r, const std::vector<uint8_t>& msg) {
+  const uint8_t op = r.u8();
+  if (!r.ok) return;
+  switch (op) {
+  case kCoopStatus: {
+    const bool maker = r.u8() != 0;
+    const bool has = r.u8() != 0;
+    const bool inHub = r.u8() != 0;
+    const uint32_t id = r.u32(), version = r.u32();
+    if (!r.ok) return;
+    if (!co.friendHeard || has != co.friendHas || inHub != co.friendInHub || id != co.friendId ||
+        version != co.friendVersion) {
+      NLOG("net: co-op: the friend %s a co-op career%s (career %u, version %u)%s", has ? "has" : "has no",
+           inHub ? ", open" : "", id, version, maker ? ", they made the room" : "");
+    }
+    co.friendMaker = maker;
+    co.friendHas = has;
+    co.friendInHub = inHub;
+    co.friendId = id;
+    co.friendVersion = version;
+    co.friendHeard = true;
+    break;
+  }
+  case kCoopPiece: {
+    const uint32_t transfer = r.u32(), piece = r.u32(), pieces = r.u32(), total = r.u32(), id = r.u32(),
+                   version = r.u32(), n = r.u32();
+    if (!r.ok || pieces == 0 || pieces > 200 || piece >= pieces || total > 700000 || n > kCoopPieceBytes || !r.need(n))
+      return;
+    if (transfer == co.inDone) {  // a resend of one already whole here: say so again
+      send_coop_got(transfer);
+      return;
+    }
+    if (transfer != co.inTransfer || co.inPieces != pieces) {
+      co.inTransfer = transfer;
+      co.inPieces = pieces;
+      co.inTotal = total;
+      co.inId = id;
+      co.inVersion = version;
+      co.inParts.assign(pieces, std::string());
+      co.inHave.assign(pieces, false);
+    }
+    if (!co.inHave[piece]) {
+      co.inParts[piece].assign(reinterpret_cast<const char*>(msg.data() + r.at), n);
+      co.inHave[piece] = true;
+    }
+    if (std::all_of(co.inHave.begin(), co.inHave.end(), [](bool b) { return b; })) {
+      std::string whole;
+      whole.reserve(co.inTotal);
+      for (const std::string& p : co.inParts) whole += p;
+      if (whole.size() == co.inTotal) {
+        co.received = std::move(whole);
+        co.receivedId = co.inId;
+        co.receivedVersion = co.inVersion;
+        co.taken = false;
+        co.inDone = transfer;
+        NLOG("net: co-op: the friend's career came in, %u bytes (career %u, version %u)", co.inTotal, co.inId,
+             co.inVersion);
+        send_coop_got(transfer);
+      } else {
+        NLOG("net: co-op: a career came in the wrong size (%zu of %u bytes), dropped", whole.size(), co.inTotal);
+      }
+      co.inParts.clear();
+      co.inHave.clear();
+      co.inTransfer = 0;
+    }
+    break;
+  }
+  case kCoopGot: {
+    const uint32_t transfer = r.u32();
+    if (r.ok && transfer == co.outTransfer && !co.outGot) {
+      co.outGot = true;
+      NLOG("net: co-op: the friend has the career (version %u, %zu bytes, %d sends)", co.outVersion, co.outText.size(),
+           co.outTries);
+    }
+    break;
+  }
+  case kCoopAsk:
+    co.asked = true;
+    NLOG("net: co-op: the friend asks for this headset's career");
+    break;
+  case kCoopPlay: {
+    const uint32_t id = r.u32(), version = r.u32();
+    const int watch = static_cast<int>(r.u32());
+    const uint32_t serial = r.u32();
+    if (!r.ok || serial == co.lastPlaySerial) return;
+    co.lastPlaySerial = serial;
+    co.playIn = true;
+    co.playId = id;
+    co.playVersion = version;
+    co.playWatch = watch;
+    co.playSerial = serial;
+    NLOG("net: co-op: the friend starts a match (career %u, version %u, %s)", id, version,
+         watch >= 0 ? "watching a game" : "your club's");
+    break;
+  }
+  default:
+    break;
+  }
 }
 
 void handle(const std::vector<uint8_t>& msg) {
@@ -790,6 +1196,8 @@ void handle(const std::vector<uint8_t>& msg) {
     st.peerLeftHoldMs = 0;
     st.rttCount = st.rttNext = 0;  // r39b: this friend's round trips only
     st.rttMs = 200;
+    co.friendHeard = false;  // r76: their co-op career as they say next
+    co.lastStatusMs = 0;     // (and this headset's, to them, now)
     NLOG("net: friend in the room");
   }
   st.peerSeenMs = now;
@@ -809,9 +1217,11 @@ void handle(const std::vector<uint8_t>& msg) {
       const size_t nameLen = std::min<size_t>(tail.u8(), 24);
       tail.bytes(name, nameLen);
       if (tail.ok && idLen > 0) xrhome::set_peer(std::string(id, idLen), std::string(name, nameLen));
+      if (tail.ok) co.friendName.assign(name, nameLen);  // r76
     }
     if (ready && !st.peerReady) {
-      NLOG("net: friend started a %s, waiting at the loading screen", c.mode != 0 ? "cup match (co-op)" : "Friendly");
+      NLOG("net: friend started a %s, waiting at the loading screen",
+           kind_of(c.mode) == 2 ? "co-op franchise match" : (c.mode != 0 ? "cup match (co-op)" : "Friendly"));
     }
     // r39b: the friend stopped waiting while this headset waits for them (see PortNetHoldMatchStart).
     if (ready) {
@@ -851,13 +1261,23 @@ void handle(const std::vector<uint8_t>& msg) {
         return;
       }
     }
+    // r76: a co-op franchise start: 'F', the host's whole match
+    bool franchise = false;
+    PortNetMatch full{};
+    if (r.ok && r.at < msg.size() && msg[r.at] == 'F') {
+      r.u8();
+      if (!read_full(r, &full)) return;
+      franchise = true;
+    }
     // r44c: optional, from the test friend only (tools/fakefriend): which side the computer plays.
     const uint8_t cpuPlays = r.ok && r.at < msg.size() ? r.u8() : 0;
     if (!r.ok || guest != st.myId || host != sender) return;
     // r43: never a match on the other Version (the hellos keep the two apart already).
     if (edition != local_edition()) return;
     if (st.online || st.startPending || !st.localReady) return;  // already going, or not at the start
-    if (coop != (st.localChoice.mode != 0)) return;  // r63: a cup only with a cup, a Friendly with a Friendly
+    // r63: a cup only with a cup, a Friendly with a Friendly; r76: a franchise match with one
+    if (franchise != (st.localChoice.mode == PORT_NET_MODE_FRANCHISE)) return;
+    if (coop != (st.localChoice.mode != 0 && !franchise)) return;
     st.isHost = false;
     st.seed = seed;
     st.delay = std::clamp(delay, 1, 60);
@@ -871,16 +1291,39 @@ void handle(const std::vector<uint8_t>& msg) {
     std::memcpy(st.match.options, home.options, sizeof(st.match.options));
     st.match.cpuPlays = cpuPlays == 1 ? 1 : 0;  // r44c: only the host's own side
     st.match.mode = home.mode;
+    std::memcpy(st.match.guests[0], home.guests, sizeof(st.match.guests[0]));  // r67
+    std::memcpy(st.match.guests[1], away.guests, sizeof(st.match.guests[1]));
+    for (int g = 0; g < 2; ++g) {  // r67b
+      st.match.guestStatMask[0][g] = home.statMask[g];
+      st.match.guestStatMask[1][g] = away.statMask[g];
+      std::memcpy(st.match.guestStats[0][g], home.stats[g], sizeof(st.match.guestStats[0][g]));
+      std::memcpy(st.match.guestStats[1][g], away.stats[g], sizeof(st.match.guestStats[1][g]));
+    }
+    fill_co_captains(st.match, home, away);  // r79
     if (coop) {
       st.match.coopSide = coopSide == 1 ? 1 : 0;
       st.match.cupSize = static_cast<int>(cup.size());
       std::memcpy(st.match.cup, cup.data(), cup.size());
     }
+    if (franchise) {
+      // r76: the host's whole match (both sides from its career), its settings
+      const PortNetMatch options = st.match;
+      st.match = full;
+      st.match.mode = PORT_NET_MODE_FRANCHISE;
+      st.match.optionsSize = options.optionsSize;
+      std::memcpy(st.match.options, options.options, sizeof(st.match.options));
+      st.match.cpuPlays = 0;
+    }
     st.frame = 0;  // the host's first inputs may arrive before this headset's frame 0
     std::memset(st.remoteTag, 0, sizeof(st.remoteTag));
     st.lastRemoteMs = 0;
     st.startPending = true;
-    if (coop) {
+    if (franchise && st.match.coopSide == PORT_NET_COOP_VERSUS) {
+      NLOG("net: starting the online league game as guest: you the away club (input delay %d frames)", st.delay);
+    } else if (franchise) {
+      NLOG("net: starting the co-op franchise match as guest: the friend's career, you two of the sidekicks "
+           "(side %d, input delay %d frames)", st.match.coopSide, st.delay);
+    } else if (coop) {
       NLOG("net: starting the online co-op cup match as guest: the friend's cup, you two of the sidekicks "
            "(input delay %d frames, cup %zu bytes)", st.delay, cup.size());
     } else {
@@ -906,6 +1349,9 @@ void handle(const std::vector<uint8_t>& msg) {
     if (r.at < msg.size()) xrvoice::take_incoming(msg.data() + r.at, msg.size() - r.at);  // r44
     break;
   }
+  case kCoop:  // r76, franchise co-op
+    handle_coop(r, msg);
+    break;
   case kHash: {
     const uint32_t f = r.u32();
     const uint32_t h = r.u32();
@@ -982,6 +1428,15 @@ void poll() {
     st.localReady = false;
     st.gaveUp = false;
     st.otherEditionMs = 0;  // r43: the old room's
+    {
+      // r76: and the old room's co-op talk (this headset's own career is told again by the franchise)
+      const Coop mine = co;
+      co = Coop{};
+      co.mineHas = mine.mineHas;
+      co.mineInHub = mine.mineInHub;
+      co.mineId = mine.mineId;
+      co.mineVersion = mine.mineVersion;
+    }
     // r39b: and anything still queued from or for the old room; the connection follows from here
     // (net_thread drops what the old link still brings in after this).
     std::lock_guard<std::mutex> lock(sh.m);
@@ -1057,6 +1512,28 @@ void poll() {
   sh.pinging = !st.online;
   if (!connected) return;
   if (!st.online && now - st.lastHelloMs > 500) send_hello();
+  // r76, franchise co-op: this headset's co-op career each second; a career going to the friend resent
+  // whole every 1.5 s until they have it (20 tries); the host's match start repeated until the friend
+  // waits at it too (their hello says so) or 20 s.
+  if (!st.online && !st.startPending) {
+    if (now - co.lastStatusMs > 1000) send_coop_status();
+    if (!co.outGot && peer_present() && now - co.outLastMs > 1500) {
+      if (co.outTries >= 20) {
+        co.outGot = true;
+        NLOG("net: co-op: the friend never said they have the career (version %u)", co.outVersion);
+      } else {
+        send_career_pieces();
+      }
+    }
+    if (co.playOut) {
+      const bool friendWaits = st.peerReady && st.peerChoice.mode == PORT_NET_MODE_FRANCHISE;
+      if (friendWaits || now - co.outPlaySinceMs > 20000) {
+        co.playOut = false;
+      } else if (now - co.outPlayLastMs > 400) {
+        send_coop_play();
+      }
+    }
+  }
   // Both at the loading screen: the lower id hosts (home side). r39b: on a recent hello (they come
   // every 0.5 s); the hold now waits out a quiet friend, whose last ready bit may be an old one.
   // r63: a Friendly with a Friendly, a cup with a cup (co-op); i_host picks who hosts.
@@ -1066,9 +1543,10 @@ void poll() {
       static uint64_t told = 0;
       if (now - told > 10000) {
         told = now;
+        static const char* const kKind[3] = {"Friendly", "cup match", "co-op franchise match"};
         NLOG("net: the friend waits at a %s and this headset at a %s: both need the same (two Friendlies, "
-             "or both in a cup for co-op)", st.peerChoice.mode != 0 ? "cup match" : "Friendly",
-             st.localChoice.mode != 0 ? "cup match" : "Friendly");
+             "both in a cup for co-op, or both in the co-op franchise)", kKind[kind_of(st.peerChoice.mode)],
+             kKind[kind_of(st.localChoice.mode)]);
       }
     } else if (i_host()) {
       host_start();
@@ -1212,6 +1690,18 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
     // r63: Friendly or cup; a cup's whole state and its team's side, for a co-op start as host.
     st.localChoice.mode = static_cast<uint8_t>(localChoice->mode);
     st.localChoice.progress = static_cast<uint32_t>(std::max(localChoice->cupProgress, 0));
+    for (int g = 0; g < 2; ++g) {  // r67: this side's guests; r67b: and their own stats
+      std::memcpy(st.localChoice.guests[g], localChoice->guests[side][g], sizeof(st.localChoice.guests[g]));
+      st.localChoice.guests[g][sizeof(st.localChoice.guests[g]) - 1] = '\0';
+      st.localChoice.statMask[g] = localChoice->guestStatMask[side][g];
+      std::memcpy(st.localChoice.stats[g], localChoice->guestStats[side][g], sizeof(st.localChoice.stats[g]));
+    }
+    // r79: this side's Grudge Match co-captain
+    st.localChoice.coCaptain = localChoice->coCaptains[side];
+    std::memcpy(st.localChoice.coGuest, localChoice->coGuests[side], sizeof(st.localChoice.coGuest));
+    st.localChoice.coGuest[sizeof(st.localChoice.coGuest) - 1] = '\0';
+    st.localChoice.coMask = localChoice->coStatMask[side];
+    std::memcpy(st.localChoice.coStats, localChoice->coStats[side], sizeof(st.localChoice.coStats));
     {
       std::lock_guard<std::mutex> lock(xrnet::sh.m);
       st.localChoice.maker = xrnet::sh.roomMaker ? 1 : 0;  // r64
@@ -1219,11 +1709,20 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
     xrnet::g_localCoopSide = localChoice->coopSide;
     xrnet::g_localCup.assign(localChoice->cup,
                              localChoice->cup + std::clamp(localChoice->cupSize, 0, static_cast<int>(sizeof(localChoice->cup))));
+    if (localChoice->mode == PORT_NET_MODE_FRANCHISE) {
+      // r76: the whole match from the career (the host sends it); no cup, no progress (i_host: who made
+      // the room, then the lower id, as the career's host)
+      xrnet::g_localFull = *localChoice;
+      xrnet::g_localCup.clear();
+      st.localChoice.progress = 0;
+    }
     st.localReady = true;
     st.readySinceMs = now;
     st.peerLeftHoldMs = 0;
     xrnet::send_hello();
-    const char* what = st.localChoice.mode != 0 ? "Cup match (co-op)" : "Friendly";
+    const char* what = st.localChoice.mode == PORT_NET_MODE_FRANCHISE ? "co-op franchise match"
+                       : st.localChoice.mode != 0                     ? "Cup match (co-op)"
+                                                                       : "Friendly";
     if (xrnet::peer_present()) {
       NLOG("net: %s started with the friend in the room: waiting for them to start one too", what);
     } else {
@@ -1253,7 +1752,11 @@ int waiting_for_friend() {
   return 2;
 }
 
-bool waiting_in_cup() { return st.localChoice.mode != 0; }
+bool waiting_in_cup() { return st.localChoice.mode != 0 && st.localChoice.mode != PORT_NET_MODE_FRANCHISE; }
+
+bool waiting_in_franchise() { return st.localChoice.mode == PORT_NET_MODE_FRANCHISE; }
+
+bool waiting_in_league() { return waiting_in_franchise() && g_localFull.coopSide == PORT_NET_COOP_VERSUS; }
 
 bool room_maker() {
   std::lock_guard<std::mutex> lock(sh.m);
@@ -1322,6 +1825,94 @@ extern "C" void PortNetNoteScore(int home, int away) {
   st.scoreSeen = true;
 }
 
+// r76, franchise co-op (include/port/xr_net.h): the franchise's side, all on the game thread.
+using xrnet::co;
+
+extern "C" int PortNetCoopFriend(void) {
+  return st.threadStarted && !st.room.empty() && xrnet::sh.connected.load() && xrnet::peer_present() ? 1 : 0;
+}
+
+extern "C" int PortNetCoopHost(void) { return xrnet::coop_host() ? 1 : 0; }
+
+extern "C" const char* PortNetCoopFriendName(void) { return co.friendName.c_str(); }
+
+extern "C" void PortNetCoopSetMine(int has, unsigned careerId, unsigned version, int inHub) {
+  const bool h = has != 0, in = inHub != 0;
+  if (h != co.mineHas || in != co.mineInHub || careerId != co.mineId || version != co.mineVersion) {
+    co.mineHas = h;
+    co.mineInHub = in;
+    co.mineId = careerId;
+    co.mineVersion = version;
+    co.lastStatusMs = 0;  // told at the next poll
+  }
+}
+
+extern "C" int PortNetCoopFriendCareer(int* has, unsigned* careerId, unsigned* version, int* inHub) {
+  if (!co.friendHeard || !xrnet::peer_present()) return 0;
+  *has = co.friendHas ? 1 : 0;
+  *careerId = co.friendId;
+  *version = co.friendVersion;
+  *inHub = co.friendInHub ? 1 : 0;
+  return 1;
+}
+
+extern "C" void PortNetCoopSendCareer(const char* text, int size, unsigned careerId, unsigned version) {
+  if (text == nullptr || size <= 0 || size > 700000) return;
+  static uint32_t count = 0;
+  co.outText.assign(text, static_cast<size_t>(size));
+  co.outTransfer = (static_cast<uint32_t>(st.myId) ^ (++count * 0x9E3779B9u)) | 1u;
+  co.outId = careerId;
+  co.outVersion = version;
+  co.outGot = false;
+  co.outTries = 0;
+  co.outLastMs = 0;  // sent at the next poll
+}
+
+extern "C" const char* PortNetCoopTakeCareer(int* size, unsigned* careerId, unsigned* version) {
+  if (co.taken) return nullptr;
+  co.taken = true;
+  co.handedOut = std::move(co.received);
+  co.received.clear();
+  *size = static_cast<int>(co.handedOut.size());
+  *careerId = co.receivedId;
+  *version = co.receivedVersion;
+  return co.handedOut.c_str();
+}
+
+extern "C" void PortNetCoopRequestCareer(void) {
+  if (!xrnet::sh.connected.load()) return;
+  xrnet::Writer w = xrnet::header(xrnet::kCoop);
+  w.u8(xrnet::kCoopAsk);
+  xrnet::send(std::move(w.v));
+}
+
+extern "C" int PortNetCoopTakeRequest(void) {
+  if (!co.asked) return 0;
+  co.asked = false;
+  return 1;
+}
+
+extern "C" void PortNetCoopSendPlay(unsigned careerId, unsigned version, int watchGame) {
+  std::random_device rd;
+  co.outPlayId = careerId;
+  co.outPlayVersion = version;
+  co.outPlayWatch = watchGame;
+  co.outPlaySerial = rd() | 1u;
+  co.playOut = true;
+  co.outPlaySinceMs = xrnet::now_ms();
+  co.outPlayLastMs = 0;
+  xrnet::send_coop_play();
+}
+
+extern "C" int PortNetCoopTakePlay(unsigned* careerId, unsigned* version, int* watchGame) {
+  if (!co.playIn) return 0;
+  co.playIn = false;
+  *careerId = co.playId;
+  *version = co.playVersion;
+  *watchGame = co.playWatch;
+  return 1;
+}
+
 // strikers-quest r45: the tournament match the panel's room is for ("" for none), with the room
 // (StrikersActivity, before nativeSetRoom); taken when the next online match starts.
 extern "C" JNIEXPORT void JNICALL Java_io_github_newcoke_strikers_StrikersActivity_nativeSetTourney(JNIEnv* env, jclass,
@@ -1369,6 +1960,52 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_newcoke_strikers_StrikersActivi
   xrnet::sh.roomSet = true;
 }
 
+// r100: an online league's match room (the league server's go), this headset hosting it (the home club's) or
+// not; null or "": back to the launcher's room as it was. Taken by poll() between matches, like a pick.
+extern "C" void PortNetLeagueRoom(const char* room, int host) {
+  static bool s_in = false;
+  static std::string s_room, s_tourney;
+  static bool s_maker = false;
+  std::lock_guard<std::mutex> lock(xrnet::sh.m);
+  if (!xrnet::sh.roomSet) {  // (the launcher's, as poll() would take it)
+    xrnet::sh.room = xrnet::sanitize_room(std::getenv("STRIKERS_ROOM"));
+    const char* tourney = std::getenv("STRIKERS_TOURNEY");
+    xrnet::sh.tourney = tourney != nullptr ? tourney : "";
+    const char* maker = std::getenv("STRIKERS_ROOM_MAKER");
+    xrnet::sh.roomMaker = maker != nullptr && maker[0] == '1';
+    xrnet::sh.roomSet = true;
+  }
+  const std::string code = xrnet::sanitize_room(room);
+  if (!code.empty()) {
+    if (!s_in) {
+      s_in = true;
+      s_room = xrnet::sh.room;
+      s_tourney = xrnet::sh.tourney;
+      s_maker = xrnet::sh.roomMaker;
+    }
+    xrnet::sh.room = code;
+    xrnet::sh.tourney.clear();
+    xrnet::sh.roomMaker = host != 0;  // (i_host: the maker hosts: the home club's headset)
+    NLOG("net: league game room %s (%s)", code.c_str(), host != 0 ? "hosting it" : "joining it");
+  } else if (s_in) {
+    s_in = false;
+    xrnet::sh.room = s_room;
+    xrnet::sh.tourney = s_tourney;
+    xrnet::sh.roomMaker = s_maker;
+    NLOG("net: league game over: back to room %s", s_room.empty() ? "(none)" : s_room.c_str());
+  }
+}
+
+// r100: the connection has moved to the league game's room (poll() took it): its match start can wait there.
+extern "C" int PortNetLeagueRoomReady(void) {
+  std::string want;
+  {
+    std::lock_guard<std::mutex> lock(xrnet::sh.m);
+    want = xrnet::sh.room;
+  }
+  return st.threadStarted && !want.empty() && st.room == want ? 1 : 0;
+}
+
 // strikers-quest r43: StrikersActivity, once a second: true once after an online match was refused
 // (online_note: the friend is on the other Version or another build), so the game goes back to the
 // launcher panel, which says why and has the Version button.
@@ -1386,6 +2023,8 @@ bool step(const NetPad&, NetPad*, NetPad*) { return false; }
 int local_pad() { return 0; }
 int waiting_for_friend() { return 0; }
 bool waiting_in_cup() { return false; }
+bool waiting_in_franchise() { return false; }
+bool waiting_in_league() { return false; }
 bool room_maker() { return false; }
 void cancel_wait() {}
 const char* room_code() { return ""; }
@@ -1401,5 +2040,18 @@ extern "C" void PortNetFrameEnd(unsigned int, int) {}
 extern "C" int PortNetLocalPad(void) { return 0; }
 extern "C" int PortNetOnline(void) { return 0; }
 extern "C" void PortNetNoteScore(int, int) {}
+extern "C" int PortNetCoopFriend(void) { return 0; }
+extern "C" int PortNetCoopHost(void) { return 1; }
+extern "C" const char* PortNetCoopFriendName(void) { return ""; }
+extern "C" void PortNetCoopSetMine(int, unsigned, unsigned, int) {}
+extern "C" int PortNetCoopFriendCareer(int*, unsigned*, unsigned*, int*) { return 0; }
+extern "C" void PortNetCoopSendCareer(const char*, int, unsigned, unsigned) {}
+extern "C" const char* PortNetCoopTakeCareer(int*, unsigned*, unsigned*) { return nullptr; }
+extern "C" void PortNetCoopRequestCareer(void) {}
+extern "C" int PortNetCoopTakeRequest(void) { return 0; }
+extern "C" void PortNetCoopSendPlay(unsigned, unsigned, int) {}
+extern "C" int PortNetCoopTakePlay(unsigned*, unsigned*, int*) { return 0; }
+extern "C" void PortNetLeagueRoom(const char*, int) {}
+extern "C" int PortNetLeagueRoomReady(void) { return 0; }
 
 #endif

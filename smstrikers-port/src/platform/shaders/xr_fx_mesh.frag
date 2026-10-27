@@ -61,8 +61,20 @@ float sdFlower(vec2 p, float r) {
     }
     return d;
 }
-// The captain's motif (theme = eCharacterClass + 1; 0 = no team yet).
+// r68c: the guests' own outlines (xr_fx make_etch, tools/outside/etchres.py): 8 x 8 cells of distance
+// (0.5 = the outline, a quarter of a cell either way over the range), one per guest in roster order.
+layout(set = 0, binding = 0) uniform sampler2D uEtch;
+float sdGuest(int cell, vec2 p) {
+    vec2 c = clamp(p, vec2(-0.5), vec2(0.5));
+    float outside = length(p - c);
+    vec2 uv = (vec2(float(cell % 8), float(cell / 8)) + vec2(c.x + 0.5, 0.5 - c.y)) / 8.0;
+    float d = (textureLod(uEtch, uv, 0.0).r - 128.0 / 255.0) * (255.0 / 127.0) * 0.25;
+    return d + outside;
+}
+// The captain's motif (theme = eCharacterClass + 1; 0 = no team yet; r68c: 100 + a guest's roster
+// place = its own outline).
 float motif(int theme, vec2 p) {
+    if (theme >= 100) return sdGuest(theme - 100, p);
     int c = theme - 1;
     if (c == 0 || c == 7) return sdHeart((p + vec2(0.0, 0.32)) * 1.6) / 1.6;      // Birdo, Peach
     if (c == 1) return sdFlower(p, 0.2);                                            // Daisy
@@ -267,6 +279,29 @@ void main() {
             shine = 14.0;
         }
         glow = vParams.w;
+    } else if (shape == 61) {
+        // r89: the home corner's rug: the captain's main colour with a border and a ring of the second, its
+        // emblem (vParams.y as a banner's) in white on a disc of the second in the middle, a soft pile.
+        float r = length(p.xz);
+        int theme = int(vParams.y + 0.5);
+        base = c1;
+        if (r > 0.44 || abs(r - 0.33) < 0.016) base = c2;
+        if (abs(r - 0.47) < 0.008) base = vec3(1.0, 0.82, 0.3);  // a gold thread round the border
+        float disc = r - 0.2;
+        vec2 q = vec2(p.x, -p.z) / (1.9 * 0.2);
+        float d = motif(theme, q);
+        float aa = max(fwidth(d), 1e-4);
+        float aad = max(fwidth(disc), 1e-5);
+        float inDisc = 1.0 - smoothstep(-aad, aad, disc);
+        float ring = 1.0 - smoothstep(0.0, 2.0 * aad, abs(disc + 0.006));
+        vec3 emb = mix(c2, vec3(1.0), 1.0 - smoothstep(-aa, aa, d));
+        emb *= 1.0 - 0.6 * (1.0 - smoothstep(0.0, 2.0 * aa, abs(d)));
+        base = mix(base, emb, inDisc);
+        base = mix(base, vec3(1.0, 0.82, 0.3), ring * 0.9);
+        base *= 0.9 + 0.1 * sin(p.x * 900.0 + sin(p.z * 300.0)) * sin(p.z * 900.0);  // the pile
+        spec = 0.06;
+        shine = 8.0;
+        glow = vParams.w;
     } else if (shape == 27) {
         // r61: the Super Strike ball: white with dark panels, glossy, glowing in the second colour.
         vec3 d = normalize(p);
@@ -317,6 +352,48 @@ void main() {
                     glow = 0.0;
                 }
             }
+        }
+    } else if (shape >= 40 && shape <= 60) {
+        // r82: the themed celebrations' pieces (xr_fx_mesh.h): the surface from aux: 0 glossy, 1 metal,
+        // 2 rough stone, 3 gem / ice (shining, a little glow), 4 wood.
+        spec = 0.5;
+        shine = 45.0;
+        if (aux > 0.5 && aux < 1.5) {
+            metal = true;
+        } else if (aux > 1.5 && aux < 2.5) {
+            float n = sin(p.x * 37.0) * sin(p.y * 41.0 + 1.3) * sin(p.z * 29.0 + 0.7);
+            base *= 0.78 + 0.22 * n;
+            spec = 0.06;
+            shine = 10.0;
+        } else if (aux > 2.5 && aux < 3.5) {
+            spec = 0.95;
+            shine = 90.0;
+            glow = 0.25 + 0.4 * vParams.w;
+        } else if (aux > 3.5) {
+            float grain = sin(p.y * 90.0 + sin(p.x * 40.0) * 2.0);
+            base *= 0.85 + 0.15 * grain;
+            spec = 0.2;
+            shine = 18.0;
+        }
+        if (shape == 43) {           // a Poke Ball: top half colour 1, bottom colour 2, a black band and button
+            base = p.y > 0.0 ? c1 : c2;
+            if (abs(p.y) < 0.045) base = vec3(0.03);
+            float r = length(p.xy);
+            if (p.z > 0.0 && r < 0.15) base = r < 0.1 ? vec3(0.97) : vec3(0.03);
+            spec = 0.8;
+            shine = 70.0;
+        } else if (shape == 49) {    // a pill: its two halves
+            base = p.y > 0.0 ? c1 : c2;
+            spec = 0.8;
+            shine = 70.0;
+        } else if (shape == 41 && mat == 0 && p.z > 0.0) {  // a shield's emblem: a triangle over a bar
+            vec2 q = p.xy - vec2(0.0, 0.1);
+            float tri = max(abs(q.x) * 0.866 + q.y * 0.5 - 0.11, -q.y - 0.1);
+            if (tri < 0.0 || (abs(p.y + 0.12) < 0.03 && abs(p.x) < 0.2)) base = c2;
+        } else if (shape == 60) {    // a pearl
+            spec = 0.9;
+            shine = 80.0;
+            glow = 0.12;
         }
     } else if (shape == 23) {        // r57: the shelf: wood with its grain, a gold trim, dark brackets
         if (mat == 0) {

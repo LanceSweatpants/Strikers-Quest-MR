@@ -3,6 +3,7 @@
 #include "NL/nlMemory.h"
 #include "NL/nlFile.h"
 #include "NL/nlPrint.h"
+#include "port/xr_guest.h"
 
 extern const unsigned short LocalizationTableNotFound[] = { 'L', 'o', 'c', 'a', 'l', 'i', 'z', 'a', 't', 'i', 'o', 'n', ' ', 'T', 'a', 'b', 'l', 'e', ' ', 'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd', 0 };
 extern const unsigned short MissingLocString[] = { 'm', 'i', 's', 's', 'i', 'n', 'g', ' ', 'l', 'o', 'c', ' ', 's', 't', 'r', 'i', 'n', 'g', 0 };
@@ -84,6 +85,8 @@ unsigned char nlLocalization::Load(nlLanguage Language, bool ingameloc)
 
     m_LookupTable = (StringLookup*)(m_pFile + 1);
     m_FirstString = (unsigned short*)(&m_LookupTable[m_pFile->StringCount]);
+    // strikers-quest r67: guest characters' names join the table (src/platform/xr_guest.cpp).
+    PortGuestLocInject(this);
     return 1;
 }
 

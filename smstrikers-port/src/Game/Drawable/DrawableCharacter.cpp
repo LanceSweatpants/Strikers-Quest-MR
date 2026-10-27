@@ -95,6 +95,7 @@ void Replayable(SaveFrame& frame, char typeId, cPoseNode*& poseNode)
 #include "Game/BasicStadium.h"
 #include "Game/GL/GLInventory.h"
 #include "NL/gl/glAppAttach.h"  // PORT: ResolvedWhiteTexture, at its real type
+#include "port/xr_guest.h"      // strikers-quest r65: guest characters
 #include "NL/gl/glView.h"
 #include "NL/gl/glModel.h"
 #include "NL/gl/glUserData.h"
@@ -315,6 +316,7 @@ void DrawableCharacter::Grab(cCharacter& character)
     }
 
     ScaleNodesAboutFeet(mPoseAccumulator, mPosition); // PORT (strikers-quest)
+    PortGuestNoteLive(mPoseAccumulator);              // strikers-quest r102: posed by its own controller
 
     EffectsTexturing* tex = character.m_pEffectsTexturing;
     if (tex == NULL)
@@ -745,6 +747,10 @@ void DrawableCharacter::SendToGl(const cCharacter& character) const
 
     pSpecularData = WorldManager::s_World->m_pSTSIntensity;
     glModel* pModel = glModelDup(skinMesh->pModel, true);
+    // strikers-quest r65: a guest character drawn in this one's place (include/port/xr_guest.h),
+    // with this character's material; NULL when it has none.
+    int nGuestModels = 0;
+    glModel** pGuestModels = PortGuestFrameModels(character, mPoseAccumulator, pModel, &nGuestModels);
 
     bool isVisible;
     if (nlTaskManager::m_pInstance->m_CurrState == 0x100 || sXrOwnMatrix)  // r42: the scorer is never the camera's
@@ -778,10 +784,15 @@ void DrawableCharacter::SendToGl(const cCharacter& character) const
 
     if (isVisible)
     {
-        glModelPacket* pPacket = pModel->packets;
         u32 dirtValue = (u32)(u8)(int)(63.0f * (1.0f - ((float)mDirt / 255.0f)));
 
-        for (; pPacket < pModel->packets + pModel->numPackets; pPacket++)
+        // r65: the character's own model, or each of its guest's.
+        const int nDrawModels = pGuestModels != nullptr ? nGuestModels : 1;
+        for (int nDraw = 0; nDraw < nDrawModels; nDraw++)
+        {
+        glModel* pDrawModel = pGuestModels != nullptr ? pGuestModels[nDraw] : pModel;
+        glModelPacket* pPacket = pDrawModel->packets;
+        for (; pPacket < pDrawModel->packets + pDrawModel->numPackets; pPacket++)
         {
             if (pLightData != nullptr)
             {
@@ -833,9 +844,25 @@ void DrawableCharacter::SendToGl(const cCharacter& character) const
                 glSetTextureState(pPacket->state.texturestate, (eGLTextureState)0xC, dirtValue);
             }
         }
+        }
 
+        if (pGuestModels != nullptr)
+        {
+            for (int nDraw = 0; nDraw < nGuestModels; nDraw++)
+                if (fxtex == nullptr || !PortGuestIsSparkleModel(pGuestModels[nDraw]))  // r94
+                    glViewAttachModel(GLV_Characters, pGuestModels[nDraw]);
+        }
+        else
+        {
         u8 isMapped = 0;
-        if (character.m_uNormalTextureID != character.m_uSwapTextureID)
+        // strikers-quest r68c: a sidekick's or keeper's kit in its guest captain's own colours.
+        const unsigned long guestKit = PortGuestKitTexture(character);
+        if (guestKit != 0 && character.m_uNormalTextureID != 0 && character.m_uNormalTextureID != (u32)-1)
+        {
+            gl_ModifyAddMapping(GLMod_DiffuseTex, character.m_uNormalTextureID, guestKit);
+            isMapped = 1;
+        }
+        else if (character.m_uNormalTextureID != character.m_uSwapTextureID)
         {
             gl_ModifyAddMapping(GLMod_DiffuseTex, character.m_uNormalTextureID, character.m_uSwapTextureID);
             isMapped = 1;
@@ -851,6 +878,7 @@ void DrawableCharacter::SendToGl(const cCharacter& character) const
         if (isMapped != 0)
         {
             gl_ModifyClearLastMapping();
+        }
         }
     }
 
@@ -947,14 +975,16 @@ void DrawableCharacter::SendToGl(const cCharacter& character) const
             params.fRadius = g_fRadiusScale * fRadius;
             params.fHeight = s_fHeightFudge * fHeight;
             params.fWidth = params.fHeight;
-            params.pModel = pModel;
+            params.pModel = pGuestModels != nullptr ? pGuestModels[0] : pModel;  // r65: a guest's shadow is its own
             params.nPartitionIndex = GetShadowPartitionIndex();
             params.nVisibleInterval = g_nOnscreenUpdate[characterSizeIndex];
             params.nInvisibleInterval = g_nOffscreenUpdate[characterSizeIndex];
 
             if (ShouldShadowBeUpdated(params))
             {
-                params.pModel = glModelDupNoStreams(pModel, true, false);
+                // strikers-quest r67b: a guest's shadow from its own model (world-space vertices with
+                // the character's own matrix handle, like its skin's), not the Strikers character's.
+                params.pModel = glModelDupNoStreams(pGuestModels != nullptr ? pGuestModels[0] : pModel, true, false);
                 RenderCharacterIntoTexture(params);
             }
 
@@ -1056,6 +1086,7 @@ void DrawableCharacter::Blend(const float* blendFactors, const DrawableCharacter
         mPoseAccumulator = new (nlMalloc(sizeof(cPoseAccumulator), 8, false)) cPoseAccumulator(lhs.mPoseAccumulator->m_BaseSHierarchy, false);
     }
     mPoseAccumulator->InitAccumulators();
+    PortGuestNoteBlend(mPoseAccumulator, lhs.mPoseAccumulator, rhs.mPoseAccumulator, *blendFactors); // strikers-quest r102
     const float rhsWeight = *blendFactors;
     RotAccum* lhsRot;
     RotAccum* rhsRot;
@@ -1131,6 +1162,7 @@ void DrawableCharacter::EvaluateFrom(const cPoseNode& poseNode, const nlVector3&
     mPoseAccumulator->InitAccumulators();
 
     poseNode.Evaluate(1.0f, mPoseAccumulator);
+    PortGuestNoteTree(mPoseAccumulator, &poseNode); // strikers-quest r102: the cut-scene's clip, for a guest
 
     mEffectsTexturing = fxGetTexturing(eFXTex_Nothing);
 
@@ -1267,6 +1299,7 @@ void DrawableCharacter::Replay(T& frame)
     {
         mPoseAccumulator->InitAccumulators();
         mPoseTree->Evaluate(1.0f, mPoseAccumulator);
+        PortGuestNoteTree(mPoseAccumulator, mPoseTree); // strikers-quest r102: the replay's clip, for a guest
 
         BuildNodeMatrices();
 

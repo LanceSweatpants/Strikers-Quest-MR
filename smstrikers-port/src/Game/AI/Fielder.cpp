@@ -1,6 +1,8 @@
 #include "port/region.h"  // PORT: one binary, three discs
 #include "Game/AI/Fielder.h"
+#include "port/lineup.h"  // strikers-quest r79
 #include "port/xr_quest.h" // strikers-quest: item-use log
+#include "port/franchise.h" // strikers-quest r73: a nemesis hunting your captain
 #include "Game/MathHelpers.h"
 #include "Game/AI/FielderActions.h"
 #include "Game/AI/AIPlay.h"
@@ -2613,7 +2615,33 @@ cFielder* cFielder::DoFindBestHitTarget()
     if (GetGlobalPad() == NULL)
     {
         FuzzyVariant vBestTarget = Fuzzy::GetBestHitTarget(this);
-        return (cFielder*)vBestTarget.mData.pPlayer;
+        cFielder* pBest = (cFielder*)vBestTarget.mData.pPlayer;
+        // strikers-quest r73 (Lance: a nemesis hunts you, subtly): in a franchise match against your
+        // nemesis's club, now and then a hit goes for your captain instead, when it is about as near
+        // as the one the game picked. Offline franchise matches only (0 everywhere else).
+        const float hunt = PortFranchiseHunt(m_pTeam->m_nSide, (cPlayer*)m_pTeam->GetCaptain() == (cPlayer*)this);
+        if (hunt > 0.0f)
+        {
+            cFielder* pCaptain = m_pTeam->GetOtherTeam()->GetCaptain();
+            if (pCaptain != NULL && pCaptain != pBest && !pCaptain->IsFallenDown(0.0f) &&
+                pCaptain->m_tFrozenTimer.m_uPackedTime == 0 &&
+                !(pCaptain->m_ePowerup == POWER_UP_STAR && pCaptain->m_tPowerupEffectTime.m_uPackedTime != 0) &&
+                !pCaptain->mActionShootToScoreVars.isCurrentlyInvincible)
+            {
+                float dx = pCaptain->m_v3Position.x - m_v3Position.x, dy = pCaptain->m_v3Position.y - m_v3Position.y;
+                const float dc = nlSqrt(dx * dx + dy * dy, true);
+                float db = 1e9f;
+                if (pBest != NULL)
+                {
+                    dx = pBest->m_v3Position.x - m_v3Position.x;
+                    dy = pBest->m_v3Position.y - m_v3Position.y;
+                    db = nlSqrt(dx * dx + dy * dy, true);
+                }
+                if (dc < 4.0f && dc <= db + 1.0f && PortFranchiseHuntRoll(hunt))
+                    pBest = pCaptain;
+            }
+        }
+        return pBest;
     }
 
     float fBestScore = 99999.9f;
@@ -3861,8 +3889,8 @@ void cFielder::CleanActionShootToScore()
 
     g_pBall->m_pDrawableBall->m_uObjectFlags &= ~0x40;
 
-    BasicString<char, Detail::TempStringAllocator> effectName(
-        GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)this->m_pTeam->m_nSide)));
+    BasicString<char, Detail::TempStringAllocator> effectName(GetTeamName((eTeamID)PortStsTeam(this->m_pTeam->m_nSide,
+        (int)m_eCharacterClass, (int)nlSingleton<GameInfoManager>::Instance()->GetTeam((s16)this->m_pTeam->m_nSide))));  // r79
     effectName.AppendInPlace("_captain_sts_effect");
     EffectsGroup* pGroup = fxGetGroup(effectName.c_str());
     KillEffect(pGroup);

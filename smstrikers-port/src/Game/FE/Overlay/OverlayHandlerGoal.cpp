@@ -11,7 +11,13 @@
 #include "NL/nlFormat.h"
 #include "NL/nlLocalization.h"
 
+#include "port/lineup.h"
+
 extern cTeam* g_pTeams[];
+
+// strikers-quest r79: the co-captain's goals (slot 1 with a captain class, include/port/lineup.h). They stay
+// in mSidekickGoals too, so the score sums are the game's; the sidekick count shown takes them out.
+static int s_coCaptainGoals[2] = {0, 0};
 
 static inline const unsigned short* LookupLocHash(unsigned long key)
 {
@@ -57,6 +63,7 @@ GoalOverlay::GoalOverlay()
     mCaptainGoals[1] = 0;
     mSidekickGoals[0] = 0;
     mSidekickGoals[1] = 0;
+    s_coCaptainGoals[0] = s_coCaptainGoals[1] = 0;
 }
 
 /**
@@ -159,6 +166,7 @@ void GoalOverlay::eventHandler(Event* event, void* param)
         pGoal->mCaptainGoals[1] = 0;
         pGoal->mSidekickGoals[0] = 0;
         pGoal->mSidekickGoals[1] = 0;
+        s_coCaptainGoals[0] = s_coCaptainGoals[1] = 0;
         pGoal->mIsInOvertime = false;
     }
 }
@@ -169,6 +177,7 @@ void GoalOverlay::Reset()
     mCaptainGoals[1] = 0;
     mSidekickGoals[0] = 0;
     mSidekickGoals[1] = 0;
+    s_coCaptainGoals[0] = s_coCaptainGoals[1] = 0;
     mIsInOvertime = false;
 }
 
@@ -276,6 +285,12 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
     pText->SetString(mClockBuffer);
     pText->m_bVisible = true;
 
+    // strikers-quest r79: a co-captain's goal is a captain's goal, his own count under his own name
+    const bool coGoal = !isSuperTeam && playerIndex == 1 && PortSecondCaptain(homeAway) >= 0;
+    if (coGoal)
+    {
+        s_coCaptainGoals[homeAway] += numGoals;
+    }
     if (playerIndex > 0)
     {
         mSidekickGoals[homeAway] += numGoals;
@@ -329,6 +344,26 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
                 formatted = Format(unformatted, captain);
             }
         }
+        else if (coGoal && GetLOCCoCaptainName(homeAway) != 0)
+        {
+            // strikers-quest r79: the captain lines with the co-captain's name and goals
+            const unsigned long coName = GetLOCCoCaptainName(homeAway);
+            BasicString<unsigned short, Detail::TempStringAllocator> captain(LookupLocHash(coName));
+            if (s_coCaptainGoals[homeAway] == 3)
+            {
+                unformatted = BasicString<unsigned short, Detail::TempStringAllocator>(LookupLocHash(0xD8976F68));
+                formatted = Format(unformatted, captain);
+            }
+            else
+            {
+                unformatted = BasicString<unsigned short, Detail::TempStringAllocator>(LookupLocHash(0x3DE2ABC1));
+                BasicString<char, Detail::TempStringAllocator> numGoalsString(
+                    LexicalCast<BasicString<char, Detail::TempStringAllocator>, int>(s_coCaptainGoals[homeAway]));
+                unsigned short goalsWideString[32];
+                nlStrToWcs(numGoalsString.c_str(), goalsWideString, 32);
+                formatted = Format(unformatted, goalsWideString, captain);
+            }
+        }
         else if (playerIndex == 0 && mCaptainGoals[homeAway] == 3 && !isSuperTeam)
         {
             unformatted = BasicString<unsigned short, Detail::TempStringAllocator>(LookupLocHash(0xD8976F68));
@@ -358,8 +393,10 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
             BasicString<unsigned short, Detail::TempStringAllocator> captain(
                 LookupLocHash(GetLOCTeamName((eTeamID)team)));
 
+            // strikers-quest r79: without the co-captain's
             BasicString<char, Detail::TempStringAllocator> numGoalsString(
-                LexicalCast<BasicString<char, Detail::TempStringAllocator>, int>(mSidekickGoals[homeAway]));
+                LexicalCast<BasicString<char, Detail::TempStringAllocator>, int>(mSidekickGoals[homeAway] -
+                                                                                 s_coCaptainGoals[homeAway]));
             unsigned short goalsWideString[32];
             nlStrToWcs(numGoalsString.c_str(), goalsWideString, 32);
 

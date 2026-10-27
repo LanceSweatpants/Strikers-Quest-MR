@@ -38,6 +38,11 @@ enum Id : uint8_t {
   // a ball (a unit across).
   kBanner, kPennant, kBall,
   kPedestal,  // r61: the cup suite's pedestal, a unit tall (wood column, gold trim, dark base)
+  // r82: the themed celebrations' pieces (C:\StrikersMR\CELEBRATION-THEMES.md), each about a unit tall.
+  // aux tells xr_fx_mesh.frag the surface: 0 glossy, 1 metal, 2 rough stone, 3 gem / ice, 4 wood.
+  kSword, kShield, kRod, kPokeBall, kDumbbell, kRock, kBone, kApple, kMissile, kPill,
+  kRupee, kTriforce, kIceBlock, kIcicle, kGlove, kNote, kBat, kShard, kNeedle, kYoyo,
+  kRug,  // r89: the home corner's round rug, a unit across, a little thick, face up (+y)
   kCount
 };
 
@@ -47,7 +52,7 @@ struct Range {
 
 struct Set {
   std::vector<Vertex> verts;
-  std::vector<uint16_t> indices;
+  std::vector<uint32_t> indices;  // r82: 32-bit (the themed pieces took the set past 16 bits)
   Range ranges[kCount];
 };
 
@@ -119,7 +124,7 @@ struct Builder {
     for (int j = 0; j < nv; ++j) {
       for (int k = 0; k < nu; ++k) {
         const uint32_t a = base + j * (nu + 1) + k, b = a + 1, c = a + (nu + 1), d = c + 1;
-        for (uint32_t i : {a, b, c, b, d, c}) out.indices.push_back(static_cast<uint16_t>(i));
+        for (uint32_t i : {a, b, c, b, d, c}) out.indices.push_back(i);
       }
     }
   }
@@ -186,9 +191,13 @@ struct Builder {
           const V3 p = c + nn * hn + s * (su * hss) + t * (tv * ht);
           out.verts.push_back(Vertex{{p.x, p.y, p.z}, {0, 0, 0}, {nn.x, nn.y, nn.z}, mat, 0.0f});
         }
-        for (uint32_t i : {0u, 1u, 2u, 1u, 3u, 2u}) out.indices.push_back(static_cast<uint16_t>(base + i));
+        for (uint32_t i : {0u, 1u, 2u, 1u, 3u, 2u}) out.indices.push_back(base + i);
       }
     }
+  }
+  // r82: the surface tag (aux) of the vertices added since `from`.
+  void tag(size_t from, float aux) {
+    for (size_t i = from; i < out.verts.size(); ++i) out.verts[i].aux = aux;
   }
   // Turns and moves the vertices added since `from`.
   void xform(size_t from, const M3& r, V3 t) {
@@ -555,6 +564,223 @@ inline Set build(float detail) {
   b.lathe_poly(1, 8, 0.0f, {{0.29f, -0.4f}, {0.22f, -0.38f}, {0.2f, 0.38f}, {0.24f, 0.4f}});
   b.lathe_poly(1, 8, 1.0f, {{0.24f, 0.4f}, {0.3f, 0.42f}, {0.3f, 0.5f}, {0.0f, 0.5f}});
   finish(kPedestal);
+
+  // ---- r82: the themed celebrations' pieces (C:\StrikersMR\CELEBRATION-THEMES.md) ----
+  auto tagged = [&](float aux, auto add) {
+    const size_t from = set.verts.size();
+    add();
+    b.tag(from, aux);
+  };
+  auto placed = [&](float aux, const M3& r, V3 t, auto add) {
+    const size_t from = set.verts.size();
+    add();
+    b.tag(from, aux);
+    b.xform(from, r, t);
+  };
+
+  // A sword along +y: a diamond-section steel blade with a point (detail colour, metal), a crossguard
+  // and pommel (main colour), a dark grip.
+  start(kSword);
+  tagged(1.0f, [&] {
+    b.patch(4, n(8, 4), 1.0f,
+            [](float u, float v) {
+              const float w = 0.052f * (1.0f - 0.97f * smooth(0.8f, 1.0f, v));
+              const float a = 2.0f * kPi * u;
+              return V3{w * std::cos(a), -0.1f + 0.62f * v, 0.22f * w * std::sin(a)};
+            },
+            none);
+  });
+  tagged(0.0f, [&] { b.box({0.0f, -0.11f, 0.0f}, {0.15f, 0.022f, 0.032f}, 0.0f); });
+  tagged(0.0f, [&] { b.lathe(1, n(10, 6), 1, 3.0f, [](float, float v) { return RH{0.028f, -0.4f + 0.28f * v}; }, none); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, -0.43f, 0.0f}, [&] { b.ellipsoid(n(10, 6), n(6, 3), 0.0f, 0.045f, 0.045f, 0.045f); });
+  finish(kSword);
+
+  // A shield facing +z: a heater shape (main colour; the shader paints its emblem in the detail
+  // colour), a steel rim behind its edge.
+  start(kShield);
+  {
+    auto outline = [](float scale) {
+      return [scale](float t) {
+        const float s = std::sin(t), c = std::cos(t);
+        const float x = 0.38f * s * (c < 0.0f ? 1.0f + 0.55f * c : 1.0f);
+        const float y = c >= 0.0f ? 0.44f * std::pow(c, 0.25f) : 0.52f * c;
+        return RH{x * scale, y * scale};
+      };
+    };
+    auto bend = [](float x, float) { return -0.22f * x * x; };
+    tagged(0.0f, [&] { b.puffy(n(32, 14), n(6, 3), 0.0f, 0.0f, 0.0f, 0.05f, 0.35f, outline(1.0f), bend); });
+    placed(1.0f, rot_y(0.0f), V3{0.0f, 0.0f, -0.012f},
+           [&] { b.puffy(n(32, 14), n(4, 2), 2.0f, 0.0f, 0.0f, 0.035f, 0.3f, outline(1.07f), bend); });
+  }
+  finish(kShield);
+
+  // A lightning rod: a copper rod with a point (detail colour, metal), a glass ball on it (main
+  // colour, glowing), a dark base.
+  start(kRod);
+  tagged(1.0f, [&] { b.lathe(1, n(8, 5), 1, 1.0f, [](float, float v) { return RH{0.022f, -0.44f + 0.8f * v}; }, none); });
+  tagged(1.0f, [&] { b.lathe_poly(1, n(8, 5), 1.0f, {{0.022f, 0.36f}, {0.0f, 0.5f}}); });
+  placed(3.0f, rot_y(0.0f), V3{0.0f, 0.06f, 0.0f}, [&] { b.ellipsoid(n(14, 8), n(8, 4), 0.0f, 0.075f, 0.075f, 0.075f); });
+  tagged(1.0f, [&] { b.lathe_poly(1, n(12, 6), 3.0f, {{0.0f, -0.5f}, {0.09f, -0.5f}, {0.09f, -0.44f}, {0.0f, -0.44f}}); });
+  finish(kRod);
+
+  // A Poke Ball (the shader paints its halves, band and button).
+  start(kPokeBall);
+  b.ellipsoid(n(24, 12), n(14, 6), 0.0f, 0.5f, 0.5f, 0.5f);
+  finish(kPokeBall);
+
+  // A dumbbell lying along x: a steel bar (detail colour), two plates each end (main colour).
+  start(kDumbbell);
+  tagged(1.0f, [&] { b.lathe(0, n(10, 6), 1, 1.0f, [](float, float v) { return RH{0.035f, -0.46f + 0.92f * v}; }, none); });
+  for (float side : {-1.0f, 1.0f}) {
+    const float x0 = side < 0.0f ? -0.4f : 0.2f, x1 = side < 0.0f ? -0.2f : 0.4f;
+    tagged(0.0f, [&] { b.lathe_poly(0, n(20, 10), 0.0f, {{0.0f, x0}, {0.2f, x0}, {0.2f, x1}, {0.0f, x1}}); });
+  }
+  finish(kDumbbell);
+
+  // A rock: a lumpy ellipsoid (rough).
+  start(kRock);
+  tagged(2.0f, [&] {
+    b.patch(n(18, 8), n(10, 5), 0.0f,
+            [](float u, float v) {
+              const float phi = -0.5f * kPi + kPi * v, t = 2.0f * kPi * u;
+              const float r = 0.45f * (1.0f + 0.16f * std::sin(3.0f * t + 1.3f) * std::cos(2.0f * phi) +
+                                       0.1f * std::sin(5.0f * t + 3.0f * phi) + 0.07f * std::cos(4.0f * phi + 0.5f));
+              return V3{1.08f * r * std::cos(phi) * std::sin(t), 0.82f * r * std::cos(phi) * std::cos(t), r * std::sin(phi)};
+            },
+            none);
+  });
+  finish(kRock);
+
+  // A bone along y: a shaft and two knobs at each end (main colour).
+  start(kBone);
+  tagged(0.0f, [&] { b.lathe(1, n(10, 6), 1, 0.0f, [](float, float v) { return RH{0.045f, -0.34f + 0.68f * v}; }, none); });
+  for (float sy : {-1.0f, 1.0f}) {
+    for (float sx : {-1.0f, 1.0f}) {
+      placed(0.0f, rot_y(0.0f), V3{0.065f * sx, 0.37f * sy, 0.0f},
+             [&] { b.ellipsoid(n(12, 6), n(8, 4), 0.0f, 0.085f, 0.085f, 0.085f); });
+    }
+  }
+  finish(kBone);
+
+  // An apple (main colour) with a dark stem and a leaf (detail colour).
+  start(kApple);
+  {
+    const std::vector<RH> prof = {{0.0f, -0.4f}, {0.24f, -0.42f}, {0.41f, -0.26f}, {0.46f, 0.0f},
+                                  {0.41f, 0.24f}, {0.27f, 0.38f}, {0.08f, 0.33f}, {0.0f, 0.3f}};
+    tagged(0.0f, [&] { b.lathe(1, n(22, 10), n(12, 6), 0.0f, [prof](float, float v) { return spline(prof, v); }, none); });
+  }
+  placed(4.0f, rot_z(-0.25f), V3{0.0f, 0.3f, 0.0f},
+         [&] { b.lathe(1, n(6, 4), 1, 3.0f, [](float, float v) { return RH{0.02f, 0.18f * v}; }, none); });
+  placed(0.0f, rot_z(-0.9f), V3{0.11f, 0.42f, 0.0f},
+         [&] { b.puffy(n(14, 6), n(4, 2), 1.0f, 0.0f, 0.0f, 0.015f, 0.5f, [](float t) { return RH{0.06f * std::sin(t), 0.13f * std::cos(t)}; }, flat); });
+  finish(kApple);
+
+  // A missile along y: body (main colour), nose and four fins (detail colour, metal).
+  start(kMissile);
+  tagged(0.0f, [&] { b.lathe_poly(1, n(14, 8), 0.0f, {{0.0f, -0.45f}, {0.12f, -0.45f}, {0.12f, 0.18f}}); });
+  tagged(1.0f, [&] { b.lathe_poly(1, n(14, 8), 1.0f, {{0.12f, 0.18f}, {0.07f, 0.36f}, {0.0f, 0.48f}}); });
+  for (int f = 0; f < 4; ++f) {
+    placed(1.0f, rot_y(0.5f * kPi * f), V3{0.0f, 0.0f, 0.0f}, [&] { b.box({0.17f, -0.34f, 0.0f}, {0.06f, 0.1f, 0.008f}, 1.0f); });
+  }
+  finish(kMissile);
+
+  // A capsule (Dr. Mario's pill) along y; the shader colours its halves.
+  start(kPill);
+  tagged(0.0f, [&] {
+    b.lathe(1, n(16, 8), n(6, 3), 0.0f,
+            [](float, float v) { const float phi = -0.5f * kPi + 0.5f * kPi * v; return RH{0.17f * std::cos(phi), -0.18f + 0.17f * std::sin(phi)}; },
+            none);
+    b.lathe(1, n(16, 8), 1, 0.0f, [](float, float v) { return RH{0.17f, -0.18f + 0.36f * v}; }, none);
+    b.lathe(1, n(16, 8), n(6, 3), 0.0f,
+            [](float, float v) { const float phi = 0.5f * kPi * v; return RH{0.17f * std::cos(phi), 0.18f + 0.17f * std::sin(phi)}; },
+            none);
+  });
+  finish(kPill);
+
+  // A rupee: a long hexagonal gem (main colour, a gem).
+  start(kRupee);
+  tagged(3.0f, [&] { b.lathe_poly(1, 6, 0.0f, {{0.0f, -0.5f}, {0.21f, -0.29f}, {0.21f, 0.29f}, {0.0f, 0.5f}}); });
+  finish(kRupee);
+
+  // The Triforce: three golden triangles facing +z (metal).
+  start(kTriforce);
+  {
+    const float R = 0.2887f * 0.94f;
+    const V3 at[3] = {{0.0f, 0.2887f, 0.0f}, {-0.25f, -0.1443f, 0.0f}, {0.25f, -0.1443f, 0.0f}};
+    for (const V3& c : at) {
+      placed(1.0f, rot_y(0.0f), c, [&] { b.lathe_poly(2, 3, 0.0f, {{0.0f, -0.05f}, {R, -0.05f}, {R, 0.05f}, {0.0f, 0.05f}}); });
+    }
+  }
+  finish(kTriforce);
+
+  // An ice block: a rounded cube (main colour, shining like a gem).
+  start(kIceBlock);
+  {
+    const size_t from = set.verts.size();
+    rbox(0.0f, 0.32f, 0.32f, 0.32f, 0.22f, V3{0.0f, 0.0f, 0.0f});
+    b.tag(from, 3.0f);
+  }
+  finish(kIceBlock);
+
+  // An icicle pointing down, rippled (main colour, ice).
+  start(kIcicle);
+  tagged(3.0f, [&] {
+    b.lathe(1, n(10, 6), n(10, 5), 0.0f,
+            [](float, float v) { return RH{0.13f * std::pow(v, 0.8f) * (1.0f + 0.1f * std::sin(18.0f * v)), -0.5f + v}; }, none);
+    b.lathe_poly(1, n(10, 6), 0.0f, {{0.13f * 0.98f, 0.5f}, {0.0f, 0.5f}});
+  });
+  finish(kIcicle);
+
+  // A boxing glove (main colour) with its thumb and a white cuff.
+  start(kGlove);
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.08f, 0.0f}, [&] { b.ellipsoid(n(18, 8), n(10, 5), 0.0f, 0.3f, 0.36f, 0.27f); });
+  placed(0.0f, rot_z(0.5f), V3{0.24f, -0.02f, 0.1f}, [&] { b.ellipsoid(n(12, 6), n(6, 3), 0.0f, 0.1f, 0.18f, 0.1f); });
+  tagged(0.0f, [&] {
+    b.lathe(1, n(16, 8), 1, 2.0f, [](float, float v) { return RH{0.21f, -0.48f + 0.26f * v}; }, none);
+    b.lathe_poly(1, n(16, 8), 2.0f, {{0.0f, -0.48f}, {0.21f, -0.48f}});
+  });
+  finish(kGlove);
+
+  // A music note (main colour): a tilted head, a stem and a flag.
+  start(kNote);
+  placed(0.0f, rot_z(0.4f), V3{-0.12f, -0.36f, 0.0f}, [&] { b.ellipsoid(n(16, 8), n(8, 4), 0.0f, 0.18f, 0.13f, 0.09f); });
+  tagged(0.0f, [&] { b.box({0.045f, 0.06f, 0.0f}, {0.024f, 0.42f, 0.024f}, 0.0f); });
+  placed(0.0f, rot_z(-0.9f), V3{0.15f, 0.34f, 0.0f}, [&] { b.ellipsoid(n(12, 6), n(6, 3), 0.0f, 0.15f, 0.05f, 0.035f); });
+  finish(kNote);
+
+  // A baseball bat along y (main colour, wood grain).
+  start(kBat);
+  {
+    const std::vector<RH> prof = {{0.0f, -0.5f}, {0.055f, -0.49f}, {0.055f, -0.455f}, {0.028f, -0.43f}, {0.03f, -0.1f},
+                                  {0.058f, 0.15f}, {0.074f, 0.38f}, {0.07f, 0.48f}, {0.0f, 0.5f}};
+    tagged(4.0f, [&] { b.lathe(1, n(14, 8), n(16, 8), 0.0f, [prof](float, float v) { return spline(prof, v); }, none); });
+  }
+  finish(kBat);
+
+  // A metal shard: a long jagged three-sided splinter (detail colour, metal).
+  start(kShard);
+  tagged(1.0f, [&] { b.lathe_poly(1, 3, 1.0f, {{0.0f, -0.5f}, {0.15f, -0.2f}, {0.09f, 0.32f}, {0.0f, 0.5f}}); });
+  finish(kShard);
+
+  // A pin / needle along y: steel (detail colour, metal) with a round head (main colour).
+  start(kNeedle);
+  tagged(1.0f, [&] { b.lathe_poly(1, n(8, 5), 1.0f, {{0.0f, -0.5f}, {0.018f, -0.3f}, {0.018f, 0.36f}, {0.0f, 0.36f}}); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.41f, 0.0f}, [&] { b.ellipsoid(n(10, 6), n(6, 3), 0.0f, 0.07f, 0.07f, 0.07f); });
+  finish(kNeedle);
+
+  // A yo-yo facing +z (main colour).
+  start(kYoyo);
+  tagged(0.0f, [&] {
+    b.lathe_poly(2, n(20, 10), 0.0f,
+                 {{0.0f, -0.2f}, {0.42f, -0.2f}, {0.46f, -0.16f}, {0.46f, -0.05f}, {0.1f, -0.03f},
+                  {0.1f, 0.03f}, {0.46f, 0.05f}, {0.46f, 0.16f}, {0.42f, 0.2f}, {0.0f, 0.2f}});
+  });
+  finish(kYoyo);
+
+  // r89: the home corner's rug: a flat disc a unit across, its edge rounded down to the floor.
+  start(kRug);
+  b.lathe_poly(1, n(48, 24), 0.0f, {{0.0f, 0.0f}, {0.5f, 0.0f}, {0.5f, 0.008f}, {0.485f, 0.016f}, {0.0f, 0.016f}});
+  finish(kRug);
 
   return set;
 }

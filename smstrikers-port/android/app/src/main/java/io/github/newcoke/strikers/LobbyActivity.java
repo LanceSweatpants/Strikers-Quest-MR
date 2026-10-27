@@ -34,6 +34,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -58,7 +59,9 @@ public class LobbyActivity extends Activity {
     // strikers-quest r44: the room server (src/platform/xr_net.cpp kServerHost) and the online protocol
     // (kProtocol there): quick match only pairs headsets that can play each other.
     private static final String SERVER_HOST = "strikers-rooms.strikers-rooms.workers.dev";
-    private static final int ONLINE_PROTOCOL = 7;  // r63: xr_net.cpp kProtocol (co-op Cup)
+    // r76: 10 = xr_net.cpp kProtocol (franchise co-op). It had stayed at 7 since r63 while the game went to 8, 9:
+    // quick match could pair builds that then refused each other.
+    private static final int ONLINE_PROTOCOL = 14;  // r78: the co-captains in the franchise start; r79: in the choice; r80: guest sidekicks' own stats; r86: 4-minute franchise matches
     private static final int REQUEST_MIC = 44;
     private int quickToken;          // r44: the search running (a newer one, or Cancel, ends it)
     private boolean searching;       // r44: the quick match page is up
@@ -159,6 +162,7 @@ public class LobbyActivity extends Activity {
         leaveTourneyPage();
         page.removeAllViews();
         onHome = true;
+        onGuests = false;
         title("Quest 3 Strikers", 30);
         if (update != null) {
             note(shortName(update) + " is out.").setTextColor(ACCENT);
@@ -176,6 +180,10 @@ public class LobbyActivity extends Activity {
         page.addView(button("Join with a code", false, v -> showJoin()));
         page.addView(button("Voice chat: " + (voiceOn() ? "On" : "Off"), false, v -> toggleVoice()));  // r44
         page.addView(button("Home ground", false, v -> showHomeGround()));  // r61
+        // strikers-quest 1.14: guests made on this headset from the player's own game files
+        page.addView(button("Guest characters", !io.github.newcoke.strikers.guests.GuestSetup.made(StrikersHome.homeDir(this)),
+                v -> showGuests()));
+        page.addView(button("Characters", false, v -> showCharacters()));  // r66: guest characters
         page.addView(button("Controls", false, v -> showControls()));  // r46
         page.addView(button("RetroAchievements", false, v -> showRetroAch()));  // r46
         page.addView(button("Choose game file", false, v -> showChooser(null, null)));
@@ -405,7 +413,7 @@ public class LobbyActivity extends Activity {
         String game = getPackageName() + ":game";
         for (ActivityManager.RunningAppProcessInfo p : running) {
             if (game.equals(p.processName)) {
-                android.util.Log.i("strikers", "Version changed: ending the game left running (pid " + p.pid + ")");
+                android.util.Log.i("strikers", "Version or characters changed: ending the game left running (pid " + p.pid + ")");
                 android.os.Process.killProcess(p.pid);
             }
         }
@@ -738,21 +746,59 @@ public class LobbyActivity extends Activity {
         return c >= 0 && c < CLASS_NAMES.length ? CLASS_NAMES[c] : "?";
     }
 
-    private int readHomePick() {
-        String t = readText(new File(StrikersHome.homeDir(this), "home-captain.txt"), 16).trim();
-        try {
-            return t.isEmpty() ? -1 : Integer.parseInt(t);
-        } catch (NumberFormatException e) {
-            return -1;
+    /** home-captain.txt: a Strikers captain's class number, r90 a guest's pack ("pk_geodude"), "-1" automatic. */
+    private String readHomePick() {
+        String t = readText(new File(StrikersHome.homeDir(this), "home-captain.txt"), 64).trim();
+        return t.isEmpty() ? "-1" : t;
+    }
+
+    private void writeHomePick(String pick) {
+        try (java.io.OutputStream out = new java.io.FileOutputStream(
+                new File(StrikersHome.homeDir(this), "home-captain.txt"))) {
+            out.write((pick + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // the pick is lost; the page shows the old one
         }
     }
 
-    private void writeHomePick(int captain) {
-        try (java.io.OutputStream out = new java.io.FileOutputStream(
-                new File(StrikersHome.homeDir(this), "home-captain.txt"))) {
-            out.write((captain + "\n").getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            // the pick is lost; the page shows the old one
+    /** r90: a guest captain on this headset (guests/roster.txt). */
+    private static final class HomeGuest {
+        final String pack, name, game;
+
+        HomeGuest(String pack, String name, String game) {
+            this.pack = pack;
+            this.name = name;
+            this.game = game;
+        }
+    }
+
+    /** r90: every guest captain this headset has, in roster order; an evolved Pokemon only once it's unlocked
+     *  (franchise/unlocked.txt), as on the character select menu. */
+    private List<HomeGuest> homeGuests() {
+        File home = StrikersHome.homeDir(this);
+        java.util.Set<String> unlocked = new java.util.HashSet<>();
+        for (String l : readText(new File(home, "franchise/unlocked.txt"), 64000).split("\n")) {
+            if (!l.trim().isEmpty()) unlocked.add(l.trim());
+        }
+        List<HomeGuest> out = new ArrayList<>();
+        for (String line : readText(new File(home, "guests/roster.txt"), 200000).split("\n")) {
+            if (line.startsWith("#")) continue;
+            String[] f = line.split("\t");
+            if (f.length < 5 || !f[1].trim().equals("captain")) continue;
+            String pack = f[0].trim();
+            if (f.length >= 6 && f[5].trim().equals("franchise") && !unlocked.contains(pack)) continue;
+            out.add(new HomeGuest(pack, f[3].trim(), f[4].trim()));
+        }
+        return out;
+    }
+
+    /** r90: a home-ground name: a class number's captain, or a guest pack's own name. */
+    private static String homeName(String classOrPack, java.util.Map<String, String> guestNames) {
+        try {
+            return className(Integer.parseInt(classOrPack));
+        } catch (NumberFormatException e) {
+            String n = guestNames.get(classOrPack);
+            return n != null ? n : classOrPack;
         }
     }
 
@@ -767,14 +813,21 @@ public class LobbyActivity extends Activity {
         return sb.toString();
     }
 
-    /** What xr_home.txt says, in a few lines. */
-    private String homeSummary() {
+    /** What xr_home.txt says, in a few lines (r90: imported captains by their own names). */
+    private String homeSummary(java.util.Map<String, String> guestNames) {
         String text = readText(new File(StrikersHome.homeDir(this), "xr_home.txt"), 8000);
         StringBuilder out = new StringBuilder();
         String cpuRival = null;
         int cpuGames = 1;  // two at least
         String onlineRival = null;
         int onlineGames = 0;
+        // r90: the imported captains of the last match / the first win ("lastguests <mine|-> <theirs|->")
+        String[] lastGuests = null, ticketGuests = null;
+        for (String line : text.split("\n")) {
+            String[] f = line.trim().split(" ");
+            if (f.length == 3 && f[0].equals("lastguests")) lastGuests = f;
+            if (f.length == 3 && f[0].equals("ticketguests")) ticketGuests = f;
+        }
         for (String line : text.split("\n")) {
             String[] f = line.trim().split(" ");
             if (f.length < 2) continue;
@@ -782,8 +835,12 @@ public class LobbyActivity extends Activity {
                 if (f[0].equals("last") && f.length >= 10) {
                     int mine = Integer.parseInt(f[3]), theirs = Integer.parseInt(f[4]);
                     boolean online = f[6].equals("1");
-                    String them = online ? joinFrom(f, 10) : className(Integer.parseInt(f[2]));
-                    out.append("Last match: ").append(className(Integer.parseInt(f[1]))).append(" ").append(mine)
+                    String me = lastGuests != null && !lastGuests[1].equals("-") ? homeName(lastGuests[1], guestNames)
+                                                                                 : className(Integer.parseInt(f[1]));
+                    String them = online ? joinFrom(f, 10)
+                            : (lastGuests != null && !lastGuests[2].equals("-") ? homeName(lastGuests[2], guestNames)
+                                                                                  : className(Integer.parseInt(f[2])));
+                    out.append("Last match: ").append(me).append(" ").append(mine)
                             .append(" - ").append(theirs).append(" ").append(them.isEmpty() ? "online friend" : them)
                             .append(f[5].equals("1") ? " (overtime)" : "").append("\n");
                 } else if (f[0].equals("cpu") && f.length >= 5) {
@@ -791,6 +848,13 @@ public class LobbyActivity extends Activity {
                     if (w + l + d > cpuGames) {
                         cpuGames = w + l + d;
                         cpuRival = className(Integer.parseInt(f[1])) + " (you " + w + " - " + l + " them"
+                                + (d > 0 ? ", " + d + " draws" : "") + ")";
+                    }
+                } else if (f[0].equals("gcpu") && f.length >= 6) {  // r90: an imported CPU captain's record
+                    int w = Integer.parseInt(f[3]), l = Integer.parseInt(f[4]), d = Integer.parseInt(f[5]);
+                    if (w + l + d > cpuGames) {
+                        cpuGames = w + l + d;
+                        cpuRival = homeName(f[1], guestNames) + " (you " + w + " - " + l + " them"
                                 + (d > 0 ? ", " + d + " draws" : "") + ")";
                     }
                 } else if (f[0].equals("online") && f.length >= 5) {
@@ -804,8 +868,12 @@ public class LobbyActivity extends Activity {
                     out.append("Comebacks: ").append(f[1]).append("   Super Strike goals: ").append(f[3])
                             .append("   Matches: ").append(f[4]).append("\n");
                 } else if (f[0].equals("ticket") && f.length >= 5) {
-                    out.append("First win: ").append(className(Integer.parseInt(f[1]))).append(" ").append(f[3])
-                            .append(" - ").append(f[4]).append(" ").append(className(Integer.parseInt(f[2]))).append("\n");
+                    String me = ticketGuests != null && !ticketGuests[1].equals("-") ? homeName(ticketGuests[1], guestNames)
+                                                                                     : className(Integer.parseInt(f[1]));
+                    String them = ticketGuests != null && !ticketGuests[2].equals("-") ? homeName(ticketGuests[2], guestNames)
+                                                                                       : className(Integer.parseInt(f[2]));
+                    out.append("First win: ").append(me).append(" ").append(f[3])
+                            .append(" - ").append(f[4]).append(" ").append(them).append("\n");
                 }
             } catch (RuntimeException e) {
                 // a line from another version: skipped
@@ -824,20 +892,271 @@ public class LobbyActivity extends Activity {
         note("Your home team's colours, your trophies, your rivals and what you earn show up around you: by"
                 + " the trophy shelf, beside the big screen, on the Tabletop, and in your suite when you"
                 + " enter a cup.");
-        final int pick = readHomePick();
-        page.addView(row("Automatic: the captain you play most" + (pick < 0 ? "   (current)" : ""), true, v -> {
-            writeHomePick(-1);
+        final String pick = readHomePick();
+        // r90 (Lance: "its still only available for the base players"): every character on this headset's
+        // roster too, by game; the game takes a guest's pack as well as a captain's number.
+        final List<HomeGuest> guests = homeGuests();
+        final java.util.Map<String, String> guestNames = new java.util.HashMap<>();
+        for (HomeGuest g : guests) guestNames.put(g.pack, g.name);
+        String current = pick.equals("-1") ? "Automatic" : homeName(pick, guestNames);
+        note("Your home captain now: " + current);
+        page.addView(row("Automatic: the captain you play most" + (pick.equals("-1") ? "   (current)" : ""), true, v -> {
+            writeHomePick("-1");
             showHomeGround();
         }));
+        title("Super Mario Strikers", 18);
         for (final int c : HOME_CAPTAINS) {
-            page.addView(row(className(c) + (pick == c ? "   (current)" : ""), true, v -> {
-                writeHomePick(c);
+            final String key = Integer.toString(c);
+            page.addView(row(className(c) + (pick.equals(key) ? "   (current)" : ""), true, v -> {
+                writeHomePick(key);
                 showHomeGround();
             }));
         }
-        TextView summary = note(homeSummary());
+        String lastGame = null;
+        for (final HomeGuest g : guests) {
+            if (!g.game.equals(lastGame)) {
+                lastGame = g.game;
+                title(g.game.equals("Colosseum") ? "Pokemon Colosseum" : g.game, 18);
+            }
+            page.addView(row(g.name + (pick.equals(g.pack) ? "   (current)" : ""), true, v -> {
+                writeHomePick(g.pack);
+                showHomeGround();
+            }));
+        }
+        TextView summary = note(homeSummary(guestNames));
         summary.setTextSize(14);
         page.addView(button("Back", false, v -> showHome()));
+    }
+
+    // --- strikers-quest r66: guest characters (src/platform/xr_guest.cpp) ---
+    // Characters from the player's own other games (packs in <home>/guests/*.gpk), each playing in
+    // place of one Strikers character by Strikers' rules. guests.txt in the game's home folder holds
+    // the picks, "<class> <pack>" a line, read when the game starts.
+
+    private static final String[][] GUEST_SLOTS = {
+        {"mario", "Mario"}, {"luigi", "Luigi"}, {"peach", "Peach"}, {"daisy", "Daisy"},
+        {"wario", "Wario"}, {"waluigi", "Waluigi"}, {"yoshi", "Yoshi"}, {"donkeykong", "Donkey Kong"},
+        {"toad", "Toad"}, {"koopa", "Koopa"}, {"hammerbros", "Hammer Bro"}, {"birdo", "Birdo"},
+    };
+
+    private static final java.util.Set<String> POKEMON = new java.util.HashSet<>(java.util.Arrays.asList(
+            "venusaur", "charizard", "blastoise", "clefairy", "chansey", "electrode", "weezing", "goldeen",
+            "staryu", "snorlax", "articuno", "zapdos", "moltres", "mew", "chikorita", "cyndaquil", "togepi",
+            "marill", "bellossom", "unown", "wobbuffet", "porygon2", "scizor", "entei", "raikou", "suicune",
+            "lugia", "hooh", "celebi"));
+
+    private static String guestLabel(String pack) {
+        switch (pack) {
+            case "bowserjr": return "Bowser Jr. (Charged)";
+            case "bowser": return "Bowser (Charged)";
+            case "diddykong": return "Diddy Kong (Charged)";
+            case "petey": return "Petey Piranha (Charged)";
+            case "boo": return "Boo (Charged)";
+            case "drybones": return "Dry Bones (Charged)";
+            case "montymole": return "Monty Mole (Charged)";
+            case "shyguy": return "Shy Guy (Charged)";
+            case "falcon": return "Captain Falcon (Melee)";
+            case "younglink": return "Young Link (Melee)";
+            case "drmario": return "Dr. Mario (Melee)";
+            case "gamewatch": return "Mr. Game & Watch (Melee)";
+            case "popo": return "Popo (Melee)";
+            case "nana": return "Nana (Melee)";
+            case "hooh": return "Ho-Oh (Melee Pokemon)";
+            default: {
+                String n = pack.isEmpty() ? pack : Character.toUpperCase(pack.charAt(0)) + pack.substring(1);
+                return POKEMON.contains(pack) ? n + " (Melee Pokemon)" : n + " (Melee)";
+            }
+        }
+    }
+
+    private File guestsFile() {
+        return new File(StrikersHome.homeDir(this), "guests.txt");
+    }
+
+    private java.util.Map<String, String> readGuests() {
+        java.util.Map<String, String> picks = new java.util.LinkedHashMap<>();
+        for (String line : readText(guestsFile(), 8000).split("\n")) {
+            String[] f = line.trim().split("\\s+");
+            if (f.length >= 2 && !f[0].startsWith("#")) picks.put(f[0], f[1]);
+        }
+        return picks;
+    }
+
+    private void writeGuests(java.util.Map<String, String> picks) {
+        StringBuilder sb = new StringBuilder("# Quest 3 Strikers guest characters: <Strikers character> <guest>\n");
+        for (java.util.Map.Entry<String, String> e : picks.entrySet()) {
+            sb.append(e.getKey()).append(' ').append(e.getValue()).append('\n');
+        }
+        try (java.io.OutputStream out = new java.io.FileOutputStream(guestsFile())) {
+            out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // the pick is lost; the page shows the old one
+        }
+        // A fresh pick gets a fresh start (xr_guest.cpp turns guests off after a run that died drawing one).
+        //noinspection ResultOfMethodCallIgnored
+        new File(StrikersHome.homeDir(this), "guests.lock").delete();
+        // r66e: the game reads guests.txt once, at its first guest draw; one left running in the
+        // background would keep the old line-up, so it ends, as for a Version change.
+        endRunningGame();
+    }
+
+    private java.util.List<String> guestPacks() {
+        java.util.List<String> packs = new java.util.ArrayList<>();
+        File[] files = new File(StrikersHome.homeDir(this), "guests").listFiles();
+        if (files != null) {
+            for (File f : files) {
+                String n = f.getName();
+                if (n.endsWith(".gpk")) packs.add(n.substring(0, n.length() - 4));
+            }
+        }
+        java.util.Collections.sort(packs, (a, b) -> guestLabel(a).compareToIgnoreCase(guestLabel(b)));
+        return packs;
+    }
+
+    // ------------------------------------------------------------------ strikers-quest 1.14: guest characters
+    // (Lance: "make the converter"): made on this headset from the player's own Melee / Pokemon Colosseum / Mario
+    // Strikers Charged files (guests/GuestSetup, guests/Convert). Nothing of those games is in the app.
+    private io.github.newcoke.strikers.guests.GuestSetup.Found guestFound;  // the last search, null before one
+    private boolean guestScanning, onGuests;
+    private TextView guestProgress;
+
+    private void showGuests() {
+        final io.github.newcoke.strikers.guests.GuestSetup.Found found = guestFound;
+        leaveTourneyPage();
+        page.removeAllViews();
+        onHome = false;
+        onGuests = true;
+        guestProgress = null;
+        title("Guest characters", 26);
+        TextView rule = note("YOU NEED YOUR OWN GAME FILES FOR THE GUEST CHARACTERS.\nCopy them anywhere on the Quest"
+                + " (Download is fine) as .iso or .rvz. Mario Strikers Charged: .rvz only (Dolphin: Convert File Format)."
+                + " Nothing from these games comes with this app: your headset makes the characters from your files.");
+        rule.setTextColor(ACCENT);
+        if (found == null && !guestScanning) scanGuests();
+        if (found == null) {
+            note("Looking for your game files...");
+        } else {
+            for (int i = 0; i < io.github.newcoke.strikers.guests.GuestSetup.IDS.length; i++) {
+                File f = found.files.get(io.github.newcoke.strikers.guests.GuestSetup.IDS[i]);
+                TextView t = note(io.github.newcoke.strikers.guests.GuestSetup.NAMES[i] + ": "
+                        + (f != null ? "found  (" + GameFile.shortPath(f) + ")" : "not found") + "\n"
+                        + io.github.newcoke.strikers.guests.GuestSetup.GIVES[i]);
+                t.setTextSize(15);
+                t.setTextColor(f != null ? Color.WHITE : MUTED);
+            }
+            for (String p : found.problems) note(p).setTextColor(WARN);
+            if (StrikersHome.strikersImage(this) == null) {
+                note("Pick your Super Mario Strikers file first (Choose game file): the guests' kits and moves come"
+                        + " from it.").setTextColor(WARN);
+            }
+        }
+        final File home = StrikersHome.homeDir(this);
+        if (io.github.newcoke.strikers.guests.GuestSetup.running) {
+            guestProgress = note(guestLine());
+            guestProgress.setTextColor(ACCENT);
+            note("Keep the app open while it works (a few minutes). The game can't start until it's done.").setTextSize(14);
+        } else if (found != null && !found.files.isEmpty() && StrikersHome.strikersImage(this) != null) {
+            boolean needed = io.github.newcoke.strikers.guests.GuestSetup.needed(home, found.files);
+            page.addView(button(needed ? "Make guest characters" : "Make them again", needed, v -> startGuests()));
+        }
+        String result = io.github.newcoke.strikers.guests.GuestSetup.result;
+        if (!io.github.newcoke.strikers.guests.GuestSetup.running && result != null) {
+            note(result).setTextColor(io.github.newcoke.strikers.guests.GuestSetup.warnings.isEmpty() ? ACCENT : WARN);
+            java.util.List<String> w = new java.util.ArrayList<>(io.github.newcoke.strikers.guests.GuestSetup.warnings);
+            for (int i = 0; i < w.size() && i < 12; i++) note(w.get(i)).setTextSize(13);
+        }
+        if (!io.github.newcoke.strikers.guests.GuestSetup.running) {
+            page.addView(button("Search again", false, v -> {
+                guestFound = null;
+                showGuests();
+            }));
+        }
+        page.addView(button("Back", false, v -> {
+            onGuests = false;
+            showHome();
+        }));
+    }
+
+    private static String guestLine() {
+        int d = io.github.newcoke.strikers.guests.GuestSetup.done, t = io.github.newcoke.strikers.guests.GuestSetup.total;
+        return "Making guests: " + (t > 0 ? (100 * d / t) : 0) + "%\n" + io.github.newcoke.strikers.guests.GuestSetup.line;
+    }
+
+    private void scanGuests() {
+        if (!StrikersHome.hasAllFilesAccess()) {
+            guestFound = new io.github.newcoke.strikers.guests.GuestSetup.Found();
+            guestFound.problems.add("Turn on file access for this app first (Choose game file shows how).");
+            return;
+        }
+        guestScanning = true;
+        new Thread(() -> {
+            io.github.newcoke.strikers.guests.GuestSetup.Found f =
+                    io.github.newcoke.strikers.guests.GuestSetup.scan(android.os.Environment.getExternalStorageDirectory());
+            runOnUiThread(() -> {
+                guestScanning = false;
+                guestFound = f;
+                if (onGuests) showGuests();
+            });
+        }, "strikers-guest-scan").start();
+    }
+
+    private void startGuests() {
+        if (guestFound == null) return;
+        final File home = StrikersHome.homeDir(this);
+        io.github.newcoke.strikers.guests.GuestSetup.start(getAssets(), home, StrikersHome.strikersImage(this),
+                guestFound.files, () -> runOnUiThread(() -> {
+                    if (!onGuests) return;
+                    if (!io.github.newcoke.strikers.guests.GuestSetup.running || guestProgress == null) showGuests();
+                    else guestProgress.setText(guestLine());
+                }));
+        showGuests();
+    }
+
+    private void showCharacters() {
+        leaveTourneyPage();
+        page.removeAllViews();
+        onHome = false;
+        title("Characters", 26);
+        final java.util.List<String> packs = guestPacks();
+        note(packs.isEmpty()
+                ? "No guest characters on this headset yet."
+                : "Pick who plays instead of each Strikers character. Guests play by Strikers' rules (its goalie,"
+                        + " its Super Strikes); Charged's characters move their own way. It applies the next time"
+                        + " the game starts.");
+        final java.util.Map<String, String> picks = readGuests();
+        for (final String[] slot : GUEST_SLOTS) {
+            String g = picks.get(slot[0]);
+            String text = slot[1] + ":   " + (g == null ? "themselves" : guestLabel(g));
+            page.addView(row(text, true, v -> showCharacterPick(slot)));
+        }
+        if (!picks.isEmpty()) {
+            page.addView(button("Everyone back to normal", false, v -> {
+                writeGuests(new java.util.LinkedHashMap<>());
+                showCharacters();
+            }));
+        }
+        page.addView(button("Back", false, v -> showHome()));
+    }
+
+    private void showCharacterPick(final String[] slot) {
+        page.removeAllViews();
+        onHome = false;
+        title("Instead of " + slot[1], 24);
+        final java.util.Map<String, String> picks = readGuests();
+        final String current = picks.get(slot[0]);
+        page.addView(row(slot[1] + " themselves" + (current == null ? "   (current)" : ""), true, v -> {
+            picks.remove(slot[0]);
+            writeGuests(picks);
+            showCharacters();
+        }));
+        for (final String pack : guestPacks()) {
+            page.addView(row(guestLabel(pack) + (pack.equals(current) ? "   (current)" : ""), true, v -> {
+                picks.put(slot[0], pack);
+                writeGuests(picks);
+                showCharacters();
+            }));
+        }
+        page.addView(button("Back", false, v -> showCharacters()));
     }
 
     /** One game button: the Quest buttons to pick from. One already taken swaps with it. */
@@ -1544,6 +1863,10 @@ public class LobbyActivity extends Activity {
     /** r45: `tourneyMid`, a tournament match's id ("" for none): the game reports how it ends. */
     private void start(String code, String tourneyMid) {
         if (!code.isEmpty() && tourneyMid.isEmpty()) prefs.edit().putString(LAST_CODE, code).apply();
+        if (io.github.newcoke.strikers.guests.GuestSetup.running) {  // 1.14: half-made guests aren't loadable
+            showGuests();
+            return;
+        }
         if (!readyToStart(code)) return;
         Intent game = new Intent(this, StrikersActivity.class);
         game.putExtra(EXTRA_ROOM, code);

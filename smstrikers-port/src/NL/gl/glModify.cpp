@@ -7,7 +7,10 @@ struct GLModifier
     /* 0x00 */ eGLModifier type;
     // PORT: texture and program hashes, not signed values.
     /* 0x04 */ u32 was;
-    /* 0x08 */ u32 willBe;
+    // strikers-quest r68h: a texture handle can be a PlatTexture pointer (64 bits: glx_GetTex takes
+    // one from the port's region): kept whole, not cut to 32 bits (the guest kits drew the flashing
+    // error texture: Lance's "glowing" Toads and keepers, r68d-g).
+    /* 0x08 */ uintptr_t willBe;
 };
 
 static GLModifier glModifier[6];

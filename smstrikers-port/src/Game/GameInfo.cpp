@@ -1,6 +1,7 @@
 #include "NL/nlLexicalCast.h"
 #include "Game/GameInfo.h"
 #include "port/overlay.h"
+#include "port/franchise.h"  // strikers-quest r97: a franchise match's difficulty
 #include <stdlib.h>
 #include "NL/nlString.h"
 #include "NL/nlDebug.h"
@@ -2473,6 +2474,13 @@ void GameInfoManager::ApplyDifficultySettings()
             settings = &mCurrentCup->mCupSettings;
         }
         skillLevel = settings->SkillLevel;
+        // strikers-quest r97: a franchise match plays at its career's difficulty (port/franchise.h), not the
+        // Friendly options' skill it is set up as
+        const int franchiseSkill = PortFranchiseSkillLevel();
+        if (franchiseSkill >= (int)GameplaySettings::ROOKIE && franchiseSkill <= (int)GameplaySettings::LEGEND)
+        {
+            skillLevel = (GameplaySettings::eSkillLevel)franchiseSkill;
+        }
     }
 
     mCurrentDifficulty[0] = DifficultyMap[skillLevel][humansOnSide[0] ? 0 : 1];
@@ -3879,6 +3887,11 @@ GameplaySettings::eSkillLevel GameInfoManager::GetSkillLevel()
 {
     if (mIsInStrikers101Mode)
         return GameplaySettings::TRAINING;
+
+    // strikers-quest r97: a franchise match's career difficulty (ApplyDifficultySettings does the same)
+    const int franchiseSkill = PortFranchiseSkillLevel();
+    if (franchiseSkill >= (int)GameplaySettings::ROOKIE && franchiseSkill <= (int)GameplaySettings::LEGEND)
+        return (GameplaySettings::eSkillLevel)franchiseSkill;
 
     const GameplaySettings::eSkillLevel* p;
 

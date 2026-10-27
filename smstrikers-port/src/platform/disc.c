@@ -83,6 +83,13 @@ struct PortDisc
 
     // RVZ: its tables, buffers and junk generator (below).
     struct Rvz* rvz;
+
+    // strikers-quest 1.14 (the guest converter, port_disc_open_any): may be a Wii disc. A Wii .rvz / .wia is
+    // read as its game partition's data (stored decrypted there), so reads and the file walk see that
+    // partition like a GameCube disc (its file table's offsets are in 4-byte units: walkShift 2).
+    int allowWii;
+    int wii;
+    unsigned walkShift;
 };
 
 static uint32_t rd_be32(const unsigned char* p)
@@ -388,7 +395,17 @@ typedef struct
     uint32_t packed;        // size of the packed stream once decompressed, 0 when not packed
     uint32_t outSize;       // bytes of disc it holds
     unsigned char compressed;
+    unsigned char inPart;   // 1.14: Wii partition data (hash exception lists first, 0x7C00 a sector)
 } RvzGroup;
+
+// 1.14: a Wii partition's data entry: its sectors (0x8000 on the disc, 0x7C00 of data each) and groups.
+typedef struct
+{
+    uint32_t first, count, group, groups;
+} RvzPart;
+
+#define WII_SECTOR 0x8000u
+#define WII_SECTOR_DATA 0x7C00u
 
 #ifdef STRIKERS_LZMA_BZIP2
 // src/platform/disc_codecs.c (r41).
@@ -429,6 +446,9 @@ struct Rvz
 #endif
     uint32_t lfg[LFG_K];
     size_t lfgPos;
+    RvzPart part[2];        // 1.14: the Wii game partition's two data entries (count 0: unused)
+    unsigned char* plain;   // 1.14: one partition group decompressed (its exception lists, then its data)
+    size_t plainCap;
 };
 
 static void rvz_free(struct Rvz* r)
@@ -439,6 +459,7 @@ static void rvz_free(struct Rvz* r)
     free(r->group);
     free(r->comp);
     free(r->packed);
+    free(r->plain);
 #ifdef STRIKERS_ZSTD
     if (r->dctx != NULL)
         ZSTD_freeDCtx(r->dctx);
@@ -582,6 +603,85 @@ static int rvz_grow(unsigned char** buf, size_t* cap, size_t want)
     return 0;
 }
 
+// 1.14: past `lists` hash exception lists (a u16 count, then 22 bytes an exception) at pos.
+static size_t skip_lists(const unsigned char* p, size_t len, size_t pos, unsigned lists)
+{
+    unsigned i;
+    for (i = 0; i < lists && pos + 2 <= len; i++)
+        pos += 2 + (size_t)((p[pos] << 8) | p[pos + 1]) * 22;
+    return pos;
+}
+
+// 1.14: a Wii partition group, already read into r->comp (tools/outside/rvzread.py's _group): its hash
+// exception lists (one a 2 MiB of the chunk; before the data when the group is stored as it is, inside the
+// decompressed bytes otherwise), then the data, packed or not. Junk runs come out as zeros: no file sits in one.
+static int rvz_load_part(PortDisc* d, const RvzGroup* e, unsigned char* out, unsigned* outLen)
+{
+    struct Rvz* r = d->rvz;
+    const unsigned lists = (r->chunkSize + 0x1FFFFFu) / 0x200000u;
+    const int plainLists = r->compression == WIA_NONE || !e->compressed;
+    const unsigned char* data = r->comp;
+    size_t len = e->size, pos = 0;
+
+    if (plainLists)
+    {
+        pos = skip_lists(data, len, 0, lists);
+        pos = (pos + 3) & ~(size_t)3;
+        if (pos > len)
+            return -1;
+        data += pos;
+        len -= pos;
+    }
+    if (e->compressed && r->compression != WIA_NONE)
+    {
+        // (how big it decompresses isn't stored: room for the lists at their largest and the data)
+        const size_t cap = (size_t)lists * (2 + 0xFFFFu * 22) + (e->packed > e->outSize ? e->packed : e->outSize);
+        long got;
+        if (rvz_grow(&r->plain, &r->plainCap, cap) != 0)
+            return -1;
+        got = rvz_unpack_bytes(r, data, len, r->plain, cap, 1);
+        if (got < 0)
+            return -1;
+        data = r->plain;
+        len = (size_t)got;
+        if (!plainLists)
+        {
+            pos = skip_lists(data, len, 0, lists);
+            if (pos > len)
+                return -1;
+            data += pos;
+            len -= pos;
+        }
+    }
+    memset(out, 0, e->outSize);
+    if (e->packed == 0)
+        memcpy(out, data, len < e->outSize ? len : e->outSize);
+    else
+    {
+        size_t p = 0, w = 0;
+        while (p + 4 <= len && w < e->outSize)
+        {
+            const uint32_t s = rd_be32(data + p);
+            size_t n = s & 0x7FFFFFFFu;
+            p += 4;
+            if (n > e->outSize - w)
+                n = e->outSize - w;
+            if ((s & 0x80000000u) != 0)
+                p += LFG_SEED * 4;  // the junk's generator seed: zeros instead
+            else
+            {
+                if (p + n > len)
+                    return -1;
+                memcpy(out + w, data + p, n);
+                p += n;
+            }
+            w += n;
+        }
+    }
+    *outLen = e->outSize;
+    return 0;
+}
+
 static int rvz_load(PortDisc* d, unsigned g, unsigned char* out, unsigned* outLen)
 {
     struct Rvz* r = d->rvz;
@@ -603,6 +703,8 @@ static int rvz_load(PortDisc* d, unsigned g, unsigned char* out, unsigned* outLe
         return -1;
     if (disc_seek(d->f, e->fileOffset) != 0 || fread(r->comp, 1, e->size, d->f) != e->size)
         return -1;
+    if (e->inPart)
+        return rvz_load_part(d, e, out, outLen);
     data = r->comp;
     dataLen = e->size;
 
@@ -733,10 +835,16 @@ static PortDisc* rvz_open(PortDisc* d, char* err, size_t errsize)
     r->comprLen = h2[0xD4] <= sizeof r->comprData ? h2[0xD4] : (unsigned)sizeof r->comprData;
     memcpy(r->comprData, h2 + 0xD5, sizeof r->comprData);
 
-    if (rd_be32(h2 + 0x00) != 1 || rd_be32(h2 + 0x90) != 0)
+    // 1.14: a Wii disc only for the guest converter (port_disc_open_any): Mario Strikers Charged
+    d->wii = d->allowWii && rd_be32(h2 + 0x00) == 2 && rd_be32(h2 + 0x90) != 0;
+    if (!d->wii && (rd_be32(h2 + 0x00) != 1 || rd_be32(h2 + 0x90) != 0))
         return fail(d, err, errsize,
                     "That .rvz/.wia holds a Wii disc. Super Mario Strikers is a GameCube game; its disc\n"
                     "has a code beginning G4Q.");
+    if (d->wii && r->compression == WIA_PURGE)
+        return fail(d, err, errsize,
+                    "That .wia Wii image uses purge, which this can't read. Convert it to .rvz in Dolphin\n"
+                    "(right-click the game, Convert File Format, RVZ).");
     {
         const uint32_t c = r->compression;
         int ok = c == WIA_NONE || c == (r->isWia ? WIA_PURGE : WIA_ZSTD);
@@ -833,6 +941,59 @@ static PortDisc* rvz_open(PortDisc* d, char* err, size_t errsize)
         }
     }
 
+    if (d->wii)
+    {
+        // 1.14: the partition entries (key, then two data entries: first sector, sectors, first group, groups).
+        // The game's is the biggest one; its groups hold 0x7C00 bytes of data a sector.
+        const uint32_t nPart = rd_be32(h2 + 0x90), partSize = rd_be32(h2 + 0x94);
+        const uint64_t partAt = rd_be64(h2 + 0x98);
+        const uint32_t spc = r->chunkSize / WII_SECTOR;
+        uint64_t best = 0;
+        unsigned char ent[0x30];
+        if (nPart == 0 || nPart > 64 || partSize < sizeof ent)
+            return fail(d, err, errsize, "That Wii .rvz/.wia's partition table does not make sense.");
+        for (i = 0; i < nPart; i++)
+        {
+            RvzPart pd[2];
+            uint64_t total = 0;
+            if (disc_seek(d->f, partAt + (uint64_t)i * partSize) != 0 || fread(ent, 1, sizeof ent, d->f) != sizeof ent)
+                return fail(d, err, errsize, "That Wii .rvz/.wia's partition table could not be read.");
+            for (k = 0; k < 2; k++)
+            {
+                pd[k].first = rd_be32(ent + 0x10 + 0x10 * k);
+                pd[k].count = rd_be32(ent + 0x14 + 0x10 * k);
+                pd[k].group = rd_be32(ent + 0x18 + 0x10 * k);
+                pd[k].groups = rd_be32(ent + 0x1C + 0x10 * k);
+                total += pd[k].count;
+            }
+            if (total > best)
+            {
+                best = total;
+                memcpy(r->part, pd, sizeof pd);
+            }
+        }
+        for (k = 0; k < 2; k++)
+        {
+            const RvzPart* p = &r->part[k];
+            unsigned j;
+            for (j = 0; j < p->groups; j++)
+            {
+                const uint32_t g = p->group + j;
+                const uint64_t gsector = (uint64_t)p->first + (uint64_t)j * spc;
+                uint64_t nsec;
+                if (g >= nGroups || gsector >= (uint64_t)p->first + p->count)
+                    break;
+                nsec = (uint64_t)p->first + p->count - gsector;
+                if (nsec > spc)
+                    nsec = spc;
+                r->group[g].outSize = (uint32_t)(nsec * WII_SECTOR_DATA);
+                r->group[g].inPart = 1;
+            }
+        }
+        d->walkShift = 2;
+        d->name = r->isWia ? "WIA (Wii)" : "RVZ (Wii)";
+    }
+
     d->blockSize = r->chunkSize;
     if (cache_init(d) != 0)
         return fail(d, err, errsize, "Out of memory sizing the .rvz block cache.");
@@ -901,6 +1062,53 @@ static long rvz_read(PortDisc* d, unsigned char* out, size_t len, unsigned long 
     return (long)done;
 }
 
+// 1.14: a Wii disc's game partition data at `offset` (rvzread.py's read_part): its sectors hold 0x7C00 bytes each.
+static long rvz_read_part(PortDisc* d, unsigned char* out, size_t len, unsigned long long offset)
+{
+    const struct Rvz* r = d->rvz;
+    const uint32_t spc = r->chunkSize / WII_SECTOR;
+    const uint64_t base = r->part[0].first;
+    size_t done = 0;
+
+    while (done < len)
+    {
+        const unsigned long long off = offset + done;
+        const uint64_t sector = base + off / WII_SECTOR_DATA;
+        const RvzPart* p = NULL;
+        unsigned k;
+        for (k = 0; k < 2; k++)
+            if (r->part[k].count != 0 && sector >= r->part[k].first && sector < (uint64_t)r->part[k].first + r->part[k].count)
+            {
+                p = &r->part[k];
+                break;
+            }
+        if (p == NULL)
+            break;
+        {
+            const uint32_t rel = (uint32_t)((sector - p->first) / spc);
+            const uint64_t gsector = (uint64_t)p->first + (uint64_t)rel * spc;
+            const unsigned long long gstart = (gsector - base) * WII_SECTOR_DATA;
+            const unsigned within = (unsigned)(off - gstart);
+            unsigned have = 0;
+            const unsigned char* data;
+            size_t want;
+            if (rel >= p->groups)
+                break;
+            data = cache_get(d, p->group + rel, &have);
+            if (data == NULL)
+                return done > 0 ? (long)done : -1;
+            if (within >= have)
+                break;
+            want = have - within;
+            if (want > len - done)
+                want = len - done;
+            memcpy(out + done, data + within, want);
+            done += want;
+        }
+    }
+    return (long)done;
+}
+
 long port_disc_read(PortDisc* d, void* dst, size_t len, unsigned long long offset)
 {
     unsigned char* out = (unsigned char*)dst;
@@ -909,6 +1117,8 @@ long port_disc_read(PortDisc* d, void* dst, size_t len, unsigned long long offse
     if (d == NULL || dst == NULL)
         return -1;
 
+    if (d->kind == DISC_RVZ && d->wii)
+        return rvz_read_part(d, out, len, offset);
     if (d->kind == DISC_RVZ)
         return rvz_read(d, out, len, offset);
 
@@ -1071,7 +1281,24 @@ static void note_nkit(const unsigned char* head, size_t got)
                 "ordinary image.\n");
 }
 
+static PortDisc* disc_open(const char* path, int allowWii, char* err, size_t errsize);
+
 PortDisc* port_disc_open(const char* path, char* err, size_t errsize)
+{
+    return disc_open(path, 0, err, errsize);
+}
+
+PortDisc* port_disc_open_any(const char* path, char* err, size_t errsize)
+{
+    return disc_open(path, 1, err, errsize);
+}
+
+int port_disc_is_wii(const PortDisc* disc)
+{
+    return disc != NULL && disc->wii;
+}
+
+static PortDisc* disc_open(const char* path, int allowWii, char* err, size_t errsize)
 {
     unsigned char head[0x220];
     size_t got;
@@ -1084,6 +1311,7 @@ PortDisc* port_disc_open(const char* path, char* err, size_t errsize)
         snprintf(err, errsize, "Out of memory.");
         return NULL;
     }
+    d->allowWii = allowWii;
 
     d->f = fopen(path, "rb");
     if (d->f == NULL)
@@ -1110,7 +1338,7 @@ PortDisc* port_disc_open(const char* path, char* err, size_t errsize)
             return fail(d, err, errsize,
                         "That .rvz/.wia could not be read past its own header, it is "
                         "truncated or damaged.");
-        if (rd_be32(head + 0x1C) != GC_MAGIC)
+        if (d->wii ? rd_be32(head + 0x18) != WII_MAGIC : rd_be32(head + 0x1C) != GC_MAGIC)
             return fail(d, err, errsize,
                         "That .rvz/.wia decompresses to something that is not a GameCube "
                         "disc. It is either damaged or an image of something else.");
@@ -1125,6 +1353,10 @@ PortDisc* port_disc_open(const char* path, char* err, size_t errsize)
         return d;
     }
 
+    if (rd_be32(head + 0x18) == WII_MAGIC && allowWii)
+        return fail(d, err, errsize,
+                    "That is a Wii disc image whose data is encrypted (.iso / .wbfs). Convert it to .rvz\n"
+                    "in Dolphin (right-click the game, Convert File Format, RVZ) and use that file.");
     if (rd_be32(head + 0x18) == WII_MAGIC)
         return fail(d, err, errsize,
                     "That is a Wii disc image. Super Mario Strikers is a "
@@ -1175,11 +1407,34 @@ static int walk_fail(unsigned char* fst, char* err, size_t errsize, const char* 
     return -1;
 }
 
+// The 32-bit walk over the 64-bit one (a GameCube disc's offsets fit; a Wii partition's may not).
+struct Walk32
+{
+    PortDiscVisit visit;
+    void* user;
+};
+
+static int walk32_visit(void* user, const char* path, unsigned long long offset, unsigned length, int isDir)
+{
+    const struct Walk32* w = (const struct Walk32*)user;
+    return w->visit(w->user, path, (unsigned)offset, length, isDir);
+}
+
 int port_disc_walk(PortDisc* d, PortDiscVisit visit, void* user, char* err, size_t errsize)
+{
+    struct Walk32 w;
+    w.visit = visit;
+    w.user = user;
+    return port_disc_walk64(d, walk32_visit, &w, err, errsize);
+}
+
+int port_disc_walk64(PortDisc* d, PortDiscVisit64 visit, void* user, char* err, size_t errsize)
 {
     unsigned char hdr[0x440];
     unsigned char* fst = NULL;
-    unsigned fstOff, fstSize, nent, strOff, i;
+    unsigned long long fstOff;
+    unsigned fstSize, nent, strOff, i;
+    const unsigned shift = d != NULL ? d->walkShift : 0;  // 1.14: a Wii partition's table counts in 4 bytes
     char dir[1024];
     char full[1024];
     unsigned endStack[DISC_FST_DEPTH];
@@ -1190,8 +1445,8 @@ int port_disc_walk(PortDisc* d, PortDiscVisit visit, void* user, char* err, size
     if (port_disc_read(d, hdr, sizeof hdr, 0) != (long)sizeof hdr)
         return walk_fail(fst, err, errsize, "That image is too short to hold a disc header.");
 
-    fstOff = be32u(hdr + 0x424);
-    fstSize = be32u(hdr + 0x428);
+    fstOff = (unsigned long long)be32u(hdr + 0x424) << shift;
+    fstSize = be32u(hdr + 0x428) << shift;
     if (fstSize < 12 || fstSize > (16u << 20))
         return walk_fail(fst, err, errsize,
                          "That image's file table is not a sane size, so it is "
@@ -1264,7 +1519,7 @@ int port_disc_walk(PortDisc* d, PortDiscVisit visit, void* user, char* err, size
         }
 
         snprintf(full, sizeof full, "%s%s%s", dir, dirLen ? "/" : "", name);
-        if (visit(user, full, be32u(e + 4), be32u(e + 8), 0) != 0)
+        if (visit(user, full, (unsigned long long)be32u(e + 4) << shift, be32u(e + 8), 0) != 0)
             break;
     }
 

@@ -14,6 +14,8 @@
 
 #include "../../include/port/xr_net.h"
 #include "../../include/port/xr_quest.h"
+#include "../../include/port/franchise.h"  // r76: a co-op franchise match is no rival match
+#include "../../include/port/xr_guest.h"   // r87: the imported captains
 
 namespace xrhome {
 namespace {
@@ -30,14 +32,27 @@ struct Online {
   Record record;
 };
 
+// r87: an imported captain's games, by its pack (the class it played as kept for its colours' fallback).
+struct GuestUses {
+  int captain = -1;
+  int uses = 0;
+};
+struct GuestRecord {
+  int captain = -1;
+  Record record;
+};
+
 struct State {
   bool loaded = false;
   std::string id, name;  // this headset (the panel's player id and team name)
   int pick = -1;         // the panel's home captain (-1 = the one you play most)
+  std::string pickGuest;  // r90: ... an imported one (its pack; pick = the class it plays as)
   int64_t pickMtime = 0;
-  int uses[12] = {};
+  int uses[12] = {};     // r87: the Strikers captains' own games (an imported one's go in guestUses)
+  std::map<std::string, GuestUses> guestUses;
   Match last, ticket;
-  Record cpu[12];
+  Record cpu[12];        // r87: against the Strikers captains themselves (imported ones: guestCpu)
+  std::map<std::string, GuestRecord> guestCpu;
   std::map<std::string, Online> online;  // by the friend's player id
   int comebacks = 0, bestComeback = 0, superStrikes = 0, matches = 0;
   int generation = 1;
@@ -76,10 +91,31 @@ std::string clean(const std::string& n) {
   return out;
 }
 
+// r87: a guest pack as saved: one word ("-" none).
+std::string pack_word(const std::string& p) {
+  std::string out;
+  for (char c : p) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') out.push_back(c);
+    if (out.size() >= 40) break;
+  }
+  return out.empty() ? "-" : out;
+}
+std::string pack_from_word(const char* w) { return std::strcmp(w, "-") == 0 ? std::string() : std::string(w); }
+
 void write_match(FILE* f, const char* key, const Match& m) {
   std::fprintf(f, "%s %d %d %d %d %d %d %d %d %lld %s\n", key, m.myCaptain, m.theirCaptain, m.mine, m.theirs,
                m.overtime ? 1 : 0, m.online ? 1 : 0, m.cup ? 1 : 0, m.forfeit ? 1 : 0, static_cast<long long>(m.when),
                clean(m.theirName).c_str());
+  // r87: its imported captains on a line of their own (older files have none: the Strikers captains)
+  if (!m.myGuest.empty() || !m.theirGuest.empty())
+    std::fprintf(f, "%sguests %s %s\n", key, pack_word(m.myGuest).c_str(), pack_word(m.theirGuest).c_str());
+}
+
+void read_guests(const char* rest, Match* m) {
+  char a[48] = {}, b[48] = {};
+  if (std::sscanf(rest, "%47s %47s", a, b) != 2) return;
+  m->myGuest = pack_from_word(a);
+  m->theirGuest = pack_from_word(b);
 }
 
 bool read_match(const char* rest, Match* m) {
@@ -111,6 +147,16 @@ void save() {
   for (int c = 0; c < 12; ++c) {
     const Record& r = s.cpu[c];
     if (r.games() > 0) std::fprintf(f, "cpu %d %d %d %d %d\n", c, r.wins, r.losses, r.draws, r.lastLost ? 1 : 0);
+  }
+  // r87: the imported captains' games and records
+  for (const auto& [pack, u] : s.guestUses) {
+    if (u.uses > 0) std::fprintf(f, "guse %s %d %d\n", pack_word(pack).c_str(), u.captain, u.uses);
+  }
+  for (const auto& [pack, g] : s.guestCpu) {
+    const Record& r = g.record;
+    if (r.games() > 0)
+      std::fprintf(f, "gcpu %s %d %d %d %d %d\n", pack_word(pack).c_str(), g.captain, r.wins, r.losses, r.draws,
+                   r.lastLost ? 1 : 0);
   }
   for (const auto& [id, o] : s.online) {
     std::fprintf(f, "online %s %d %d %d %d %s\n", id.c_str(), o.record.wins, o.record.losses, o.record.draws,
@@ -152,10 +198,24 @@ void load() {
         o.name = n > 0 ? std::string(rest + n) : std::string();
         while (!o.name.empty() && (o.name.back() == '\n' || o.name.back() == '\r')) o.name.pop_back();
       }
+    } else if (std::strcmp(key, "guse") == 0) {
+      char pack[48] = {};
+      int c = -1, n = 0;
+      if (std::sscanf(rest, "%47s %d %d", pack, &c, &n) == 3 && std::strcmp(pack, "-") != 0) s.guestUses[pack] = {c, n};
+    } else if (std::strcmp(key, "gcpu") == 0) {
+      char pack[48] = {};
+      int c = -1, w = 0, l = 0, d = 0, ll = 0;
+      if (std::sscanf(rest, "%47s %d %d %d %d %d", pack, &c, &w, &l, &d, &ll) == 6 && std::strcmp(pack, "-") != 0) {
+        s.guestCpu[pack] = {c, Record{w, l, d, ll != 0}};
+      }
     } else if (std::strcmp(key, "last") == 0) {
       read_match(rest, &s.last);
     } else if (std::strcmp(key, "ticket") == 0) {
       read_match(rest, &s.ticket);
+    } else if (std::strcmp(key, "lastguests") == 0) {
+      read_guests(rest, &s.last);
+    } else if (std::strcmp(key, "ticketguests") == 0) {
+      read_guests(rest, &s.ticket);
     } else if (std::strcmp(key, "honors") == 0) {
       std::sscanf(rest, "%d %d %d %d", &s.comebacks, &s.bestComeback, &s.superStrikes, &s.matches);
     }
@@ -169,30 +229,67 @@ void read_pick() {
   if (stat(pick_path().c_str(), &st) != 0) {
     if (s.pick != -1) {
       s.pick = -1;
+      s.pickGuest.clear();
       ++s.generation;
     }
     return;
   }
   if (static_cast<int64_t>(st.st_mtime) == s.pickMtime) return;
   s.pickMtime = st.st_mtime;
-  int c = -1;
+  // a captain's class number, or (r90, Lance: "its still only available for the base players") an imported
+  // captain's pack, standing in for the Strikers captain it plays as
+  char word[64] = {};
   if (FILE* f = std::fopen(pick_path().c_str(), "r")) {
-    if (std::fscanf(f, "%d", &c) != 1) c = -1;
+    if (std::fscanf(f, "%63s", word) != 1) word[0] = '\0';
     std::fclose(f);
   }
-  if (!is_captain(c)) c = -1;
-  if (c != s.pick) {
+  int c = -1;
+  std::string guest;
+  char* end = nullptr;
+  const long n = std::strtol(word, &end, 10);
+  if (word[0] != '\0' && end != nullptr && *end == '\0') {
+    c = static_cast<int>(n);
+  } else if (word[0] != '\0') {
+    static const int kTeamCaptain[8] = {1, 2, 5, 6, 7, 9, 10, 11};  // eTeamID -> eCharacterClass
+    const int idx = PortGuestRosterFind(PORT_GUEST_CAPTAIN, word);
+    const int team = idx >= 0 ? PortGuestRosterBase(idx) : -1;
+    if (team >= 0 && team < 8) {
+      c = kTeamCaptain[team];
+      guest = word;
+    }
+  }
+  if (!is_captain(c)) {
+    c = -1;
+    guest.clear();
+  }
+  if (c != s.pick || guest != s.pickGuest) {
     s.pick = c;
+    s.pickGuest = guest;
     ++s.generation;
-    HLOG("home captain: %s", c >= 0 ? captain_name(c) : "the one you play most");
+    HLOG("home captain: %s", c < 0 ? "the one you play most" : (guest.empty() ? captain_name(c) : guest.c_str()));
   }
 }
 
-int home_captain_locked() {
-  if (is_captain(s.pick)) return s.pick;
-  int best = -1;
+// r87: an imported captain you play most is your home captain itself (`guest`: its pack, else "").
+int home_captain_locked(std::string* guest = nullptr) {
+  if (guest != nullptr) guest->clear();
+  if (is_captain(s.pick)) {
+    if (guest != nullptr) *guest = s.pickGuest;  // r90: the panel's pick may be an imported captain
+    return s.pick;
+  }
+  int best = -1, bestUses = 0;
   for (int c = 0; c < 12; ++c) {
-    if (is_captain(c) && s.uses[c] > 0 && (best < 0 || s.uses[c] > s.uses[best])) best = c;
+    if (is_captain(c) && s.uses[c] > bestUses) {
+      best = c;
+      bestUses = s.uses[c];
+    }
+  }
+  for (const auto& [pack, u] : s.guestUses) {
+    if (u.uses > bestUses && is_captain(u.captain)) {
+      best = u.captain;
+      bestUses = u.uses;
+      if (guest != nullptr) *guest = pack;
+    }
   }
   return best >= 0 ? best : 6;  // Mario until you have played
 }
@@ -239,7 +336,7 @@ View view() {
   ensure_loaded();
   View v;
   v.generation = s.generation;
-  v.captain = home_captain_locked();
+  v.captain = home_captain_locked(&v.captainGuest);
   v.last = s.last;
   v.ticket = s.ticket;
   v.comebacks = s.comebacks;
@@ -260,6 +357,18 @@ View view() {
     v.cpu.valid = true;
     v.cpu.captain = best;
     v.cpu.record = s.cpu[best];
+  }
+  // r87: an imported CPU captain is a rival of its own
+  for (const auto& [pack, gr] : s.guestCpu) {
+    const Record& r = gr.record;
+    if (r.games() < 2) continue;
+    if (!v.cpu.valid || r.games() > v.cpu.record.games() ||
+        (r.games() == v.cpu.record.games() && r.losses > v.cpu.record.losses)) {
+      v.cpu.valid = true;
+      v.cpu.captain = gr.captain;
+      v.cpu.guest = pack;
+      v.cpu.record = r;
+    }
   }
   // The online rival: the friend you have played most.
   const Online* top = nullptr;
@@ -349,24 +458,41 @@ extern "C" void PortHomeMatchEnd(int scoreLeft, int scoreRight, int overtime, in
   m.valid = true;
   m.myCaptain = caps[h];
   m.theirCaptain = caps[1 - h];
+  // r87: who really captained each side (an imported character in that class's place)
+  for (int side = 0; side < 2; ++side) {
+    const int gi = PortGuestCaptainFor(side);
+    const char* pack = gi >= 0 ? PortGuestRosterPack(gi) : nullptr;
+    (side == h ? m.myGuest : m.theirGuest) = pack != nullptr ? std::string(pack) : std::string();
+  }
   m.mine = std::max(0, score[h]);
   m.theirs = std::max(0, score[1 - h]);
   m.overtime = overtime != 0;
   m.cup = cup != 0;
   m.forfeit = forfeitSide == 0 || forfeitSide == 1;
-  // r63: an online cup match is co-op (the friend on your team, the computer against you).
-  m.online = !s.peerId.empty() && PortNetOnline() != 0 && cup == 0;
+  // r63: an online cup match is co-op (the friend on your team, the computer against you); r76: so is
+  // an online franchise match (the co-op career)
+  m.online = !s.peerId.empty() && PortNetOnline() != 0 && cup == 0 && !PortFranchiseCoopActive();
   m.theirName = m.online ? s.peerName : std::string();
   m.when = static_cast<int64_t>(std::time(nullptr));
   const bool won = forfeitSide == 1 - h || (forfeitSide != h && score[h] > score[1 - h]);
   const bool lost = forfeitSide == h || (forfeitSide != 1 - h && score[h] < score[1 - h]);
-  if (m.myCaptain >= 0 && m.myCaptain < 12) ++s.uses[m.myCaptain];
+  if (!m.myGuest.empty()) {
+    xrhome::GuestUses& u = s.guestUses[m.myGuest];
+    u.captain = m.myCaptain;
+    ++u.uses;
+  } else if (m.myCaptain >= 0 && m.myCaptain < 12) {
+    ++s.uses[m.myCaptain];
+  }
   ++s.matches;
   xrhome::Record* rec = nullptr;
   if (m.online) {
     xrhome::Online& o = s.online[s.peerId];
     if (!s.peerName.empty()) o.name = s.peerName;
     rec = &o.record;
+  } else if (!m.theirGuest.empty()) {
+    xrhome::GuestRecord& gr = s.guestCpu[m.theirGuest];
+    gr.captain = m.theirCaptain;
+    rec = &gr.record;
   } else if (m.theirCaptain >= 0 && m.theirCaptain < 12) {
     rec = &s.cpu[m.theirCaptain];
   }
@@ -385,9 +511,10 @@ extern "C" void PortHomeMatchEnd(int scoreLeft, int scoreRight, int overtime, in
   s.last = m;
   ++s.generation;
   xrhome::save();
-  HLOG("match over: %s %d-%d %s%s%s (%s, came back from %d down, %d Super Strike goals)", xrhome::captain_name(m.myCaptain),
-       m.mine, m.theirs, m.online ? (m.theirName.empty() ? "online friend" : m.theirName.c_str())
-                                  : xrhome::captain_name(m.theirCaptain),
+  HLOG("match over: %s %d-%d %s%s%s (%s, came back from %d down, %d Super Strike goals)",
+       m.myGuest.empty() ? xrhome::captain_name(m.myCaptain) : m.myGuest.c_str(), m.mine, m.theirs,
+       m.online ? (m.theirName.empty() ? "online friend" : m.theirName.c_str())
+                : (m.theirGuest.empty() ? xrhome::captain_name(m.theirCaptain) : m.theirGuest.c_str()),
        m.overtime ? " in overtime" : "", m.forfeit ? " (forfeit)" : "", won ? "win" : (lost ? "loss" : "draw"),
        s.worstDeficit, s.supers);
 }

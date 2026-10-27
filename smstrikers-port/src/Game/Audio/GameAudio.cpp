@@ -7,6 +7,7 @@
 #include "Game/Sys/debug.h"
 #include "NL/nlTask.h"
 #include "types.h"
+#include "port/xr_guest.h"  // strikers-quest r68: guest voices
 
 SlotPool<SFXPlaySet> SFXPlaySet::m_TrackedSFXSlotPool(0x32, 0x10);
 
@@ -94,6 +95,7 @@ void cGameSFX::ShutdownPlaySet()
  */
 void cGameSFX::SetSFX(SoundPropAccessor* pSoundPropAccessor)
 {
+    PortGuestVoiceForget(this);  // strikers-quest r68: a guest voice looks at the new table again
     if (!mbInited)
     {
         nlPrintf("Error: cGameSFX::SetSFX(): Sound class not initialized\n");
@@ -578,6 +580,7 @@ uintptr_t cGameSFX::Play(Audio::SoundAttributes& sfxData)
     EmitterStartInfo info;
     pSFXEmitter = NULL;
     emitterIndex = Audio::GetSndIDError();
+    float guestVolume = -1.0f;  // strikers-quest r68: >= 0 when this is a guest's voice
 
     if (!Audio::IsInited() || !this->mbInited)
     {
@@ -644,6 +647,17 @@ uintptr_t cGameSFX::Play(Audio::SoundAttributes& sfxData)
             Audio::SetSFXVolumeGroup(sfxID, volGrp);
         }
 
+        // strikers-quest r68: a guest player's voice is its own (include/port/xr_guest.h): the game's
+        // plays on, silent, and the guest's clip starts where the game's would.
+        if (meClassType == CHAR && volGrp >= 5 && volGrp <= 19 && mpSFX != NULL)
+        {
+            guestVolume = PortGuestVoiceMute(this, mpSFX, mNumSFXTypes, sfxData.mu_Type);
+            if (guestVolume >= 0.0f)
+            {
+                fVolume = 0.0f;
+            }
+        }
+
         if (sfxData.mi_GroupPriority >= 0)
         {
             if (CheckForHigherPrioritySFX(sfxData.mi_GroupPriority))
@@ -688,6 +702,10 @@ uintptr_t cGameSFX::Play(Audio::SoundAttributes& sfxData)
 
     if (!sfxData.mb_Is3D)
     {
+        if (guestVolume >= 0.0f)
+        {
+            PortGuestVoiceStart(this, mpSFX[sfxData.mu_Type].typeStr, volGrp, guestVolume, NULL, 0.0f);
+        }
         voiceID = Audio::PlaySFXbyID(sfxData, sfxID, fVolume, fVolReverb, volGrp);
         this->mpSFX[sfxData.mu_Type].lastVoiceID = voiceID;
         return voiceID;
@@ -709,6 +727,13 @@ uintptr_t cGameSFX::Play(Audio::SoundAttributes& sfxData)
     else if (sfxData.posUpdateMethod == VECTORS)
     {
         vPos = sfxData.pos.vPos;
+    }
+
+    if (guestVolume >= 0.0f)  // strikers-quest r68
+    {
+        const float at[3] = { vPos.x, vPos.y, vPos.z };
+        PortGuestVoiceStart(this, mpSFX[sfxData.mu_Type].typeStr, volGrp, guestVolume, at,
+                            g_pGame != NULL ? g_pGame->m_pGameTweaks->fMaxAudibleEmitterDistance : 100.0f);
     }
 
     if (sfxData.mb_Update3DContinuously)

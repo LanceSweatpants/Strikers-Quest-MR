@@ -32,6 +32,7 @@ extern cBall* g_pBall;
 #include <stdlib.h>
 #include "port/overlay.h"
 #include "port/xr_quest.h" // strikers-quest: goal celebrations
+#include "port/franchise.h" // strikers-quest r70: franchise mode
 #include "Game/Render/Wiper.h" // strikers-quest: the self-test's flash wipe
 #include "Game/Render/ShootToScoreMeter.h" // strikers-quest: the Super Strike meter in Tabletop
 #include "Game/GameTweaks.h"
@@ -40,6 +41,8 @@ extern cBall* g_pBall;
 #include "port/xr_scorer.h"    // strikers-quest r42: the life-size scorer
 #include "port/edition.h"      // strikers-quest r43: Classic / Plus
 #include "port/xr_net.h"       // strikers-quest: online 1v1
+#include "port/xr_guest.h"     // strikers-quest r67: guest characters online
+#include "port/lineup.h"       // strikers-quest r78: the co-captain
 #include "port/xr_layers.h"    // strikers-quest r53: per-match field/stadium log
 #include "Game/DB/Cup.h"       // strikers-quest r61: the cup suite's table
 #include "NL/nlTask.h"
@@ -472,6 +475,7 @@ void cGame::BeginGame(bool bRematch, bool bStraightToKickoff)
     // strikers-quest r53: which stadium, and the field/stadium split logged again for it.
     PortXrLayersNewMatch((int)nlSingleton<GameInfoManager>::Instance()->GetStadium());
     PortHomeMatchBegin(); // r61: the home ground's score keeping for this match
+    PortFranchiseIntroBegin(); // r70b: a franchise match's intro card (the headset shows it)
 
     if (m_eGameState != GS_PRE_GAME)
     {
@@ -533,11 +537,22 @@ void cGame::BeginGame(bool bRematch, bool bStraightToKickoff)
 // strikers-quest: goal celebrations in the headset (src/platform/xr_quest.cpp). The goal comes from
 // CheckForGoal below; the replay, skip and kick-off edges are polled once a game frame
 // (PortCelebrationPoll, from main.cpp). Nothing here changes the game.
+// strikers-quest r68c: a guest character (include/port/xr_guest.h) has a theme of its own, not its
+// slot's: 100 + its roster place (xr_fx theme_for: its team colours for the confetti and your
+// controllers' skin, its own outline etched into them).
+static const int kPortGuestThemeBase = 100;
+
 static int port_celebration_character(const cPlayer* p)
 {
     if (p == NULL)
         return -1;
     const int c = (int)p->m_eCharacterClass;
+    if (p->GetTeam() != NULL)
+    {
+        const int guest = PortGuestIndexFor(p->GetTeam()->m_nSide, c);
+        if (guest >= 0)
+            return kPortGuestThemeBase + guest;
+    }
     // A captain playing in goal counts as that captain.
     static const int kGoalieToFielder[] = { DAISY, DONKEYKONG, LUIGI, MARIO, PEACH, WALUIGI, WARIO, YOSHI };
     if (c >= DAISY_GOALIE && c <= YOSHI_GOALIE)
@@ -558,6 +573,19 @@ static void port_celebration_goal(int side, int goalType, int numGoals, int hype
         character = port_celebration_character(g_pTeams[side]->GetCaptain());
     PortXrGoal(side, character, numGoals == 2 ? 1 : 0, hyper, ownGoal ? 1 : 0, humanPad);
     PortHomeGoal(side, numGoals == 2 ? 1 : 0); // r61: the home ground's comebacks and Super Strikes
+    // r71: franchise mode's scorers (0 the captain, the sidekicks by m_ID 1-3). r84: an own goal is the
+    // scoring team's last toucher's, as the scorer show and the game's tally (StatsTracker) have it; a
+    // keeper is nobody's (4 is the co-captain's line, r78).
+    {
+        int who = -1;
+        const cPlayer* credited = ownGoal ? teamTouch : scorer;
+        if (credited != NULL && credited->m_eClassType != GOALIE)
+            who = (g_pTeams[side] != NULL && credited == g_pTeams[side]->GetCaptain()) ? 0 : (int)credited->m_ID;
+        // r78: a co-captain (slot 1, include/port/lineup.h) is 4, its club's other captain
+        if (who == 1 && PortSecondCaptain(side) >= 0)
+            who = 4;
+        PortFranchiseGoal(side, who, numGoals == 2 ? 2 : 1);
+    }
     // r42: the crowd keeps roaring, and (but for a Super Strike) the scorer comes over life-size.
     // strikers-quest r43: Plus only; Classic is alpha 1.2's goal (no roar, no scorer, no banner).
     if (PortPlusFeatures())
@@ -919,6 +947,12 @@ static int port_net_pack_options(unsigned char* out)
     return n;
 }
 
+// r76: for the franchise's co-op match start (src/platform/franchise.cpp), the same settings blob.
+extern "C" int PortNetPackOptions(unsigned char* out)
+{
+    return port_net_pack_options(out);
+}
+
 static void port_net_unpack_options(const unsigned char* in, int size)
 {
     GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
@@ -1078,6 +1112,33 @@ extern "C" int PortNetGameHoldMatchStart(void)
     m.optionsSize = port_net_pack_options(m.options);
     const short side = pInfo->GetPlayingSide(0);
     m.mode = (int)pInfo->GetCurrentMode();
+    // r67: each side's guest characters (include/port/xr_guest.h), by pack name.
+    for (int s = 0; s < 2; s++)
+    {
+        for (int role = 0; role < 2; role++)
+        {
+            const int pick = PortGuestGetPick(m.teams[s], role);
+            const char* pack = PortGuestRosterPack(pick);
+            if (pack != NULL)
+            {
+                strncpy(m.guests[s][role], pack, sizeof(m.guests[s][role]) - 1);
+                // r67b: its own stats as this headset has them, so the friend's headset plays it the same
+                PortGuestStatsFor(pick, m.guestStats[s][role], &m.guestStatMask[s][role]);
+            }
+        }
+    }
+    // r79: a Grudge Match's co-captains as picked here (include/port/lineup.h): class, guest, its own stats
+    for (int s = 0; s < 2; s++)
+    {
+        int coGuest = -1;
+        m.coCaptains[s] = cup ? -1 : PortPickedCoCaptain(s, &coGuest);
+        const char* pack = m.coCaptains[s] >= 0 ? PortGuestRosterPack(coGuest) : NULL;
+        if (pack != NULL)
+        {
+            strncpy(m.coGuests[s], pack, sizeof(m.coGuests[s]) - 1);
+            PortGuestStatsFor(coGuest, m.coStats[s], &m.coStatMask[s]);
+        }
+    }
     if (cup)
     {
         m.coopSide = side == 1 ? 1 : 0;
@@ -1101,6 +1162,72 @@ extern "C" void PortNetGameFrameBegin(void)
     if (!isStart)
         return;
     GameInfoManager* pInfo = nlSingleton<GameInfoManager>::Instance();
+    // r65 (alpha 1.13 crash: a friend's build wrote the match one byte differently, the team came out
+    // as a huge number): nothing from the network reaches the game out of range.
+    for (int side = 0; side < 2; side++)
+    {
+        if (m.teams[side] < 0 || m.teams[side] > (int)TEAM_MYSTERY)
+        {
+            OSReport("[net] the match's team %d is %d, not a team; Mario instead\n", side, m.teams[side]);
+            m.teams[side] = (int)TEAM_MARIO;
+        }
+        if (m.sidekicks[side] < 0 || m.sidekicks[side] >= (int)NUM_SIDEKICKS)
+        {
+            OSReport("[net] the match's sidekick %d is %d, not a sidekick; Toad instead\n", side, m.sidekicks[side]);
+            m.sidekicks[side] = (int)SK_TOAD;
+        }
+    }
+    if (m.stadium < 0 || m.stadium >= (int)MAX_STADIUMS)
+    {
+        OSReport("[net] the match's stadium is %d, not a stadium; Mario Stadium instead\n", m.stadium);
+        m.stadium = (int)STAD_MARIO_STADIUM;
+    }
+    if (m.optionsSize < 0 || m.optionsSize > (int)sizeof(m.options))
+        m.optionsSize = 0;
+    if (m.mode == PORT_NET_MODE_FRANCHISE)
+    {
+        // r76, franchise co-op: the host's whole match (both clubs as its career has them; the friend's
+        // franchise set the same up), both pads on the club's side: pad 0 the host (the captain and a
+        // sidekick), pad 1 the friend (the other two). coopSide -1: a CPU v CPU game watched together.
+        pInfo->SetMode(GameInfoManager::GM_FRIENDLY);
+        for (int side = 0; side < 2; side++)
+        {
+            pInfo->SetTeam((short)side, (eTeamID)m.teams[side]);
+            pInfo->SetSidekick((short)side, (eSidekickID)m.sidekicks[side]);
+        }
+        pInfo->SetStadium((eStadiumID)m.stadium);
+        PortGuestClearOnlineStats();
+        for (int side = 0; side < 2; side++)
+        {
+            for (int role = 0; role < 2; role++)
+            {
+                m.guests[side][role][sizeof(m.guests[side][role]) - 1] = '\0';
+                // (any roster entry: an evolved form is franchise-only)
+                PortGuestSetPick(m.teams[side], role, PortGuestRosterFindAny(role, m.guests[side][role]));
+                PortGuestSetOnlineStats(side, role, m.guestStats[side][role], m.guestStatMask[side][role]);
+            }
+        }
+        // r78: each side's co-captain as the host has it (include/port/lineup.h): its class (what the
+        // match is built from) and its own stats; who it's drawn as stays this headset's (the friend's
+        // franchise set the same up from the same career, shiny and all)
+        for (int side = 0; side < 2; side++)
+        {
+            PortSetSecondCaptain(side, m.coCaptains[side]);
+            PortGuestSetOnlineStats(side, 2, m.coStats[side], m.coStatMask[side]);
+        }
+        const short coop = (short)(m.coopSide == 0 || m.coopSide == 1 ? m.coopSide : -1);
+        for (int pad = 0; pad < 4; pad++)
+            pInfo->SetPlayingSide((unsigned short)pad, (short)(pad < 2 ? coop : -1));
+        if (m.coopSide == PORT_NET_COOP_VERSUS)
+        {
+            // r100, an online league's game between two people: each on their own club, pad 0 the host (home)
+            for (int pad = 0; pad < 4; pad++)
+                pInfo->SetPlayingSide((unsigned short)pad, (short)(pad < 2 ? pad : -1));
+        }
+        pInfo->mMainUserPadNumber = (eFEINPUT_PAD)0;
+        port_net_unpack_options(m.options, m.optionsSize);
+        return;
+    }
     if (m.mode != GameInfoManager::GM_FRIENDLY)
     {
         // r63, co-op Cup: the host's cup (the host takes it over again, unchanged), both pads on its
@@ -1108,6 +1235,15 @@ extern "C" void PortNetGameFrameBegin(void)
         if (!port_net_unpack_cup(m.cup, m.cupSize))
             return;  // (a cup this build doesn't know: each plays its own then)
         const short side = (short)(m.coopSide == 1 ? 1 : 0);
+        // r67: the host's guests for the cup's team (the host's side of the match message);
+        // r67b: on the stats the host's headset sent.
+        PortGuestClearOnlineStats();
+        for (int role = 0; role < 2; role++)
+        {
+            m.guests[0][role][sizeof(m.guests[0][role]) - 1] = '\0';
+            PortGuestSetPick((int)pInfo->GetTeam(side), role, PortGuestRosterFind(role, m.guests[0][role]));
+            PortGuestSetOnlineStats(side, role, m.guestStats[0][role], m.guestStatMask[0][role]);
+        }
         for (int pad = 0; pad < 4; pad++)
             pInfo->SetPlayingSide((unsigned short)pad, (short)(pad < 2 ? side : -1));
         pInfo->mMainUserPadNumber = (eFEINPUT_PAD)0;
@@ -1121,6 +1257,27 @@ extern "C" void PortNetGameFrameBegin(void)
     pInfo->SetSidekick(0, (eSidekickID)m.sidekicks[0]);
     pInfo->SetSidekick(1, (eSidekickID)m.sidekicks[1]);
     pInfo->SetStadium((eStadiumID)m.stadium);
+    // r67: both sides' guest characters, as each headset picked them (a pack this headset lacks:
+    // that side is drawn as its slot).
+    PortGuestClearOnlineStats();
+    for (int side = 0; side < 2; side++)
+    {
+        for (int role = 0; role < 2; role++)
+        {
+            m.guests[side][role][sizeof(m.guests[side][role]) - 1] = '\0';
+            PortGuestSetPick(m.teams[side], role, PortGuestRosterFind(role, m.guests[side][role]));
+            // r67b: each side's guests on the stats their own headset sent (the same on both).
+            PortGuestSetOnlineStats(side, role, m.guestStats[side][role], m.guestStatMask[side][role]);
+        }
+    }
+    // r79: each side's co-captain as its own headset picked it (both headsets drop the same clashes)
+    for (int side = 0; side < 2; side++)
+    {
+        m.coGuests[side][sizeof(m.coGuests[side]) - 1] = '\0';
+        PortGuestSetOnlineStats(side, 2, m.coStats[side], m.coStatMask[side]);
+    }
+    PortSetCoCaptainsForMatch(m.coCaptains[0], PortGuestRosterFind(0, m.coGuests[0]), m.coCaptains[1],
+                              PortGuestRosterFind(0, m.coGuests[1]));
     // strikers-quest r44c: the test friend (tools/fakefriend) can ask for its side to be played by the
     // computer: its pad then has no side, which is how a Friendly against the CPU is set up.
     for (int pad = 0; pad < 4; pad++)
@@ -1225,6 +1382,12 @@ void cGame::CheckForGoal()
             pGoalScored->data.v3ShotPosition = g_pBall->m_v3ShotOrigin;
             pGoalScored->data.pScorer = m_pScorer;
             pGoalScored->data.pAssister = m_pAssister;
+            // strikers-quest r93: who the game credits, for checking assists against what was seen
+            fprintf(stderr, "[port] goal: side %d type %lu scorer %d (class %d) assister %d (class %d)\n", nSide,
+                    (unsigned long)g_pBall->m_uGoalType, m_pScorer != NULL ? m_pScorer->m_ID : -1,
+                    m_pScorer != NULL ? (int)m_pScorer->m_eCharacterClass : -1, m_pAssister != NULL ? m_pAssister->m_ID : -1,
+                    m_pAssister != NULL ? (int)m_pAssister->m_eCharacterClass : -1);
+            fflush(stderr);
 
             if (m_pScorer != NULL && m_pScorer->GetGlobalPad() != NULL)
             {
@@ -1496,6 +1659,7 @@ static cFielder* port_DebugFielder(int index)
 extern "C" void PortDebugFrame(void)
 {
     port_DebugPushSession();
+    PortFranchiseFrame();  // strikers-quest r70: franchise mode (starts its matches from the main menu)
 
     PortDebugCommand c;
     while (PortDebugPopCommand(&c))
@@ -2134,6 +2298,14 @@ void cGame::ResetScorerInfo()
  */
 void cGame::SetPotentialScorer(cPlayer* pPlayer)
 {
+    // strikers-quest r93 (Lance: "you're not counting the lob pass assists, as assists, 2 games now"): a
+    // one-timer or volley calls this again for the player who has just taken the ball (cBall's owner change
+    // already made it the potential scorer, the passer its assister), and as "the same player" that second
+    // call took the assist away. The same player again changes nothing now.
+    if (pPlayer != nullptr && pPlayer == m_pScorer)
+    {
+        return;
+    }
     cPlayer* pOldScorer = m_pScorer;
 
     if (pOldScorer != nullptr && pPlayer != nullptr && pOldScorer != pPlayer && pOldScorer->IsOnSameTeam(pPlayer))

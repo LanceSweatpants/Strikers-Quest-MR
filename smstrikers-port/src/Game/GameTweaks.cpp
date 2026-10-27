@@ -7,6 +7,7 @@
 #include "NL/nlPrint.h"
 
 #include "Game/GameInfo.h"
+#include "port/franchise.h"  // strikers-quest r86: franchise matches are 4 minutes
 
 SkillTweaks g_sSkillTweaks[2];
 const char* g_sDifficultyFileNames[7] = {
@@ -47,6 +48,11 @@ void GameTweaks::Init()
     else
     {
         fGameDuration = gameSettings.GameTime;
+    }
+    // strikers-quest r86 (Lance: franchise matches 4 minutes): whatever the options say
+    if (const int franchiseSeconds = PortFranchiseMatchSeconds())
+    {
+        fGameDuration = (float)franchiseSeconds;
     }
 
     fBlockPassLightAttackSpeed = cfg.Get<float>("Block Ball with LAttack under this Speed", 5.0f);

@@ -1,0 +1,105 @@
+# Quest 3 Strikers: the guests the on-headset renderer (guests/render) makes pictures and poses for, in
+# roster order (outside/guests/roster.txt, colo-picks.json bases). Names and slots only.
+#   pack  game  pose  cell  portrait
+# game: melee | colo | charged (the game whose files it is made from).
+# pose: the Strikers class whose "idle" clip stands it (retarget packs, retargetsim.guest_pose), or own
+#   (its own "idle" clip, Charged GPK1).
+# cell: its etch.r8 cell (roster place; the franchise-only evolved forms none: -). The game's roster.txt,
+#   when there, decides instead (etchres.py reads it).
+# portrait: full (the whole figure, 256 x 256, + its _shiny pack's), bust (head and shoulders 136 x 188,
+#   its bind pose: a guest whose game has no portrait of its own), - (none).
+bowser	charged	own	0	-
+bowserjr	charged	own	1	-
+diddykong	charged	own	2	-
+petey	charged	own	3	-
+drmario	melee	Mario	4	-
+falcon	melee	Luigi	5	-
+fox	melee	Yoshi	6	-
+falco	melee	Luigi	7	-
+link	melee	Mario	8	-
+younglink	melee	Luigi	9	-
+zelda	melee	Peach	10	-
+sheik	melee	Daisy	11	bust
+samus	melee	Waluigi	12	-
+kirby	melee	Yoshi	13	-
+ness	melee	Mario	14	-
+popo	melee	Daisy	15	-
+nana	melee	Peach	16	-
+marth	melee	Luigi	17	-
+roy	melee	Mario	18	-
+ganondorf	melee	Wario	19	-
+gamewatch	melee	Waluigi	20	-
+pk_bulbasaur	colo	Daisy	21	full
+pk_charmander	colo	Mario	22	full
+pk_squirtle	colo	Luigi	23	full
+pk_mrmime	colo	Waluigi	24	full
+pk_mankey	colo	Wario	25	full
+pk_machop	colo	Wario	26	full
+pk_geodude	colo	Wario	27	full
+pk_gastly	colo	Waluigi	28	full
+pk_onix	colo	DonkeyKong	29	full
+pk_voltorb	colo	Wario	30	full
+pk_dratini	colo	Peach	31	full
+pk_pichu	colo	Daisy	32	full
+pk_igglybuff	colo	Peach	33	full
+pk_torchic	colo	Yoshi	34	full
+pk_dusclops	colo	DonkeyKong	35	full
+pk_drowzee	colo	Mario	36	full
+pk_cubone	colo	Mario	37	full
+pk_koffing	colo	Waluigi	38	full
+pk_mewtwo	colo	Waluigi	39	full
+pk_snorlax	colo	DonkeyKong	40	full
+pk_magby	colo	Mario	41	full
+pk_treecko	colo	Yoshi	42	full
+pk_mudkip	colo	Daisy	43	full
+pk_shuppet	colo	Peach	44	full
+pk_bagon	colo	Wario	45	full
+pk_poliwag	colo	Luigi	46	full
+pk_scyther	colo	Luigi	47	full
+pk_houndour	colo	Yoshi	48	full
+pk_beldum	colo	Waluigi	49	full
+boo	charged	own	50	-
+drybones	charged	own	51	-
+montymole	charged	own	52	-
+shyguy	charged	own	53	-
+pk_ivysaur	colo	Daisy	-	full
+pk_venusaur	colo	DonkeyKong	-	full
+pk_charmeleon	colo	Mario	-	full
+pk_charizard	colo	DonkeyKong	-	full
+pk_wartortle	colo	Luigi	-	full
+pk_blastoise	colo	DonkeyKong	-	full
+pk_primeape	colo	Wario	-	full
+pk_machoke	colo	Wario	-	full
+pk_machamp	colo	DonkeyKong	-	full
+pk_graveler	colo	Wario	-	full
+pk_golem	colo	DonkeyKong	-	full
+pk_haunter	colo	Waluigi	-	full
+pk_gengar	colo	Waluigi	-	full
+pk_steelix	colo	DonkeyKong	-	full
+pk_electrode	colo	Wario	-	full
+pk_dragonair	colo	Peach	-	full
+pk_dragonite	colo	DonkeyKong	-	full
+pk_pikachu	colo	Yoshi	-	full
+pk_raichu	colo	Yoshi	-	full
+pk_jigglypuff	colo	Peach	-	full
+pk_wigglytuff	colo	Peach	-	full
+pk_combusken	colo	Yoshi	-	full
+pk_blaziken	colo	Luigi	-	full
+pk_hypno	colo	Waluigi	-	full
+pk_marowak	colo	Mario	-	full
+pk_weezing	colo	Waluigi	-	full
+pk_magmar	colo	Mario	-	full
+pk_grovyle	colo	Yoshi	-	full
+pk_sceptile	colo	Luigi	-	full
+pk_marshtomp	colo	Wario	-	full
+pk_swampert	colo	DonkeyKong	-	full
+pk_banette	colo	Waluigi	-	full
+pk_shelgon	colo	Wario	-	full
+pk_salamence	colo	Yoshi	-	full
+pk_poliwhirl	colo	Luigi	-	full
+pk_poliwrath	colo	Wario	-	full
+pk_politoed	colo	Luigi	-	full
+pk_scizor	colo	Luigi	-	full
+pk_houndoom	colo	Yoshi	-	full
+pk_metang	colo	Waluigi	-	full
+pk_metagross	colo	DonkeyKong	-	full

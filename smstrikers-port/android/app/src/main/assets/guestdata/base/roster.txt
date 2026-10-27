@@ -1,0 +1,96 @@
+# Quest 3 Strikers guest roster (tools/outside/roster.py): pack, role, plays as, name, game
+bowser	captain	donkeykong	Bowser	Charged
+bowserjr	captain	wario	Bowser Jr.	Charged
+diddykong	captain	yoshi	Diddy Kong	Charged
+petey	captain	wario	Petey Piranha	Charged
+drmario	captain	mario	Dr. Mario	Melee
+falcon	captain	luigi	Captain Falcon	Melee
+fox	captain	yoshi	Fox	Melee
+falco	captain	luigi	Falco	Melee
+link	captain	mario	Link	Melee
+younglink	captain	luigi	Young Link	Melee
+zelda	captain	peach	Zelda	Melee
+sheik	captain	daisy	Sheik	Melee
+samus	captain	waluigi	Samus	Melee
+kirby	captain	yoshi	Kirby	Melee
+ness	captain	mario	Ness	Melee
+popo	captain	daisy	Popo	Melee
+nana	captain	peach	Nana	Melee
+marth	captain	luigi	Marth	Melee
+roy	captain	mario	Roy	Melee
+ganondorf	captain	wario	Ganondorf	Melee
+gamewatch	captain	waluigi	Mr. Game & Watch	Melee
+pk_bulbasaur	captain	daisy	Bulbasaur	Colosseum
+pk_charmander	captain	mario	Charmander	Colosseum
+pk_squirtle	captain	luigi	Squirtle	Colosseum
+pk_mrmime	captain	waluigi	Mr. Mime	Colosseum
+pk_mankey	captain	wario	Mankey	Colosseum
+pk_machop	captain	wario	Machop	Colosseum
+pk_geodude	captain	wario	Geodude	Colosseum
+pk_gastly	captain	waluigi	Gastly	Colosseum
+pk_onix	captain	donkeykong	Onix	Colosseum
+pk_voltorb	captain	wario	Voltorb	Colosseum
+pk_dratini	captain	peach	Dratini	Colosseum
+pk_pichu	captain	daisy	Pichu	Colosseum
+pk_igglybuff	captain	peach	Igglybuff	Colosseum
+pk_torchic	captain	yoshi	Torchic	Colosseum
+pk_dusclops	captain	donkeykong	Dusclops	Colosseum
+pk_drowzee	captain	mario	Drowzee	Colosseum
+pk_cubone	captain	mario	Cubone	Colosseum
+pk_koffing	captain	waluigi	Koffing	Colosseum
+pk_mewtwo	captain	waluigi	Mewtwo	Colosseum
+pk_snorlax	captain	donkeykong	Snorlax	Colosseum
+pk_magby	captain	mario	Magby	Colosseum
+pk_treecko	captain	yoshi	Treecko	Colosseum
+pk_mudkip	captain	daisy	Mudkip	Colosseum
+pk_shuppet	captain	peach	Shuppet	Colosseum
+pk_bagon	captain	wario	Bagon	Colosseum
+pk_poliwag	captain	luigi	Poliwag	Colosseum
+pk_scyther	captain	luigi	Scyther	Colosseum
+pk_houndour	captain	yoshi	Houndour	Colosseum
+pk_beldum	captain	waluigi	Beldum	Colosseum
+boo	sidekick	toad	Boo	Charged
+drybones	sidekick	koopa	Dry Bones	Charged
+montymole	sidekick	birdo	Monty Mole	Charged
+shyguy	sidekick	hammerbros	Shy Guy	Charged
+pk_ivysaur	captain	daisy	Ivysaur	Colosseum	franchise	pk_bulbasaur
+pk_venusaur	captain	donkeykong	Venusaur	Colosseum	franchise	pk_ivysaur
+pk_charmeleon	captain	mario	Charmeleon	Colosseum	franchise	pk_charmander
+pk_charizard	captain	donkeykong	Charizard	Colosseum	franchise	pk_charmeleon
+pk_wartortle	captain	luigi	Wartortle	Colosseum	franchise	pk_squirtle
+pk_blastoise	captain	donkeykong	Blastoise	Colosseum	franchise	pk_wartortle
+pk_primeape	captain	wario	Primeape	Colosseum	franchise	pk_mankey
+pk_machoke	captain	wario	Machoke	Colosseum	franchise	pk_machop
+pk_machamp	captain	donkeykong	Machamp	Colosseum	franchise	pk_machoke
+pk_graveler	captain	wario	Graveler	Colosseum	franchise	pk_geodude
+pk_golem	captain	donkeykong	Golem	Colosseum	franchise	pk_graveler
+pk_haunter	captain	waluigi	Haunter	Colosseum	franchise	pk_gastly
+pk_gengar	captain	waluigi	Gengar	Colosseum	franchise	pk_haunter
+pk_steelix	captain	donkeykong	Steelix	Colosseum	franchise	pk_onix
+pk_electrode	captain	wario	Electrode	Colosseum	franchise	pk_voltorb
+pk_dragonair	captain	peach	Dragonair	Colosseum	franchise	pk_dratini
+pk_dragonite	captain	donkeykong	Dragonite	Colosseum	franchise	pk_dragonair
+pk_pikachu	captain	yoshi	Pikachu	Colosseum	franchise	pk_pichu
+pk_raichu	captain	yoshi	Raichu	Colosseum	franchise	pk_pikachu
+pk_jigglypuff	captain	peach	Jigglypuff	Colosseum	franchise	pk_igglybuff
+pk_wigglytuff	captain	peach	Wigglytuff	Colosseum	franchise	pk_jigglypuff
+pk_combusken	captain	yoshi	Combusken	Colosseum	franchise	pk_torchic
+pk_blaziken	captain	luigi	Blaziken	Colosseum	franchise	pk_combusken
+pk_hypno	captain	waluigi	Hypno	Colosseum	franchise	pk_drowzee
+pk_marowak	captain	mario	Marowak	Colosseum	franchise	pk_cubone
+pk_weezing	captain	waluigi	Weezing	Colosseum	franchise	pk_koffing
+pk_magmar	captain	mario	Magmar	Colosseum	franchise	pk_magby
+pk_grovyle	captain	yoshi	Grovyle	Colosseum	franchise	pk_treecko
+pk_sceptile	captain	luigi	Sceptile	Colosseum	franchise	pk_grovyle
+pk_marshtomp	captain	wario	Marshtomp	Colosseum	franchise	pk_mudkip
+pk_swampert	captain	donkeykong	Swampert	Colosseum	franchise	pk_marshtomp
+pk_banette	captain	waluigi	Banette	Colosseum	franchise	pk_shuppet
+pk_shelgon	captain	wario	Shelgon	Colosseum	franchise	pk_bagon
+pk_salamence	captain	yoshi	Salamence	Colosseum	franchise	pk_shelgon
+pk_poliwhirl	captain	luigi	Poliwhirl	Colosseum	franchise	pk_poliwag
+pk_poliwrath	captain	wario	Poliwrath	Colosseum	franchise	pk_poliwhirl
+pk_politoed	captain	luigi	Politoed	Colosseum	franchise	pk_poliwhirl
+pk_scizor	captain	luigi	Scizor	Colosseum	franchise	pk_scyther
+pk_houndoom	captain	yoshi	Houndoom	Colosseum	franchise	pk_houndour
+pk_metang	captain	waluigi	Metang	Colosseum	franchise	pk_beldum
+pk_metagross	captain	donkeykong	Metagross	Colosseum	franchise	pk_metang

@@ -30,6 +30,17 @@ typedef int (*PortDiscVisit)(void* user, const char* path, unsigned offset,
 int port_disc_walk(PortDisc* disc, PortDiscVisit visit, void* user, char* err,
                    size_t errsize);
 
+// strikers-quest 1.14 (the guest converter, android/.../guests): any GameCube disc (Melee, Pokemon Colosseum
+// ...) and a Wii .rvz / .wia (Mario Strikers Charged), read as its game partition's data (decrypted there). The
+// game itself keeps port_disc_open (Strikers' GameCube disc only).
+PortDisc* port_disc_open_any(const char* path, char* err, size_t errsize);
+int port_disc_is_wii(const PortDisc* disc);
+typedef int (*PortDiscVisit64)(void* user, const char* path, unsigned long long offset,
+                               unsigned length, int isDir);
+// As port_disc_walk with 64-bit offsets (a Wii partition's files can sit past 4 GB).
+int port_disc_walk64(PortDisc* disc, PortDiscVisit64 visit, void* user, char* err,
+                     size_t errsize);
+
 // Supplied by the host when built with PORT_DISC_INFLATE_HOOK instead of STRIKERS_ZLIB.
 int port_disc_inflate(unsigned char* dst, unsigned long* dstLen,
                       const unsigned char* src, unsigned long srcLen);

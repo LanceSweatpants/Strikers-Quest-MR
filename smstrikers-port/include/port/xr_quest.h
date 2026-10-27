@@ -92,6 +92,11 @@ void PortXrScorerFrame(int phase, float phaseTime, float height, int characterCl
 /* r43d, xr_scorer.cpp, just before each PortXrScorerFrame: the scorer's goals and assists this game
  * (goals < 0: unknown) and whether this goal is its third regular one (the hat trick). */
 void PortXrScorerStats(int goals, int assists, int hatTrick);
+/* r68h: and which of its team it is (cPlayer m_ID: 0 the captain, 1-3 the sidekicks; -1 the keeper):
+   a sidekick's banner shows its own name (PortGuestSidekickName). */
+void PortXrScorerPlayer(int playerId);
+/* r73: the show that follows is a franchise nemesis's face-off (1), not a goal (0): its banner says so. */
+void PortXrScorerFaceOff(int faceoff);
 /* PortCelebrationPoll, every game frame: the game is paused (the crowd volume panel shows). */
 void PortXrSetPaused(int paused);
 /* Fielder.cpp UseTeamPowerup, for the log: the team's items (ePowerUpType) and whether the

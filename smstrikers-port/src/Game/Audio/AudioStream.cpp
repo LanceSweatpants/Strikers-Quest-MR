@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include "Game/FE/feHelpFuncs.h"
+#include "port/xr_guest.h"  // strikers-quest r68
 
 extern cTeam* g_pTeams[2];
 extern unsigned int nlAudioSeed;  // strikers-quest r50: the sounds' own (NL/nlMath.cpp)
@@ -47,6 +48,19 @@ void Audio::StopStreaming()
     }
 }
 
+// strikers-quest r68: the announcer line just looked up names a guest captain by the Strikers
+// captain's name ("HomeCaptain" etc.): StreamTrack::QueueStream plays it silent (it still runs, so
+// whatever waits on it goes on as before). A guest scoring gets the line the game has for a
+// sidekick's goal, which names nobody.
+static bool s_guestNameCall = false;
+
+bool Audio::TrackMgrTakeGuestNameCall()
+{
+    const bool was = s_guestNameCall;
+    s_guestNameCall = false;
+    return was;
+}
+
 /**
  * Offset/Address/Size: 0x2EC | 0x8014BB04 | size: 0x370
  */
@@ -54,16 +68,19 @@ bool Audio::TrackMgrFileNameParamLookup(const char* param, char* out, unsigned l
 {
     s32 hash = nlStringLowerHash(param);
     const char* value;
+    s_guestNameCall = false;
 
     switch (hash)
     {
     case 0x3B762F28:
+        s_guestNameCall = PortGuestCaptainFor(0) >= 0;
         value = GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam(0));
         nlStrNCpy(out, value, size);
         break;
 
     case (s32)0xB59118F1:
     {
+        s_guestNameCall = PortGuestCaptainFor(1) >= 0;
         uintptr_t outValue = (uintptr_t)GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam(1));
         nlStrNCpy(out, (const char*)outValue, size);
         break;
@@ -99,6 +116,12 @@ bool Audio::TrackMgrFileNameParamLookup(const char* param, char* out, unsigned l
         break;
 
     case (s32)0xAEDB83D0:
+        if (Audio::g_pLastScorer->GetTeam() != NULL
+            && PortGuestIndexFor(Audio::g_pLastScorer->GetTeam()->m_nSide, (int)Audio::g_pLastScorer->m_eCharacterClass) >= 0)
+        {
+            nlStrNCpy(out, "Side", size);
+            break;
+        }
         switch (Audio::g_pLastScorer->m_eCharacterClass)
         {
         case 0:
@@ -150,6 +173,7 @@ bool Audio::TrackMgrFileNameParamLookup(const char* param, char* out, unsigned l
     {
         int sideInt = g_pTeams[0]->m_nScore < g_pTeams[1]->m_nScore;
         s16 side = (s16)sideInt;
+        s_guestNameCall = PortGuestCaptainFor(side) >= 0;
         uintptr_t outValue = (uintptr_t)GetTeamName(nlSingleton<GameInfoManager>::Instance()->GetTeam(side));
         nlStrNCpy(out, (const char*)outValue, size);
         break;

@@ -1,0 +1,695 @@
+# Melee fighters on the guest roster -> GPK2 (tools/outside/meleepack.py as repack-guests.ps1 runs it:
+# --map melee-bone-map.json --visible melee-visible.json). Our tuning only, no game data.
+#   pack <pack> <costume file>   one fighter (its default costume)
+#   scale <x>                    Melee costume units per Strikers unit (_scale_hint)
+#   show <n> ...                 the DObjs Melee shows by default (numbered joint by joint)
+#   class / flap_l / flap_r      _class, _flap_l, _flap_r
+#   map <joint> <Strikers bone>  the bone map, in the map file's order
+pack drmario PlDrNr.dat
+scale 13.7781
+map 3 bip01
+map 4 bip01 pelvis
+map 5 bip01 spine
+map 22 bip01 neck
+map 23 bip01 head
+map 6 bip01 l clavicle
+map 8 bip01 l upperarm
+map 9 bip01 l forearm
+map 10 bip01 l hand
+map 53 bip01 l thigh
+map 54 bip01 l calf
+map 56 bip01 l foot
+map 57 bip01 l toe0
+map 19 bip01 l finger0
+map 20 bip01 l finger01
+map 11 bip01 l finger1
+map 12 bip01 l finger11
+map 13 bip01 l finger2
+map 14 bip01 l finger21
+map 15 bip01 l finger3
+map 16 bip01 l finger31
+map 17 bip01 l finger4
+map 18 bip01 l finger41
+map 29 bip01 r clavicle
+map 31 bip01 r upperarm
+map 32 bip01 r forearm
+map 33 bip01 r hand
+map 69 bip01 r thigh
+map 70 bip01 r calf
+map 72 bip01 r foot
+map 73 bip01 r toe0
+map 43 bip01 r finger0
+map 44 bip01 r finger01
+map 34 bip01 r finger1
+map 35 bip01 r finger11
+map 36 bip01 r finger2
+map 37 bip01 r finger21
+map 38 bip01 r finger3
+map 39 bip01 r finger31
+map 40 bip01 r finger4
+map 41 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 48 49 50 51 52 53 54 55 56 57
+pack falcon PlCaNr.dat
+scale 15.6246
+map 3 bip01
+map 4 bip01 pelvis
+map 18 bip01 spine
+map 19 bip01 spine1
+map 38 bip01 neck
+map 39 bip01 head
+map 21 bip01 l clavicle
+map 23 bip01 l upperarm
+map 24 bip01 l forearm
+map 25 bip01 l hand
+map 7 bip01 l thigh
+map 8 bip01 l calf
+map 10 bip01 l foot
+map 11 bip01 l toe0
+map 35 bip01 l finger0
+map 36 bip01 l finger01
+map 26 bip01 l finger1
+map 27 bip01 l finger11
+map 28 bip01 l finger2
+map 29 bip01 l finger21
+map 30 bip01 l finger3
+map 31 bip01 l finger31
+map 32 bip01 l finger4
+map 33 bip01 l finger41
+map 42 bip01 r clavicle
+map 45 bip01 r upperarm
+map 46 bip01 r forearm
+map 47 bip01 r hand
+map 13 bip01 r thigh
+map 14 bip01 r calf
+map 16 bip01 r foot
+map 17 bip01 r toe0
+map 58 bip01 r finger0
+map 59 bip01 r finger01
+map 48 bip01 r finger1
+map 49 bip01 r finger11
+map 50 bip01 r finger2
+map 51 bip01 r finger21
+map 52 bip01 r finger3
+map 53 bip01 r finger31
+map 54 bip01 r finger4
+map 55 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 65 66 67 68 70 71 72 73 77 78
+pack fox PlFxNr.dat
+scale 15.7874
+map 3 bip01
+map 4 bip01 pelvis
+map 21 bip01 spine
+map 22 bip01 spine1
+map 40 bip01 neck
+map 41 bip01 head
+map 23 bip01 l clavicle
+map 25 bip01 l upperarm
+map 26 bip01 l forearm
+map 27 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 37 bip01 l finger0
+map 38 bip01 l finger01
+map 28 bip01 l finger1
+map 29 bip01 l finger11
+map 30 bip01 l finger2
+map 31 bip01 l finger21
+map 32 bip01 l finger3
+map 33 bip01 l finger31
+map 34 bip01 l finger4
+map 35 bip01 l finger41
+map 53 bip01 r clavicle
+map 55 bip01 r upperarm
+map 56 bip01 r forearm
+map 57 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 68 bip01 r finger0
+map 69 bip01 r finger01
+map 58 bip01 r finger1
+map 59 bip01 r finger11
+map 60 bip01 r finger2
+map 61 bip01 r finger21
+map 62 bip01 r finger3
+map 63 bip01 r finger31
+map 64 bip01 r finger4
+map 65 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 68 69 70 71 72 73 74 75 76
+pack falco PlFcNr.dat
+scale 13.7781
+map 3 bip01
+map 4 bip01 pelvis
+map 18 bip01 spine
+map 19 bip01 spine1
+map 38 bip01 neck
+map 39 bip01 head
+map 21 bip01 l clavicle
+map 23 bip01 l upperarm
+map 24 bip01 l forearm
+map 26 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 35 bip01 l finger0
+map 36 bip01 l finger01
+map 27 bip01 l finger1
+map 28 bip01 l finger11
+map 29 bip01 l finger2
+map 30 bip01 l finger21
+map 31 bip01 l finger3
+map 32 bip01 l finger31
+map 33 bip01 l finger4
+map 34 bip01 l finger41
+map 47 bip01 r clavicle
+map 49 bip01 r upperarm
+map 50 bip01 r forearm
+map 52 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 62 bip01 r finger0
+map 63 bip01 r finger01
+map 53 bip01 r finger1
+map 54 bip01 r finger11
+map 55 bip01 r finger2
+map 56 bip01 r finger21
+map 57 bip01 r finger3
+map 58 bip01 r finger31
+map 59 bip01 r finger4
+map 60 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 43
+pack link PlLkNr.dat
+scale 12.4228
+map 3 bip01
+map 4 bip01 pelvis
+map 17 bip01 spine
+map 18 bip01 spine1
+map 39 bip01 neck
+map 40 bip01 head
+map 19 bip01 l clavicle
+map 21 bip01 l upperarm
+map 22 bip01 l forearm
+map 23 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 36 bip01 l finger0
+map 37 bip01 l finger01
+map 27 bip01 l finger1
+map 28 bip01 l finger11
+map 29 bip01 l finger2
+map 30 bip01 l finger21
+map 31 bip01 l finger3
+map 32 bip01 l finger31
+map 33 bip01 l finger4
+map 34 bip01 l finger41
+map 51 bip01 r clavicle
+map 53 bip01 r upperarm
+map 54 bip01 r forearm
+map 55 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 65 bip01 r finger0
+map 66 bip01 r finger01
+map 56 bip01 r finger1
+map 57 bip01 r finger11
+map 58 bip01 r finger2
+map 59 bip01 r finger21
+map 60 bip01 r finger3
+map 61 bip01 r finger31
+map 62 bip01 r finger4
+map 63 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 73 74 79 80 81 82 84 85
+pack younglink PlClNr.dat
+scale 15.7874
+map 3 bip01
+map 4 bip01 pelvis
+map 17 bip01 spine
+map 18 bip01 spine1
+map 41 bip01 neck
+map 42 bip01 head
+map 19 bip01 l clavicle
+map 21 bip01 l upperarm
+map 22 bip01 l forearm
+map 25 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 38 bip01 l finger0
+map 39 bip01 l finger01
+map 29 bip01 l finger1
+map 30 bip01 l finger11
+map 31 bip01 l finger2
+map 32 bip01 l finger21
+map 33 bip01 l finger3
+map 34 bip01 l finger31
+map 35 bip01 l finger4
+map 36 bip01 l finger41
+map 53 bip01 r clavicle
+map 55 bip01 r upperarm
+map 56 bip01 r forearm
+map 59 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 69 bip01 r finger0
+map 70 bip01 r finger01
+map 60 bip01 r finger1
+map 61 bip01 r finger11
+map 62 bip01 r finger2
+map 63 bip01 r finger21
+map 64 bip01 r finger3
+map 65 bip01 r finger31
+map 66 bip01 r finger4
+map 67 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 61 65 66 67 68 71 72
+pack zelda PlZdNr.dat
+scale 12.0285
+map 3 bip01
+map 4 bip01 pelvis
+map 66 bip01 spine
+map 67 bip01 spine1
+map 88 bip01 neck
+map 89 bip01 head
+map 68 bip01 l clavicle
+map 72 bip01 l upperarm
+map 73 bip01 l forearm
+map 76 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 86 bip01 l finger0
+map 87 bip01 l finger01
+map 77 bip01 l finger1
+map 78 bip01 l finger11
+map 79 bip01 l finger2
+map 80 bip01 l finger21
+map 81 bip01 l finger3
+map 82 bip01 l finger31
+map 83 bip01 l finger4
+map 84 bip01 l finger41
+map 96 bip01 r clavicle
+map 100 bip01 r upperarm
+map 101 bip01 r forearm
+map 104 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 114 bip01 r finger0
+map 115 bip01 r finger01
+map 105 bip01 r finger1
+map 106 bip01 r finger11
+map 107 bip01 r finger2
+map 108 bip01 r finger21
+map 109 bip01 r finger3
+map 110 bip01 r finger31
+map 111 bip01 r finger4
+map 112 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 42 43 44 45 46 47 48 49 50 51 52 53 54
+pack sheik PlSkNr.dat
+scale 10.8256
+map 3 bip01
+map 4 bip01 pelvis
+map 17 bip01 spine
+map 18 bip01 spine1
+map 35 bip01 neck
+map 36 bip01 head
+map 19 bip01 l clavicle
+map 21 bip01 l upperarm
+map 22 bip01 l forearm
+map 23 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 32 bip01 l finger0
+map 33 bip01 l finger01
+map 24 bip01 l finger1
+map 25 bip01 l finger11
+map 26 bip01 l finger2
+map 27 bip01 l finger21
+map 28 bip01 l finger3
+map 29 bip01 l finger31
+map 30 bip01 l finger4
+map 31 bip01 l finger41
+map 39 bip01 r clavicle
+map 41 bip01 r upperarm
+map 42 bip01 r forearm
+map 43 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 53 bip01 r finger0
+map 54 bip01 r finger01
+map 44 bip01 r finger1
+map 45 bip01 r finger11
+map 46 bip01 r finger2
+map 47 bip01 r finger21
+map 48 bip01 r finger3
+map 49 bip01 r finger31
+map 50 bip01 r finger4
+map 51 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 55 56 57 58 59 60 61
+pack samus PlSsNr.dat
+scale 17.2226
+map 3 bip01
+map 4 bip01 pelvis
+map 19 bip01 spine
+map 20 bip01 spine1
+map 41 bip01 neck
+map 42 bip01 head
+map 21 bip01 l clavicle
+map 26 bip01 l upperarm
+map 27 bip01 l forearm
+map 28 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 11 bip01 l toe0
+map 38 bip01 l finger0
+map 39 bip01 l finger01
+map 29 bip01 l finger1
+map 30 bip01 l finger11
+map 31 bip01 l finger2
+map 32 bip01 l finger21
+map 33 bip01 l finger3
+map 34 bip01 l finger31
+map 35 bip01 l finger4
+map 36 bip01 l finger41
+map 43 bip01 r clavicle
+map 48 bip01 r upperarm
+map 49 bip01 r forearm
+map 50 bip01 r hand
+map 13 bip01 r thigh
+map 14 bip01 r calf
+map 16 bip01 r foot
+map 18 bip01 r toe0
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 20 21 22 23 24 33 34 35 36 37 40 41 43 44 45 46 50 55 56 57 58 60 61 62 64 65 68 69 70 72 73 75 76 77 78 79 81 83 85 87 89 90 94
+pack kirby PlKbNr.dat
+scale 16.4738
+map 3 bip01
+map 4 bip01 pelvis
+map 5 bip01 spine
+map 6 bip01 head
+map 22 bip01 l clavicle
+map 24 bip01 l upperarm
+map 25 bip01 l forearm
+map 33 bip01 l thigh
+map 34 bip01 l calf
+map 36 bip01 l foot
+map 37 bip01 l toe0
+map 27 bip01 r clavicle
+map 29 bip01 r upperarm
+map 30 bip01 r forearm
+map 39 bip01 r thigh
+map 40 bip01 r calf
+map 42 bip01 r foot
+map 43 bip01 r toe0
+show 3 4 5 6 7 18 19
+pack ness PlNsNr.dat
+scale 15.1559
+map 3 bip01
+map 4 bip01 pelvis
+map 5 bip01 spine
+map 23 bip01 neck
+map 24 bip01 head
+map 7 bip01 l clavicle
+map 9 bip01 l upperarm
+map 10 bip01 l forearm
+map 11 bip01 l hand
+map 48 bip01 l thigh
+map 49 bip01 l calf
+map 51 bip01 l foot
+map 52 bip01 l toe0
+map 20 bip01 l finger0
+map 21 bip01 l finger01
+map 12 bip01 l finger1
+map 13 bip01 l finger11
+map 14 bip01 l finger2
+map 15 bip01 l finger21
+map 16 bip01 l finger3
+map 17 bip01 l finger31
+map 18 bip01 l finger4
+map 19 bip01 l finger41
+map 29 bip01 r clavicle
+map 31 bip01 r upperarm
+map 32 bip01 r forearm
+map 33 bip01 r hand
+map 55 bip01 r thigh
+map 56 bip01 r calf
+map 58 bip01 r foot
+map 59 bip01 r toe0
+map 43 bip01 r finger0
+map 44 bip01 r finger01
+map 34 bip01 r finger1
+map 35 bip01 r finger11
+map 36 bip01 r finger2
+map 37 bip01 r finger21
+map 38 bip01 r finger3
+map 39 bip01 r finger31
+map 40 bip01 r finger4
+map 41 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69
+pack popo PlPpNr.dat
+scale 13.179
+map 3 bip01
+map 4 bip01 pelvis
+map 5 bip01 spine
+map 18 bip01 neck
+map 19 bip01 head
+map 7 bip01 l clavicle
+map 9 bip01 l upperarm
+map 10 bip01 l forearm
+map 11 bip01 l hand
+map 36 bip01 l thigh
+map 37 bip01 l calf
+map 39 bip01 l foot
+map 40 bip01 l toe0
+map 16 bip01 l finger0
+map 17 bip01 l finger01
+map 12 bip01 l finger1
+map 13 bip01 l finger11
+map 22 bip01 r clavicle
+map 24 bip01 r upperarm
+map 25 bip01 r forearm
+map 26 bip01 r hand
+map 42 bip01 r thigh
+map 43 bip01 r calf
+map 45 bip01 r foot
+map 46 bip01 r toe0
+map 30 bip01 r finger0
+map 31 bip01 r finger01
+map 27 bip01 r finger1
+map 28 bip01 r finger11
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 31 32 33 34 35 36 37 38 39
+pack nana PlNnNr.dat
+scale 13.179
+map 3 bip01
+map 4 bip01 pelvis
+map 5 bip01 spine
+map 18 bip01 neck
+map 19 bip01 head
+map 7 bip01 l clavicle
+map 9 bip01 l upperarm
+map 10 bip01 l forearm
+map 11 bip01 l hand
+map 36 bip01 l thigh
+map 37 bip01 l calf
+map 39 bip01 l foot
+map 40 bip01 l toe0
+map 16 bip01 l finger0
+map 17 bip01 l finger01
+map 12 bip01 l finger1
+map 13 bip01 l finger11
+map 22 bip01 r clavicle
+map 24 bip01 r upperarm
+map 25 bip01 r forearm
+map 26 bip01 r hand
+map 42 bip01 r thigh
+map 43 bip01 r calf
+map 45 bip01 r foot
+map 46 bip01 r toe0
+map 30 bip01 r finger0
+map 31 bip01 r finger01
+map 27 bip01 r finger1
+map 28 bip01 r finger11
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 31 32 33 34 35 36 37 38 39
+pack marth PlMsNr.dat
+scale 13.179
+map 3 bip01
+map 4 bip01 pelvis
+map 21 bip01 spine
+map 22 bip01 spine1
+map 59 bip01 neck
+map 60 bip01 head
+map 25 bip01 l clavicle
+map 28 bip01 l upperarm
+map 29 bip01 l forearm
+map 31 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 41 bip01 l finger0
+map 42 bip01 l finger01
+map 32 bip01 l finger1
+map 33 bip01 l finger11
+map 34 bip01 l finger2
+map 35 bip01 l finger21
+map 36 bip01 l finger3
+map 37 bip01 l finger31
+map 38 bip01 l finger4
+map 39 bip01 l finger41
+map 67 bip01 r clavicle
+map 70 bip01 r upperarm
+map 71 bip01 r forearm
+map 73 bip01 r hand
+map 13 bip01 r thigh
+map 14 bip01 r calf
+map 16 bip01 r foot
+map 17 bip01 r toe0
+map 85 bip01 r finger0
+map 86 bip01 r finger01
+map 77 bip01 r finger1
+map 78 bip01 r finger11
+map 79 bip01 r finger2
+map 80 bip01 r finger21
+map 81 bip01 r finger3
+map 82 bip01 r finger31
+map 83 bip01 r finger4
+map 84 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 61 62 69 70 71 72 76 77 78 79 83
+pack roy PlFeNr.dat
+scale 14.0332
+map 3 bip01
+map 4 bip01 pelvis
+map 23 bip01 spine
+map 24 bip01 spine1
+map 61 bip01 neck
+map 62 bip01 head
+map 27 bip01 l clavicle
+map 30 bip01 l upperarm
+map 31 bip01 l forearm
+map 33 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 43 bip01 l finger0
+map 44 bip01 l finger01
+map 34 bip01 l finger1
+map 35 bip01 l finger11
+map 36 bip01 l finger2
+map 37 bip01 l finger21
+map 38 bip01 l finger3
+map 39 bip01 l finger31
+map 40 bip01 l finger4
+map 41 bip01 l finger41
+map 69 bip01 r clavicle
+map 72 bip01 r upperarm
+map 73 bip01 r forearm
+map 75 bip01 r hand
+map 14 bip01 r thigh
+map 15 bip01 r calf
+map 17 bip01 r foot
+map 18 bip01 r toe0
+map 87 bip01 r finger0
+map 88 bip01 r finger01
+map 79 bip01 r finger1
+map 80 bip01 r finger11
+map 81 bip01 r finger2
+map 82 bip01 r finger21
+map 83 bip01 r finger3
+map 84 bip01 r finger31
+map 85 bip01 r finger4
+map 86 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 37 38 39 40 41 42 43 44 45 46 47 62 63 64 65 66 67 68 69 70 71 72 73 74 75 85 86 87 88 90 91 92 93
+pack ganondorf PlGnNr.dat
+scale 14.0332
+map 3 bip01
+map 4 bip01 pelvis
+map 17 bip01 spine
+map 18 bip01 spine1
+map 53 bip01 neck
+map 54 bip01 head
+map 20 bip01 l clavicle
+map 22 bip01 l upperarm
+map 23 bip01 l forearm
+map 25 bip01 l hand
+map 6 bip01 l thigh
+map 7 bip01 l calf
+map 9 bip01 l foot
+map 10 bip01 l toe0
+map 34 bip01 l finger0
+map 35 bip01 l finger01
+map 26 bip01 l finger1
+map 27 bip01 l finger11
+map 28 bip01 l finger2
+map 29 bip01 l finger21
+map 30 bip01 l finger3
+map 31 bip01 l finger31
+map 32 bip01 l finger4
+map 33 bip01 l finger41
+map 64 bip01 r clavicle
+map 66 bip01 r upperarm
+map 67 bip01 r forearm
+map 69 bip01 r hand
+map 12 bip01 r thigh
+map 13 bip01 r calf
+map 15 bip01 r foot
+map 16 bip01 r toe0
+map 79 bip01 r finger0
+map 80 bip01 r finger01
+map 70 bip01 r finger1
+map 71 bip01 r finger11
+map 72 bip01 r finger2
+map 73 bip01 r finger21
+map 74 bip01 r finger3
+map 75 bip01 r finger31
+map 76 bip01 r finger4
+map 77 bip01 r finger41
+show 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81
+pack gamewatch PlGwNr.dat
+scale 14.8587
+map 4 bip01
+map 5 bip01 pelvis
+map 6 bip01 spine
+map 19 bip01 neck
+map 20 bip01 head
+map 9 bip01 l clavicle
+map 11 bip01 l upperarm
+map 12 bip01 l forearm
+map 14 bip01 l hand
+map 36 bip01 l thigh
+map 37 bip01 l calf
+map 39 bip01 l foot
+map 40 bip01 l toe0
+map 18 bip01 l finger0
+map 15 bip01 l finger1
+map 16 bip01 l finger11
+map 24 bip01 r clavicle
+map 26 bip01 r upperarm
+map 27 bip01 r forearm
+map 29 bip01 r hand
+map 44 bip01 r thigh
+map 45 bip01 r calf
+map 47 bip01 r foot
+map 48 bip01 r toe0
+map 34 bip01 r finger0
+map 30 bip01 r finger1
+map 31 bip01 r finger11
+show 0 17 18 19 20 21 22 36 37 38 39 40 41

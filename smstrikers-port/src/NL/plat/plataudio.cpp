@@ -59,9 +59,13 @@ struct _struct_stack_list_0x10
     /* 0x0C */ u32 numGroupsOnStack; /* inferred */
 };
 
+// strikers-quest r78: the secondary stack (the in-game groups: both captains' and sidekicks' voices, the
+// HUD, surfaces, stadium) 0x2B4000 -> 0x400000, room for a co-captain's voice group on each side
+// (include/port/lineup.h). The port's ARAM is 16 MB and only the two sound stacks take from it
+// (ai_ar.c ARAlloc: 0x44C000 primary + this).
 static struct _struct_stack_list_0x10 stack_list[2] = {
     { NULL, 0xFFFFFFFEU, (s32)PlatAudio::gPrimaryStackSize, 0U },
-    { NULL, 0xFFFFFFFFU, 0x2B4000, 0U },
+    { NULL, 0xFFFFFFFFU, 0x400000, 0U },
 };
 
 static const SND_HOOKS sndHooks = { musyXAlloc, musyXFree };

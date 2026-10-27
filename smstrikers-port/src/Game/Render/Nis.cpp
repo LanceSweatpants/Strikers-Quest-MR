@@ -2,6 +2,7 @@
 #include "NL/nlWare.h"
 #include "dolphin/os.h"
 #include "port/endian.h"
+#include "port/lineup.h"  // strikers-quest r78: the co-captain
 extern "C" unsigned long port_cam_swap(void*, unsigned long);
 #include "NL/vmath.h"
 #include "Game/ReplayManager.h"
@@ -80,23 +81,25 @@ Nis::Nis(NisHeader& header, char* data, int size)
             }
             NisPlayer* player = NisPlayer::Instance();
             player->mGoalScorerCharIndex = -1;
-            if (mCharacterControllers[i] != NULL)
+            // strikers-quest r78: TargetToIndex can say 10 (a co-captain side's third sidekick: none), and the
+            // fall-backs below never hand a co-captain someone else's animation (include/port/lineup.h)
+            const bool wanted = i >= 0 && i < 10;
+            auto taken = [&](int k) { return k < 0 || k >= 10 || mCharacterControllers[k] != NULL || PortIsCoCaptainSlot(k); };
+            if (wanted && mCharacterControllers[i] != NULL)
             {
                 i = NisPlayer::Instance()->TargetToIndex(NIS_TARGET_HOME_CAPTAIN, numAnimations, mWinnerType);
-            }
-            if (mCharacterControllers[i] != NULL)
-            {
-                i = NisPlayer::Instance()->TargetToIndex(NIS_TARGET_AWAY_CAPTAIN, numAnimations, mWinnerType);
-            }
-            if (mCharacterControllers[i] != NULL)
-            {
-                for (i = 0; i < 10; i++)
+                if (wanted && taken(i))
+                    i = NisPlayer::Instance()->TargetToIndex(NIS_TARGET_AWAY_CAPTAIN, numAnimations, mWinnerType);
+                if (wanted && taken(i))
                 {
-                    if (mCharacterControllers[i] == NULL)
-                        break;
+                    for (i = 0; i < 10; i++)
+                    {
+                        if (!taken(i))
+                            break;
+                    }
                 }
             }
-            if (i < 10)
+            if (wanted && i >= 0 && i < 10 && mCharacterControllers[i] == NULL)
             {
                 mBallId[i] = numAnimations;
                 cPN_SAnimController* controller = ::new (AllocateSAnimController()) cPN_SAnimController(anim, NULL, PM_HOLD, NULL, 0, false);

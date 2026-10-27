@@ -17,6 +17,7 @@
 #include "NL/nlTask.h"
 #include "NL/nlString.h"
 #include "string.h"
+#include "port/lineup.h"  // strikers-quest r78: the co-captain
 
 extern unsigned long cupTrophyHash;
 extern "C" int sscanf(const char*, const char*, ...);
@@ -887,21 +888,25 @@ void NisPlayer::EventHandler(Event* event)
  */
 int NisPlayer::TargetToIndex(NisTarget target, int index, NisWinnerType winnerType) const
 {
+    // strikers-quest r78: a side with a co-captain (include/port/lineup.h) has its sidekicks in slots 2-3:
+    // a sidekick's cut-scene animation never goes to the co-captain (another class's skeleton: a garbled
+    // pose, an out-of-range bone), a third one goes nowhere (10). Without a co-captain these are the
+    // game's own index + 1 / + 5 (a captain cut-scene's extra animations included).
     if (target == NIS_TARGET_HOME_CAPTAIN)
     {
-        return index;
+        return index > 0 && PortSecondCaptain(0) >= 0 ? PortSidekickSlot(0, index - 1) : index;
     }
     if (target == NIS_TARGET_AWAY_CAPTAIN)
     {
-        return index + 4;
+        return index > 0 && PortSecondCaptain(1) >= 0 ? PortSidekickSlot(1, index - 1) : index + 4;
     }
     if (target == NIS_TARGET_HOME_SIDEKICK)
     {
-        return index + 1;
+        return PortSidekickSlot(0, index);
     }
     if (target == NIS_TARGET_AWAY_SIDEKICK)
     {
-        return index + 5;
+        return PortSidekickSlot(1, index);
     }
     if (target == NIS_TARGET_HOME_GOALIE)
     {
@@ -913,19 +918,11 @@ int NisPlayer::TargetToIndex(NisTarget target, int index, NisWinnerType winnerTy
     }
     if (target == NIS_TARGET_LOSER_SIDEKICK)
     {
-        if (mWinnerSide[winnerType] == 0)
-        {
-            return index + 5;
-        }
-        return index + 1;
+        return PortSidekickSlot(mWinnerSide[winnerType] == 0 ? 1 : 0, index);  // r78 (was index + 5 / + 1)
     }
     if (target == NIS_TARGET_WINNER_SIDEKICK)
     {
-        if (mWinnerSide[winnerType] == 0)
-        {
-            return index + 1;
-        }
-        return index + 5;
+        return PortSidekickSlot(mWinnerSide[winnerType] == 0 ? 0 : 1, index);  // r78 (was index + 1 / + 5)
     }
     if (target == NIS_TARGET_LOSER_GOALIE)
     {

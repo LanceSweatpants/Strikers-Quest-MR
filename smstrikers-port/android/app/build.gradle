@@ -20,8 +20,8 @@ android {
         targetSdk 35
         // strikers-quest: the Quest alpha's own numbers (the phone port was 1 / 1.2.0). Raise
         // versionCode with every public build so an update installs over the last one.
-        versionCode 6401
-        versionName '0.1.13-alpha1 (r64b)'
+        versionCode 6848
+        versionName '0.1.14-alpha1 (r103)'
         ndk {
             // The only ABI the prebuilt Dawn package exists for, and the only one worth shipping:
             // a 32-bit build would not address the game's heap comfortably, and x86 Android is
@@ -92,20 +92,28 @@ def stageAssets = tasks.register('stageStrikersAssets', Sync) {
     from('../../assets/suites') {
         into 'suites'
     }
+    // strikers-quest 1.14: our own franchise data and art (clubs, ratings, evolution levels; club / playoff /
+    // league logos), staged into STRIKERS_HOME by StrikersHome; the guests themselves are made on the headset.
+    from('../../assets/franchise') {
+        into 'franchise'
+    }
+    from('../../assets/guestart') {
+        into 'guestart'
+    }
     into layout.buildDirectory.dir('strikers-assets')
 }
 
-// QUEM LÊ A PASTA DEPENDE DE QUEM A ESCREVE, e não só quem a empacota.
+// QUEM LÃŠ A PASTA DEPENDE DE QUEM A ESCREVE, e nÃ£o sÃ³ quem a empacota.
 //
-// Era só merge*Assets, e isso bastava para o debug. O release trouxe o lint
-// "vital", que monta um modelo do projeto e, para isso, percorre os diretórios
-// de assets -- sem passar pelo merge. O Gradle vê uma tarefa lendo a saída de
-// outra sem dependência declarada e recusa a build, com razão: a ordem entre as
-// duas não estaria garantida.
+// Era sÃ³ merge*Assets, e isso bastava para o debug. O release trouxe o lint
+// "vital", que monta um modelo do projeto e, para isso, percorre os diretÃ³rios
+// de assets -- sem passar pelo merge. O Gradle vÃª uma tarefa lendo a saÃ­da de
+// outra sem dependÃªncia declarada e recusa a build, com razÃ£o: a ordem entre as
+// duas nÃ£o estaria garantida.
 //
-// A lista é por nome porque o diretório entra na source set como texto, e um
-// caminho em texto não carrega consigo quem o produziu. Se aparecer mais uma
-// tarefa que leia assets, é aqui que ela entra.
+// A lista Ã© por nome porque o diretÃ³rio entra na source set como texto, e um
+// caminho em texto nÃ£o carrega consigo quem o produziu. Se aparecer mais uma
+// tarefa que leia assets, Ã© aqui que ela entra.
 tasks.configureEach { task ->
     final boolean empacota = task.name.startsWith('merge') && task.name.endsWith('Assets')
     final boolean analisa = task.name.toLowerCase().contains('lint')

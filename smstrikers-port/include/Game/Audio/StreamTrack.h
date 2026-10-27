@@ -20,6 +20,7 @@ class StereoAudioStream;
 namespace Audio
 {
 bool TrackMgrFileNameParamLookup(const char* param, char* out, unsigned long size);
+bool TrackMgrTakeGuestNameCall();  // strikers-quest r68 (AudioStream.cpp)
 } // namespace Audio
 
 namespace AudioStreamTrack

@@ -71,6 +71,8 @@ STRIKERS_BUILD_DIR="$BUILD" "$PYTHON" tools/genstubs.py \
 
 echo "==> link"
 "$CMAKE" --build "$BUILD" --target strikers --parallel
+# strikers-quest 1.14: the guest converter's disc reader for the launcher (guests/DiscSource.java)
+"$CMAKE" --build "$BUILD" --target guestdisc --parallel
 
 LIB="$BUILD/libmain.so"
 if [ ! -f "$LIB" ]; then
@@ -90,6 +92,12 @@ if [ ! -f "$CXXLIB" ]; then
     exit 1
 fi
 cp "$CXXLIB" "$STAGE/"
+if [ -f "$BUILD/libguestdisc.so" ]; then
+    cp "$BUILD/libguestdisc.so" "$STAGE/"
+else
+    echo "==> FAILED: no libguestdisc.so produced" >&2
+    exit 1
+fi
 # The Vulkan stand-in, which is what Dawn's dlopen("libvulkan.so") is meant to find; see
 # src/platform/vulkan_shim.c.
 if [ -f "$BUILD/libvulkan.so" ]; then

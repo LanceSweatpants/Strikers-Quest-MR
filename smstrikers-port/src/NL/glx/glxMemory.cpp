@@ -384,8 +384,13 @@ void* glplatFrameAlloc(unsigned long size, eGLMemory memType)
 /**
  * Offset/Address/Size: 0x40 | 0x801B6968 | size: 0x100
  */
+// strikers-quest r66e: counts the flips below; guest characters (src/platform/xr_guest.cpp) keep
+// their per-frame vertex data in memory of their own, turned over on it.
+unsigned int g_portGlFrame = 0;
+
 void glplatFrameAllocNextFrame()
 {
+    g_portGlFrame++;
     if (glx_MemoryDump)
     {
         tDebugPrintManager::Print(DC_GLPLAT, "memory used: %uKB resource, %uKB frame real, %uKB frame virt\n", n_phys >> 10, n_frame[i_frame][0] >> 10, n_frame[i_frame][1] >> 10);
