@@ -155,11 +155,15 @@ void StatsTracker::SetBasicGameInfoPointer(BasicGameInfo* pGameInfo, bool initia
         i++;
     } while (i < 5);
 
-    // strikers-quest r78: a co-captain in slot 1 (include/port/lineup.h) keeps its own class's record
+    // strikers-quest r78: a co-captain in slot 1 (include/port/lineup.h) keeps its own class's record; r130: every
+    // sidekick slot playing a captain class
     for (int side = 0; side < 2; side++)
     {
-        if (PortSecondCaptain(side) >= 0)
-            mCurrentPlayerStats[side][1].mRecordType.mCharacterClass = (eCharacterClass)PortSecondCaptain(side);
+        for (int slot = 0; slot < 3; slot++)
+        {
+            if (PortSlotCaptain(side, slot) >= 0)
+                mCurrentPlayerStats[side][slot + 1].mRecordType.mCharacterClass = (eCharacterClass)PortSlotCaptain(side, slot);
+        }
     }
 
     j = 0;

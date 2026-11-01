@@ -103,6 +103,11 @@ struct HostRig
     // with no other followed bone above them: placed where the Strikers hips are).
     bool hipsBody[kMaxNodes];
     int hipsTop;  // the top one of those placed where the Strikers hips are: they all move by its factors
+    // r124 (Lance: the heroes "moving all wonky"; Blade on Wario's moves stood sumo-wide, kicked in the splits): a guest
+    // with its own idle (the Marvel heroes) and every Strikers bone's standing pose (guests/hostref_all.txt): the bone
+    // turns the way the Strikers one turns from ITS standing pose, starting from the guest's own idle (clip space)
+    bool useStand[kMaxNodes];
+    float standRot[kMaxNodes][9];
 };
 // r101: a tail stays upright (r68) while the hips are within this of their standing turn (every move of normal
 // play), goes with them fully past kTailFollow (a Super Strike, a bomb, a tackle tumble the body 120-160 degrees),
@@ -123,6 +128,7 @@ struct HostRef
 };
 std::unordered_map<u32, HostRef> s_hostRef[12];
 bool s_hostRefRead = false;
+std::unordered_map<u32, HostRef> s_hostRefAll[12];  // r124: every bone (guests/hostref_all.txt, hostref.py --all)
 
 struct GVert
 {
@@ -174,6 +180,10 @@ struct Guest
     std::unordered_map<u32, int> byHash;
     int idle, run, pass, kick, hit, wave;
     int celebrate;      // r77: its own goal celebration clip (the scorer show), -1 none
+    int ownIdle = -1, ownRun = -1;  // r108: a retarget guest's own idle / run (clips "own_idle" / "own_run"), -1 none
+    std::vector<int> ownCel;         // r123: a hero's own goal celebrations (its big attacks, "own_cel1".."own_cel4")
+    float slither = 0.0f;           // r108: a long body's ripple (limbs.txt "slither"), 0 none
+    float spin = 0.0f;              // r130: a top spins as it goes (limbs.txt "spin", turns per 4 m), 0 none
     u32 gasRgb = 0;     // r101: its gas's colour (0xFFRRGGBB, its gas cards' picture), 0 no gas
     bool retarget;      // r66: moves with the Strikers character's own animations (GPK2)
     u32 mode;           // r69: GPK2 mode bits: 1 retarget, 2 flies (flapping wings, bob), 4 floats (bob)
@@ -194,6 +204,14 @@ struct CharState
     double paceT;
     bool running;
     unsigned int paceFrame;
+    // r108: a hero's own moves (own_move): the mode it was drawn in last frame (-1 the Strikers moves, else its own
+    // clip), its last world matrices, and the cross-fade from the ones it had when the mode changed
+    int lastMode = -2;
+    unsigned int fadeFrame = 0;
+    float fade = 0.0f;
+    bool hasLast = false;
+    float lastWorld[kMaxNodes][16];
+    float fadeWorld[kMaxNodes][16];
 };
 
 void mul(const float* a, const float* b, float* out);
@@ -210,6 +228,8 @@ std::unordered_map<const cCharacter*, CharState> s_state;
 // r77: the life-size scorer's copy being drawn (PortGuestScorerPose): what it was posed with, and its
 // own cross-fade state (the field character's stays its own)
 bool s_scorerActive = false;
+int s_scorerCel = -1;       // r124: the hero scorer's attack now (a clip index) and how far in (0..1, -1 over)
+float s_scorerCelT = -1.0f;
 const cSAnim* s_scorerClip = NULL;
 float s_scorerNorm = 0.0f, s_scorerCelebrate = 0.0f;
 CharState s_scorerState;
@@ -305,7 +325,8 @@ void heaviest_clip(cPoseNode* node, float w, const cPN_SAnimController** best, f
 const float kPaceStart = 1.0f, kPaceStop = 0.6f;  // units a second (a run is about 6)
 const float kPaceRunSpeed = 6.0f;                 // the speed a guest's run clip is paced for
 
-int pace_clip(const Guest* g, CharState& st, int clip, const float* rootM, float* t)
+// How fast the body travels (st.speed, units a second) and how far it has gone (st.travel), once a frame.
+void pace_update(CharState& st, const float* rootM)
 {
     if (st.paceFrame != g_portGlFrame)
     {
@@ -328,6 +349,11 @@ int pace_clip(const Guest* g, CharState& st, int clip, const float* rootM, float
         st.paceY = y;
         st.paceT = now;
     }
+}
+
+int pace_clip(const Guest* g, CharState& st, int clip, const float* rootM, float* t)
+{
+    pace_update(st, rootM);
     const bool standing = clip == g->idle || clip == g->wave || clip == g->celebrate;
     if (!standing || g->run < 0)
     {
@@ -352,6 +378,7 @@ int pace_clip(const Guest* g, CharState& st, int clip, const float* rootM, float
     *t = n - floorf(n);
     return g->run;
 }
+
 
 std::string home_dir()
 {
@@ -469,10 +496,15 @@ PlatTexture* make_texture(const u8* rec, u32 size)
 // lines (a shiny pack takes its normal pack's): the mapped upper arms, forearms and hands drawn that much
 // smaller round the shoulder (retarget_pose), what hangs off them following. Colosseum's Pikachu has long
 // thin arms the Strikers arm moves let hang to its knees (PC check, retargetsim RETARGET_ARMS: 0.55).
-float arm_scale_for(const std::string& pack)
+// r105 (Lance: "grovyle was WAY too small"): and "<pack> size <scale>": the whole guest drawn that much bigger
+// round its feet (the 3D evolution too, PortGuestSizeScale), its pack untouched.
+float limb_value(const std::string& pack, const char* what)
 {
-    static std::unordered_map<std::string, float> s_limbs;
+    static std::unordered_map<std::string, float> s_limbs[4];  // arms, size, slither (r108), spin (r130)
+    // r131 (review): read once under a lock - the hub's figure loader thread can be the first caller too
+    static std::mutex s_lock;
     static bool s_read = false;
+    std::lock_guard<std::mutex> guard(s_lock);
     if (!s_read)
     {
         s_read = true;
@@ -481,14 +513,22 @@ float arm_scale_for(const std::string& pack)
             char line[160];
             while (fgets(line, sizeof line, f) != NULL)
             {
-                char key[64], what[16];
+                char key[64], kind[16];
                 float v = 1.0f;
-                if (line[0] != '#' && sscanf(line, "%63s %15s %f", key, what, &v) == 3 && strcmp(what, "arms") == 0 &&
-                    v > 0.1f && v <= 2.0f)
-                    s_limbs[key] = v;
+                if (line[0] == '#' || sscanf(line, "%63s %15s %f", key, kind, &v) != 3)
+                    continue;
+                if (strcmp(kind, "arms") == 0 && v > 0.1f && v <= 2.0f)
+                    s_limbs[0][key] = v;
+                else if (strcmp(kind, "size") == 0 && v >= 0.5f && v <= 2.0f)
+                    s_limbs[1][key] = v;
+                else if (strcmp(kind, "slither") == 0 && v > 0.0f && v <= 3.0f)  // r108 (slither_world)
+                    s_limbs[2][key] = v;
+                else if (strcmp(kind, "spin") == 0 && v > 0.0f && v <= 4.0f)  // r130 (spin_world)
+                    s_limbs[3][key] = v;
             }
             fclose(f);
-            fprintf(stderr, "[guest] limbs.txt: %d guests with their own arm size\n", (int)s_limbs.size());
+            fprintf(stderr, "[guest] limbs.txt: %d guests with their own arm size, %d with their own size, %d slither\n",
+                    (int)s_limbs[0].size(), (int)s_limbs[1].size(), (int)s_limbs[2].size());
             fflush(stderr);
         }
     }
@@ -496,9 +536,13 @@ float arm_scale_for(const std::string& pack)
     const size_t shiny = base.find("_shiny");
     if (shiny != std::string::npos)
         base.resize(shiny);
-    std::unordered_map<std::string, float>::const_iterator it = s_limbs.find(base);
-    return it != s_limbs.end() ? it->second : 1.0f;
+    const int which = strcmp(what, "size") == 0 ? 1 : (strcmp(what, "slither") == 0 ? 2 : (strcmp(what, "spin") == 0 ? 3 : 0));
+    const std::unordered_map<std::string, float>& table = s_limbs[which];
+    std::unordered_map<std::string, float>::const_iterator it = table.find(base);
+    return it != table.end() ? it->second : (which >= 2 ? 0.0f : 1.0f);
 }
+
+float arm_scale_for(const std::string& pack) { return limb_value(pack, "arms"); }
 
 Guest* load_pack(const std::string& name, float scale)
 {
@@ -535,8 +579,10 @@ Guest* load_pack(const std::string& name, float scale)
     const u32 nNodes = rd32(p), nPackets = rd32(p), nTex = rd32(p), nAnims = rd32(p);
     Guest* g = new Guest();
     g->name = name;
-    g->scale = scale;
+    g->scale = scale * limb_value(name, "size");  // r105: its own size (limbs.txt)
     g->armScale = arm_scale_for(name);  // r97
+    g->slither = limb_value(name, "slither");  // r108
+    g->spin = limb_value(name, "spin");  // r130
     g->height = rdf(p);
     p += 32;  // name
     g->mode = v2 ? rd32(p) : 0;
@@ -703,6 +749,14 @@ Guest* load_pack(const std::string& name, float scale)
         auto it = g->byHash.find(nlStringLowerHash(n));
         return it != g->byHash.end() ? it->second : -1;
     };
+    g->ownIdle = find("own_idle");  // r108 (the Marvel heroes, tools/outside/mua/mua2gpk.py)
+    g->ownRun = find("own_run");
+    for (const char* c : {"own_cel1", "own_cel2", "own_cel3", "own_cel4"})  // r123
+    {
+        const int a = find(c);
+        if (a >= 0)
+            g->ownCel.push_back(a);
+    }
     g->idle = find("idle");
     g->run = find("run_with_ball");
     g->pass = find("pass_600");
@@ -817,6 +871,19 @@ std::vector<RosterEntry> s_roster;
 std::vector<int> s_byRole[2];
 bool s_rosterRead = false;
 int s_pick[GameInfoManager::GM_NUM_MODES][8][2];
+// r130 (Lance: "you can have anybody play a sidekick now. think 4 selectable characters per team"; "i want that no
+// sidekicks shit to carry over betweeen any mode ... when its time to select sidekicks you allow anyone to be chosen"):
+// each of a team's 3 sidekicks (cPlayer m_ID 1-3) its own pick: a roster index of any role, -1 the team's Strikers
+// sidekick itself, PORT_GUEST_INHERIT = the team's one sidekick pick (s_pick role 1, as before). guest-picks.txt
+// lines with role 2-4. Online: the slots the match setup carried (s_netSlot below).
+int s_slotPick[GameInfoManager::GM_NUM_MODES][8][3];
+bool s_slotShiny[2][4] = {};  // a member's shiny (franchise), by m_ID
+// r130 (online): each side's three slots as the match setup carried them (PortGuestSetOnlineSlots, the same on both
+// headsets: a pack this headset lacks is -1), used online while s_netSlotOn[side]. Off (PortGuestClearOnlineStats):
+// an older build on the other headset, or a franchise match: both headsets play the side's one sidekick pick.
+int s_netSlot[2][3] = {{PORT_GUEST_INHERIT, PORT_GUEST_INHERIT, PORT_GUEST_INHERIT},
+                       {PORT_GUEST_INHERIT, PORT_GUEST_INHERIT, PORT_GUEST_INHERIT}};
+bool s_netSlotOn[2] = {false, false};
 bool s_picksRead = false;
 
 int team_of(const char* n)
@@ -938,6 +1005,10 @@ void read_picks()
         for (auto& team : mode)
             for (int& pick : team)
                 pick = PORT_GUEST_INHERIT;
+    for (auto& mode : s_slotPick)  // r130
+        for (auto& team : mode)
+            for (int& pick : team)
+                pick = PORT_GUEST_INHERIT;
     read_roster();
     FILE* f = fopen(picks_path().c_str(), "r");
     if (f == NULL)
@@ -946,8 +1017,20 @@ void read_picks()
     char pack[64];
     while (fscanf(f, "%d %d %d %63s", &mode, &team, &role, pack) == 4)
     {
-        if (mode < 0 || mode >= GameInfoManager::GM_NUM_MODES || team < 0 || team >= 8 || role < 0 || role > 1)
+        if (mode < 0 || mode >= GameInfoManager::GM_NUM_MODES || team < 0 || team >= 8 || role < 0 || role > 4)
             continue;
+        if (role >= 2)  // r130: a sidekick slot's own pick (any role)
+        {
+            int& sp = s_slotPick[mode][team][role - 2];
+            if (strcmp(pack, "@original") == 0)
+                sp = -1;
+            if (strncmp(pack, "@strikers_", 10) == 0 && team_of(pack + 10) >= 0)  // r130: a Strikers captain
+                sp = PORT_GUEST_ORIGINAL + team_of(pack + 10);
+            for (size_t i = 0; i < s_roster.size(); i++)
+                if (s_roster[i].pack == pack)
+                    sp = (int)i;
+            continue;
+        }
         if (strcmp(pack, "@original") == 0)
         {
             s_pick[mode][team][role] = -1;
@@ -973,6 +1056,16 @@ void write_picks()
                     fprintf(f, "%d %d %d @original\n", m, t, r);
                 else if (s_pick[m][t][r] >= 0 && s_pick[m][t][r] < (int)s_roster.size())
                     fprintf(f, "%d %d %d %s\n", m, t, r, s_roster[s_pick[m][t][r]].pack.c_str());
+    static const char* const kTeamKeys[8] = {"daisy", "donkeykong", "luigi", "mario", "peach", "waluigi", "wario", "yoshi"};
+    for (int m = 0; m < GameInfoManager::GM_NUM_MODES; m++)  // r130: the sidekick slots
+        for (int t = 0; t < 8; t++)
+            for (int k = 0; k < 3; k++)
+                if (s_slotPick[m][t][k] == -1)
+                    fprintf(f, "%d %d %d @original\n", m, t, k + 2);
+                else if (s_slotPick[m][t][k] >= PORT_GUEST_ORIGINAL && s_slotPick[m][t][k] < PORT_GUEST_ORIGINAL + 8)
+                    fprintf(f, "%d %d %d @strikers_%s\n", m, t, k + 2, kTeamKeys[s_slotPick[m][t][k] - PORT_GUEST_ORIGINAL]);
+                else if (s_slotPick[m][t][k] >= 0 && s_slotPick[m][t][k] < (int)s_roster.size())
+                    fprintf(f, "%d %d %d %s\n", m, t, k + 2, s_roster[s_slotPick[m][t][k]].pack.c_str());
     const bool failed = ferror(f) != 0;
     const int closed = fclose(f);
     if (!failed && closed == 0)
@@ -983,6 +1076,52 @@ int current_mode()
 {
     const int m = (int)GameInfoManager::Instance()->GetCurrentMode();
     return m >= 0 && m < GameInfoManager::GM_NUM_MODES ? m : -1;
+}
+
+// r130: a sidekick slot's (0-2) own pick value as it plays this match: offline its team's in the current mode, online
+// the match setup's (s_netSlot: both headsets the same; none while it carried none). PORT_GUEST_INHERIT none.
+int slot_pick_raw(int side, int slot)
+{
+    if (side < 0 || side > 1 || slot < 0 || slot > 2)
+        return PORT_GUEST_INHERIT;
+    if (PortNetOnline())
+        return s_netSlotOn[side] ? s_netSlot[side][slot] : PORT_GUEST_INHERIT;
+    GameInfoManager* gi = GameInfoManager::Instance();
+    if (gi == NULL)
+        return PORT_GUEST_INHERIT;
+    read_picks();
+    const int mode = current_mode();
+    if (mode < 0)
+        return PORT_GUEST_INHERIT;
+    const int team = (int)gi->GetTeam((short)side);
+    if (team < 0 || team >= 8)  // the Super Team has no guests
+        return PORT_GUEST_INHERIT;
+    return s_slotPick[mode][team][slot];
+}
+
+// r130: r130's first take drew a Strikers captain on a sidekick class (cap_<name> roster packs); now the real one plays
+bool is_cap_pack(int index)
+{
+    return index >= 0 && index < (int)s_roster.size() && s_roster[index].pack.compare(0, 4, "cap_") == 0;
+}
+
+// r130: the guest drawn for a slot pick value: its roster index, or -1 (a Strikers character itself: the Strikers
+// sidekick, a Strikers captain - on its class, or on the sidekick class when its class was taken)
+int slot_guest_of(int v)
+{
+    return v >= 0 && v < (int)s_roster.size() && !is_cap_pack(v) ? v : -1;
+}
+
+// r130: the guest of sidekick slot `slot` of `side` playing a captain class (include/port/lineup.h PortSlotCaptain): the
+// co-captain's for slot 0 when the side has one (r78), else the slot's own pick; -1 the Strikers captain itself.
+int captain_slot_guest(int side, int slot)
+{
+    if (side < 0 || side > 1 || slot < 0 || slot > 2)
+        return -1;
+    if (slot == 0 && PortSecondCaptain(side) >= 0)
+        return s_coPick[side];
+    read_roster();
+    return slot_guest_of(slot_pick_raw(side, slot));
 }
 
 // The roster index of the guest playing class `cls` for `side` this match, or -1.
@@ -999,11 +1138,42 @@ int pick_for_side(int side, int cls)
     int role = -1;
     if ((int)ConvertToCharacterClass((eTeamID)team) == cls)
         role = PORT_GUEST_CAPTAIN;
-    else if (PortSecondCaptain(side) == cls)
-        return s_coPick[side];  // r78: the co-captain's own (a guest, or -1: the Strikers captain itself)
+    else if (PortSlotOfClass(side, cls) >= 0)
+        // r78: the co-captain's own (a guest, or -1: the Strikers captain itself); r130: any sidekick slot playing a
+        // captain class (each class once on the field: the class alone says which)
+        return captain_slot_guest(side, PortSlotOfClass(side, cls));
     else if ((int)ConvertToCharacterClass(gi->GetSidekick((short)side)) == cls)
         role = PORT_GUEST_SIDEKICK;
     return role < 0 ? PORT_GUEST_INHERIT : s_pick[mode][team][role];
+}
+
+// r130: the guest playing class `cls` for `side` as player `playerId` (cPlayer m_ID; 1-3 the sidekicks, -1 unknown):
+// a sidekick its own slot's pick, else as pick_for_side. *slot = the slot (1-3) when its own pick was used on the
+// sidekick class. Online only the slots the match setup carried (s_netSlot: both headsets the same), else the side's one
+// sidekick pick. A slot playing a captain class: that slot's guest (pick_for_side, by its class).
+int pick_for_player(int side, int cls, int playerId, int* slot = NULL)
+{
+    if (slot != NULL)
+        *slot = 0;
+    // r130: a sidekick slot playing a captain class: that slot's own (by its m_ID first, then by its class)
+    if (playerId >= 1 && playerId <= 3 && side >= 0 && side <= 1 && PortSlotCaptain(side, playerId - 1) == cls && cls >= 0)
+        return captain_slot_guest(side, playerId - 1);
+    const int base = pick_for_side(side, cls);
+    if (playerId < 1 || playerId > 3 || side < 0 || side > 1 || PortSlotOfClass(side, cls) >= 0)
+        return base;
+    GameInfoManager* gi = GameInfoManager::Instance();
+    if (current_mode() < 0 || gi == NULL)
+        return base;
+    const int team = (int)gi->GetTeam((short)side);
+    if (team < 0 || team >= 8 || (int)ConvertToCharacterClass(gi->GetSidekick((short)side)) != cls)
+        return base;
+    const int sp = slot_pick_raw(side, playerId - 1);
+    if (sp == PORT_GUEST_INHERIT)
+        return base;
+    if (slot != NULL)
+        *slot = playerId;
+    // a Strikers captain picked for it whose class was taken (logged, include/port/lineup.h): the Strikers sidekick itself
+    return slot_guest_of(sp);
 }
 
 // The cSAnim's name (cIdentifier keeps it protected); for the log only.
@@ -1292,24 +1462,215 @@ void set_rot_keep_scale(float* w, const float* r)
     }
 }
 
+// r108 (Lance: "i dont want the x men moving like mario and all them IF WE CAN PREVENT THAT"): a hero's own run while
+// the Strikers character runs (and moves), its own idle while it stands still: the clip to play and where in it (t);
+// -1 = the Strikers move (kicks, passes, tackles, turns, stops, strafes, hits ...). Live play only.
+int own_move(const Guest* g, const cSAnim* host, CharState& st, const float* rootM, float* t)
+{
+    if (host == NULL || (g->ownIdle < 0 && g->ownRun < 0))
+        return -1;
+    const char* n = NameOf::get(host);
+    if (n == NULL)
+        return -1;
+    pace_update(st, rootM);
+    // r123 (Lance: Blade's "legs look CRAZY" when running): the run without the ball ("jog") too - it was the
+    // Strikers character's jog on the hero's skeleton (Wario's on Blade: arms out wide, legs kicked sideways)
+    const bool runClip = strcmp(n, "run_with_ball") == 0 || strncmp(n, "run_with_ball_lean", 18) == 0 ||
+                         strncmp(n, "turbo_run", 9) == 0 || strncmp(n, "turbo_with_ball_level", 21) == 0 ||
+                         strcmp(n, "jog") == 0;
+    if (g->ownRun >= 0 && runClip && st.speed > kPaceStop)
+    {
+        // its stride by the ground covered (no skating), at the Strikers run speed its clip plays as made
+        const GAnim& run = g->anims[g->ownRun];
+        const float stride = kPaceRunSpeed * (run.keys > 1 ? (float)(run.keys - 1) / 30.0f : 0.6f);
+        const float k = st.travel / stride;
+        *t = k - floorf(k);
+        return g->ownRun;
+    }
+    if (g->ownIdle >= 0 && strcmp(n, "idle") == 0 && st.speed < kPaceStart)
+    {
+        const GAnim& idle = g->anims[g->ownIdle];
+        const double secs = idle.keys > 1 ? (double)(idle.keys - 1) / 30.0 : 1.0;
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double k = now / secs;
+        *t = (float)(k - floor(k));
+        return g->ownIdle;
+    }
+    return -1;
+}
+
+// r108: the cross-fade when a hero changes between its own moves and the Strikers moves (or idle <-> run), in the
+// world: ~0.17 s from the last frame's matrices. `mode` -1 = Strikers moves, else its own clip. Once a frame.
+void own_fade(CharState& st, int mode, float (*world)[16], int n)
+{
+    if (st.fadeFrame != g_portGlFrame)
+    {
+        st.fadeFrame = g_portGlFrame;
+        if (st.hasLast && st.lastMode != -2 && mode != st.lastMode)
+        {
+            memcpy(st.fadeWorld, st.lastWorld, sizeof(float) * 16 * n);
+            st.fade = 1.0f;
+        }
+        else if (st.fade > 0.0f)
+        {
+            st.fade -= 1.0f / 12.0f;
+        }
+        st.lastMode = mode;
+    }
+    if (st.fade > 0.0f)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            float ra[9], rb[9], r[9];
+            rot_of(world[i], ra);
+            rot_of(st.fadeWorld[i], rb);
+            slerp_rot(ra, rb, st.fade, r);
+            set_rot_keep_scale(world[i], r);
+            for (int c = 12; c < 15; c++)
+                world[i][c] = world[i][c] * (1.0f - st.fade) + st.fadeWorld[i][c] * st.fade;
+        }
+    }
+    memcpy(st.lastWorld, world, sizeof(float) * 16 * n);
+    st.hasLast = true;
+}
+
+// r130: a top (limbs.txt "<pack> spin <turns per 4 m>") turns round the up axis through its root as it goes, the
+// turn following the ground covered (a slow turn standing still), so it never just glides. World space, after the pose.
+void spin_world(const Guest* g, const CharState& st, const float* rootM, float (*world)[16], int n)
+{
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const float th = (float)fmod((st.travel / 4.0 + now * 0.3) * g->spin * 6.2831853, 6.2831853);
+    const float c = cosf(th), sn = sinf(th);
+    const float cx = rootM[12], cy = rootM[13];
+    for (int i = 0; i < n; i++)
+    {
+        for (int r = 0; r < 3; r++)
+        {
+            float* v = world[i] + r * 4;
+            const float x = v[0] * c - v[1] * sn, y = v[0] * sn + v[1] * c;
+            v[0] = x;
+            v[1] = y;
+        }
+        const float px = world[i][12] - cx, py = world[i][13] - cy;
+        world[i][12] = cx + px * c - py * sn;
+        world[i][13] = cy + px * sn + py * c;
+    }
+}
+
+// r108 (Lance: "onix and the other long character, need to slither to me, they just glide without moving"): a long
+// body (limbs.txt "<pack> slither <amount>") ripples side to side as it goes. Each bone is shifted across the way it
+// faces by a wave that starts at the head (none there) and grows down the body to the tail, and turns with the
+// wave's slope, so the segments follow the curve; the wave runs back along the body with the ground covered (one
+// wave per 0.6 body lengths travelled), a slow sway standing still. World space, after the pose.
+void slither_world(const Guest* g, const CharState& st, const float* rootM, float (*world)[16], int n)
+{
+    float fx = rootM[0], fy = rootM[1];
+    const float fl = sqrtf(fx * fx + fy * fy);
+    if (fl < 1e-6f || n < 3)
+        return;
+    fx /= fl;
+    fy /= fl;
+    const float ax = -fy, ay = fx;  // across (left of the way it faces)
+    // the head: the bone that follows the Strikers head, else the one furthest forward
+    static const u32 kHead = nlStringLowerHash("bip01 head");
+    int head = -1;
+    float best = -1e9f;
+    for (int i = 0; i < n; i++)
+    {
+        if (g->nodes[i].map == kHead)
+        {
+            head = i;
+            break;
+        }
+        const float f = world[i][12] * fx + world[i][13] * fy;
+        if (f > best)
+        {
+            best = f;
+            head = i;
+        }
+    }
+    const float hx = world[head][12], hy = world[head][13];
+    float along[kMaxNodes];
+    float len = 0.0f;
+    for (int i = 0; i < n; i++)
+    {
+        along[i] = (hx - world[i][12]) * fx + (hy - world[i][13]) * fy;  // behind the head
+        if (along[i] < 0.0f)
+            along[i] = 0.0f;
+        if (along[i] > len)
+            len = along[i];
+    }
+    if (len < 1e-3f)
+        return;
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const float moving = st.speed > 2.0f ? 1.0f : (st.speed < 0.3f ? 0.0f : (st.speed - 0.3f) / 1.7f);
+    const float lambda = 0.9f * len;                                           // a wave a little shorter than the body
+    const float k = 6.2831853f / lambda;
+    const float phase = (float)fmod(st.travel * 6.2831853 / (0.6 * len) + now * 1.2, 6.2831853);  // runs + slow sway
+    const float amp = g->slither * 0.07f * len * (0.35f + 0.65f * moving);   // at the tail
+    for (int i = 0; i < n; i++)
+    {
+        const float u = along[i] / len;  // 0 head .. 1 tail
+        if (u <= 0.0f)
+            continue;
+        const float a = amp * u;
+        const float s = sinf(k * along[i] - phase);
+        const float off = a * s;
+        const float slope = a * k * cosf(k * along[i] - phase) + amp / len * s;  // d(off)/d(along)
+        // its turn about the up axis, along the curve: the body runs back (-facing) and leans `slope` across per
+        // unit back, so its rows turn the other way round (a positive turn takes -facing toward -across)
+        const float th = -atanf(slope);
+        // move it across, and turn its rows about world up (Z) by th (row vectors: rows x Rz)
+        world[i][12] += off * ax;
+        world[i][13] += off * ay;
+        const float c = cosf(th), sn = sinf(th);
+        for (int r = 0; r < 3; r++)
+        {
+            float* v = world[i] + r * 4;
+            const float x = v[0] * c - v[1] * sn, y = v[0] * sn + v[1] * c;
+            v[0] = x;
+            v[1] = y;
+        }
+    }
+}
+
 // r66: a retarget guest (Melee) posed from the Strikers character it stands in for. Each guest
 // bone that follows a Strikers bone turns, in the world, the way that bone has turned from its
 // bind pose (D = inverse(bind rotation) x now, row vectors); its position comes from the guest's
 // own bone lengths down the chain, except the hips (bip01 / bip01 pelvis), which go where the
 // Strikers hips are, their offset from the character's root scaled by the two bind heights.
 // Bones that follow nothing keep their bind pose relative to their parent.
+int read_hostref_file(const char* file, std::unordered_map<u32, HostRef>* into);
+
+// r130 (Lance's r129 play: "on the run out onto the field, you still have ppl that arent the mario native players, be
+// floating while they run, not gliding, but floating, just not touching the ground"): where the host character's
+// soles are this frame, as a height on its root's up axis: its lower foot bone's height minus that foot's height in
+// the class's standing pose (guests/hostref_all.txt). 0 = standing on its root's ground; below 0 = the ground is under
+// the root (a root the cut-scene carries above the pitch: guests stood on it, the Strikers players' own feet didn't);
+// above 0 = in the air (a jump). False when the class has no foot bones / standing pose.
+bool host_sole(int cls, cPoseAccumulator* acc, const float* rootM, const float up[3], float* sole);
+
 void read_hostref()
 {
     if (s_hostRefRead)
         return;
     s_hostRefRead = true;
-    FILE* f = fopen((home_dir() + "/guests/hostref.txt").c_str(), "r");
-    if (f == NULL)
+    // r124: every bone's, for the heroes
+    const int all = read_hostref_file("/guests/hostref_all.txt", s_hostRefAll);
+    fprintf(stderr, "[guest] hostref_all: %d standing-pose bones%s\n", all, all > 0 ? "" : " (none: heroes turn from their bind)");
+    if (read_hostref_file("/guests/hostref.txt", s_hostRef) < 0)
     {
         fprintf(stderr, "[guest] no guests/hostref.txt: guests turn from the Strikers bind poses\n");
         fflush(stderr);
-        return;
     }
+}
+
+// One standing-pose file into `into` (per class): the bones read, -1 no file.
+int read_hostref_file(const char* file, std::unordered_map<u32, HostRef>* into)
+{
+    FILE* f = fopen((home_dir() + file).c_str(), "r");
+    if (f == NULL)
+        return -1;
     char line[512];
     int count = 0;
     while (fgets(line, sizeof line, f) != NULL)
@@ -1334,13 +1695,65 @@ void read_hostref()
         for (int i = 0; i < 12; i++)
             if (strcmp(cls, kClassNames[i]) == 0)
             {
-                s_hostRef[i][(u32)id] = r;
+                into[i][(u32)id] = r;
                 count++;
             }
     }
     fclose(f);
-    fprintf(stderr, "[guest] hostref: %d standing-pose bones\n", count);
+    fprintf(stderr, "[guest] %s: %d standing-pose bones\n", file, count);
     fflush(stderr);
+    return count;
+}
+
+bool host_sole(int cls, cPoseAccumulator* acc, const float* rootM, const float up[3], float* sole)
+{
+    if (cls < 0 || cls >= 12 || acc == NULL || acc->m_BaseSHierarchy == NULL)
+        return false;
+    // r130 (Hariyama agent's game-pose check): the ankles AND the toes - at push-off the host's ankle rises while its
+    // toe stays down, and reading the ankle alone lifted every guest 3-10 cm for ~2 frames a step (the run "float")
+    static int s_foot[12][4];
+    static float s_stand[12][4];
+    static bool s_done[12] = {};
+    if (!s_done[cls])
+    {
+        s_done[cls] = true;
+        read_hostref();
+        static const char* kFeet[4] = {"bip01 l foot", "bip01 r foot", "bip01 l toe0", "bip01 r toe0"};
+        cSHierarchy* h = acc->m_BaseSHierarchy;
+        for (int k = 0; k < 4; k++)
+        {
+            s_foot[cls][k] = -1;
+            const u32 hash = nlStringLowerHash(kFeet[k]);
+            std::unordered_map<u32, HostRef>::const_iterator ref = s_hostRefAll[cls].find(hash);
+            if (ref == s_hostRefAll[cls].end())
+                continue;
+            for (int i = 0; i < h->m_nNumNodes; i++)
+                if (h->GetNodeID(i) == hash)
+                {
+                    s_foot[cls][k] = i;
+                    s_stand[cls][k] = ref->second.pos[2];
+                }
+        }
+        fprintf(stderr, "[guest] %s's soles from its foot bones %d / %d (standing %.3f / %.3f), toes %d / %d\n",
+                kClassNames[cls], s_foot[cls][0], s_foot[cls][1], s_stand[cls][0], s_stand[cls][1], s_foot[cls][2],
+                s_foot[cls][3]);
+    }
+    bool any = false;
+    float lowest = 0.0f;
+    for (int k = 0; k < 4; k++)
+    {
+        const int i = s_foot[cls][k];
+        if (i < 0 || i >= acc->GetNumNodes())
+            continue;
+        const float* F = (const float*)&acc->GetNodeMatrix(i);
+        const float hgt = (F[12] - rootM[12]) * up[0] + (F[13] - rootM[13]) * up[1] + (F[14] - rootM[14]) * up[2] - s_stand[cls][k];
+        if (!any || hgt < lowest)
+            lowest = hgt;
+        any = true;
+    }
+    if (any)
+        *sole = lowest;
+    return any;
 }
 
 bool retarget_pose(Guest* g, int cls, const cCharacter& c, cPoseAccumulator* acc, const float* rootM,
@@ -1571,6 +1984,56 @@ bool retarget_pose(Guest* g, int cls, const cCharacter& c, cPoseAccumulator* acc
                 }
             }
         }
+        // r124: a hero (its own idle) on every bone's standing pose: starts from its own idle, not its bind
+        {
+            int fromOwn = 0;
+            const std::unordered_map<u32, HostRef>& all = s_hostRefAll[cls];
+            for (int i = 0; i < n; i++)
+                rig.useStand[i] = false;
+            if (g->ownIdle >= 0 && !all.empty())
+            {
+                static float stand[kMaxNodes][7];
+                sample(g, g->anims[g->ownIdle], 0.0f, stand);
+                static float sw[kMaxNodes][16];
+                for (int i = 0; i < n; i++)
+                {
+                    const int par = g->nodes[i].parent;
+                    if (par < 0 || par >= i)
+                    {
+                        static const float kI[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+                        memcpy(sw[i], kI, sizeof kI);
+                        continue;
+                    }
+                    float l[16];
+                    local_matrix(stand[i], l);
+                    mul(l, sw[par], sw[i]);
+                }
+                for (int i = 0; i < n; i++)
+                {
+                    if (rig.hostNode[i] < 0)
+                        continue;
+                    std::unordered_map<u32, HostRef>::const_iterator ref = all.find(g->nodes[i].map);
+                    if (ref == all.end())
+                        continue;
+                    rot_of(sw[i], rig.standRot[i]);
+                    for (int r = 0; r < 3; r++)
+                        for (int cc = 0; cc < 3; cc++)
+                            rig.hostInvBindRot[i][r * 3 + cc] = ref->second.rot[cc * 3 + r];  // its inverse: the transpose
+                    if (rig.rootLike[i] && fabsf(ref->second.pos[2]) > 1e-3f)
+                    {
+                        rig.k[i] = sw[i][14] / ref->second.pos[2];
+                        rig.hostHipZ[i] = ref->second.pos[2];
+                    }
+                    rig.useStand[i] = true;
+                    fromOwn++;
+                }
+            }
+            if (fromOwn > 0)
+            {
+                fprintf(stderr, "[guest] %s on %s: %d bones turn from its own idle and the Strikers standing pose\n",
+                        g->name.c_str(), kClassNames[cls], fromOwn);
+            }
+        }
         fprintf(stderr, "[guest] %s on %s: %d of %d bones follow the Strikers skeleton (%d nodes there)\n",
                 g->name.c_str(), kClassNames[cls], mapped, wanted, h != NULL ? h->m_nNumNodes : 0);
         fflush(stderr);
@@ -1705,7 +2168,10 @@ bool retarget_pose(Guest* g, int cls, const cCharacter& c, cPoseAccumulator* acc
         memcpy(H, &acc->GetNodeMatrix(hn), 64);
         float hr[9], gr[9], d[9], r[9];
         const float hs = rot_of(H, hr);
-        rot_of(gn.bindWorld, gr);
+        if (rig.useStand[i])
+            memcpy(gr, rig.standRot[i], sizeof gr);  // r124: its own idle's turn (clip space)
+        else
+            rot_of(gn.bindWorld, gr);
         mul3(rig.hostInvBindRot[i], hr, d);
         mul3(gr, d, r);
         float* w = world[i];
@@ -1928,7 +2394,7 @@ glModel* sparkle_model(const Skinned* sk, size_t nSk, const float* rootM, const 
     const float ring = 0.85f * 0.25f * ((hi[0] - lo[0]) + (hi[1] - lo[1])) + 0.12f * H;
     // 18 stars, each lit for the first half of its 1.5 s turn (about 9 at once), three crossed
     // squares a star so it shows from the side, the table's view from above and the stands alike.
-    const int kStars = 18;
+    const int kStars = 28;  // r127: more (were 18)
     const float kTurn = 1.5f;
     float pos[kStars * 3][4][3];
     int nQuads = 0;
@@ -1947,7 +2413,7 @@ glModel* sparkle_model(const Skinned* sk, size_t nSk, const float* rootM, const 
         const float rad = ring * (0.75f + 0.45f * sparkle_rand(key, turn, 3));
         const float big = 0.55f + 0.45f * sparkle_rand(key, turn, 4);
         const float grow = sinf(3.14159265f * life);
-        const float half = 0.5f * 0.2f * H * big * grow;
+        const float half = 0.5f * 0.27f * H * big * grow;  // r127: bigger (0.2)
         if (half < 1e-4f)
             continue;
         const float spin = 6.2831853f * sparkle_rand(key, turn, 5) + 0.7f * life;
@@ -2057,6 +2523,199 @@ glModel* sparkle_model(const Skinned* sk, size_t nSk, const float* rootM, const 
     memset(model, 0, sizeof *model);
     model->numPackets = 1;
     model->packets = out;
+    return model;
+}
+
+// r127 (Lance: "make them jawns glisten and shimmer, not just that artwork difference. a mf like me aint finna know the
+// difference"): a shiny guest's body shines. A copy of its own body, a hair outside it, drawn additively (blend 3:
+// source alpha, one) over it: a bright white glint band sweeping up across it on the slant every 1.4 s, a soft
+// rainbow sheen drifting along with it, and the twinkling stars (sparkle_model, more and bigger) round it.
+PlatTexture* sheen_texture()
+{
+    static PlatTexture* s_tex = NULL;
+    static bool s_made = false;
+    if (s_made)
+        return s_tex;
+    s_made = true;
+    const int W = 256, Hh = 4;
+    std::vector<u8> rgba((size_t)W * Hh * 4);
+    for (int x = 0; x < W; x++)
+    {
+        const float u = (x + 0.5f) / W;  // the band at the middle; the texture repeats (one band a period)
+        const float d = u - 0.5f;
+        const float core = expf(-(d * d) / (2.0f * 0.022f * 0.022f));
+        const float halo = 0.45f * expf(-(d * d) / (2.0f * 0.08f * 0.08f));
+        const float wash = 0.10f;
+        // the rainbow sheen: hue round the period, pale
+        const float hue = u * 6.0f;
+        const float rr = clamp01(fabsf(hue - 3.0f) - 1.0f), gg = clamp01(2.0f - fabsf(hue - 2.0f)), bb = clamp01(2.0f - fabsf(hue - 4.0f));
+        const float a = clamp01(core + halo + wash);
+        const float white = clamp01(core * 1.4f);
+        const float rgb[3] = {white + (1.0f - white) * (0.55f + 0.45f * rr), white + (1.0f - white) * (0.55f + 0.45f * gg),
+                              white + (1.0f - white) * (0.55f + 0.45f * bb)};
+        for (int y = 0; y < Hh; y++)
+        {
+            u8* o = &rgba[((size_t)y * W + x) * 4];
+            for (int c = 0; c < 3; c++)
+                o[c] = (u8)(255.0f * clamp01(rgb[c]));
+            o[3] = (u8)(255.0f * a);
+        }
+    }
+    std::vector<u8> rec(32 + (size_t)W * Hh * 4, 0);
+    rec[3] = 1;
+    rec[7] = 3;
+    rec[8] = rec[9] = rec[10] = 8;
+    rec[11] = 1;
+    rec[14] = (u8)(W >> 8);
+    rec[15] = (u8)W;
+    rec[16] = (u8)(Hh >> 8);
+    rec[17] = (u8)Hh;
+    u8* o = &rec[32];
+    for (int by = 0; by < Hh; by += 4)
+        for (int bx = 0; bx < W; bx += 4)
+        {
+            for (int k = 0; k < 16; k++)
+            {
+                const u8* t = &rgba[((size_t)(by + k / 4) * W + bx + k % 4) * 4];
+                o[k * 2] = t[3];
+                o[k * 2 + 1] = t[0];
+                o[32 + k * 2] = t[1];
+                o[32 + k * 2 + 1] = t[2];
+            }
+            o += 64;
+        }
+    s_tex = make_texture(rec.data(), (u32)rec.size());
+    return s_tex;
+}
+
+const glModel* s_lastSheen = NULL;  // r127 (PortGuestIsSparkleModel)
+
+glModel* sheen_model(const Guest* g, const Skinned* sk, const size_t* skStart, const float* rootM,
+                     const glModelPacket& hostPacket, const eGLStream* ids, int nIds, float now)
+{
+    PlatTexture* tex = sheen_texture();
+    if (tex == NULL)
+        return NULL;
+    float up[3], fw[3];
+    {
+        const float lu = sqrtf(rootM[8] * rootM[8] + rootM[9] * rootM[9] + rootM[10] * rootM[10]);
+        const float lf = sqrtf(rootM[0] * rootM[0] + rootM[1] * rootM[1] + rootM[2] * rootM[2]);
+        if (lu < 1e-6f || lf < 1e-6f)
+            return NULL;
+        for (int c = 0; c < 3; c++)
+        {
+            up[c] = rootM[8 + c] / lu;
+            fw[c] = rootM[c] / lf;
+        }
+    }
+    // the slant the glint sweeps along (up, a little forward), and the body's span along it
+    float dir[3] = {up[0] + 0.45f * fw[0], up[1] + 0.45f * fw[1], up[2] + 0.45f * fw[2]};
+    const float dl = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    for (int c = 0; c < 3; c++)
+        dir[c] /= dl;
+    float lo = 1e9f, hi = -1e9f;
+    size_t total = 0;
+    for (size_t pi = 0; pi < g->packets.size(); pi++)
+    {
+        const GPacket& pk = g->packets[pi];
+        if (pk.strip.size() < 3 || pk.strip.size() > 65535 || pk.verts.empty() || pk.soft || pk.gas || pk.flameFrame >= 0)
+            continue;
+        for (size_t v = 0; v < pk.verts.size(); v++)
+        {
+            const Skinned& q = sk[skStart[pi] + v];
+            const float h = (q.p.x - rootM[12]) * dir[0] + (q.p.y - rootM[13]) * dir[1] + (q.p.z - rootM[14]) * dir[2];
+            lo = h < lo ? h : lo;
+            hi = h > hi ? h : hi;
+        }
+        total++;
+    }
+    const float span = hi - lo;
+    if (total == 0 || !(span > 1e-3f) || span > 100.0f)
+        return NULL;
+    // the band's place along the body (0 its lowest point, 1 its highest), from below it to above it once every 1.4 s;
+    // a body span is 0.8 of the picture, so it shows one band whether the picture repeats or not
+    const float kPeriod = 1.4f;
+    const float sweep = -0.35f + (now / kPeriod - floorf(now / kPeriod)) * 1.7f;
+    const float eps = 0.006f * span;
+    glModel* model = (glModel*)arena_alloc(sizeof(glModel));
+    glModelPacket* outs = (glModelPacket*)arena_alloc(sizeof(glModelPacket) * total);
+    if (model == NULL || outs == NULL)
+        return NULL;
+    static std::vector<u8> s_white((size_t)65536 * 4, 0xFF);
+    int nOut = 0;
+    for (size_t pi = 0; pi < g->packets.size(); pi++)
+    {
+        const GPacket& pk = g->packets[pi];
+        if (pk.strip.size() < 3 || pk.strip.size() > 65535 || pk.verts.empty() || pk.soft || pk.gas || pk.flameFrame >= 0)
+            continue;
+        const Skinned* skp = &sk[skStart[pi]];
+        const int nv = (int)pk.strip.size();
+        u8* pos = (u8*)arena_alloc((size_t)nv * 12);
+        s8* nrm = (s8*)arena_alloc((size_t)nv * 3);
+        s16* ramp = (s16*)arena_alloc((size_t)nv * 4);
+        s16* uv = (s16*)arena_alloc((size_t)nv * 4);
+        float* basis = (float*)arena_alloc((size_t)nv * 12);
+        glModelStream* streams = (glModelStream*)arena_alloc(sizeof(glModelStream) * nIds);
+        if (pos == NULL || nrm == NULL || ramp == NULL || uv == NULL || basis == NULL || streams == NULL)
+            return NULL;
+        for (int k = 0; k < nv; k++)
+        {
+            const Skinned& v = skp[pk.strip[k]];
+            const float p[3] = {v.p.x + v.n.x * eps, v.p.y + v.n.y * eps, v.p.z + v.n.z * eps};
+            memcpy(pos + (size_t)k * 12, p, 12);
+            nrm[k * 3 + 0] = (s8)(64.0f * v.n.x);
+            nrm[k * 3 + 1] = (s8)(64.0f * v.n.y);
+            nrm[k * 3 + 2] = (s8)(64.0f * v.n.z);
+            ramp[k * 2 + 0] = 980;  // the lit end of the light ramp: the glint shines whichever way it faces
+            ramp[k * 2 + 1] = 512;
+            const float h = ((v.p.x - rootM[12]) * dir[0] + (v.p.y - rootM[13]) * dir[1] + (v.p.z - rootM[14]) * dir[2] - lo) / span;
+            const float u = 0.5f + 0.8f * (h - sweep);
+            uv[k * 2 + 0] = (s16)(1024.0f * u);
+            uv[k * 2 + 1] = 512;
+            memcpy(basis + (size_t)k * 3, &v.n, 12);
+        }
+        for (int s2 = 0; s2 < nIds; s2++)
+        {
+            const int id = ids[s2];
+            glModelStream& st = streams[s2];
+            st.id = (u8)id;
+            st.stride = kStride[id];
+            st.beData = 0;
+            st.dataSize = (u32)nv * kStride[id];
+            if (id == GLStream_Position)
+                st.address = (uintptr_t)pos;
+            else if (id == GLStream_Normal)
+                st.address = (uintptr_t)nrm;
+            else if (id == GLStream_Colour)
+                st.address = (uintptr_t)s_white.data();
+            else if (id == GLStream_BumpLocal)
+                st.address = (uintptr_t)ramp;
+            else if (id >= GLStream_Diffuse && id <= GLStream_Gloss)
+                st.address = (uintptr_t)uv;
+            else
+                st.address = (uintptr_t)basis;
+        }
+        glModelPacket& out = outs[nOut++];
+        memset(&out, 0, sizeof out);
+        out.numVertices = (u16)nv;
+        out.primType = (u8)GLP_TriStrip;
+        out.numStreams = (u8)nIds;
+        out.streams = streams;
+        out.state = hostPacket.state;
+        out.state.texture[GLTT_Diffuse] = (uintptr_t)tex;
+        out.state.texture[GLTT_Detail] = (uintptr_t)tex;
+        u32 r = out.state.raster;
+        glSetRasterState(r, GLS_AlphaBlend, 3);  // source alpha, one: it adds light
+        glSetRasterState(r, GLS_DepthWrite, 0);
+        glSetRasterState(r, GLS_AlphaTest, 0);
+        glSetRasterState(r, GLS_Culling, 0);
+        out.state.raster = r;
+    }
+    if (nOut == 0)
+        return NULL;
+    memset(model, 0, sizeof *model);
+    model->numPackets = (u32)nOut;
+    model->packets = outs;
     return model;
 }
 
@@ -2325,7 +2984,12 @@ glModel* smoke_model(const float* centre, float radius, const float* rootM, cons
 bool PortGuestIsSparkleModel(const glModel* model)
 {
     // (r101: Gastly's smoke too: the game's effect skins - shocked, frozen - leave both out)
-    return model != NULL && (model == s_lastSparkle || model == s_lastSmoke);
+    return model != NULL && (model == s_lastSparkle || model == s_lastSmoke || model == s_lastSheen);  // r127: the shine
+}
+
+float PortGuestSizeScale(const char* pack)
+{
+    return pack != NULL ? limb_value(pack, "size") : 1.0f;
 }
 
 void PortGuestNoteLive(const void* acc)
@@ -2373,6 +3037,68 @@ void PortGuestNoteBlend(const void* acc, const void* lhs, const void* rhs, float
         n->t = a->t + (b->t - a->t) * rhsWeight;
 }
 
+// r124: Spider-Man's web shots on the life-size scorer (PortGuestTakeWebShots): from each wrist (the copy's game space),
+// the way his forearm points turned toward where he faces, and lifted (up past you, not into your face).
+static std::mutex s_webMutex;
+static float s_webShots[8][6];
+static int s_webShotCount = 0;
+
+static void push_web_shots(const Guest* g, const float rootM[16], float world[][16], int n)
+{
+    static const u32 kHand[2] = {nlStringLowerHash("bip01 r hand"), nlStringLowerHash("bip01 l hand")};
+    static const u32 kArm[2] = {nlStringLowerHash("bip01 r forearm"), nlStringLowerHash("bip01 l forearm")};
+    float fx = rootM[0], fy = rootM[1];
+    const float fl = sqrtf(fx * fx + fy * fy);
+    if (fl < 1e-6f)
+        return;
+    fx /= fl;
+    fy /= fl;
+    std::lock_guard<std::mutex> lock(s_webMutex);
+    for (int side = 0; side < 2; side++)
+    {
+        int hand = -1, arm = -1;
+        for (int i = 0; i < n; i++)
+        {
+            if (g->nodes[i].map == kHand[side])
+                hand = i;
+            if (g->nodes[i].map == kArm[side])
+                arm = i;
+        }
+        if (hand < 0 || s_webShotCount >= 8)
+            continue;
+        float d[3] = {fx, fy, 0.0f};
+        if (arm >= 0)
+        {
+            const float ax = world[hand][12] - world[arm][12], ay = world[hand][13] - world[arm][13],
+                        az = world[hand][14] - world[arm][14];
+            const float al = sqrtf(ax * ax + ay * ay + az * az);
+            if (al > 1e-5f)
+            {
+                d[0] = 0.5f * fx + 0.5f * ax / al;
+                d[1] = 0.5f * fy + 0.5f * ay / al;
+                d[2] = 0.5f * az / al;
+            }
+        }
+        d[2] += 0.45f;
+        float* o = s_webShots[s_webShotCount++];
+        o[0] = world[hand][12];
+        o[1] = world[hand][13];
+        o[2] = world[hand][14];
+        o[3] = d[0];
+        o[4] = d[1];
+        o[5] = d[2];
+    }
+}
+
+int PortGuestTakeWebShots(float* out, int max)
+{
+    std::lock_guard<std::mutex> lock(s_webMutex);
+    const int c = s_webShotCount < max ? s_webShotCount : max;
+    memcpy(out, s_webShots, sizeof(float) * 6 * c);
+    s_webShotCount = 0;
+    return c;
+}
+
 void PortGuestScorerPose(bool active, const cSAnim* clip, float normTime, float celebrateSeconds)
 {
     s_scorerActive = active;
@@ -2395,22 +3121,29 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
     if (cls < 0 || cls >= 12 || acc == NULL || hostModel == NULL || hostModel->numPackets == 0)
         return NULL;
     // r67: this team's pick (pick screens) first, else guests.txt's guest for the class.
-    int side = -1;
+    int side = -1, playerId = -1;
     if (character.m_eClassType >= PLAYER)
     {
         const cTeam* team = static_cast<const cPlayer&>(character).m_pTeam;
         side = team != NULL ? (int)team->m_nSide : -1;
+        playerId = (int)static_cast<const cPlayer&>(character).m_ID;  // r130: which of the team it is
     }
     Guest* g = NULL;
     bool sparkle = false;  // r94: a shiny one twinkles (sparkle_model)
-    const int picked = pick_for_side(side, cls);
+    int slotOwn = 0;  // r130: a sidekick on its own slot's pick (1-3)
+    const int picked = pick_for_player(side, cls, playerId, &slotOwn);
     if (picked >= 0)
     {
         g = roster_guest(picked);
-        // r70c: a shiny franchise captain; r78: a co-captain has its own shiny
-        const bool coCaptain = side >= 0 && side < 2 && PortSecondCaptain(side) == cls;
-        const bool shinyHere = side >= 0 && side < 2 && (coCaptain ? s_coShiny[side] : s_shinySide[side]);
-        if (g != NULL && shinyHere && s_roster[picked].role == PORT_GUEST_CAPTAIN)
+        // r70c: a shiny franchise captain; r78: a co-captain has its own shiny; r130: a sidekick slot its own (on the
+        // sidekick class, or on a captain class of its own: its member's)
+        const int capSlot = side >= 0 && side < 2 ? PortSlotOfClass(side, cls) : -1;
+        const bool coCaptain = capSlot == 0 && PortSecondCaptain(side) >= 0;
+        const bool shinyHere =
+            side >= 0 && side < 2 &&
+            (slotOwn > 0 ? s_slotShiny[side][slotOwn]
+                         : (coCaptain ? s_coShiny[side] : (capSlot >= 0 ? s_slotShiny[side][capSlot + 1] : s_shinySide[side])));
+        if (g != NULL && shinyHere && (slotOwn > 0 || capSlot >= 0 || s_roster[picked].role == PORT_GUEST_CAPTAIN))
         {
             sparkle = true;
             Guest* shiny = roster_guest_shiny(picked);
@@ -2431,12 +3164,148 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
     memcpy(rootM, &root, sizeof rootM);
     const char* clipName = "";
     float t = 0.0f;
+    int ownMode = -1;  // r108: a hero drawn with its own clip this frame (-1: the Strikers moves)
+    bool webDue = false;  // r124: Spider-Man's wrists flick this frame (push_web_shots)
     if (g->retarget)
     {
-        // r66: the Strikers character's own pose, bone for bone, on the guest's skeleton.
-        if (!retarget_pose(g, cls, character, acc, rootM, world))
-            return NULL;
-        clipName = "(Strikers moves)";
+        // r108: a hero's own idle / run in live play (not the life-size scorer, the goal cut-scene or a replay,
+        // whose poses come from elsewhere), else (r66) the Strikers character's own pose, bone for bone.
+        CharState* ost = NULL;
+        // r123 (Lance: "the super heros, when they score, can their celebration be like an ultra attack they have in
+        // game??? maybe rotate between 4 different attacks???"): the life-size scorer, a hero: one of its own big
+        // attacks from the start of the show (the next one each goal), then its own idle; its own run for the show's jog
+        if (s_scorerActive && !g->ownCel.empty())
+        {
+            static uint32_t s_lastScorerFrame = 0;
+            static int s_celTurn = -1;
+            static bool s_danceStarted = false;
+            static int s_webNext = 0;  // r124: Spider-Man's next wrist flick (below)
+            static std::chrono::steady_clock::time_point s_danceStart;
+            if (s_celTurn < 0 || g_portGlFrame - s_lastScorerFrame > 30)  // a new show
+            {
+                ++s_celTurn;
+                s_danceStarted = false;
+            }
+            s_lastScorerFrame = g_portGlFrame;
+            ost = &s_state[&character];
+            // r124 (Lance: "you have them gliding when the celebration starts"): the show (xr_scorer.cpp) jogs the
+            // copy in and out across your room (its pose the jog: its own run then, in step), dances on its spot
+            // (posed with no clip: its attack starts there and plays to its end, waves or not), then waves and idles
+            // (its own idle)
+            const char* sn = s_scorerClip != NULL ? NameOf::get(s_scorerClip) : NULL;
+            const bool jogging = sn != NULL && (strcmp(sn, "jog") == 0 || strstr(sn, "run") != NULL);
+            if (s_scorerClip == NULL && !s_danceStarted)
+            {
+                s_danceStarted = true;
+                s_danceStart = std::chrono::steady_clock::now();
+                s_webNext = 0;
+                fprintf(stderr, "[guest] %s scores: celebration %d of %zu (%s)\n", g->name.c_str(),
+                        (int)(s_celTurn % g->ownCel.size()) + 1, g->ownCel.size(),
+                        g->anims[g->ownCel[s_celTurn % g->ownCel.size()]].name.c_str());
+                fflush(stderr);
+            }
+            const int cel = g->ownCel[s_celTurn % g->ownCel.size()];
+            const GAnim& a = g->anims[cel];
+            const float secs = a.keys > 1 ? (float)(a.keys - 1) / 30.0f : 1.0f;
+            const float since =
+                s_danceStarted ? std::chrono::duration<float>(std::chrono::steady_clock::now() - s_danceStart).count() : -1.0f;
+            s_scorerCel = -1;
+            s_scorerCelT = -1.0f;
+            if (s_danceStarted && since < secs && !jogging)
+            {
+                ownMode = cel;
+                t = since / secs;
+                s_scorerCel = cel;  // (for the effects: which attack, how far in)
+                s_scorerCelT = t;
+                // r124 (Lance: "you didnt even include webs when he did his signature wrist flick trying to shoot webs"):
+                // Spider-Man's web move (own_cel3: Web Line's start, its held loop, its pull) has his hands out in front
+                // from 0.6 s and flicks his wrists every 10 keys (measured from the clip: 0.6, 0.93, 1.27 s); each flick
+                // shoots a web from both wrists (push_web_shots, once the pose is built; xr_quest takes them)
+                static const float kFlicks[3] = {0.6f, 0.93f, 1.27f};
+                if (strncmp(g->name.c_str(), "mua_spiderman", 13) == 0 && a.name == "own_cel3")
+                    while (s_webNext < 3 && since >= kFlicks[s_webNext])
+                    {
+                        ++s_webNext;
+                        webDue = true;
+                    }
+            }
+            else if (jogging && g->ownRun >= 0)
+            {
+                ownMode = g->ownRun;
+                t = s_scorerNorm;
+            }
+            else if (g->ownIdle >= 0)
+            {
+                const GAnim& idle = g->anims[g->ownIdle];
+                const double isecs = idle.keys > 1 ? (double)(idle.keys - 1) / 30.0 : 1.0;
+                const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                const double k = now / isecs;
+                ownMode = g->ownIdle;
+                t = (float)(k - floor(k));
+            }
+        }
+        else if (!s_scorerActive && (g->ownIdle >= 0 || g->ownRun >= 0))
+        {
+            const PoseNote* note = note_for(acc, false);
+            if (note == NULL || !note->tree)
+            {
+                ost = &s_state[&character];
+                const cPN_SAnimController* ctrl = character.m_pCurrentAnimController;
+                ownMode = own_move(g, ctrl != NULL ? ctrl->m_pSAnim : NULL, *ost, rootM, &t);
+            }
+        }
+        if (ownMode >= 0)
+        {
+            static float ownPose[kMaxNodes][7];
+            sample(g, g->anims[ownMode], t, ownPose);
+            for (int i = 0; i < n; i++)
+            {
+                const int par = g->nodes[i].parent;
+                if (par < 0)
+                {
+                    float s[16] = {g->scale, 0, 0, 0, 0, g->scale, 0, 0, 0, 0, g->scale, 0, 0, 0, 0, 1};
+                    mul(s, rootM, world[i]);
+                    continue;
+                }
+                float l[16];
+                local_matrix(ownPose[i], l);
+                mul(l, world[par], world[i]);
+            }
+            clipName = g->anims[ownMode].name.c_str();
+        }
+        else
+        {
+            if (!retarget_pose(g, cls, character, acc, rootM, world))
+                return NULL;
+            clipName = "(Strikers moves)";
+            if (g->scale != 1.0f)
+                for (int i = 0; i < n; i++)
+                {
+                    for (int r = 0; r < 3; r++)
+                        for (int c = 0; c < 3; c++)
+                            world[i][r * 4 + c] *= g->scale;
+                    for (int c = 0; c < 3; c++)
+                        world[i][12 + c] = rootM[12 + c] + (world[i][12 + c] - rootM[12 + c]) * g->scale;
+                }
+        }
+        // r108: a long body slithers (Onix, Steelix, Dratini, Dragonair)
+        if (g->slither > 0.0f && !s_scorerActive)
+        {
+            CharState& sst = s_state[&character];
+            pace_update(sst, rootM);
+            slither_world(g, sst, rootM, world, n);
+        }
+        // r130: a top spins (Hitmontop: stored on its head, it goes round as it moves instead of gliding)
+        if (g->spin > 0.0f && !s_scorerActive)
+        {
+            CharState& sst = s_state[&character];
+            pace_update(sst, rootM);
+            spin_world(g, sst, rootM, world, n);
+        }
+        if (ost != NULL)
+            own_fade(*ost, ownMode, world, n);
+        if (webDue)
+            push_web_shots(g, rootM, world, n);
     }
     else
     {
@@ -2524,15 +3393,7 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
             mul(l, world[par], world[i]);
         }
     }
-    if (g->retarget && g->scale != 1.0f)
-        for (int i = 0; i < n; i++)
-        {
-            for (int r = 0; r < 3; r++)
-                for (int c = 0; c < 3; c++)
-                    world[i][r * 4 + c] *= g->scale;
-            for (int c = 0; c < 3; c++)
-                world[i][12 + c] = rootM[12 + c] + (world[i][12 + c] - rootM[12 + c]) * g->scale;
-        }
+    // (r108: a retarget guest's own size is now applied in its branch above, before the cross-fade)
     static float skin[kMaxNodes][16];
     for (int i = 0; i < n; i++)
     {
@@ -2693,19 +3554,57 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
         if (ul > 1e-6f && skTotal > 0)
         {
             const float u[3] = {up[0] / ul, up[1] / ul, up[2] / ul};
-            float lowest = 0.0f;
+            float lowest = 1e9f;
             for (size_t v = 0; v < skTotal; v++)
             {
                 const float h = (sk[v].p.x - rootM[12]) * u[0] + (sk[v].p.y - rootM[13]) * u[1] + (sk[v].p.z - rootM[14]) * u[2];
                 if (h < lowest)
                     lowest = h;
             }
-            if (lowest < 0.0f)
+            // r130: a walker's lowest point goes where the Strikers character's soles are (host_sole): down onto the
+            // pitch when a cut-scene carries the root above it (the run-out), up with the character's jumps. Fliers
+            // and floaters keep their hover; with no soles known, only nobody through the root's ground (r68).
+            float shift = lowest < 0.0f ? -lowest : 0.0f;
+            // r130: a hero's own celebration / idle on the life-size scorer copy stands on its own clip's ground (its
+            // moves were checked on the spot): no lift for a cape dipping under the floor (it lies flat, below)
+            const bool ownScorer = s_scorerActive && ownMode >= 0;
+            if (ownScorer)
+                shift = 0.0f;
+            float sole = 0.0f;
+            const float H = g->height > 0.0f ? g->height * g->scale : 1.0f;
+            if (!ownScorer && (g->mode & 6) == 0 && g->slither <= 0.0f && host_sole(cls, acc, rootM, u, &sole) &&
+                sole > -1.5f * H && sole < 1.5f * H)
+            {
+                // a hero on its own run / idle clip (r108) steps on its own clip's ground: the host's flight keys
+                // (Mario's run has both feet 0.17-0.38 m up for 3 of 16 keys) would lift it while its own foot is
+                // down; only the host's feet BELOW its root (a run-out carrying the root above the pitch) take it down
+                if (ownMode >= 0 && !s_scorerActive)
+                    sole = std::min(sole, 0.0f);
+                // never under the pitch (its surface is z 0 in the match: a tackled character's feet lying flat sit
+                // lower than standing ones do); the life-size scorer copy stands where the show puts it
+                if (!s_scorerActive && u[2] > 0.9f)
+                    sole = std::max(sole, -rootM[14] / u[2]);
+                shift = sole - lowest;
+            }
+            if (lowest < 1e8f && shift != 0.0f)
                 for (size_t v = 0; v < skTotal; v++)
                 {
-                    sk[v].p.x -= lowest * u[0];
-                    sk[v].p.y -= lowest * u[1];
-                    sk[v].p.z -= lowest * u[2];
+                    sk[v].p.x += shift * u[0];
+                    sk[v].p.y += shift * u[1];
+                    sk[v].p.z += shift * u[2];
+                }
+            // r130 (Moon Knight's cape 0.3 under the floor in a celebration crouch): on the life-size scorer copy a part
+            // still under its floor lies flat on it instead
+            if (s_scorerActive && lowest + shift < 0.0f && lowest > -1e8f)
+                for (size_t v = 0; v < skTotal; v++)
+                {
+                    const float h = (sk[v].p.x - rootM[12]) * u[0] + (sk[v].p.y - rootM[13]) * u[1] + (sk[v].p.z - rootM[14]) * u[2];
+                    if (h < 0.0f)
+                    {
+                        sk[v].p.x -= h * u[0];
+                        sk[v].p.y -= h * u[1];
+                        sk[v].p.z -= h * u[2];
+                    }
                 }
         }
     }
@@ -2873,10 +3772,18 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
             }
         }
     }
+    s_lastSheen = NULL;
     if (sparkle)
     {
         const float now = (float)(flameTs.tv_sec % 86400) + (float)flameTs.tv_nsec * 1e-9f;
         const u32 seed = (u32)(cls * 2 + (side > 0 ? 1 : 0));
+        // r127: the body's shine first (drawn over the body), then the stars
+        if (glModel* sh = sheen_model(g, sk.data(), skStart.data(), rootM, hostModel->packets[0], ids, nIds,
+                                      now + 0.37f * (float)(cls % 4)))
+        {
+            s_frameModels.push_back(sh);
+            s_lastSheen = sh;
+        }
         if (glModel* sp = sparkle_model(sk.data(), skTotal, rootM, hostModel->packets[0], ids, nIds, seed, now))
         {
             s_frameModels.push_back(sp);
@@ -2901,7 +3808,15 @@ struct Picker
     bool free[8] = {};
     int commitSide = -1, commitRole = -1, commitIndex = -1;  // made on the panel, not yet taken
     int pendingIndex[2][2] = {{-1, -1}, {-1, -1}};            // taken, waiting for the screen's confirm
+    // r130: the three sidekicks picked on the menu (roster indexes, -1 the Strikers sidekick itself; slots before
+    // trioFirst are the co-captain's), waiting for the screen's confirm of the class they play as
+    int trio[2][3] = {{-1, -1, -1}, {-1, -1, -1}};
+    int trioFirst[2] = {0, 0};
+    int trioSide = 0;  // the side of the last one (the cup / tournament screens set the pick straight from their take)
     int pendingSlot[2][2] = {{-1, -1}, {-1, -1}};
+    // r130 (review): the team each side's captain was just picked as (the game's GetTeam is only set once both sides
+    // are ready, so the sidekick menu would see last match's), -1 none since the picks were cleared
+    int chosenTeam[2] = {-1, -1};
 };
 Picker s_picker;
 
@@ -2924,8 +3839,10 @@ void PortGuestPickerOffer(int side, int role, const bool freeCaptains[8])
     if (side < 0 || side > 1 || role < 0 || role > 1)
         return;
     read_roster();
-    if (s_byRole[role].empty())
-        return;  // no guests of this kind on this headset: nothing to offer
+    // no guests of this kind on this headset: nothing to offer (r130: the sidekick menu offers every guest captain
+    // too, so it opens with no Charged sidekick guests; r130: and the eight Strikers captains, so it always opens)
+    if (role == 0 && s_byRole[role].empty())
+        return;
     s_picker.offerSide = side;
     s_picker.offerRole = role;
     s_picker.offerFrame = g_portGlFrame;
@@ -2969,6 +3886,9 @@ bool PortGuestPickerCaptainFree(int team)
 
 int PortGuestSlotFor(int index, const bool freeCaptains[8])
 {
+    // r130: the menu's three sidekicks: the Strikers sidekick class they play as
+    if (index >= PORT_GUEST_TRIO && index < PORT_GUEST_TRIO + 4)
+        return index - PORT_GUEST_TRIO;
     // r68e: a Strikers character from the menu: its own slot (a captain only while it's free)
     if (index >= PORT_GUEST_ORIGINAL_SIDEKICK && index < PORT_GUEST_ORIGINAL_SIDEKICK + 4)
         return index - PORT_GUEST_ORIGINAL_SIDEKICK;
@@ -2980,14 +3900,88 @@ int PortGuestSlotFor(int index, const bool freeCaptains[8])
     const RosterEntry& r = s_roster[index];
     if (r.role == PORT_GUEST_SIDEKICK)
         return r.base;  // sidekicks are never taken from the other side
-    if (r.base < 0 || r.base >= 8)
+    return PortGuestSlotForBase(r.base, freeCaptains);
+}
+
+// r130: see xr_guest.h
+int PortGuestSlotForBase(int base, const bool freeCaptains[8])
+{
+    if (base < 0 || base >= 8 || freeCaptains == NULL)
         return -1;
-    if (freeCaptains[r.base])
-        return r.base;
+    if (freeCaptains[base])
+        return base;
     for (int k = 0; k < 7; k++)
-        if (freeCaptains[kSlotOrder[r.base][k]])
-            return kSlotOrder[r.base][k];
+        if (freeCaptains[kSlotOrder[base][k]])
+            return kSlotOrder[base][k];
     return -1;
+}
+
+int PortGuestPickWant(int pick, int* mayMove)
+{
+    if (mayMove != NULL)
+        *mayMove = 0;
+    if (pick >= PORT_GUEST_ORIGINAL && pick < PORT_GUEST_ORIGINAL + 8)
+        return pick - PORT_GUEST_ORIGINAL;  // a Strikers captain: its own class
+    read_roster();
+    if (pick < 0 || pick >= (int)s_roster.size())
+        return -1;  // none, the Strikers sidekick
+    const RosterEntry& r = s_roster[pick];
+    if (r.pack.compare(0, 4, "cap_") == 0)
+        return team_of(r.pack.c_str() + 4);  // (r130's first take, a captain drawn on a sidekick: the real captain now)
+    if (r.role != PORT_GUEST_CAPTAIN || r.base < 0 || r.base >= 8 || !guests_enabled())
+        return -1;  // a sidekick guest (Boo ...) plays the sidekick class
+    if (mayMove != NULL)
+        *mayMove = 1;
+    return r.base;
+}
+
+int PortGuestSlotWant(int side, int slot, int* mayMove)
+{
+    if (mayMove != NULL)
+        *mayMove = 0;
+    const int v = slot_pick_raw(side, slot);
+    return v == PORT_GUEST_INHERIT ? -1 : PortGuestPickWant(v, mayMove);
+}
+
+void PortGuestPickerCaptainIs(int side, int team)
+{
+    if (side >= 0 && side < 2)
+        s_picker.chosenTeam[side] = team >= 0 && team < 8 ? team : -1;
+}
+
+unsigned PortGuestSlotCaptainsTaken(int side)
+{
+    if (side < 0 || side > 1)
+        return 0;
+    GameInfoManager* gi = GameInfoManager::Instance();
+    unsigned bits = 0;
+    // this side's captain (just picked on this screen, else the match's)
+    int mine = s_picker.chosenTeam[side];
+    if (mine < 0 && gi != NULL && current_mode() >= 0)
+        mine = (int)gi->GetTeam((short)side);
+    if (mine >= 0 && mine < 8)
+        bits |= 1u << mine;
+    // the other side's captain once picked on this screen, and the Strikers captains in its sidekick slots
+    const int other = s_picker.chosenTeam[1 - side];
+    if (other >= 0 && other < 8)
+    {
+        bits |= 1u << other;
+        for (int k = 1; k <= 3; k++)
+        {
+            const int p = PortGuestGetSlotPick(other, k);
+            if (p >= PORT_GUEST_ORIGINAL && p < PORT_GUEST_ORIGINAL + 8)
+                bits |= 1u << (p - PORT_GUEST_ORIGINAL);
+        }
+    }
+    // a Grudge Match's co-captains (this side's is its slot 1)
+    for (int s = 0; s < 2; s++)
+    {
+        const int cls = PortGuestCoCaptainOffered(s) ? PortPickedCoCaptain(s, NULL) : -1;
+        for (int t = 0; t < 8 && cls >= 0; t++)
+            if ((int)ConvertToCharacterClass((eTeamID)t) == cls)
+                bits |= 1u << t;
+    }
+    return bits;
 }
 
 // r79: Grudge Match co-captains (include/port/lineup.h), see xr_guest.h.
@@ -3087,9 +4081,13 @@ void PortGuestCaptainChosen(int side, int team)
     // r68e: a Strikers captain picked on the menu counts as a plain pick
     const bool mine = pending >= 0 && pending < PORT_GUEST_ORIGINAL && s_picker.pendingSlot[side][PORT_GUEST_CAPTAIN] == team;
     PortGuestSetPick(team, PORT_GUEST_CAPTAIN, mine ? pending : -1);
+    s_picker.chosenTeam[side] = team;  // r130
     // A plain pick on the game's own grid: no sidekick guest held over from before for this team.
     if (!mine)
+    {
         PortGuestSetPick(team, PORT_GUEST_SIDEKICK, -1);
+        PortGuestSetSlotPicks(team, NULL, 0);  // r130
+    }
     pending = -1;
 }
 
@@ -3099,7 +4097,12 @@ void PortGuestSidekickChosen(int side, int team, int sidekick)
         return;
     int& pending = s_picker.pendingIndex[side][PORT_GUEST_SIDEKICK];
     const bool mine = pending >= 0 && s_picker.pendingSlot[side][PORT_GUEST_SIDEKICK] == sidekick;
-    PortGuestSetPick(team, PORT_GUEST_SIDEKICK, mine ? pending : -1);
+    // r130: the menu's three sidekicks (PORT_GUEST_TRIO + the class they play as): the team's sidekick pick is the
+    // Strikers one of that class, each slot its own
+    const bool trio = mine && pending >= PORT_GUEST_TRIO && pending < PORT_GUEST_TRIO + 4;
+    PortGuestSetPick(team, PORT_GUEST_SIDEKICK, mine && !trio ? pending : -1);  // (a plain pick: the slots' own go)
+    if (trio)
+        PortGuestSetSlotPicks(team, s_picker.trio[side], s_picker.trioFirst[side]);
     pending = -1;
 }
 
@@ -3162,9 +4165,10 @@ bool stats_ordered(const float* v)
 
 // Online (r67b): the stats each side's guests play on, as their own headset sent them; both
 // headsets apply these and nothing from their own files. Mask 0 = none (the slot's).
-// [side][role]: 0 captain, 1 sidekick; r78: 2 the side's co-captain (include/port/lineup.h)
-float s_onlineStats[2][3][PORT_GUEST_STATS];
-unsigned s_onlineMask[2][3] = {};
+// [side][role]: 0 captain, 1 sidekick; r78: 2 the side's co-captain (include/port/lineup.h); r130: 3-5 the side's
+// sidekick slots m_ID 1-3 on their own picks (PortGuestSetOnlineSlots)
+float s_onlineStats[2][6][PORT_GUEST_STATS];
+unsigned s_onlineMask[2][6] = {};
 
 // A guest's own stats file: the keys it sets (mask bits) and their values; false when the file is
 // missing or anything in it is malformed (then none of it is used).
@@ -3237,7 +4241,7 @@ int PortGuestStatsFor(int index, float* values, unsigned* mask)
 
 void PortGuestSetOnlineStats(int side, int role, const float* values, unsigned mask)
 {
-    if (side < 0 || side > 1 || role < 0 || role > 2)  // r78: 2 = the co-captain
+    if (side < 0 || side > 1 || role < 0 || role > 5)  // r78: 2 = the co-captain; r130: 3-5 the sidekick slots
         return;
     s_onlineMask[side][role] = 0;
     if (values == NULL)
@@ -3253,6 +4257,64 @@ void PortGuestSetOnlineStats(int side, int role, const float* values, unsigned m
         s_onlineStats[side][role][i] = values[i];
     }
     s_onlineMask[side][role] = mask;
+}
+
+// r130: see xr_guest.h
+void PortGuestSetOnlineSlots(int side, int captainTeam, const unsigned char kinds[3], const int wants[3],
+                             const char packs[3][24], const float stats[3][PORT_GUEST_STATS], const unsigned masks[3])
+{
+    if (side < 0 || side > 1 || kinds == NULL || wants == NULL || packs == NULL || stats == NULL || masks == NULL)
+        return;
+    read_picks();
+    int picks[3];
+    int first = 3;  // the first slot with its own pick (slot 1 is a co-captain's when the side has one)
+    std::string shown[3];
+    for (int k = 0; k < 3; k++)
+    {
+        int v = PORT_GUEST_INHERIT;  // kind 0: the side's one sidekick pick
+        shown[k] = "(its sidekick pick)";
+        PortGuestSetOnlineStats(side, 3 + k, NULL, 0);
+        if (kinds[k] == 1)  // the Strikers sidekick itself
+        {
+            v = -1;
+            shown[k] = "(Strikers)";
+        }
+        else if (kinds[k] == 3 && wants[k] >= 0 && wants[k] < 8)  // r130: a Strikers captain itself (its class: lineup)
+        {
+            v = PORT_GUEST_ORIGINAL + wants[k];
+            shown[k] = std::string("(Strikers captain ") + std::to_string(wants[k]) + ")";
+        }
+        else if (kinds[k] == 2)  // a guest of any role, by pack (rosters differ per headset)
+        {
+            char pack[24];
+            memcpy(pack, packs[k], sizeof pack);
+            pack[sizeof pack - 1] = '\0';
+            v = -1;
+            for (size_t i = 0; i < s_roster.size() && v < 0; i++)
+                if (s_roster[i].pack == pack)
+                    v = (int)i;
+            shown[k] = pack;
+            if (v < 0)
+            {
+                shown[k] += " (not on this headset: drawn as its slot's own class)";
+                fprintf(stderr, "[guest] online: side %d's sidekick %d is %s, which this headset doesn't have: drawn as its "
+                                "slot's own class, on the stats its headset sent\n", side, k + 1, pack);
+            }
+            // on the stats its own headset sent, whether or not this headset has it (r103: the same match on both)
+            PortGuestSetOnlineStats(side, 3 + k, stats[k], masks[k]);
+        }
+        s_netSlot[side][k] = v;
+        s_slotShiny[side][k + 1] = false;  // (franchise members' only; online franchise plays the one pick)
+        picks[k] = v;
+        if (v != PORT_GUEST_INHERIT && first == 3)
+            first = k;
+    }
+    s_netSlotOn[side] = true;
+    // the team's slot picks too, kept like its one sidekick pick (PortGuestSetPick) for the screens and the next match
+    PortGuestSetSlotPicks(captainTeam, first < 3 ? picks : NULL, first < 3 ? first : 0);
+    fprintf(stderr, "[guest] online: side %d's sidekicks %s / %s / %s\n", side, shown[0].c_str(), shown[1].c_str(),
+            shown[2].c_str());
+    fflush(stderr);
 }
 
 int PortGuestLoadingPicture(const char* name, void* buf, unsigned long size)
@@ -3337,6 +4399,7 @@ int PortGuestLoadingPicture(const char* name, void* buf, unsigned long size)
 void PortGuestClearOnlineStats()
 {
     memset(s_onlineMask, 0, sizeof s_onlineMask);
+    s_netSlotOn[0] = s_netSlotOn[1] = false;  // r130: until the match setup carries a side's sidekick slots
 }
 
 // r80: the stats each player's tweaks got from its guest (bit = kStatKeys index), for PortGuestOwnStats
@@ -3344,6 +4407,7 @@ static std::unordered_map<const void*, unsigned> s_ownStatMask;
 
 // r103: the online stats slot (PortGuestSetOnlineStats' role) of class `cls` on `side`, the way pick_for_side
 // sorts it, from the match itself (no roster needed): 0 its captain, 2 its co-captain, 1 its sidekicks; -1 none.
+// r130: 3-5 a sidekick slot playing a captain class of its own (that slot's stats, as the match setup carried them).
 static int online_role(int side, int cls)
 {
     GameInfoManager* gi = GameInfoManager::Instance();
@@ -3352,14 +4416,18 @@ static int online_role(int side, int cls)
         return -1;
     if ((int)ConvertToCharacterClass((eTeamID)team) == cls)
         return 0;
-    if (PortSecondCaptain(side) == cls)
-        return 2;
+    const int capSlot = PortSlotOfClass(side, cls);
+    if (capSlot >= 0)
+        return capSlot == 0 && PortSecondCaptain(side) >= 0 ? 2 : 3 + capSlot;
     if ((int)ConvertToCharacterClass(gi->GetSidekick((short)side)) == cls)
         return 1;
     return -1;
 }
 
-void PortGuestApplyTweaks(int side, int cls, FielderTweaks* t)
+void PortGuestApplyTweaks(int side, int cls, FielderTweaks* t) { PortGuestApplyTweaksPlayer(side, cls, -1, t); }
+
+// r130: a sidekick on its own slot's pick plays on that one's stats (CreateCharacter passes its m_ID)
+void PortGuestApplyTweaksPlayer(int side, int cls, int playerId, FielderTweaks* t)
 {
     if (t != NULL)
         s_ownStatMask.erase(t);  // (a new player: nothing of its own yet)
@@ -3377,11 +4445,16 @@ void PortGuestApplyTweaks(int side, int cls, FielderTweaks* t)
         const int role = online_role(side, cls);
         if (role < 0)
             return;
-        mask = s_onlineMask[side][role];
+        // r130: a sidekick on its own slot's pick (the match setup carried the side's slots): that slot's stats as its
+        // headset sent them (a Strikers sidekick slot: none, its class's), else the side's sidekick pick's
+        int slot = 0;
+        const int slotPick = role == 1 ? pick_for_player(side, cls, playerId, &slot) : -1;
+        const int statRole = slot > 0 ? 2 + slot : role;
+        mask = s_onlineMask[side][statRole];
         if (mask == 0)
             return;
-        memcpy(own, s_onlineStats[side][role], sizeof own);
-        picked = guests_enabled() ? pick_for_side(side, cls) : -1;
+        memcpy(own, s_onlineStats[side][statRole], sizeof own);
+        picked = guests_enabled() ? (slot > 0 ? slotPick : pick_for_side(side, cls)) : -1;
         if (picked < 0 || picked >= (int)s_roster.size())
             name = "a guest this headset doesn't have";
     }
@@ -3389,7 +4462,7 @@ void PortGuestApplyTweaks(int side, int cls, FielderTweaks* t)
     {
         if (!guests_enabled())
             return;
-        picked = pick_for_side(side, cls);
+        picked = pick_for_player(side, cls, playerId);  // r130: per sidekick
         if (picked < 0)
             return;
         if (!read_guest_stats(picked, own, &mask))
@@ -3463,6 +4536,24 @@ int PortGuestIndexFor(int side, int cls)
         return -1;
     const int picked = pick_for_side(side, cls);
     return picked >= 0 ? picked : -1;
+}
+
+int PortGuestIndexForPlayer(int side, int cls, int playerId)  // r130
+{
+    if (!guests_enabled())
+        return -1;
+    const int picked = pick_for_player(side, cls, playerId);
+    return picked >= 0 ? picked : -1;
+}
+
+int PortGuestMenuCaptainFor(int side)
+{
+    if (!guests_enabled() || side < 0 || side > 1)
+        return -1;
+    const int team = s_picker.chosenTeam[side];  // r130: the captain just picked on this screen, if any
+    if (team >= 0 && team < 8)
+        return PortGuestGetPick(team, PORT_GUEST_CAPTAIN);
+    return PortGuestCaptainFor(side);
 }
 
 int PortGuestCaptainFor(int side)
@@ -3558,9 +4649,17 @@ const char* PortGuestSidekickName(int side, int playerId)
     const int cls = (int)p->m_eCharacterClass;
     if (cls != TOAD && cls != KOOPA && cls != HAMMERBROS && cls != BIRDO)
         return NULL;  // a captain: its own name
+    // r130: a sidekick slot with a named character of its own (a Pokemon, a hero, a Melee fighter, a Charged captain):
+    // its own name
+    {
+        int slot = 0;
+        const int own = pick_for_player(side, cls, playerId, &slot);
+        if (slot > 0 && own >= 0 && own < (int)s_roster.size() && s_roster[own].role == PORT_GUEST_CAPTAIN)
+            return s_roster[own].name.c_str();
+    }
     // its kind: a Charged guest sidekick playing this slot, or the Strikers one
     std::string kind = kClassNames[cls];
-    const int guest = PortGuestIndexFor(side, cls);
+    const int guest = PortGuestIndexForPlayer(side, cls, playerId);
     if (guest >= 0 && guest < (int)s_roster.size())
         kind = s_roster[guest].pack;
     // whose team: its captain (a guest, or the Strikers one)
@@ -3820,6 +4919,21 @@ void PortGuestSetPick(int captainTeam, int role, int index)
     const int mode = current_mode();
     if (mode < 0 || captainTeam < 0 || captainTeam >= 8 || role < 0 || role > 1)
         return;
+    // r130: a team's sidekick pick: the menu's three (PORT_GUEST_TRIO + their class: each slot its own, the team's pick
+    // the Strikers sidekick of that class), or one pick for all three (the slots' own go)
+    if (role == PORT_GUEST_SIDEKICK)
+    {
+        if (index >= PORT_GUEST_TRIO && index < PORT_GUEST_TRIO + 4)
+        {
+            const int sd = s_picker.trioSide;
+            PortGuestSetSlotPicks(captainTeam, s_picker.trio[sd], s_picker.trioFirst[sd]);
+            index = -1;
+        }
+        else
+        {
+            PortGuestSetSlotPicks(captainTeam, NULL, 0);
+        }
+    }
     if (index < PORT_GUEST_INHERIT || index >= (int)s_roster.size() || (index >= 0 && s_roster[index].role != role))
         index = -1;
     if (s_pick[mode][captainTeam][role] == index)
@@ -3833,6 +4947,7 @@ void PortGuestSetPick(int captainTeam, int role, int index)
 
 void PortGuestClearPicks()
 {
+    s_picker.chosenTeam[0] = s_picker.chosenTeam[1] = -1;  // r130
     read_picks();
     const int mode = current_mode();
     if (mode < 0)
@@ -3844,8 +4959,83 @@ void PortGuestClearPicks()
             any = any || s_pick[mode][t][r] != -1;
             s_pick[mode][t][r] = -1;
         }
+    for (int t = 0; t < 8; t++)  // r130: the sidekick slots too
+        for (int k = 0; k < 3; k++)
+        {
+            any = any || s_slotPick[mode][t][k] != PORT_GUEST_INHERIT;
+            s_slotPick[mode][t][k] = PORT_GUEST_INHERIT;
+        }
     if (any)
         write_picks();
+}
+
+// r130: see xr_guest.h
+int PortGuestGetSlotPick(int captainTeam, int slot)
+{
+    read_picks();
+    const int mode = current_mode();
+    if (mode < 0 || captainTeam < 0 || captainTeam >= 8 || slot < 1 || slot > 3)
+        return PORT_GUEST_INHERIT;
+    return s_slotPick[mode][captainTeam][slot - 1];
+}
+
+// r130: see xr_guest.h
+void PortGuestSetSlotPicks(int captainTeam, const int* picks, int firstSlot)
+{
+    read_picks();
+    const int mode = current_mode();
+    if (mode < 0 || captainTeam < 0 || captainTeam >= 8)
+        return;
+    bool changed = false;
+    for (int k = 0; k < 3; k++)
+    {
+        int v = PORT_GUEST_INHERIT;
+        if (picks != NULL && k >= firstSlot)
+        {
+            v = picks[k] >= 0 && picks[k] < (int)s_roster.size() ? picks[k] : -1;
+            if (picks[k] >= PORT_GUEST_ORIGINAL && picks[k] < PORT_GUEST_ORIGINAL + 8)
+                v = picks[k];  // r130: a Strikers captain (its own class, include/port/lineup.h)
+        }
+        if (s_slotPick[mode][captainTeam][k] != v)
+        {
+            s_slotPick[mode][captainTeam][k] = v;
+            changed = true;
+        }
+    }
+    if (!changed)
+        return;
+    if (picks != NULL)
+    {
+        auto shown = [&](int k) -> std::string {
+            if (k < firstSlot)
+                return "(co-captain)";
+            const int p = s_slotPick[mode][captainTeam][k];
+            if (p >= PORT_GUEST_ORIGINAL && p < PORT_GUEST_ORIGINAL + 8)
+                return "(Strikers captain " + std::to_string(p - PORT_GUEST_ORIGINAL) + ")";
+            return p >= 0 && p < (int)s_roster.size() ? s_roster[p].pack : std::string("(Strikers)");
+        };
+        fprintf(stderr, "[guest] pick: mode %d, team %d's sidekicks = %s / %s / %s\n", mode, captainTeam, shown(0).c_str(),
+                shown(1).c_str(), shown(2).c_str());
+        fflush(stderr);
+    }
+    write_picks();
+}
+
+void PortGuestPickerCommitTrio(int side, const int picks[3], int firstSlot, int sidekickClass)
+{
+    if (side < 0 || side > 1 || sidekickClass < 0 || sidekickClass > 3)
+        return;
+    for (int k = 0; k < 3; k++)
+        s_picker.trio[side][k] = picks[k];
+    s_picker.trioFirst[side] = firstSlot;
+    s_picker.trioSide = side;
+    PortGuestPickerCommit(side, PORT_GUEST_SIDEKICK, PORT_GUEST_TRIO + sidekickClass);
+}
+
+void PortGuestSetSlotShiny(int side, int playerId, bool shiny)
+{
+    if (side >= 0 && side < 2 && playerId >= 1 && playerId <= 3)
+        s_slotShiny[side][playerId] = shiny;
 }
 
 unsigned long PortGuestLocName(int index)
@@ -3877,11 +5067,11 @@ unsigned long PortGuestLocSidekickName(int captainTeam, int sidekick)
     return pick >= 0 && s_roster[pick].base == sidekick ? PortGuestLocName(pick) : 0;
 }
 
-unsigned long PortGuestLocCoCaptainName(int side)
+unsigned long PortGuestLocSlotCaptainName(int side, int slot)
 {
-    if (!guests_enabled() || side < 0 || side > 1 || PortSecondCaptain(side) < 0)
+    if (!guests_enabled() || side < 0 || side > 1 || PortSlotCaptain(side, slot) < 0)
         return 0;
-    return PortGuestLocName(s_coPick[side]);
+    return PortGuestLocName(captain_slot_guest(side, slot));  // r130: any slot playing a captain class (r79: the co-captain)
 }
 
 const char* PortGuestShownName(int side, int cls)
@@ -3926,6 +5116,7 @@ void PortGuestLocInject(nlLocalization* loc)
                            : game == "Melee" ? "From Super Smash Bros. Melee"
                            : game == "Melee Pokemon" ? "A Pokemon from Super Smash Bros. Melee"
                            : game == "Colosseum" ? "A Pokemon from Pokemon Colosseum"
+                           : game == "Ultimate Alliance" ? "From Marvel: Ultimate Alliance"  // r107
                                                      : "A guest from another game";
         texts.push_back(std::make_pair((u32)s_roster[r].descKey, std::string(from)));
     }

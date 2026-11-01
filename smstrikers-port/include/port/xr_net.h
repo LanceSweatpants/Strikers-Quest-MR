@@ -51,6 +51,23 @@ typedef struct PortNetMatch {
     char coGuests[2][24];
     float coStats[2][28];
     unsigned coStatMask[2];
+    /* r130: each side's three sidekick slots' own picks (cPlayer m_ID 1-3, include/port/xr_guest.h
+     * PortGuestSetSlotPicks): kind 0 none (the side's one sidekick pick), 1 the Strikers sidekick itself, 2 a guest of
+     * any role (its pack) with its own stats as its own headset read them. In the hello's and the start's 'L' tails
+     * (xr_net.cpp), no protocol change: slotsAgreed (the agreed match) = a bit per side (1 home, 2 away) the start
+     * carried; 0 when either headset's build has no 'L' tails (both then play each side's one sidekick pick). */
+    unsigned char slotKinds[2][3];
+    char slotGuests[2][3][24];
+    float slotStats[2][3][28];
+    unsigned slotStatMask[2][3];
+    int slotsAgreed;
+    /* r130 (Lance: "let ANY spot be ANY character"): kind 3 = a Strikers captain itself. slotWant: the captain each slot
+     * wants to play as (eTeamID: a Strikers captain's own, a guest captain's base; -1 the side's sidekick class), worked
+     * out by the headset that picked it (its roster). slotClass: the class each slot plays (eCharacterClass, -1 the
+     * sidekick class), resolved by the host for both sides (include/port/lineup.h PortResolveSlotClasses) and sent in
+     * the start; -1 in a headset's own picks. In the 'L' tails (xr_net.cpp; r130's first 'S' tails had neither). */
+    int slotWant[2][3];
+    int slotClass[2][3];
 } PortNetMatch;
 
 /* SuperLoadingScene, every frame its intro slide is done, with this headset's picks and the side

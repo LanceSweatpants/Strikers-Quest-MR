@@ -21,6 +21,12 @@
 
 namespace xrfx {
 
+// r117: the 3D character models drawn at once (Scene::models, set_model's slots): the 3D evolution's two /
+// the character select menu's figure, and the home corner's
+// r131: + 18 for the franchise's characters (the hub's pages, trades, awards night: xr_quest.cpp fr_figs_frame), slots 3-20
+// r131: + 1, the last: STRIKERS ILLUSTRATED's pages as bending paper (xr_quest.cpp; ModelDraw::under < 0 = paper)
+constexpr int kModelSlots = 3 + 18 + 1;
+
 struct DeviceInfo {
   XrInstance instance = XR_NULL_HANDLE;
   XrSession session = XR_NULL_HANDLE;
@@ -33,6 +39,9 @@ struct DeviceInfo {
   float maxAnisotropy = 0.0f;      // r61: the device's samplerAnisotropy limit when enabled, else 0
   uint32_t roomWidth = 0, roomHeight = 0;  // r61: the cup suite's room layer per eye (full size)
   uint32_t roomSamples = 1;  // r62: its multisampling (4 where colour and depth both have it)
+  // r117 (Lance: the home ground's banners "blurry as fuck"): the effects layer's multisampling (1 or 4, never
+  // more than roomSamples); it was single-sampled
+  uint32_t fxSamples = 1;
 };
 
 // Where things are this display frame, in LOCAL space (meters, Y up).
@@ -158,6 +167,7 @@ struct Scene {
   // (its window, ahead, is -Z at 0). Its walls hide the effects behind them; its live things follow
   // suiteCaptain's world (eCharacterClass).
   bool roomShown = false;
+  bool roomEvo = false;  // r119: an evolution's backdrop (evo_<theme>): none of the cup suite's live things
   XrVector3f roomOrigin{0.0f, 0.0f, 0.0f};
   float roomYaw = 0.0f;
   int suiteCaptain = -1;
@@ -180,8 +190,15 @@ struct Scene {
     float white = 0.0f, alpha = 1.0f, glow = 0.0f, under = 0.0f;
     uint32_t glowRgb = 0xFFFFFF;
     int flameFrame = -1;
+    float shine = 0.0f;  // r127: a shiny one's glint sweeping over it (0 none .. 1)
+    // r131: a baked model (Model::frames, posNrm unused): which of its frames shows, and where its own space (feet
+    // at the origin, facing +X, Y up) stands in the room: `scale` times, turned by `yaw` about +Y (0 faces +X), its
+    // feet at `at` (LOCAL)
+    int frame = -1;
+    XrVector3f at{0.0f, 0.0f, 0.0f};
+    float yaw = 0.0f, scale = 1.0f;
   };
-  ModelDraw models[2];
+  ModelDraw models[kModelSlots];  // r117: 0-1 the 3D evolution / the menu's figure, 2 the home corner's; r131: 3- franchise
 };
 
 // r96: a character model for Scene::models (xr_evo.cpp builds it from a guest pack): its pictures (RGBA,
@@ -201,10 +218,16 @@ struct Model {
   std::vector<uint32_t> indices;
   std::vector<ModelPart> parts;
   uint32_t vertexCount = 0;
+  // r131: its poses baked ahead (frameCount x vertexCount x 6 floats: position, normal, in its own space): they go up
+  // to the GPU with it and a frame is picked per draw (ModelDraw::frame), nothing posed or copied per frame
+  std::vector<float> frames;
+  uint32_t frameCount = 0;
 };
 // Render thread only: puts a model in slot 0 / 1 (its pictures go up to the GPU now, waiting for it), or
 // with an empty one lets that slot's go.
 void set_model(int slot, Model&& model);
+// r131: a model is up in that slot (set_model worked, the renderer not restarted since)
+bool model_up(int slot);
 
 // r96 (Lance: "their celebration stuff minus the confetti to fall during that process ... for pichu, it
 // should JUST be lightning that falls, for squirtle it should be water that falls/water cannons,
@@ -281,6 +304,10 @@ void set_marker(bool shown, float x, float y, float z, int teamCaptain);
 // or the screen's size); strength 1..3 (the item's size + 1); kind 0 fire, 1 dust (Chain Chomp).
 void blast(const XrVector3f& at, const XrVector3f& dir, float unit, float strength, int kind);
 
+// r124 (Lance: Spider-Man's "signature wrist flick trying to shoot webs"): a web line shot from `from` (LOCAL, his
+// wrist) along `dir` (any length), `length` meters out: the strand, and a little web opening where it ends.
+void web_shot(const XrVector3f& from, const XrVector3f& dir, float length);
+
 // The game's own full-screen flash (colour 0..1, opacity), reported every game frame it draws one:
 // shown over your whole view while the reports keep coming.
 void screen_flash(float r, float g, float b, float a);
@@ -301,6 +328,11 @@ void dump_at_flash();
 // For the stats line: the most pieces drawn in one frame, and mesh indices per eye, since the last
 // call. False when nothing was drawn.
 bool take_stats(uint32_t* peakParts, uint32_t* peakIndices);
+// r130: the celebration pieces' budget scale (0.25 .. 1): xr_quest lowers it while the headset misses display
+// frames and raises it back while it holds them
+void set_load_scale(float scale);
+float load_scale();
+bool pieces_alive();  // r130: any celebration piece up (the load scale only steps down then)
 
 // Self-test: the next rendered left eye of the effects layer is written to `path` as a PPM, the
 // pieces over mid grey so the transparent parts read.

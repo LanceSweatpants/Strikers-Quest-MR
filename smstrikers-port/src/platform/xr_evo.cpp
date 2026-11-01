@@ -6,6 +6,7 @@
 #define XR_USE_PLATFORM_ANDROID 1
 #define XR_USE_GRAPHICS_API_VULKAN 1
 #include "xr_evo.h"
+#include "../../include/port/xr_guest.h"  // r105: PortGuestSizeScale
 
 #include <algorithm>
 #include <cmath>
@@ -83,6 +84,12 @@ struct Figure {
   float fps = 30.0f;
   std::vector<float> pose;  // frames x nodes x 12 (rows 0-2 x y z, then the position)
   float height = 1.0f, radius = 0.4f, front = 0.3f, middle[2] = {0.0f, 0.0f};
+  float size = 1.0f;  // r105: its own size over its pack's (guests/limbs.txt "size", as in the match)
+  // r119 (Lance: "i want more interaction"): its moves by kind (a home figure's loop file's "SEG1" part) and its
+  // head (it looks at you): the nodes that turn with it
+  std::vector<Segment> segs;
+  int head = -1;
+  std::vector<uint8_t> inHead;  // nodes: 1 = the head or under it
 };
 
 namespace {
@@ -107,13 +114,27 @@ bool decode_rgba8(const uint8_t* data, size_t size, uint32_t w, uint32_t h, std:
   return true;
 }
 
-// One frame's skinning matrices (row vectors) at time t: the pose's two nearest frames blended.
-void skin_at(const Figure& f, float t, std::vector<float>* skin) {
+// One frame's skinning matrices (row vectors) at time t: the pose's two nearest frames blended; r119: the head (and
+// all under it) turned by lookYaw about +Z and lookPitch up, round the head (Strikers model space: facing +X).
+void skin_at(const Figure& f, float t, std::vector<float>* skin, float lookYaw = 0.0f, float lookPitch = 0.0f) {
   const uint32_t n = f.nodes;
   skin->assign(size_t(n) * 16, 0.0f);
   const float fr = std::max(0.0f, t) * f.fps;
   const uint32_t i0 = static_cast<uint32_t>(fr) % f.frames, i1 = (i0 + 1) % f.frames;
   const float a = fr - std::floor(fr);
+  // r119: the look: pitch up about +Y (row vectors: +X toward +Z), then yaw about +Z; round the head's place
+  const bool look = f.head >= 0 && (lookYaw != 0.0f || lookPitch != 0.0f) && f.inHead.size() == n;
+  float M[3][3] = {}, pivot[3] = {};
+  if (look) {
+    const float cp = std::cos(lookPitch), sp = std::sin(lookPitch), cy = std::cos(lookYaw), sy = std::sin(lookYaw);
+    const float P[3][3] = {{cp, 0.0f, sp}, {0.0f, 1.0f, 0.0f}, {-sp, 0.0f, cp}};
+    const float Y[3][3] = {{cy, sy, 0.0f}, {-sy, cy, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 3; ++c) M[r][c] = P[r][0] * Y[0][c] + P[r][1] * Y[1][c] + P[r][2] * Y[2][c];
+    const float* h0 = &f.pose[(size_t(i0) * n + f.head) * 12];
+    const float* h1 = &f.pose[(size_t(i1) * n + f.head) * 12];
+    for (int c = 0; c < 3; ++c) pivot[c] = h0[9 + c] + (h1[9 + c] - h0[9 + c]) * a;
+  }
   for (uint32_t i = 0; i < n; ++i) {
     const float* p0 = &f.pose[(size_t(i0) * n + i) * 12];
     const float* p1 = &f.pose[(size_t(i1) * n + i) * 12];
@@ -121,6 +142,14 @@ void skin_at(const Figure& f, float t, std::vector<float>* skin) {
     for (int r = 0; r < 4; ++r)
       for (int c = 0; c < 3; ++c) world[r * 4 + c] = p0[r * 3 + c] + (p1[r * 3 + c] - p0[r * 3 + c]) * a;
     world[15] = 1.0f;
+    if (look && f.inHead[i] != 0) {
+      for (int r = 0; r < 3; ++r) {  // the axes turned
+        const float x = world[r * 4], y = world[r * 4 + 1], z = world[r * 4 + 2];
+        for (int c = 0; c < 3; ++c) world[r * 4 + c] = x * M[0][c] + y * M[1][c] + z * M[2][c];
+      }
+      const float x = world[12] - pivot[0], y = world[13] - pivot[1], z = world[14] - pivot[2];
+      for (int c = 0; c < 3; ++c) world[12 + c] = x * M[0][c] + y * M[1][c] + z * M[2][c] + pivot[c];
+    }
     if (f.hasInv[i]) {
       mul(&f.inv[size_t(i) * 16], world, &(*skin)[size_t(i) * 16]);
     } else {
@@ -167,9 +196,18 @@ void skin_vert(const Figure& f, const std::vector<float>& skin, const Vert& v, f
 }  // namespace
 
 Figure* load(const std::string& pack, const std::string& posePack, xrfx::Model* model) {
+  return load_files(home_dir() + "/guests/" + pack + ".gpk", home_dir() + "/guests/evo/" + posePack + ".gev", model);
+}
+
+// r117: from any pack and pose file (the home corner's: guests/home/<pack>.gpk / .gev)
+Figure* load_files(const std::string& packPath, const std::string& posePath, xrfx::Model* model) {
   std::vector<uint8_t> b, g;
-  const std::string packPath = home_dir() + "/guests/" + pack + ".gpk";
-  const std::string posePath = home_dir() + "/guests/evo/" + posePack + ".gev";
+  // r118: its pack name (the file's, no folder or .gpk) - r117 used the whole path, so guests/limbs.txt's
+  // "<pack> size" (r105: Grovyle x1.25 ...) no longer matched in the 3D evolution
+  std::string pack = packPath;
+  const size_t sl = pack.find_last_of('/');
+  if (sl != std::string::npos) pack = pack.substr(sl + 1);
+  if (pack.size() > 4 && pack.compare(pack.size() - 4, 4, ".gpk") == 0) pack.resize(pack.size() - 4);
   if (!read_file(packPath, &b) || b.size() < 64 || std::memcmp(b.data(), "GPK2", 4) != 0) {
     ELOG("%s: no retarget pack at %s", pack.c_str(), packPath.c_str());
     return nullptr;
@@ -194,7 +232,25 @@ Figure* load(const std::string& pack, const std::string& posePack, xrfx::Model* 
   }
   f->pose.resize(size_t(f->frames) * nNodes * 12);
   std::memcpy(f->pose.data(), g.data() + 16, f->pose.size() * 4);
+  // r119: after the frames, "SEG1": its moves (count, the head node or ~0, then per move: first frame, frames, kind)
+  {
+    const size_t at = 16 + f->pose.size() * 4;
+    if (g.size() >= at + 12 && std::memcmp(g.data() + at, "SEG1", 4) == 0) {
+      const uint32_t count = rd32(g.data() + at + 4), head = rd32(g.data() + at + 8);
+      if (count < 256 && g.size() >= at + 12 + size_t(count) * 12) {
+        for (uint32_t i = 0; i < count; ++i) {
+          Segment sg;
+          sg.start = rd32(g.data() + at + 12 + i * 12);
+          sg.frames = rd32(g.data() + at + 16 + i * 12);
+          sg.kind = rd32(g.data() + at + 20 + i * 12);
+          if (sg.frames > 0 && sg.start + sg.frames <= f->frames) f->segs.push_back(sg);
+        }
+        f->head = head < nNodes ? static_cast<int>(head) : -1;
+      }
+    }
+  }
   p = b.data() + 64;
+  std::vector<int32_t> parents(nNodes, -1);
   f->hasInv.resize(nNodes);
   f->inv.resize(size_t(nNodes) * 16);
   for (uint32_t i = 0; i < nNodes; ++i, p += 156) {
@@ -204,6 +260,22 @@ Figure* load(const std::string& pack, const std::string& posePack, xrfx::Model* 
     }
     f->hasInv[i] = rd32(p + 20) != 0;
     std::memcpy(&f->inv[size_t(i) * 16], p + 24, 64);
+    parents[i] = static_cast<int32_t>(rd32(p + 4));
+  }
+  // r119: the head and everything under it (parents come before their children)
+  if (f->head >= 0) {
+    f->inHead.assign(nNodes, 0);
+    for (uint32_t i = 0; i < nNodes; ++i) {
+      int k = static_cast<int>(i);
+      for (int guard = 0; guard < 64 && k >= 0 && k < static_cast<int>(nNodes); ++guard) {
+        if (k == f->head) {
+          f->inHead[i] = 1;
+          break;
+        }
+        const int par = parents[k];
+        k = par < k ? par : -1;
+      }
+    }
   }
   // the pictures (GX RGBA8 records, as meleepack.texture_record writes them), by hash
   std::unordered_map<uint32_t, int> texIndex;
@@ -299,13 +371,15 @@ Figure* load(const std::string& pack, const std::string& posePack, xrfx::Model* 
       hi[k] = std::max(hi[k], q[k]);
     }
   }
-  f->height = std::max(0.2f, hi[2]);
+  // r105: as big as it is in the match (its own size, guests/limbs.txt)
+  f->size = PortGuestSizeScale(pack.c_str());
+  f->height = std::max(0.2f, hi[2] * f->size);
   // it stands where its root is (its feet); how far it reaches out in front of that (+X: Charizard's
   // idle holds its head 0.9 m forward), and round it
   f->middle[0] = 0.0f;
   f->middle[1] = 0.0f;
-  f->front = std::max(0.1f, hi[0]);
-  f->radius = std::max(0.15f, 0.5f * std::max(hi[0] - lo[0], hi[1] - lo[1]));
+  f->front = std::max(0.1f, hi[0] * f->size);
+  f->radius = std::max(0.15f, 0.5f * f->size * std::max(hi[0] - lo[0], hi[1] - lo[1]));
   ELOG("%s: %u vertices, %zu triangles, %zu pictures, %u nodes, %u pose frames; %.2f m tall, %.2f m round, mode %u",
        pack.c_str(), m.vertexCount, m.indices.size() / 3, m.texRgba.size(), nNodes, f->frames, f->height, f->radius, f->mode);
   if (model != nullptr) *model = std::move(m);
@@ -317,11 +391,21 @@ void release(Figure* f) { delete f; }
 float height(const Figure* f) { return f != nullptr ? f->height : 1.0f; }
 float radius(const Figure* f) { return f != nullptr ? f->radius : 0.4f; }
 float front(const Figure* f) { return f != nullptr ? f->front : 0.3f; }
+float duration(const Figure* f) { return f != nullptr && f->fps > 0.0f ? static_cast<float>(f->frames) / f->fps : 1.0f; }
 
-void pose(const Figure* f, float t, const XrVector3f& feet, float yaw, float scale, float lift, std::vector<float>* out) {
+const std::vector<Segment>& segments(const Figure* f) {
+  static const std::vector<Segment> kNone;
+  return f != nullptr ? f->segs : kNone;
+}
+float fps(const Figure* f) { return f != nullptr ? f->fps : 30.0f; }
+bool looks(const Figure* f) { return f != nullptr && f->head >= 0; }
+
+void pose(const Figure* f, float t, const XrVector3f& feet, float yaw, float scale, float lift, std::vector<float>* out,
+          float lookYaw, float lookPitch) {
   if (f == nullptr) return;
+  scale *= f->size;  // r105
   std::vector<float> skin;
-  skin_at(*f, t, &skin);
+  skin_at(*f, t, &skin, lookYaw, lookPitch);
   out->resize(f->verts.size() * 6);
   const float cs = std::cos(yaw), sn = std::sin(yaw);
   // Strikers model space (x, y, z) -> LOCAL as xr_fx's game_to_room: (x, z, -y), turned by yaw about +Y;
@@ -331,6 +415,9 @@ void pose(const Figure* f, float t, const XrVector3f& feet, float yaw, float sca
   for (const Vert& v : f->verts) {
     float q[3], n[3];
     skin_vert(*f, skin, v, q, n);
+    // r130 (Lance: Moon Knight's cape in his kneel, Dr. Strange's too): nothing under the floor it stands on - a
+    // cape folded round a kneel lies flat on the floor instead of 0.3 through it
+    if (q[2] < 0.0f) q[2] = 0.0f;
     const float a = (q[0] - mx) * scale, b = q[2] * scale + lift, c = -(q[1] - my) * scale;
     o[0] = a * cs + c * sn + feet.x;
     o[1] = b + feet.y;

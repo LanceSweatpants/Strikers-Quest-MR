@@ -147,6 +147,11 @@ void aurora_apply_frame_buffer_resize();
 const AuroraEvent* aurora_update();
 bool aurora_begin_frame();
 void aurora_end_frame();
+/* strikers-quest r129: whether a frame could begin now (aurora_begin_frame's checks, nothing opened), and
+ * whether one is open (begun, not yet ended) - the headset leaves a frame open past its loop so the FIFO
+ * worker finishes it while the game works out the next (src/platform/xr_quest.cpp PortXrFrameBoundary). */
+bool aurora_frame_ready();
+bool aurora_frame_is_open();
 
 /* strikers-quest: XR present hooks.
  * While suppressed, end_frame neither acquires nor presents the window surface: under an OpenXR

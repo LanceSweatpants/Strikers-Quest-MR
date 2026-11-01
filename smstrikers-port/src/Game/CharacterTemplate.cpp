@@ -334,7 +334,7 @@ cPlayer* CreateCharacter(int nPlayerID, int nTeamID, eCharacterClass cc, bool bF
     // strikers-quest r67: a guest character plays on its own stats (include/port/xr_guest.h).
     if (!bForViewer)
     {
-        PortGuestApplyTweaks(nTeamID, (int)cc, pTweaks);
+        PortGuestApplyTweaksPlayer(nTeamID, (int)cc, nPlayerID, pTweaks);  // r130: each sidekick its own
     }
 
     cPlayer* pChar;
@@ -625,20 +625,45 @@ void CreateCharacters()
         ((cPlayer*)g_pCharacters[plrindex + 8])->m_pTeam = g_pTeams[plrindex];
     }
 
+    // strikers-quest r130 (Lance: "let ANY spot be ANY character"): each sidekick slot (index 1-3) plays its own class
+    // (include/port/lineup.h): a captain class picked for it (r78's co-captain is slot 1's), else the team's sidekick
+    // class as the game does; never with the Super Team, which already fields its captain class everywhere. A last
+    // check in a fixed order (home slots, then away): a captain class already on the field plays the sidekick class.
+    int slotClass[2][3];
+    {
+        bool used[NUM_FIELDER_CLASSES] = {};
+        for (int side = 0; side < 2; side++)
+            if ((int)captain[side] >= 0 && (int)captain[side] < NUM_FIELDER_CLASSES)
+                used[captain[side]] = true;
+        for (int side = 0; side < 2; side++)
+        {
+            for (int slot = 0; slot < 3; slot++)
+            {
+                int cls = captain[side] != MYSTERY ? PortSlotCaptain(side, slot) : -1;
+                if (cls >= 0 && (cls >= NUM_FIELDER_CLASSES || used[cls]))
+                {
+                    PortDropSlotCaptain(side, slot);
+                    cls = -1;
+                }
+                if (cls >= 0)
+                    used[cls] = true;
+                slotClass[side][slot] = cls;
+            }
+        }
+    }
+
     for (int teami = 0; teami < 2; teami++)
     {
         plrindex = (sidekick[0] > sidekick[1]) ? !teami : teami;
 
         charIdx = plrindex * 4 + 1;
 
-        // strikers-quest r78: a co-captain (include/port/lineup.h): a second captain class in slot 1 (never
-        // with the Super Team, which already fields its captain class everywhere)
-        const int coCaptain = captain[plrindex] != MYSTERY ? PortSecondCaptain(plrindex) : -1;
         for (int index = 1; index < 4; index++)
         {
-            if (index == 1 && coCaptain >= 0)
+            const int slotCaptain = slotClass[plrindex][index - 1];  // r130 (r78: the co-captain, index 1)
+            if (slotCaptain >= 0)
             {
-                g_pCharacters[charIdx] = CreateCharacter(index, plrindex, (eCharacterClass)coCaptain, false);
+                g_pCharacters[charIdx] = CreateCharacter(index, plrindex, (eCharacterClass)slotCaptain, false);
             }
             else if (SameCharacterClass(sidekick, captain, plrindex))
             {

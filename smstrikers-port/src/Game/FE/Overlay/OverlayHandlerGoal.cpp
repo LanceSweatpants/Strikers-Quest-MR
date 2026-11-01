@@ -17,7 +17,15 @@ extern cTeam* g_pTeams[];
 
 // strikers-quest r79: the co-captain's goals (slot 1 with a captain class, include/port/lineup.h). They stay
 // in mSidekickGoals too, so the score sums are the game's; the sidekick count shown takes them out.
-static int s_coCaptainGoals[2] = {0, 0};
+// r130: each sidekick slot playing a captain class (m_ID 1-3) its own count.
+static int s_coCaptainGoals[2][3] = {{0, 0, 0}, {0, 0, 0}};
+
+static void ClearSlotCaptainGoals()
+{
+    for (int side = 0; side < 2; side++)
+        for (int slot = 0; slot < 3; slot++)
+            s_coCaptainGoals[side][slot] = 0;
+}
 
 static inline const unsigned short* LookupLocHash(unsigned long key)
 {
@@ -63,7 +71,7 @@ GoalOverlay::GoalOverlay()
     mCaptainGoals[1] = 0;
     mSidekickGoals[0] = 0;
     mSidekickGoals[1] = 0;
-    s_coCaptainGoals[0] = s_coCaptainGoals[1] = 0;
+    ClearSlotCaptainGoals();
 }
 
 /**
@@ -166,7 +174,7 @@ void GoalOverlay::eventHandler(Event* event, void* param)
         pGoal->mCaptainGoals[1] = 0;
         pGoal->mSidekickGoals[0] = 0;
         pGoal->mSidekickGoals[1] = 0;
-        s_coCaptainGoals[0] = s_coCaptainGoals[1] = 0;
+        ClearSlotCaptainGoals();
         pGoal->mIsInOvertime = false;
     }
 }
@@ -177,7 +185,7 @@ void GoalOverlay::Reset()
     mCaptainGoals[1] = 0;
     mSidekickGoals[0] = 0;
     mSidekickGoals[1] = 0;
-    s_coCaptainGoals[0] = s_coCaptainGoals[1] = 0;
+    ClearSlotCaptainGoals();
     mIsInOvertime = false;
 }
 
@@ -285,12 +293,20 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
     pText->SetString(mClockBuffer);
     pText->m_bVisible = true;
 
-    // strikers-quest r79: a co-captain's goal is a captain's goal, his own count under his own name
-    const bool coGoal = !isSuperTeam && playerIndex == 1 && PortSecondCaptain(homeAway) >= 0;
+    // strikers-quest r79: a co-captain's goal is a captain's goal, his own count under his own name; r130: any
+    // sidekick slot playing a captain class (include/port/lineup.h)
+    const bool sideOk = homeAway >= 0 && homeAway <= 1;
+    const int coSlot = sideOk && !isSuperTeam && playerIndex >= 1 && playerIndex <= 3 &&
+                               PortSlotCaptain(homeAway, playerIndex - 1) >= 0
+                           ? playerIndex - 1
+                           : -1;
+    const bool coGoal = coSlot >= 0;
     if (coGoal)
     {
-        s_coCaptainGoals[homeAway] += numGoals;
+        s_coCaptainGoals[homeAway][coSlot] += numGoals;
     }
+    const int slotCaptainGoals =
+        sideOk ? s_coCaptainGoals[homeAway][0] + s_coCaptainGoals[homeAway][1] + s_coCaptainGoals[homeAway][2] : 0;
     if (playerIndex > 0)
     {
         mSidekickGoals[homeAway] += numGoals;
@@ -344,12 +360,12 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
                 formatted = Format(unformatted, captain);
             }
         }
-        else if (coGoal && GetLOCCoCaptainName(homeAway) != 0)
+        else if (coGoal && GetLOCSlotCaptainName(homeAway, coSlot) != 0)
         {
-            // strikers-quest r79: the captain lines with the co-captain's name and goals
-            const unsigned long coName = GetLOCCoCaptainName(homeAway);
+            // strikers-quest r79: the captain lines with the co-captain's name and goals (r130: that slot's)
+            const unsigned long coName = GetLOCSlotCaptainName(homeAway, coSlot);
             BasicString<unsigned short, Detail::TempStringAllocator> captain(LookupLocHash(coName));
-            if (s_coCaptainGoals[homeAway] == 3)
+            if (s_coCaptainGoals[homeAway][coSlot] == 3)
             {
                 unformatted = BasicString<unsigned short, Detail::TempStringAllocator>(LookupLocHash(0xD8976F68));
                 formatted = Format(unformatted, captain);
@@ -358,7 +374,7 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
             {
                 unformatted = BasicString<unsigned short, Detail::TempStringAllocator>(LookupLocHash(0x3DE2ABC1));
                 BasicString<char, Detail::TempStringAllocator> numGoalsString(
-                    LexicalCast<BasicString<char, Detail::TempStringAllocator>, int>(s_coCaptainGoals[homeAway]));
+                    LexicalCast<BasicString<char, Detail::TempStringAllocator>, int>(s_coCaptainGoals[homeAway][coSlot]));
                 unsigned short goalsWideString[32];
                 nlStrToWcs(numGoalsString.c_str(), goalsWideString, 32);
                 formatted = Format(unformatted, goalsWideString, captain);
@@ -393,10 +409,10 @@ void GoalOverlay::UpdateGoalInfo(int homeAway, int playerIndex, bool isCaptainS2
             BasicString<unsigned short, Detail::TempStringAllocator> captain(
                 LookupLocHash(GetLOCTeamName((eTeamID)team)));
 
-            // strikers-quest r79: without the co-captain's
+            // strikers-quest r79: without the co-captain's (r130: every captain-class slot's)
             BasicString<char, Detail::TempStringAllocator> numGoalsString(
                 LexicalCast<BasicString<char, Detail::TempStringAllocator>, int>(mSidekickGoals[homeAway] -
-                                                                                 s_coCaptainGoals[homeAway]));
+                                                                                 slotCaptainGoals));
             unsigned short goalsWideString[32];
             nlStrToWcs(numGoalsString.c_str(), goalsWideString, 32);
 

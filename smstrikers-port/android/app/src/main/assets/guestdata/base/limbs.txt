@@ -2,3 +2,28 @@
 # takes its normal pack's). xr_guest.cpp arm_scale_for; tools/outside/retargetsim.py (RETARGET_ARMS),
 # evo_pose.py. PC check: Pikachu on Yoshi's moves, 1.0 / 0.65 / 0.5 / 0.4 -> 0.55.
 pk_pikachu arms 0.55
+# r105 (Lance: "grovyle was WAY too small"): a guest's own size, "<pack> size <scale>": the whole guest drawn that
+# much bigger round its feet, in the match and the 3D evolution (xr_guest.cpp limb_value, xr_evo.cpp). The app
+# copies this file to guests/ with every update. Heights = top of the head over idle + run (PC, retargetsim, units):
+# Grovyle 1.18 -> 1.47 (was shorter than Yoshi, 1.32, whose spot it plays; now between him and Sceptile 1.64).
+# Evolved forms shorter than the Strikers character they stand in for, brought up to it:
+# Combusken 1.21 -> 1.32 (Yoshi), Raichu 1.22 -> 1.32 (Yoshi), Marshtomp 1.14 -> 1.29 (Wario),
+# Ivysaur 1.25 -> 1.42 (Daisy), Wigglytuff 1.32 -> 1.42 (Peach).
+pk_grovyle size 1.25
+pk_combusken size 1.09
+pk_raichu size 1.08
+pk_marshtomp size 1.13
+pk_ivysaur size 1.14
+pk_wigglytuff size 1.08
+# r108 (Lance: "onix and the other long character, need to slither to me, they just glide without moving"): a long
+# body's ripple as it goes, "<pack> slither <amount>" (xr_guest.cpp slither_world; PC check tools/outside/mua/
+# slither_check.py): head still, the body swaying side to side down to the tail, with the ground covered.
+pk_onix slither 1
+pk_steelix slither 1
+pk_dratini slither 1
+pk_dragonair slither 1
+# r130: a top goes round as it moves, "<pack> spin <turns per 4 m travelled>" (xr_guest.cpp spin_world; also a slow
+# turn standing still). Hitmontop's Colosseum model is stored upside down on its horn: it spins instead of gliding.
+pk_hitmontop spin 1
+# r130: Cacnea's hands brushed 3-6 cm into the floor on Daisy's moves (bone-map check g15).
+pk_cacnea arms 0.9

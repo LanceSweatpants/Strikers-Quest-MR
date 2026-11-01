@@ -302,6 +302,10 @@ void CupChooseCaptainSceneV2::Update(float fDeltaT)
         {
             freeCaptains[t] = true;  // the cup's other teams are drawn after this pick
         }
+        if (role == PORT_GUEST_SIDEKICK)
+        {
+            PortGuestPickerCaptainIs(0, (int)mCurrentCaptain);  // r130: the sidekick menu's own captain (no Strikers twin)
+        }
         PortGuestPickerOffer(0, role, freeCaptains);
         int guest = -1;
         if (PortGuestPickerTake(0, role, &guest))

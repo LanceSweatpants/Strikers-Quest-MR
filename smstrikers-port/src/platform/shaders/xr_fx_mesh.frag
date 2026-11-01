@@ -61,13 +61,22 @@ float sdFlower(vec2 p, float r) {
     }
     return d;
 }
-// r68c: the guests' own outlines (xr_fx make_etch, tools/outside/etchres.py): 8 x 8 cells of distance
+// r130: a box (half size h) and a line from a to b, for the new pieces' painted details.
+float sdBox2(vec2 p, vec2 h) {
+    vec2 d = abs(p) - h;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+float sdSeg(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a, ba = b - a;
+    return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+}
+// r68c: the guests' own outlines (xr_fx make_etch, tools/outside/etchres.py): 16 x 16 cells (r121) of distance
 // (0.5 = the outline, a quarter of a cell either way over the range), one per guest in roster order.
 layout(set = 0, binding = 0) uniform sampler2D uEtch;
 float sdGuest(int cell, vec2 p) {
     vec2 c = clamp(p, vec2(-0.5), vec2(0.5));
     float outside = length(p - c);
-    vec2 uv = (vec2(float(cell % 8), float(cell / 8)) + vec2(c.x + 0.5, 0.5 - c.y)) / 8.0;
+    vec2 uv = (vec2(float(cell % 16), float(cell / 16)) + vec2(c.x + 0.5, 0.5 - c.y)) / 16.0;  // r121: 16 x 16
     float d = (textureLod(uEtch, uv, 0.0).r - 128.0 / 255.0) * (255.0 / 127.0) * 0.25;
     return d + outside;
 }
@@ -251,7 +260,9 @@ void main() {
             bool banner = shape == 25;
             vec2 c = banner ? vec2(0.0, 0.12) : vec2(0.17, 0.31);
             float r = banner ? 0.13 : 0.07;
-            if (banner ? abs(p.x) > 0.155 : p.x < 0.07) base = c2;
+            // r124: the stripes' edges smoothed over a pixel (a hard edge stair-stepped and shimmered)
+            float se = banner ? abs(p.x) - 0.155 : 0.07 - p.x;
+            base = mix(base, c2, smoothstep(-0.5, 0.5, se / max(fwidth(se), 1e-5)));
             float disc = length(p.xy - c) - r;
             vec2 q = (p.xy - c) / (1.9 * r);
             float d;
@@ -272,8 +283,10 @@ void main() {
             emb *= 1.0 - 0.6 * (1.0 - smoothstep(0.0, 2.0 * aa, abs(d)));
             base = mix(base, emb, inDisc);
             base = mix(base, vec3(1.0, 0.82, 0.3), ring * 0.9);
-            // The weave.
-            base *= 0.93 + 0.07 * sin(p.x * 700.0) * sin(p.y * 700.0);
+            // The weave. r117 (Lance: the banners "blurry as fuck"): faded out where it's finer than a
+            // couple of pixels (there it only shimmered and muddied the cloth)
+            float wf = clamp(1.0 - 280.0 * max(fwidth(p.x), fwidth(p.y)), 0.0, 1.0);
+            base *= 1.0 - 0.07 * wf + 0.07 * wf * sin(p.x * 700.0) * sin(p.y * 700.0);
             if (dot(N, V) < 0.0) N = -N;  // cloth: lit on the side you see
             spec = 0.12;
             shine = 14.0;
@@ -353,7 +366,7 @@ void main() {
                 }
             }
         }
-    } else if (shape >= 40 && shape <= 60) {
+    } else if ((shape >= 40 && shape <= 60) || (shape >= 80 && shape <= 118)) {  // r124: 80-89 the Marvel heroes' pieces (r127: 90-92; r130: 93-118)
         // r82: the themed celebrations' pieces (xr_fx_mesh.h): the surface from aux: 0 glossy, 1 metal,
         // 2 rough stone, 3 gem / ice (shining, a little glow), 4 wood.
         spec = 0.5;
@@ -390,10 +403,114 @@ void main() {
             vec2 q = p.xy - vec2(0.0, 0.1);
             float tri = max(abs(q.x) * 0.866 + q.y * 0.5 - 0.11, -q.y - 0.1);
             if (tri < 0.0 || (abs(p.y + 0.12) < 0.03 && abs(p.x) < 0.2)) base = c2;
+        } else if (shape == 83 && mat == 2) {  // r124: Captain America's shield: its ring and star white, not cream
+            base = vec3(0.88);
         } else if (shape == 60) {    // a pearl
             spec = 0.9;
             shine = 80.0;
             glow = 0.12;
+        }
+        // r130: the new roster's light pieces (xr_fx_mesh.h): the detail painted here instead of modelled. A piece
+        // set to glow (its drop's glow, vParams.w) glows.
+        if (shape >= 93) {
+            glow = max(glow, 0.55 * vParams.w);
+            if (shape == 93 && vParams.w > 0.05) {
+                // a crescent moon set to glow (Umbreon's rings, a dart of light): lit from within, not chrome
+                metal = false;
+                spec = 0.9;
+                shine = 80.0;
+            } else if (shape == 94 && abs(p.z) > 0.03) {
+                // the "4" badge's faces: a ring and a 4 in colour 2 (mirrored on the back, so it reads there too)
+                vec2 q = vec2(p.z > 0.0 ? p.x : -p.x, p.y);
+                float ring = abs(length(q) - 0.36) - 0.028;
+                float stem = sdBox2(q - vec2(0.07, -0.02), vec2(0.045, 0.24));
+                float crossbar = sdBox2(q - vec2(-0.03, -0.08), vec2(0.17, 0.04));
+                float diag = sdSeg(q, vec2(-0.19, -0.08), vec2(0.06, 0.22)) - 0.042;
+                float d = min(min(ring, stem), min(crossbar, diag));
+                float aa = max(fwidth(d), 1e-4);
+                base = mix(base, c2, 1.0 - smoothstep(-aa, aa, d));
+            } else if (shape == 98 || shape == 101 || shape == 102) {
+                // a horn, a talon, a spike: colour 1 at its base out to colour 2 at its point
+                base = mix(c1, c2, smoothstep(-0.1, 0.45, p.y));
+            } else if (shape == 100) {
+                // a fossil / spiral shell: a spiral groove carved in both faces (each whorl about half the next, as an
+                // ammonite's), each whorl shaded across so the spiral steps show, ribs across the whorls in colour 2, a
+                // dark hollow in the middle
+                float r = length(p.xy);
+                float th = atan(p.y, p.x);
+                float s = fract(th / 6.2831853 - log(max(r, 1e-3) / 0.48) * 1.3);
+                float groove = 1.0 - smoothstep(0.0, 0.08, min(s, 1.0 - s));
+                float rib = smoothstep(0.2, 0.8, 0.5 + 0.5 * sin(th * 18.0));
+                base = mix(base, c2, 0.35 * rib * (1.0 - groove));
+                base *= (0.72 + 0.28 * s) * (1.0 - 0.6 * groove) * mix(0.35, 1.0, smoothstep(0.03, 0.07, r));
+            } else if (shape == 103 && mat == 0) {
+                // a toadstool's cap: spots in colour 2
+                vec3 d = normalize(p - vec3(0.0, -0.04, 0.0));
+                bool spot = spotAt(d, vec3(0.0, 1.0, 0.0), 0.94);
+                for (int i = 0; i < 5; ++i) {
+                    float a = 0.5 + float(i) * 1.2566;
+                    spot = spot || spotAt(d, vec3(0.9 * cos(a), 0.55, 0.9 * sin(a)), 0.95);
+                }
+                if (spot) base = c2;
+                spec = 0.6;
+                shine = 50.0;
+            } else if (shape == 104) {
+                // a lily pad: veins out from its notch in colour 2, waxy
+                vec2 q = p.xy - vec2(0.04, 0.0);
+                float vein = 1.0 - smoothstep(0.0, 0.06, abs(sin(atan(q.y, q.x) * 4.5)));
+                base = mix(base, c2, 0.6 * vein * smoothstep(0.05, 0.15, length(q)));
+                spec = 0.6;
+                shine = 50.0;
+            } else if (shape == 105) {
+                // wool: matte and fuzzy
+                base *= 0.86 + 0.14 * sin(p.x * 61.0) * sin(p.y * 57.0 + 1.1) * sin(p.z * 63.0 + 0.4);
+                spec = 0.05;
+                shine = 8.0;
+            } else if (shape == 106) {
+                // a leaf: its midrib in colour 2
+                float d = abs(p.x) - 0.014;
+                float aa = max(fwidth(d), 1e-4);
+                base = mix(base, c2, 0.7 * (1.0 - smoothstep(-aa, aa, d)) * step(abs(p.y), 0.42));
+                spec = 0.35;
+                shine = 30.0;
+            } else if (shape == 109) {
+                // an impact burst: colour 1 in the middle, colour 2 out on its spikes, a little glow
+                float d = length(p.xy) - 0.3;
+                float aa = max(fwidth(d), 1e-4);
+                base = mix(c1, c2, smoothstep(-aa, aa, d));
+                glow = max(glow, 0.12);
+            } else if (shape == 110 && mat == 0) {
+                // a spinning top: stripes of colour 1 and 2 round its body
+                float d = sin(p.y * 28.0);
+                float aa = max(fwidth(d), 1e-4);
+                base = mix(c1, c2, smoothstep(-aa, aa, d));
+            } else if (shape == 114) {
+                // a lotus: colour 2 at its heart out to colour 1 at the petals' tips; lit on the side you see
+                base = mix(c2, c1, smoothstep(0.08, 0.4, length(p.xz)));
+                if (dot(N, V) < 0.0) N = -N;
+                spec = 0.3;
+                shine = 30.0;
+            } else if (shape == 115) {
+                // lips: glossy, the line between them in colour 2
+                float d = abs(p.y - (-0.03 + 0.12 * p.x * p.x)) - 0.012;
+                float aa = max(fwidth(d), 1e-4);
+                base = mix(c2, base, clamp(smoothstep(-aa, aa, d) + step(0.44, abs(p.x)), 0.0, 1.0));
+                spec = 0.9;
+                shine = 80.0;
+            } else if (shape == 116 || shape == 117) {
+                // a heart, a star: glossy
+                spec = 0.75;
+                shine = 60.0;
+            } else if (shape == 118 && abs(p.z) > 0.008) {
+                // a dog tag: its hole and three stamped lines
+                float lines = 1.0;
+                for (int i = 0; i < 3; ++i) {
+                    lines = min(lines, sdBox2(p.xy - vec2(-0.02, 0.06 - 0.1 * float(i)), vec2(0.12 - 0.02 * float(i), 0.012)));
+                }
+                float aa = max(fwidth(lines), 1e-4);
+                base *= 1.0 - 0.35 * (1.0 - smoothstep(-aa, aa, lines));
+                if (length(p.xy - vec2(0.0, 0.22)) < 0.035) base = vec3(0.02);
+            }
         }
     } else if (shape == 23) {        // r57: the shelf: wood with its grain, a gold trim, dark brackets
         if (mat == 0) {

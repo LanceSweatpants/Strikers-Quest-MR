@@ -143,14 +143,18 @@ final class Cmpr {
         out[o + 2] = (b << 3) | (b >> 2);
     }
 
-    /** kitres.mips: the next level (2 x 2 mean, summed first to last in rows, alpha cut at 128). */
+    /**
+     * kitres.mips: the next level (2 x 2 mean, alpha cut at 128). kitres's picture is laid out channel by channel in
+     * memory (np.concatenate of a transposed view keeps that order), so numpy's mean((1, 3)) adds each row's pair first:
+     * (a + b) + (c + d) (checked against Blender's numpy on a kit's levels; 1.16: two of 410 kits needed it).
+     */
     static float[] half(float[] p, int w, int h) {
         final int nw = w / 2, nh = h / 2;
         final float[] q = new float[nw * nh * 4];
         for (int y = 0; y < nh; y++)
             for (int x = 0; x < nw; x++) {
                 final int a = ((2 * y) * w + 2 * x) * 4, b = a + 4, c = a + w * 4, d = c + 4, o = (y * nw + x) * 4;
-                for (int ch = 0; ch < 4; ch++) q[o + ch] = (((p[a + ch] + p[b + ch]) + p[c + ch]) + p[d + ch]) / 4f;
+                for (int ch = 0; ch < 4; ch++) q[o + ch] = ((p[a + ch] + p[b + ch]) + (p[c + ch] + p[d + ch])) / 4f;
                 q[o + 3] = q[o + 3] >= 128f ? 255f : 0f;
             }
         return q;

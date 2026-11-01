@@ -21,6 +21,9 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
 // r94: one of those models is a shiny guest's sparkles (never the first): left out while the game skins
 // the character with an effect (shocked, frozen), which would paint its texture on them.
 bool PortGuestIsSparkleModel(const glModel* model);
+// r105 (Lance: "grovyle was WAY too small"): a guest's own size over its pack's (guests/limbs.txt
+// "<pack> size <scale>", a shiny pack takes its normal's), 1 = as built. The 3D evolution uses it too.
+float PortGuestSizeScale(const char* pack);
 
 // r77 (Lance: Diddy "just gliding" when he scored): the life-size scorer's copy is posed by hand
 // (xr_scorer.cpp), not by the character's own animation controller, so a guest posed from its own
@@ -29,6 +32,9 @@ bool PortGuestIsSparkleModel(const glModel* model);
 // one of the port's own dances (which only move the Strikers bones): the guest's own celebration,
 // `celebrateSeconds` in. active false after the draw.
 void PortGuestScorerPose(bool active, const cSAnim* clip, float normTime, float celebrateSeconds);
+// r124: Spider-Man's web shots on the life-size scorer since the last call (his web move's wrist flicks), in the copy's
+// game space: 6 floats each (the wrist, then the way the web flies, not unit length). Returns how many (up to max).
+int PortGuestTakeWebShots(float* out, int max);
 
 // r102 (Lance: Bowser Jr. "gliding across the field upon goals scored"): what a drawn character's pose (its
 // DrawableCharacter's accumulator, `acc`) came from, for a guest posed from its own clips. Live: the
@@ -75,6 +81,15 @@ void PortGuestSetShiny(int side, bool shiny);
 // the Strikers captain of that class itself) and whether it's shiny. Drawn, named, voiced and on its
 // own stats like a captain pick.
 void PortGuestSetCoCaptain(int side, int rosterIndex, bool shiny);
+// r130 (Lance: "let ANY spot be ANY character"): what a sidekick slot's own pick plays as (include/port/lineup.h):
+// the eTeamID of the captain class it wants (a Strikers captain picked for it, PORT_GUEST_ORIGINAL + team: its own,
+// *mayMove 0; a guest captain: its base, *mayMove 1, it takes the nearest free one when that's taken), or -1: the
+// team's sidekick class (a Strikers or Charged sidekick, none). PickWant from a pick value (any of PortGuestSetSlotPicks'),
+// SlotWant from slot `slot` (0-2) of `side` (its team's own pick in the current mode; online the match setup's).
+int PortGuestPickWant(int pick, int* mayMove);
+int PortGuestSlotWant(int side, int slot, int* mayMove);
+// r130: a guest's captain slot from its base: the base when free, else the nearest free captain (kSlotOrder); -1 none.
+int PortGuestSlotForBase(int base, const bool freeCaptains[8]);
 // The guest a team (its captain eTeamID) has in the current mode for a role: roster index or -1.
 int PortGuestGetPick(int captainTeam, int role);
 void PortGuestSetPick(int captainTeam, int role, int index);  // -1 = original, -2 = inherit guests.txt
@@ -82,7 +97,8 @@ void PortGuestClearPicks();                                     // every team of
 // Text keys of guest names (the localization table carries them, see PortGuestLocInject); 0 = no guest.
 unsigned long PortGuestLocTeamName(int captainTeam);
 unsigned long PortGuestLocSidekickName(int captainTeam, int sidekick);
-unsigned long PortGuestLocCoCaptainName(int side);  // r79: the side's co-captain guest (PortGuestSetCoCaptain)
+// r79: the side's co-captain guest (PortGuestSetCoCaptain); r130: any sidekick slot (0-2) playing a captain class
+unsigned long PortGuestLocSlotCaptainName(int side, int slot);
 unsigned long PortGuestLocName(int index);
 // r68b: "From <its game>" for a team whose captain is a guest (cup / tournament screens' line under
 // the captain's name, the Strikers captain's description there); 0 = none.
@@ -97,6 +113,8 @@ const char* PortGuestShownName(int side, int cls);
 // before the fielder is built from them).
 class FielderTweaks;
 void PortGuestApplyTweaks(int side, int cls, FielderTweaks* tweaks);
+// r130: the same for the player being made (its m_ID: a sidekick on its own slot's pick plays on that one's stats)
+void PortGuestApplyTweaksPlayer(int side, int cls, int playerId, FielderTweaks* tweaks);
 // r67b, online own stats: a guest's stats as its own headset reads them (PORT_GUEST_STATS values in
 // CharacterTweaks key order, `mask` the keys its file sets); 1 if any. Sent in the match message,
 // and on both headsets each side's guests play on what their own headset sent (SetOnlineStats,
@@ -116,10 +134,20 @@ int PortGuestLoadingPicture(const char* name, void* buf, unsigned long size);
 // r68: guest voices (src/platform/xr_guest_voice.cpp). The roster index of the guest playing class
 // `cls` for `side` (picks only), or -1.
 int PortGuestIndexFor(int side, int cls);
+// r130: the same for one player (cPlayer m_ID): each sidekick its own slot's pick
+int PortGuestIndexForPlayer(int side, int cls, int playerId);
 // r68, the announcer: the guest captaining `side` this match (roster index) or -1; and whether a
 // team (its Strikers captain eTeamID) has a guest captain in the current mode, picked or being
 // picked. A guest's name is never called in a Strikers captain's voice: those calls stay silent.
 int PortGuestCaptainFor(int side);
+// r130: the sidekick menu's "your own captain": the captain just picked on this screen (else PortGuestCaptainFor)
+int PortGuestMenuCaptainFor(int side);
+// r130: the cup / tournament screens' captain for `side` (eTeamID) while its sidekicks are picked (the Friendly's
+// screen says it through PortGuestCaptainChosen)
+void PortGuestPickerCaptainIs(int side, int team);
+// r130: the Strikers captains (a bit per eTeamID) `side`'s sidekick slots can't have, as known on the menu: this side's
+// captain, the other side's once picked on this screen (and its slots' Strikers captains), both Grudge co-captains.
+unsigned PortGuestSlotCaptainsTaken(int side);
 bool PortGuestTeamHasGuestCaptain(int captainTeam);
 // r68b: the same by the game's team name (GetTeamName: "mario", "donkeykong" ...): the pick screens'
 // team logo (a Strikers captain's emblem) is hidden for a guest captain.
@@ -176,12 +204,34 @@ enum
 {
     PORT_GUEST_ORIGINAL = 1000,
     PORT_GUEST_ORIGINAL_SIDEKICK = 1100,
+    PORT_GUEST_TRIO = 1200,  // r130: + the eSidekickID the three sidekicks picked on the menu play as
 };
 bool PortGuestPickerCaptainFree(int team);  // as the screen choosing offers it (the other side's taken)
 void PortGuestPickerOffer(int side, int role, const bool freeCaptains[8]);
 bool PortGuestPickerOffered(int* side, int* role);  // offered within the last few frames
 void PortGuestPickerCommit(int side, int role, int index);
 bool PortGuestPickerTake(int side, int role, int* index);
+// r130 (Lance: "you can have anybody play a sidekick now"): the menu's three sidekick picks (roster indexes of any role,
+// PORT_GUEST_ORIGINAL + eTeamID a Strikers captain, -1 the Strikers sidekick; slots before firstSlot are the
+// co-captain's) go to the pick screen as one pick,
+// PORT_GUEST_TRIO + the sidekick class they play as; its confirm (PortGuestSidekickChosen) gives each slot its own.
+void PortGuestPickerCommitTrio(int side, const int picks[3], int firstSlot, int sidekickClass);
+// A team's three sidekick slots' own picks (picks null: none, the team's one sidekick pick for all three, as before).
+// r130: a pick is a roster index (any role), PORT_GUEST_ORIGINAL + eTeamID (a Strikers captain: its own class), or
+// anything else = the Strikers sidekick.
+void PortGuestSetSlotPicks(int captainTeam, const int* picks, int firstSlot);
+// r130: one of them in the current mode (slot 1-3 = cPlayer m_ID): a roster index, PORT_GUEST_ORIGINAL + eTeamID, -1 the
+// Strikers sidekick, PORT_GUEST_INHERIT none (the team's one sidekick pick). The online match setup carries them (Game.cpp).
+int PortGuestGetSlotPick(int captainTeam, int slot);
+// r130, online: a side's three sidekick slots as the match setup carried them (both headsets the same): kinds[k] 0 none
+// (the side's one sidekick pick), 1 the Strikers sidekick, 2 a guest of any role by pack (one this headset lacks: drawn
+// as the slot's own class, logged), 3 a Strikers captain (wants[k]: its eTeamID), on the stats its own headset sent
+// (masks: the keys set). This match's players use them online (until PortGuestClearOnlineStats); also kept as the team's
+// slot picks (PortGuestSetSlotPicks). The classes they play: include/port/lineup.h PortSetSlotCaptains.
+void PortGuestSetOnlineSlots(int side, int captainTeam, const unsigned char kinds[3], const int wants[3],
+                             const char packs[3][24], const float stats[3][PORT_GUEST_STATS], const unsigned masks[3]);
+// A sidekick slot's (m_ID 1-3) shiny this match (franchise members).
+void PortGuestSetSlotShiny(int side, int playerId, bool shiny);
 // The Strikers slot a guest plays in: its own base when free, else the nearest free captain; -1 none.
 int PortGuestSlotFor(int index, const bool freeCaptains[8]);
 void PortGuestCaptainChosen(int side, int team);

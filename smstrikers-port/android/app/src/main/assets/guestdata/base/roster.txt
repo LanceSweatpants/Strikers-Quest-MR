@@ -94,3 +94,185 @@ pk_scizor	captain	luigi	Scizor	Colosseum	franchise	pk_scyther
 pk_houndoom	captain	yoshi	Houndoom	Colosseum	franchise	pk_houndour
 pk_metang	captain	waluigi	Metang	Colosseum	franchise	pk_beldum
 pk_metagross	captain	donkeykong	Metagross	Colosseum	franchise	pk_metang
+mua_ghostrider	captain	luigi	Ghost Rider	Ultimate Alliance
+mua_drstrange	captain	luigi	Dr. Strange	Ultimate Alliance
+mua_spiderman	captain	yoshi	Spider-Man	Ultimate Alliance
+mua_blade	captain	wario	Blade	Ultimate Alliance
+mua_spiderwoman	captain	yoshi	Spider-Woman	Ultimate Alliance
+mua_iceman	captain	luigi	Iceman	Ultimate Alliance
+mua_wolverine	captain	wario	Wolverine	Ultimate Alliance
+mua_colossus	captain	mario	Colossus	Ultimate Alliance
+mua_captainamerica	captain	mario	Captain America	Ultimate Alliance
+mua_elektra	captain	yoshi	Elektra	Ultimate Alliance
+mua_ghostrider_c2	captain	luigi	Ghost Rider II	Ultimate Alliance	franchise	mua_ghostrider
+mua_ghostrider_c3	captain	luigi	Ghost Rider III	Ultimate Alliance	franchise	mua_ghostrider_c2
+mua_ghostrider_c4	captain	luigi	Ghost Rider IV	Ultimate Alliance	franchise	mua_ghostrider_c3
+mua_drstrange_c2	captain	luigi	Dr. Strange II	Ultimate Alliance	franchise	mua_drstrange
+mua_drstrange_c3	captain	luigi	Dr. Strange III	Ultimate Alliance	franchise	mua_drstrange_c2
+mua_drstrange_c4	captain	luigi	Dr. Strange IV	Ultimate Alliance	franchise	mua_drstrange_c3
+mua_spiderman_c2	captain	yoshi	Spider-Man II	Ultimate Alliance	franchise	mua_spiderman
+mua_spiderman_c3	captain	yoshi	Spider-Man III	Ultimate Alliance	franchise	mua_spiderman_c2
+mua_spiderman_c4	captain	yoshi	Spider-Man IV	Ultimate Alliance	franchise	mua_spiderman_c3
+mua_blade_c2	captain	wario	Blade II	Ultimate Alliance	franchise	mua_blade
+mua_blade_c3	captain	wario	Blade III	Ultimate Alliance	franchise	mua_blade_c2
+mua_blade_c4	captain	wario	Blade IV	Ultimate Alliance	franchise	mua_blade_c3
+mua_spiderwoman_c2	captain	yoshi	Spider-Woman II	Ultimate Alliance	franchise	mua_spiderwoman
+mua_spiderwoman_c3	captain	yoshi	Spider-Woman III	Ultimate Alliance	franchise	mua_spiderwoman_c2
+mua_spiderwoman_c4	captain	yoshi	Spider-Woman IV	Ultimate Alliance	franchise	mua_spiderwoman_c3
+mua_iceman_c2	captain	luigi	Iceman II	Ultimate Alliance	franchise	mua_iceman
+mua_iceman_c3	captain	luigi	Iceman III	Ultimate Alliance	franchise	mua_iceman_c2
+mua_iceman_c4	captain	luigi	Iceman IV	Ultimate Alliance	franchise	mua_iceman_c3
+mua_wolverine_c2	captain	wario	Wolverine II	Ultimate Alliance	franchise	mua_wolverine
+mua_wolverine_c3	captain	wario	Wolverine III	Ultimate Alliance	franchise	mua_wolverine_c2
+mua_wolverine_c4	captain	wario	Wolverine IV	Ultimate Alliance	franchise	mua_wolverine_c3
+mua_colossus_c2	captain	mario	Colossus II	Ultimate Alliance	franchise	mua_colossus
+mua_colossus_c3	captain	mario	Colossus III	Ultimate Alliance	franchise	mua_colossus_c2
+mua_colossus_c4	captain	mario	Colossus IV	Ultimate Alliance	franchise	mua_colossus_c3
+mua_captainamerica_c2	captain	mario	Captain America II	Ultimate Alliance	franchise	mua_captainamerica
+mua_captainamerica_c3	captain	mario	Captain America III	Ultimate Alliance	franchise	mua_captainamerica_c2
+mua_captainamerica_c4	captain	mario	Captain America IV	Ultimate Alliance	franchise	mua_captainamerica_c3
+mua_elektra_c2	captain	yoshi	Elektra II	Ultimate Alliance	franchise	mua_elektra
+mua_elektra_c3	captain	yoshi	Elektra III	Ultimate Alliance	franchise	mua_elektra_c2
+mua_elektra_c4	captain	yoshi	Elektra IV	Ultimate Alliance	franchise	mua_elektra_c3
+mua_ironman	captain	luigi	Iron Man	Ultimate Alliance
+mua_thor	captain	luigi	Thor	Ultimate Alliance
+mua_deadpool	captain	luigi	Deadpool	Ultimate Alliance
+mua_blackpanther	captain	luigi	Black Panther	Ultimate Alliance
+mua_daredevil	captain	luigi	Daredevil	Ultimate Alliance
+mua_storm	captain	peach	Storm	Ultimate Alliance
+mua_thing	captain	donkeykong	Thing	Ultimate Alliance
+mua_humantorch	captain	luigi	Human Torch	Ultimate Alliance
+mua_hawkeye	captain	luigi	Hawkeye	Ultimate Alliance
+mua_blackwidow	captain	daisy	Black Widow	Ultimate Alliance
+mua_ironman_c2	captain	luigi	Iron Man II	Ultimate Alliance	franchise	mua_ironman
+mua_ironman_c3	captain	luigi	Iron Man III	Ultimate Alliance	franchise	mua_ironman_c2
+mua_ironman_c4	captain	luigi	Iron Man IV	Ultimate Alliance	franchise	mua_ironman_c3
+mua_thor_c2	captain	luigi	Thor II	Ultimate Alliance	franchise	mua_thor
+mua_thor_c3	captain	luigi	Thor III	Ultimate Alliance	franchise	mua_thor_c2
+mua_thor_c4	captain	luigi	Thor IV	Ultimate Alliance	franchise	mua_thor_c3
+mua_deadpool_c2	captain	luigi	Deadpool II	Ultimate Alliance	franchise	mua_deadpool
+mua_deadpool_c3	captain	luigi	Deadpool III	Ultimate Alliance	franchise	mua_deadpool_c2
+mua_deadpool_c4	captain	luigi	Deadpool IV	Ultimate Alliance	franchise	mua_deadpool_c3
+mua_blackpanther_c2	captain	luigi	Black Panther II	Ultimate Alliance	franchise	mua_blackpanther
+mua_blackpanther_c3	captain	luigi	Black Panther III	Ultimate Alliance	franchise	mua_blackpanther_c2
+mua_blackpanther_c4	captain	luigi	Black Panther IV	Ultimate Alliance	franchise	mua_blackpanther_c3
+mua_daredevil_c2	captain	luigi	Daredevil II	Ultimate Alliance	franchise	mua_daredevil
+mua_daredevil_c3	captain	luigi	Daredevil III	Ultimate Alliance	franchise	mua_daredevil_c2
+mua_daredevil_c4	captain	luigi	Daredevil IV	Ultimate Alliance	franchise	mua_daredevil_c3
+mua_storm_c2	captain	peach	Storm II	Ultimate Alliance	franchise	mua_storm
+mua_storm_c3	captain	peach	Storm III	Ultimate Alliance	franchise	mua_storm_c2
+mua_storm_c4	captain	peach	Storm IV	Ultimate Alliance	franchise	mua_storm_c3
+mua_thing_c2	captain	donkeykong	Thing II	Ultimate Alliance	franchise	mua_thing
+mua_thing_c3	captain	donkeykong	Thing III	Ultimate Alliance	franchise	mua_thing_c2
+mua_thing_c4	captain	donkeykong	Thing IV	Ultimate Alliance	franchise	mua_thing_c3
+mua_humantorch_c2	captain	luigi	Human Torch II	Ultimate Alliance	franchise	mua_humantorch
+mua_humantorch_c3	captain	luigi	Human Torch III	Ultimate Alliance	franchise	mua_humantorch_c2
+mua_humantorch_c4	captain	luigi	Human Torch IV	Ultimate Alliance	franchise	mua_humantorch_c3
+mua_hawkeye_c2	captain	luigi	Hawkeye II	Ultimate Alliance	franchise	mua_hawkeye
+mua_hawkeye_c3	captain	luigi	Hawkeye III	Ultimate Alliance	franchise	mua_hawkeye_c2
+mua_hawkeye_c4	captain	luigi	Hawkeye IV	Ultimate Alliance	franchise	mua_hawkeye_c3
+mua_blackwidow_c2	captain	daisy	Black Widow II	Ultimate Alliance	franchise	mua_blackwidow
+mua_blackwidow_c3	captain	daisy	Black Widow III	Ultimate Alliance	franchise	mua_blackwidow_c2
+mua_blackwidow_c4	captain	daisy	Black Widow IV	Ultimate Alliance	franchise	mua_blackwidow_c3
+pk_cyndaquil	captain	daisy	Cyndaquil	Colosseum
+pk_totodile	captain	mario	Totodile	Colosseum
+pk_chikorita	captain	daisy	Chikorita	Colosseum
+pk_abra	captain	peach	Abra	Colosseum
+pk_ralts	captain	peach	Ralts	Colosseum
+pk_larvitar	captain	mario	Larvitar	Colosseum
+pk_aron	captain	daisy	Aron	Colosseum
+pk_trapinch	captain	daisy	Trapinch	Colosseum
+pk_elekid	captain	mario	Elekid	Colosseum
+pk_psyduck	captain	mario	Psyduck	Colosseum
+pk_quilava	captain	daisy	Quilava	Colosseum	franchise	pk_cyndaquil
+pk_typhlosion	captain	luigi	Typhlosion	Colosseum	franchise	pk_quilava
+pk_croconaw	captain	mario	Croconaw	Colosseum	franchise	pk_totodile
+pk_feraligatr	captain	luigi	Feraligatr	Colosseum	franchise	pk_croconaw
+pk_bayleef	captain	daisy	Bayleef	Colosseum	franchise	pk_chikorita
+pk_meganium	captain	daisy	Meganium	Colosseum	franchise	pk_bayleef
+pk_kadabra	captain	luigi	Kadabra	Colosseum	franchise	pk_abra
+pk_alakazam	captain	luigi	Alakazam	Colosseum	franchise	pk_kadabra
+pk_kirlia	captain	luigi	Kirlia	Colosseum	franchise	pk_ralts
+pk_gardevoir	captain	luigi	Gardevoir	Colosseum	franchise	pk_kirlia
+pk_pupitar	captain	luigi	Pupitar	Colosseum	franchise	pk_larvitar
+pk_tyranitar	captain	donkeykong	Tyranitar	Colosseum	franchise	pk_pupitar
+pk_lairon	captain	daisy	Lairon	Colosseum	franchise	pk_aron
+pk_aggron	captain	luigi	Aggron	Colosseum	franchise	pk_lairon
+pk_vibrava	captain	yoshi	Vibrava	Colosseum	franchise	pk_trapinch
+pk_flygon	captain	donkeykong	Flygon	Colosseum	franchise	pk_vibrava
+pk_electabuzz	captain	mario	Electabuzz	Colosseum	franchise	pk_elekid
+pk_golduck	captain	luigi	Golduck	Colosseum	franchise	pk_psyduck
+pk_eevee	captain	daisy	Eevee	Colosseum
+pk_tyrogue	captain	mario	Tyrogue	Colosseum
+pk_mareep	captain	daisy	Mareep	Colosseum
+pk_teddiursa	captain	peach	Teddiursa	Colosseum
+pk_lotad	captain	daisy	Lotad	Colosseum
+pk_seedot	captain	mario	Seedot	Colosseum
+pk_shroomish	captain	mario	Shroomish	Colosseum
+pk_slakoth	captain	daisy	Slakoth	Colosseum
+pk_makuhita	captain	mario	Makuhita	Colosseum
+pk_whismur	captain	daisy	Whismur	Colosseum
+pk_meditite	captain	mario	Meditite	Colosseum
+pk_cacnea	captain	daisy	Cacnea	Colosseum
+pk_nidoranm	captain	daisy	Nidoran M	Colosseum
+pk_nidoranf	captain	daisy	Nidoran F	Colosseum
+pk_kabuto	captain	daisy	Kabuto	Colosseum
+pk_anorith	captain	mario	Anorith	Colosseum
+pk_wooper	captain	mario	Wooper	Colosseum
+pk_smoochum	captain	peach	Smoochum	Colosseum
+pk_sandshrew	captain	luigi	Sandshrew	Colosseum
+pk_slowpoke	captain	daisy	Slowpoke	Colosseum
+mua_invisiblewoman	captain	peach	Invisible Woman	Ultimate Alliance
+mua_moonknight	captain	luigi	Moon Knight	Ultimate Alliance
+mua_mrfantastic	captain	luigi	Mr. Fantastic	Ultimate Alliance
+mua_nickfury	captain	luigi	Nick Fury	Ultimate Alliance
+mua_silversurfer	captain	luigi	Silver Surfer	Ultimate Alliance
+mua_msmarvel	captain	daisy	Ms. Marvel	Ultimate Alliance
+pk_vaporeon	captain	daisy	Vaporeon	Colosseum	franchise	pk_eevee
+pk_jolteon	captain	daisy	Jolteon	Colosseum	franchise	pk_eevee
+pk_flareon	captain	daisy	Flareon	Colosseum	franchise	pk_eevee
+pk_espeon	captain	daisy	Espeon	Colosseum	franchise	pk_eevee
+pk_umbreon	captain	daisy	Umbreon	Colosseum	franchise	pk_eevee
+pk_hitmonlee	captain	luigi	Hitmonlee	Colosseum	franchise	pk_tyrogue
+pk_hitmonchan	captain	luigi	Hitmonchan	Colosseum	franchise	pk_tyrogue
+pk_hitmontop	captain	luigi	Hitmontop	Colosseum	franchise	pk_tyrogue
+pk_flaaffy	captain	peach	Flaaffy	Colosseum	franchise	pk_mareep
+pk_ampharos	captain	luigi	Ampharos	Colosseum	franchise	pk_flaaffy
+pk_ursaring	captain	luigi	Ursaring	Colosseum	franchise	pk_teddiursa
+pk_lombre	captain	mario	Lombre	Colosseum	franchise	pk_lotad
+pk_ludicolo	captain	luigi	Ludicolo	Colosseum	franchise	pk_lombre
+pk_nuzleaf	captain	luigi	Nuzleaf	Colosseum	franchise	pk_seedot
+pk_shiftry	captain	daisy	Shiftry	Colosseum	franchise	pk_nuzleaf
+pk_breloom	captain	luigi	Breloom	Colosseum	franchise	pk_shroomish
+pk_vigoroth	captain	luigi	Vigoroth	Colosseum	franchise	pk_slakoth
+pk_slaking	captain	donkeykong	Slaking	Colosseum	franchise	pk_vigoroth
+pk_hariyama	captain	mario	Hariyama	Colosseum	franchise	pk_makuhita
+pk_loudred	captain	daisy	Loudred	Colosseum	franchise	pk_whismur
+pk_exploud	captain	luigi	Exploud	Colosseum	franchise	pk_loudred
+pk_medicham	captain	luigi	Medicham	Colosseum	franchise	pk_meditite
+pk_cacturne	captain	luigi	Cacturne	Colosseum	franchise	pk_cacnea
+pk_nidorino	captain	daisy	Nidorino	Colosseum	franchise	pk_nidoranm
+pk_nidoking	captain	daisy	Nidoking	Colosseum	franchise	pk_nidorino
+pk_nidorina	captain	daisy	Nidorina	Colosseum	franchise	pk_nidoranf
+pk_nidoqueen	captain	daisy	Nidoqueen	Colosseum	franchise	pk_nidorina
+pk_kabutops	captain	daisy	Kabutops	Colosseum	franchise	pk_kabuto
+pk_armaldo	captain	luigi	Armaldo	Colosseum	franchise	pk_anorith
+pk_quagsire	captain	luigi	Quagsire	Colosseum	franchise	pk_wooper
+pk_jynx	captain	peach	Jynx	Colosseum	franchise	pk_smoochum
+pk_sandslash	captain	luigi	Sandslash	Colosseum	franchise	pk_sandshrew
+pk_slowbro	captain	luigi	Slowbro	Colosseum	franchise	pk_slowpoke
+pk_slowking	captain	luigi	Slowking	Colosseum	franchise	pk_slowpoke
+mua_invisiblewoman_c2	captain	peach	Invisible Woman II	Ultimate Alliance	franchise	mua_invisiblewoman
+mua_invisiblewoman_c3	captain	peach	Invisible Woman III	Ultimate Alliance	franchise	mua_invisiblewoman_c2
+mua_invisiblewoman_c4	captain	peach	Invisible Woman IV	Ultimate Alliance	franchise	mua_invisiblewoman_c3
+mua_moonknight_c2	captain	luigi	Moon Knight II	Ultimate Alliance	franchise	mua_moonknight
+mua_moonknight_c3	captain	luigi	Moon Knight III	Ultimate Alliance	franchise	mua_moonknight_c2
+mua_mrfantastic_c2	captain	luigi	Mr. Fantastic II	Ultimate Alliance	franchise	mua_mrfantastic
+mua_mrfantastic_c3	captain	luigi	Mr. Fantastic III	Ultimate Alliance	franchise	mua_mrfantastic_c2
+mua_mrfantastic_c4	captain	luigi	Mr. Fantastic IV	Ultimate Alliance	franchise	mua_mrfantastic_c3
+mua_nickfury_c2	captain	luigi	Nick Fury II	Ultimate Alliance	franchise	mua_nickfury
+mua_nickfury_c3	captain	luigi	Nick Fury III	Ultimate Alliance	franchise	mua_nickfury_c2
+mua_nickfury_c4	captain	luigi	Nick Fury IV	Ultimate Alliance	franchise	mua_nickfury_c3
+mua_msmarvel_c2	captain	daisy	Ms. Marvel II	Ultimate Alliance	franchise	mua_msmarvel
+mua_msmarvel_c3	captain	daisy	Ms. Marvel III	Ultimate Alliance	franchise	mua_msmarvel_c2
+mua_msmarvel_c4	captain	daisy	Ms. Marvel IV	Ultimate Alliance	franchise	mua_msmarvel_c3

@@ -1418,9 +1418,13 @@ static void RenderBoundingSphere(const nlMatrix4& matWorld, f32 fRadius);
 int g_portCullTested = 0;
 int g_portCullDropped = 0;
 
+extern "C" void PortXrWorldRendered(void);
+
 void World::Render()
 {
     typedef nlAVLTreeIterator<unsigned long, DrawableObject*, DefaultKeyCompare<unsigned long> > DrawableIterator;
+
+    PortXrWorldRendered();  // strikers-quest r128: the home screen's VR suite stays off while the stadium is drawn
 
     int nSubmitted;
     int nDrawn;

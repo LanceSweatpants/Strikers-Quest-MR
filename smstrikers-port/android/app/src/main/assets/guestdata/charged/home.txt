@@ -1,0 +1,27 @@
+# r118 home-corner figures, made on the headset from the player's own Charged disc (guests/charged/Home.java; PC
+# original: tools/outside/charged_home.py CAST / HIDE_NODES / NIS_KEEP). Names and numbers only, no game data.
+# Tab-separated.
+# home <Charged character> <home pack (xr_quest.cpp home_pack_for)> <life-size height, m> [nodes left off, comma-separated]
+home	mario	strikers_mario	1.55
+home	luigi	strikers_luigi	1.78
+home	peach	strikers_peach	1.80
+home	daisy	strikers_daisy	1.75
+home	yoshi	strikers_yoshi	1.70
+home	donkeykong	strikers_donkeykong	2.00
+home	wario	strikers_wario	1.65
+home	waluigi	strikers_waluigi	2.00
+home	bowser	bowser	2.25
+home	bowserjr	bowserjr	1.20
+home	diddykong	diddykong	1.20	13,14
+home	petey	petey	2.25
+# the cut-scenes it does in the corner (Art/nis/<character>_<start><n>.nis; no Mega Strikes; the last two only for its
+# "upset" moves, a goal against you)
+keep	goal_winner_high_
+keep	goal_winner_low_
+keep	home_capt_intro_
+keep	away_capt_intro_
+keep	cup_win_home_
+keep	defeated_home_
+keep	outraged_home_
+# cut-scene numbers looked for after each start (_0 .. _9)
+tries	10

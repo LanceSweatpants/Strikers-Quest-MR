@@ -47,6 +47,7 @@ struct State {
   std::string id, name;  // this headset (the panel's player id and team name)
   int pick = -1;         // the panel's home captain (-1 = the one you play most)
   std::string pickGuest;  // r90: ... an imported one (its pack; pick = the class it plays as)
+  bool none = false;      // r134 (Lance: "they can choose (NONE) to have none"): the panel's NONE - no home ground
   int64_t pickMtime = 0;
   int uses[12] = {};     // r87: the Strikers captains' own games (an imported one's go in guestUses)
   std::map<std::string, GuestUses> guestUses;
@@ -227,9 +228,10 @@ void load() {
 void read_pick() {
   struct stat st {};
   if (stat(pick_path().c_str(), &st) != 0) {
-    if (s.pick != -1) {
+    if (s.pick != -1 || s.none) {
       s.pick = -1;
       s.pickGuest.clear();
+      s.none = false;
       ++s.generation;
     }
     return;
@@ -242,6 +244,13 @@ void read_pick() {
   if (FILE* f = std::fopen(pick_path().c_str(), "r")) {
     if (std::fscanf(f, "%63s", word) != 1) word[0] = '\0';
     std::fclose(f);
+  }
+  // r134: "none" = no home ground at all (the board, the banners, the corner, the shelf)
+  const bool none = std::strcmp(word, "none") == 0;
+  if (none != s.none) {
+    s.none = none;
+    ++s.generation;
+    HLOG("home ground: %s", none ? "none (switched off on the panel)" : "on");
   }
   int c = -1;
   std::string guest;
@@ -323,6 +332,23 @@ const char* captain_name(int c) {
 void init() {
   std::lock_guard<std::mutex> lock(g_mutex);
   ensure_loaded();
+}
+
+bool home_none() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return s.none;
+}
+
+void clear_none() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!s.none) return;
+  if (FILE* f = std::fopen(pick_path().c_str(), "w")) {  // automatic again: the captain you play most
+    std::fputs("-1\n", f);
+    std::fclose(f);
+  }
+  s.none = false;
+  s.pickMtime = 0;
+  ++s.generation;
 }
 
 void poll() {
@@ -407,6 +433,16 @@ void set_peer(const std::string& id, const std::string& name) {
     s.peerName = clean(name);
     if (!id.empty()) HLOG("online friend: %s (%s)", s.peerName.empty() ? "no name" : s.peerName.c_str(), id.c_str());
   }
+}
+
+bool in_match() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return s.inMatch;
+}
+
+int human_side() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return s.inMatch ? s.human : -1;
 }
 
 }  // namespace xrhome

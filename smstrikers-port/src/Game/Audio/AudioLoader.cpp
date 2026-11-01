@@ -1591,11 +1591,12 @@ void AudioLoader::SetupCharStadiumSoundTable()
             else if (pPlayer->IsCaptain())
             {
                 // strikers-quest r79: a co-captain (slot 1, include/port/lineup.h) on his own class's table - his
-                // voice and footsteps - not the team captain's (r78 gave him the captain's)
-                if (player == 1 && PortSecondCaptain(team) >= 0)
+                // voice and footsteps - not the team captain's (r78 gave him the captain's). r130: any sidekick slot
+                // playing a captain class.
+                const int slotCaptain = player >= 1 && player <= 3 ? PortSlotCaptain(team, player - 1) : -1;
+                if (slotCaptain >= 0 && slotCaptain == (int)pPlayer->m_eCharacterClass)
                 {
-                    pPlayer->m_pCharacterSFX->SetSFX(
-                        GetSoundPropTableFromPlayerStadium(stadium, (eCharacterClass)PortSecondCaptain(team)));
+                    pPlayer->m_pCharacterSFX->SetSFX(GetSoundPropTableFromPlayerStadium(stadium, (eCharacterClass)slotCaptain));
                 }
                 else if (team == 0)
                 {
@@ -2164,10 +2165,11 @@ bool AudioLoader::LoadInGameAudioData()
 
     // strikers-quest r78: each side's co-captain (include/port/lineup.h), a captain class in slot 1: its
     // voice group too, last (the secondary stack was made bigger for them, plataudio.cpp), so that if one
-    // doesn't fit only that co-captain is quiet.
-    for (int side = 0; side < 2; side++)
+    // doesn't fit only that co-captain is quiet. r130: every sidekick slot playing a captain class (up to six).
+    for (int i = 0; i < 6; i++)
     {
-        const int cls = PortSecondCaptain(side);
+        const int side = i / 3;
+        const int cls = PortSlotCaptain(side, i % 3);
         int group = -1;
         switch (cls)
         {
@@ -2184,9 +2186,10 @@ bool AudioLoader::LoadInGameAudioData()
         if (group < 0 || AudioLoader::IsSoundGroupLoaded(group, 1) || gbDisableAudio || !AudioLoader::IsInited())
             continue;
         if (!PlatAudio::LoadSoundGroup(sebringAudioFileData, group, 1, true))
-            OSReport("[audio] the co-captain's sound group %d (side %d) did not fit on the secondary stack\n", group, side);
+            OSReport("[audio] slot %d's captain sound group %d (side %d) did not fit on the secondary stack\n", i % 3 + 1,
+                     group, side);
         else
-            OSReport("[audio] the co-captain's sound group %d (side %d) loaded\n", group, side);
+            OSReport("[audio] slot %d's captain sound group %d (side %d) loaded\n", i % 3 + 1, group, side);
     }
 
     return true;

@@ -201,6 +201,9 @@ std::vector<Kind> kinds()
         const int idx = PortGuestRosterAt(PORT_GUEST_SIDEKICK, i);
         if (idx < 0)
             continue;
+        // r130: the Strikers captains as sidekicks (cap_<name>) are picks of your own, never a club's sidekick kind
+        if (strncmp(PortGuestRosterPack(idx), "cap_", 4) == 0)
+            continue;
         Kind k;
         k.key = PortGuestRosterPack(idx);
         k.name = std::string(PortGuestRosterName(idx)) + "s";
@@ -211,10 +214,120 @@ std::vector<Kind> kinds()
     return out;
 }
 
+// r116: a sidekick kind's portrait key (the Strikers ones are strikers_<name>, Hammer Bro without the s)
+std::string kind_portrait(const std::string& kind)
+{
+    for (int k = 0; k < 4; k++)
+        if (kind == kSkKey[k])
+            return k == 2 ? std::string("strikers_hammerbro") : std::string("strikers_") + kSkKey[k];
+    return kind;
+}
+
 int rating(const std::string& key)
 {
     std::unordered_map<std::string, int>::const_iterator it = s_rating.find(key);
     return it != s_rating.end() ? it->second : 75;
+}
+
+// ------------------------------------------------------------------- r131: one character, one club
+// (Lance: "Make it so that each character is only chosen once per franchise. you as the 1UP in single player, you pick
+// first, and the league forms around your picks, never duplicating. even if that means mad teams of 4 captains".)
+// A character = its whole evolution line (a Pokemon's forms, a Marvel hero's costumes), keyed by its first form; packs
+// shown under the same name are one character too (two games' copies of one). The Strikers sidekicks (Toads, Koopas,
+// Hammer Bros, Birdos) are no characters: any club can field them.
+bool generic_kind(const std::string& key)
+{
+    for (int k = 0; k < 4; k++)
+        if (key == kSkKey[k])
+            return true;
+    return false;
+}
+
+// r131: a key's first form (evolutions.txt backwards, else the roster's "evolves from")
+std::string char_root(const std::string& key)
+{
+    std::string k = key.compare(0, 4, "cap_") == 0 ? "strikers_" + key.substr(4) : key;  // (r130's first-take packs)
+    for (int guard = 0; guard < 12; guard++)
+    {
+        std::string prev;
+        for (size_t i = 0; i < s_evos.size() && prev.empty(); i++)
+            if (s_evos[i].to == k)
+                prev = s_evos[i].from;
+        if (prev.empty())
+        {
+            const int idx = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, k.c_str());
+            const char* from = idx >= 0 ? PortGuestRosterEvolvesFrom(idx) : NULL;
+            if (from != NULL && from[0] != '\0')
+                prev = from;
+        }
+        if (prev.empty() || prev == k)
+            break;
+        k = prev;
+    }
+    return k;
+}
+
+// r131: the name a key is shown under ("" one this headset doesn't have)
+std::string char_name(const std::string& key)
+{
+    for (int t = 0; t < 8; t++)
+        if (key == std::string("strikers_") + kTeamKey[t])
+            return kTeamName[t];
+    int idx = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, key.c_str());
+    if (idx < 0)
+        idx = PortGuestRosterFindAny(PORT_GUEST_SIDEKICK, key.c_str());
+    const char* n = idx >= 0 ? PortGuestRosterName(idx) : NULL;
+    return n != NULL ? std::string(n) : std::string();
+}
+
+// r131: the character a player key is ("" none: no key, a generic Strikers sidekick kind). Cached once its first form
+// has a name here (a pack this headset lacks is asked again: the converter may add it).
+std::string char_id(const std::string& key)
+{
+    if (key.empty() || key == "-" || generic_kind(key))
+        return std::string();
+    static std::unordered_map<std::string, std::string> s_ids;
+    std::unordered_map<std::string, std::string>::const_iterator it = s_ids.find(key);
+    if (it != s_ids.end())
+        return it->second;
+    read_data();
+    const std::string root = char_root(key);
+    const std::string name = char_name(root);
+    std::string id;
+    for (size_t i = 0; i < name.size(); i++)
+    {
+        const char ch = name[i];
+        if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+            id += ch;
+        else if (ch >= 'A' && ch <= 'Z')
+            id += (char)(ch - 'A' + 'a');
+    }
+    if (id.empty())
+        return root;
+    id = "n:" + id;
+    s_ids[key] = id;
+    return id;
+}
+
+// r131: a Charged sidekick guest (Boo ...): a character, but it may fill several of one club's sidekick slots (as a club's
+// kind does)
+bool sk_guest(const std::string& key)
+{
+    return !key.empty() && PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, key.c_str()) < 0 &&
+           PortGuestRosterFindAny(PORT_GUEST_SIDEKICK, key.c_str()) >= 0;
+}
+
+// r131: a character select menu pick as a player key: strikers_<name>, a guest's pack ("" a Strikers sidekick, none)
+std::string pick_key(int pick)
+{
+    if (pick >= PORT_GUEST_ORIGINAL && pick < PORT_GUEST_ORIGINAL + 8)
+        return std::string("strikers_") + kTeamKey[pick - PORT_GUEST_ORIGINAL];
+    if (pick >= 0 && pick < PORT_GUEST_ORIGINAL)
+    {
+        const char* p = PortGuestRosterPack(pick);
+        return p != NULL ? std::string(p) : std::string();
+    }
+    return std::string();
 }
 
 // ------------------------------------------------------------------------------------------- careers
@@ -258,6 +371,12 @@ struct ClubState
     Prog cap, bk, side;           // r70c: the captain, the backup, the sidekicks (as a group)
     PStats capSt, bkSt, sk[3];    // r71: the captain, the backup, each named sidekick
     int skAge[3];                 // r71: seasons played (sidekicks retire; rookies take their place)
+    // r130 (Lance: "you can have anybody play a sidekick now ... 4 different levels for 4 different people for 4 different
+    // rewards"): each sidekick slot a member of its own: "" the club's generic sidekick of `kind` (names[k], the group's
+    // level), else a character key (a Pokemon, a hero, a Melee fighter, a Charged character) with its own level, its own
+    // evolutions / costumes and its own shiny (mp[k])
+    std::string mem[3];
+    Prog mp[3];
     int streak;                   // r71: + wins in a row / - losses in a row
 };
 struct Game
@@ -356,6 +475,36 @@ bool is_human(const Career& c, int club)
 
 // r100: whose nemesis `n` is (an online league member's club; the career's own player otherwise)
 int nem_owner(const Career& c, const Nemesis& n) { return n.owner >= 0 ? n.owner : c.myClub; }
+
+// r131: the characters a club holds: its captain and backup, its sidekick members, a Charged sidekick guest as its kind
+void club_ids(const ClubState& s, std::vector<std::string>& out)
+{
+    const std::string* keys[6] = {&s.captain, &s.backup, &s.mem[0], &s.mem[1], &s.mem[2], &s.kind};
+    for (int k = 0; k < 6; k++)
+    {
+        const std::string id = char_id(*keys[k]);
+        if (!id.empty())
+            out.push_back(id);
+    }
+}
+
+// r131: the club holding character `id` other than `except` (-1 none)
+int holder_of(const Career& c, const std::string& id, int except)
+{
+    if (id.empty())
+        return -1;
+    std::vector<std::string> ids;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        if (i == except)
+            continue;
+        ids.clear();
+        club_ids(c.clubs[i], ids);
+        if (std::find(ids.begin(), ids.end(), id) != ids.end())
+            return i;
+    }
+    return -1;
+}
 
 // r100: online leagues (below, before PortFranchiseFrame)
 bool in_league();
@@ -545,6 +694,15 @@ bool write_career(const Career& c, const std::string& path)
                 s.cap.declinedAt, s.bk.level, s.bk.xp, s.bk.shiny ? 1 : 0, s.bk.declinedAt, s.side.level, s.side.xp,
                 s.side.shiny ? 1 : 0, s.side.declinedAt);
         fprintf(f, "pstart %d %d %d %d\n", i, s.cap.startLevel, s.bk.startLevel, s.side.startLevel);  // r77
+        if (!s.mem[0].empty() || !s.mem[1].empty() || !s.mem[2].empty())  // r130: its sidekick members
+        {
+            fprintf(f, "mem %d %s %s %s\n", i, s.mem[0].empty() ? "-" : s.mem[0].c_str(), s.mem[1].empty() ? "-" : s.mem[1].c_str(),
+                    s.mem[2].empty() ? "-" : s.mem[2].c_str());
+            fprintf(f, "mprog %d", i);
+            for (int k = 0; k < 3; k++)
+                fprintf(f, " %d %d %d %d %d", s.mp[k].level, s.mp[k].xp, s.mp[k].shiny ? 1 : 0, s.mp[k].declinedAt, s.mp[k].startLevel);
+            fprintf(f, "\n");
+        }
     }
     for (size_t i = 0; i < c.news.size(); i++)
         fprintf(f, "news %s\n", c.news[i].c_str());
@@ -657,9 +815,12 @@ bool load_path(const std::string& path, int slot, Career* out)
         init_prog(c.clubs[i].cap);  // (r70 / r70b saves have none: everyone at Lv 8)
         init_prog(c.clubs[i].bk);
         init_prog(c.clubs[i].side);
+        for (int k = 0; k < 3; k++)  // r130
+            init_prog(c.clubs[i].mp[k]);
     }
     init_life(c);
     bool hadLife = false;
+    bool hadMprog[PORT_FR_CLUBS] = {};  // r130: older saves: members start at the sidekicks' level
     char line[512];
     bool ok = false;
     while (fgets(line, sizeof line, f) != NULL)
@@ -748,6 +909,36 @@ bool load_path(const std::string& path, int slot, Career* out)
                     p[k]->shiny = v[k * 4 + 2] != 0;
                     p[k]->declinedAt = v[k * 4 + 3];
                 }
+            }
+        }
+        else if (strncmp(line, "mem ", 4) == 0)  // r130
+        {
+            int i = -1;
+            char a[64], b[64], d[64];
+            if (sscanf(line + 4, "%d %63s %63s %63s", &i, a, b, d) == 4 && i >= 0 && i < PORT_FR_CLUBS)
+            {
+                const char* m[3] = {a, b, d};
+                for (int k = 0; k < 3; k++)
+                    c.clubs[i].mem[k] = strcmp(m[k], "-") == 0 ? std::string() : std::string(m[k]);
+            }
+        }
+        else if (strncmp(line, "mprog ", 6) == 0)  // r130
+        {
+            int i = -1, v[15];
+            if (sscanf(line + 6, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &i, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+                       &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14]) == 16 &&
+                i >= 0 && i < PORT_FR_CLUBS)
+            {
+                for (int k = 0; k < 3; k++)
+                {
+                    Prog& p = c.clubs[i].mp[k];
+                    p.level = v[k * 5];
+                    p.xp = v[k * 5 + 1];
+                    p.shiny = v[k * 5 + 2] != 0;
+                    p.declinedAt = v[k * 5 + 3];
+                    p.startLevel = v[k * 5 + 4];
+                }
+                hadMprog[i] = true;
             }
         }
         else if (strncmp(line, "pstart ", 7) == 0)  // r77
@@ -900,6 +1091,10 @@ bool load_path(const std::string& path, int slot, Career* out)
     fclose(f);
     if (!ok || c.games.empty())
         return false;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)  // r130
+        if (!hadMprog[i])
+            for (int k = 0; k < 3; k++)
+                c.clubs[i].mp[k] = c.clubs[i].side;
     if (!hadLife)
         deal_life(c);  // r71: a career from before A-Life: personalities and ages dealt now
     if (slot == PORT_FR_COOP_SLOT)
@@ -1016,61 +1211,189 @@ std::string make_name(Career& c, const std::string& kind, int club, int k, std::
 struct MyPicks
 {
     std::string captain, backup, kind;
+    std::string mem[3];  // r131: your three sidekick members ("" a generic one of your kind)
     bool noBackup = false;
 };
 
+// r131: a CPU club's sidekick kind from its members (the class its generic sidekicks, and a member whose captain class is
+// taken in a match, play): a Charged sidekick guest member's own class, else the class most of them suit by build (as the
+// menu's: Yoshi -> Toad, Mario / Luigi -> Koopa, Wario / DK -> Hammer Bro, Peach / Daisy / Waluigi -> Birdo), else one at
+// random. Always a Strikers kind: the Charged sidekick guests are characters now, each on one club.
+std::string kind_for_members(Career& c, const std::string mem[3])
+{
+    static const int kByCaptain[8] = {3, 2, 1, 1, 3, 3, 2, 0};  // eTeamID daisy dk luigi mario peach waluigi wario yoshi
+    for (int k = 0; k < 3; k++)
+        if (sk_guest(mem[k]))
+        {
+            const int idx = PortGuestRosterFindAny(PORT_GUEST_SIDEKICK, mem[k].c_str());
+            const int b = idx >= 0 ? PortGuestRosterBase(idx) : -1;
+            if (b >= 0 && b < 4)
+                return kSkKey[b];
+        }
+    int votes[4] = {0, 0, 0, 0}, first = -1;
+    for (int k = 0; k < 3; k++)
+    {
+        if (mem[k].empty())
+            continue;
+        int team = -1;
+        for (int t = 0; t < 8; t++)
+            if (mem[k] == std::string("strikers_") + kTeamKey[t])
+                team = t;
+        if (team < 0)
+        {
+            const int idx = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, mem[k].c_str());
+            team = idx >= 0 ? PortGuestRosterBase(idx) : -1;
+        }
+        if (team < 0 || team >= 8)
+            continue;
+        votes[kByCaptain[team]]++;
+        if (first < 0)
+            first = kByCaptain[team];
+    }
+    if (first < 0)
+        return kSkKey[next_rand(c.rng) % 4];
+    int cls = first;
+    for (int v = 0; v < 4; v++)
+        if (votes[v] > votes[cls])
+            cls = v;
+    return kSkKey[cls];
+}
+
+// r70 / r131: a new career's players. r131 (Lance: "you pick first, and the league forms around your picks, never
+// duplicating. even if that means mad teams of 4 captains"): every character once (char_id). Yours (when you picked)
+// are never dealt; the rest - the unevolved captains (the Strikers ones and every guest's first form) and the Charged
+// sidekick guests - go to the other clubs in a snake by rating (up to 5 points of luck, so the tiers differ career to
+// career), round by round: the captains, the backup captains (both from the captains), then three sidekick members each
+// from anyone left (a club with a co-captain fills the two slots on the field first: its first slot sits). When the pool
+// runs out a club has no backup / generic sidekicks; with fewer captains than clubs (a roster with few or no guests) the
+// clubs left get a dealt captain again (never one of yours).
 void deal(Career& c, const MyPicks& mine = MyPicks())
 {
-    std::vector<Captain> caps = captains();
-    std::vector<Kind> ks = kinds();
+    const std::vector<Captain> caps = captains();
+    const std::vector<Kind> ks = kinds();
     const bool picked = !mine.captain.empty();
-    std::vector<int> order;
+    std::vector<std::string> seen;  // the characters taken (yours first)
+    if (picked)
+    {
+        const std::string* yours[6] = {&mine.captain, &mine.backup, &mine.mem[0], &mine.mem[1], &mine.mem[2], &mine.kind};
+        for (int k = 0; k < 6; k++)
+        {
+            const std::string id = char_id(*yours[k]);
+            if (!id.empty())
+                seen.push_back(id);
+        }
+    }
+    struct Cand
+    {
+        std::string key;
+        double score;
+        bool captain;  // can be a club's captain (else a Charged sidekick guest: a member only)
+    };
+    std::vector<Cand> pool;
+    auto add = [&](const std::string& key, bool captain) {
+        const std::string id = char_id(key);
+        if (id.empty() || std::find(seen.begin(), seen.end(), id) != seen.end())
+            return;
+        seen.push_back(id);
+        Cand cd;
+        cd.key = key;
+        cd.score = rating(key) + 5.0 * rand01(c.rng);
+        cd.captain = captain;
+        pool.push_back(cd);
+    };
     for (size_t i = 0; i < caps.size(); i++)
-        if (!caps[i].evolved && (!picked || (caps[i].key != mine.captain && caps[i].key != mine.backup)))
-            order.push_back((int)i);  // r70c: careers start with the unevolved Pokemon only; r75: not yours
+        if (!caps[i].evolved)  // r70c: careers start with the unevolved forms only
+            add(caps[i].key, true);
+    for (size_t i = 0; i < ks.size(); i++)
+        if (ks[i].guest >= 0)  // (the Strikers kinds are anybody's)
+            add(ks[i].key, false);
+    std::stable_sort(pool.begin(), pool.end(), [](const Cand& a, const Cand& b) { return a.score > b.score; });
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        ClubState& s = c.clubs[i];
+        s.captain.clear();
+        s.backup.clear();
+        s.kind.clear();
+        s.startsBackup = false;
+        s.wins = s.losses = s.goalsFor = s.goalsAgainst = 0;
+        init_prog(s.cap);
+        init_prog(s.bk);
+        init_prog(s.side);
+        for (int k = 0; k < 3; k++)  // r130: each member its own level (Lv 8, as everyone starts)
+        {
+            s.mem[k].clear();
+            init_prog(s.mp[k]);
+        }
+    }
+    if (picked)
+    {
+        ClubState& me = c.clubs[c.myClub];
+        me.captain = mine.captain;
+        me.backup = mine.noBackup ? std::string() : mine.backup;
+        me.kind = mine.kind;
+        for (int k = 0; k < 3; k++)
+            me.mem[k] = mine.mem[k];
+    }
+    std::vector<int> order;  // the clubs being dealt, in a random order
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        if (!picked || i != c.myClub)
+            order.push_back(i);
     for (int i = (int)order.size() - 1; i > 0; i--)
     {
         const int j = (int)(next_rand(c.rng) % (unsigned)(i + 1));
         std::swap(order[i], order[j]);
     }
-    size_t next = 0;  // the next dealt captain in `order`
+    std::vector<bool> used(pool.size(), false);
+    std::vector<std::string> dealtCaps;  // (for the repeats)
+    int counts[5] = {0, 0, 0, 0, 0}, repeats = 0;
+    const int n = (int)order.size();
+    for (int round = 0; round < 5; round++)
+        for (int j = 0; j < n; j++)
+        {
+            ClubState& s = c.clubs[order[round % 2 == 0 ? j : n - 1 - j]];  // the snake: the last pick picks first next
+            int at = -1;
+            for (size_t i = 0; i < pool.size() && at < 0; i++)
+                if (!used[i] && (round >= 2 || pool[i].captain))
+                    at = (int)i;
+            if (at < 0)
+            {
+                if (round == 0)  // 1.14: fewer captains than clubs: round the dealt ones again
+                {
+                    s.captain = dealtCaps.empty() ? std::string("strikers_mario") : dealtCaps[repeats % dealtCaps.size()];
+                    repeats++;
+                }
+                continue;
+            }
+            used[at] = true;
+            counts[round]++;
+            const std::string& key = pool[at].key;
+            if (round == 0)
+            {
+                s.captain = key;
+                dealtCaps.push_back(key);
+            }
+            else if (round == 1)
+                s.backup = key;
+            else  // members: with a co-captain (a backup) slots 2 and 3 first, then slot 1 (on the bench)
+                s.mem[s.backup.empty() ? round - 2 : (round - 1) % 3] = key;
+        }
+    for (int j = 0; j < n; j++)
+        c.clubs[order[j]].kind = kind_for_members(c, c.clubs[order[j]].mem);
     for (int i = 0; i < PORT_FR_CLUBS; i++)
     {
         ClubState& s = c.clubs[i];
-        const bool me = picked && i == c.myClub;
-        if (me)
-            s.captain = mine.captain;
-        else if (next < order.size())
-            s.captain = caps[order[next++]].key;
-        else  // 1.14: fewer captains than clubs (no guest games converted): round the dealt ones again
-            s.captain = order.empty() ? std::string("strikers_mario") : caps[order[i % order.size()]].key;
-        s.backup.clear();
-        s.startsBackup = false;
-        s.wins = s.losses = s.goalsFor = s.goalsAgainst = 0;
-        s.kind = ks.empty() ? std::string("toad") : ks[next_rand(c.rng) % ks.size()].key;
-        if (me && !mine.kind.empty())
-            s.kind = mine.kind;
-        init_prog(s.cap);
-        init_prog(s.bk);
-        init_prog(s.side);
-        std::vector<std::string> used;
+        if (s.kind.empty())
+            s.kind = ks.empty() ? std::string("toad") : ks[0].key;
+        std::vector<std::string> usedNames;  // (the generic names: a member's slot keeps one too, for when it leaves)
         for (int k = 0; k < 3; k++)
-            s.names[k] = make_name(c, s.kind, i, k, used);
+            s.names[k] = make_name(c, s.kind, i, k, usedNames);
     }
-    if (picked && !mine.noBackup && !mine.backup.empty())
-        c.clubs[c.myClub].backup = mine.backup;
-    // the rest: backup captains, to random clubs (no club gets two; r75: not yours when you picked)
-    std::vector<int> clubs;
-    for (int i = 0; i < PORT_FR_CLUBS; i++)
-        if (!picked || i != c.myClub)
-            clubs.push_back(i);
-    for (int i = (int)clubs.size() - 1; i > 0; i--)
-    {
-        const int j = (int)(next_rand(c.rng) % (unsigned)(i + 1));
-        std::swap(clubs[i], clubs[j]);
-    }
-    for (size_t k = next; k < order.size() && k - next < clubs.size(); k++)
-        c.clubs[clubs[k - next]].backup = caps[order[k]].key;
+    fprintf(stderr,
+            "[franchise] dealt %d of %d characters to %d clubs: %d captains (+%d again: too few), %d backups, %d + %d + %d "
+            "sidekick members\n",
+            counts[0] + counts[1] + counts[2] + counts[3] + counts[4], (int)pool.size(), n, counts[0], repeats, counts[1],
+            counts[2], counts[3], counts[4]);
+    fflush(stderr);
 }
 
 // ------------------------------------------------------------------------------------- simulating
@@ -1092,18 +1415,33 @@ const Prog& starter_prog(const ClubState& s)
     return (s.startsBackup && !s.backup.empty()) ? s.bk : s.cap;
 }
 
+// r131: the sidekicks on the field (slot 1 sits when a co-captain plays): each member its own rating and level, a
+// generic one the kind's (a club with no members: the kind's, as before)
+double sidekick_strength(const ClubState& s)
+{
+    double sum = 0.0;
+    int n = 0;
+    for (int k = 0; k < 3; k++)
+    {
+        if (k == 0 && !s.backup.empty())
+            continue;
+        sum += s.mem[k].empty() ? rating(s.kind) + 0.25 * (s.side.level - 8) : rating(s.mem[k]) + 0.25 * (s.mp[k].level - 8);
+        n++;
+    }
+    return n > 0 ? sum / n : rating(s.kind) + 0.25 * (s.side.level - 8);
+}
+
 // r70c: a quarter point of strength a level over 8 (an evolution brings its own, better card)
 double strength(const ClubState& s)
 {
     if (s.backup.empty())
-        return 0.62 * (rating(starter(s)) + 0.25 * (starter_prog(s).level - 8)) +
-               0.38 * (rating(s.kind) + 0.25 * (s.side.level - 8));
+        return 0.62 * (rating(starter(s)) + 0.25 * (starter_prog(s).level - 8)) + 0.38 * sidekick_strength(s);  // r131
     // r78: both captains on the field (the co-captain in a sidekick's spot)
     const bool bs = s.startsBackup;
     const std::string& other = bs ? s.captain : s.backup;
     const Prog& otherProg = bs ? s.cap : s.bk;
     return 0.38 * (rating(starter(s)) + 0.25 * (starter_prog(s).level - 8)) +
-           0.32 * (rating(other) + 0.25 * (otherProg.level - 8)) + 0.30 * (rating(s.kind) + 0.25 * (s.side.level - 8));
+           0.32 * (rating(other) + 0.25 * (otherProg.level - 8)) + 0.30 * sidekick_strength(s);
 }
 
 // r70c: experience from a game: a win 70, a loss 40, 8 a goal; playoff games half as much again. The
@@ -1145,6 +1483,8 @@ void award_xp(Career& c, const Game& g)
         if (!s.backup.empty())
             gain(s.bk, xp);
         gain(s.side, xp);
+        for (int k = 0; k < 3; k++)  // r130: each sidekick member its own (a co-captain's slot 1: on the bench, half)
+            gain(s.mp[k], k == 0 && !s.backup.empty() && !s.mem[0].empty() ? xp / 2 : xp);
     }
 }
 
@@ -1423,6 +1763,7 @@ std::string club_name(int club) { return s_clubs[club].place + " " + s_clubs[clu
 
 // ------------------------------------------------------------------------------------ r71: A-Life
 std::string name_of(const std::string& key);
+std::string sk_name(const ClubState& s, int k);  // r130: a sidekick slot's name: its member's, else the generic one
 
 // A simulated game's goals given to its scorers: the captain about 4 in 10, the sidekicks the rest. r78:
 // a club with a backup captain fields both (the co-captain, 4): about 3 in 10 the starter, 2.5 the
@@ -1547,7 +1888,7 @@ void life_game(Career& c, const Game& g, const int scorers[2][kScorerSlots])
         PStats* who[kScorerSlots] = {backupStarts ? &s.bkSt : &s.capSt, &s.sk[0], &s.sk[1], &s.sk[2],
                                      backupStarts ? &s.capSt : &s.bkSt};
         const std::string capName = name_of(backupStarts ? s.backup : s.captain);
-        const std::string names[kScorerSlots] = {capName, s.names[0], s.names[1], s.names[2],
+        const std::string names[kScorerSlots] = {capName, sk_name(s, 0), sk_name(s, 1), sk_name(s, 2),
                                                  two ? name_of(backupStarts ? s.captain : s.backup) : std::string()};
         const std::string place = upper(s_clubs[club].place), otherPlace = s_clubs[other].place;
         for (int k = 0; k < kScorerSlots; k++)
@@ -1681,11 +2022,26 @@ void nem_log(Nemesis& n, const std::string& line)
         n.log.resize(6);
 }
 
-// The beef grows (or cools); past 35 they become your nemesis, with a title from how it started.
+// r114 (Lance: "can we turn up the nemesis system for the second difficulty ... 14 games into a season on the
+// first save and i have yet to encounter a nemesis interaction"): the beef it takes to become your nemesis and
+// to move on, by difficulty (Rookie as it was: 35 / 20; Pro 26 / 12, Superstar 22 / 10, Legend 18 / 8).
+int nem_threshold(const Career& c)
+{
+    static const int k[4] = {35, 26, 22, 18};
+    return k[diff_k(c)];
+}
+int nem_cool_below(const Career& c)
+{
+    static const int k[4] = {20, 12, 10, 8};
+    return k[diff_k(c)];
+}
+
+// The beef grows (or cools); past nem_threshold (35 on Rookie) they become your nemesis, with a title from how
+// it started.
 void add_heat(Career& c, Nemesis& n, int delta, int titleHint, const std::string& why)
 {
     n.heat = std::max(0, std::min(100, n.heat + delta));
-    if (!n.active && n.heat >= 35)
+    if (!n.active && n.heat >= nem_threshold(c))
     {
         n.active = true;
         n.rank = std::max(n.rank, 1);
@@ -1703,7 +2059,7 @@ void add_heat(Career& c, Nemesis& n, int delta, int titleHint, const std::string
         fprintf(stderr, "[franchise] nemesis: %s %s (%s)\n", n.name.c_str(), kTitles[n.title], why.c_str());
         fflush(stderr);
     }
-    else if (n.active && n.heat < 20)
+    else if (n.active && n.heat < nem_cool_below(c))
     {
         n.active = false;
         c.news.push_back(upper(n.name) + " HAS MOVED ON (FOR NOW)");
@@ -1777,6 +2133,9 @@ void nemesis_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], 
         why = "LOST TO YOU " + std::to_string(mine) + "-" + std::to_string(theirs);
     if (margin == 1 || margin == -1 || g.overtime)
         d += 6;  // a real contest
+    // r114: on Pro and up the clubs you beat don't forget either (+8 Pro, +10 Superstar, +12 Legend)
+    if (margin < 0 && diff_k(c) > 0)
+        d += 6 + 2 * diff_k(c);
     d += 8 * ss[m];
     d += 4 * capHits[o] + 3 * capHits[m] + anyHits[o];
     if (capHits[o] >= 2)
@@ -1844,7 +2203,7 @@ void nemesis_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], 
     for (int k = 1; k < 4; k++)
         if (scorers[o][k] >= 2)
         {
-            const std::string sk = os.names[k - 1];
+            const std::string sk = sk_name(os, k - 1);  // r131: a member by its own name
             Nemesis& sn = nemesis_for(c, "sk#" + std::to_string(opp) + "#" + sk, sk, opp, false);
             s_metThisWeek.push_back(sn.key);
             add_heat(c, sn, 8 * scorers[o][k], nemesis_title_for(os.sk[k - 1].personality, T_SNIPER),
@@ -1875,9 +2234,10 @@ void teammates_week(Career& c, bool lost)
     for (int k = 0; k < 3; k++)
     {
         const bool wantsSpot = s.sk[k].seasonGoals >= cap.seasonGoals + 3 && s.sk[k].form >= 2;
-        if (!wantsSpot && !find_nemesis(c, "sk#" + std::to_string(me) + "#" + s.names[k]))
+        const std::string skn = sk_name(s, k);  // r131: a member by its own name
+        if (!wantsSpot && !find_nemesis(c, "sk#" + std::to_string(me) + "#" + skn))
             continue;
-        Nemesis& n = nemesis_for(c, "sk#" + std::to_string(me) + "#" + s.names[k], s.names[k], me, true);
+        Nemesis& n = nemesis_for(c, "sk#" + std::to_string(me) + "#" + skn, skn, me, true);
         add_heat(c, n, wantsSpot ? 3 : -3, T_TRAITOR, "WANTS YOUR CAPTAIN'S SPOT");
     }
 }
@@ -1917,7 +2277,46 @@ double nemesis_edge(const Career& c, const Game& g, int side)
     return 0.3 * trait_count(n->traits) * (1.0 + 0.35 * diff_k(c));  // r97: more on the harder difficulties
 }
 
-// Every week: those you didn't meet cool off a little (the history stays).
+// r114: on Pro and up a rivalry doesn't wait all season: past week 3 (Superstar 2, Legend 1) with no nemesis on,
+// the hottest beef calls you out (the one you play within 3 weeks first) and becomes your nemesis.
+void nemesis_callout(Career& c)
+{
+    const int k = diff_k(c);
+    if (k == 0 || c.phase != PHASE_REGULAR || c.week < 4 - k)
+        return;
+    const int me = nem_me(c);
+    for (size_t i = 0; i < c.nems.size(); i++)
+        if (c.nems[i].active && !c.nems[i].teammate && nem_owner(c, c.nems[i]) == me)
+            return;
+    std::vector<int> soon(PORT_FR_CLUBS, 999);  // the next week each club plays you
+    for (size_t i = 0; i < c.games.size(); i++)
+    {
+        const Game& g = c.games[i];
+        if (g.played || g.week <= c.week || (g.home != me && g.away != me))
+            continue;
+        const int o = g.home == me ? g.away : g.home;
+        soon[o] = std::min(soon[o], g.week);
+    }
+    Nemesis* best = NULL;
+    int bestScore = 0;
+    for (size_t i = 0; i < c.nems.size(); i++)
+    {
+        Nemesis& n = c.nems[i];
+        if (n.teammate || n.club < 0 || n.club >= PORT_FR_CLUBS || nem_owner(c, n) != me || n.heat <= 0)
+            continue;
+        const int score = n.heat + (soon[n.club] - c.week <= 3 ? 20 : 0);
+        if (score > bestScore)
+        {
+            best = &n;
+            bestScore = score;
+        }
+    }
+    if (best == NULL)
+        return;
+    add_heat(c, *best, nem_threshold(c) - best->heat, best->title, "CALLED YOU OUT");
+}
+
+// Every week: those you didn't meet cool off a little (the history stays). r114: half as fast on Pro and up.
 void nemesis_week(Career& c)
 {
     for (size_t i = 0; i < c.nems.size(); i++)
@@ -1926,9 +2325,18 @@ void nemesis_week(Career& c)
         if (n.teammate || std::find(s_metThisWeek.begin(), s_metThisWeek.end(), n.key) != s_metThisWeek.end())
             continue;
         if (n.heat > 0)
-            add_heat(c, n, -2, n.title, "");
+            add_heat(c, n, diff_k(c) > 0 ? -1 : -2, n.title, "");
     }
     s_metThisWeek.clear();
+    // r114: every person's club (an online league's each in turn)
+    for (int club = 0; club < PORT_FR_CLUBS; club++)
+    {
+        if (!is_human(c, club))
+            continue;
+        s_nemMe = club;
+        nemesis_callout(c);
+        s_nemMe = -1;
+    }
 }
 
 // The week's CPU club decisions: who starts (form), trades until the deadline (week 12): backup
@@ -1954,10 +2362,45 @@ void swap_sidekicks(Career& c, int a, int b)
         std::swap(x.names[k], y.names[k]);
         std::swap(x.sk[k], y.sk[k]);
         std::swap(x.skAge[k], y.skAge[k]);
+        std::swap(x.mem[k], y.mem[k]);  // r131: the members go with their slots (their records are the slot's, sk[k])
+        std::swap(x.mp[k], y.mp[k]);
     }
 }
 
 std::string kind_name(const std::string& key);
+
+// r131: a sidekick trio's trade value (each slot: a member's rating + a point a level over 8, a generic one the kind's;
+// a club with no members: the kind's, as r77) and its name ("Toads", or its members': "Pikachu / Boo / Toads")
+int trio_value(const ClubState& s)
+{
+    int sum = 0;
+    for (int k = 0; k < 3; k++)
+        sum += s.mem[k].empty() ? rating(s.kind) + std::max(0, s.side.level - 8) : rating(s.mem[k]) + std::max(0, s.mp[k].level - 8);
+    return (sum + 1) / 3;
+}
+
+bool same_trio(const ClubState& a, const ClubState& b)
+{
+    return a.kind == b.kind && a.mem[0] == b.mem[0] && a.mem[1] == b.mem[1] && a.mem[2] == b.mem[2];
+}
+
+std::string trio_name(const ClubState& s)
+{
+    if (s.mem[0].empty() && s.mem[1].empty() && s.mem[2].empty())
+        return kind_name(s.kind);
+    std::string out;
+    bool generic = false;
+    for (int k = 0; k < 3; k++)
+    {
+        if (s.mem[k].empty())
+        {
+            generic = true;
+            continue;
+        }
+        out += (out.empty() ? "" : " / ") + name_of(s.mem[k]);
+    }
+    return generic ? out + " / " + kind_name(s.kind) : out;
+}
 
 void cpu_week(Career& c)
 {
@@ -2002,10 +2445,10 @@ void cpu_week(Career& c)
     if (rand01(c.rng) < 0.06)
     {
         int a = (int)(next_rand(c.rng) % PORT_FR_CLUBS), b = (int)(next_rand(c.rng) % PORT_FR_CLUBS);
-        if (a != b && !is_human(c, a) && !is_human(c, b) && c.clubs[a].kind != c.clubs[b].kind)
+        if (a != b && !is_human(c, a) && !is_human(c, b) && !same_trio(c.clubs[a], c.clubs[b]))  // r131: members too
         {
             c.news.push_back("BIG TRADE: " + upper(s_clubs[a].place) + " AND " + upper(s_clubs[b].place) + " SWAP SIDEKICKS (" +
-                             upper(kind_name(c.clubs[a].kind)) + " FOR " + upper(kind_name(c.clubs[b].kind)) + ")");
+                             upper(trio_name(c.clubs[a])) + " FOR " + upper(trio_name(c.clubs[b])) + ")");
             swap_sidekicks(c, a, b);
         }
     }
@@ -2054,14 +2497,15 @@ void awards_night(Career& c)
         }
         for (int k = 0; k < 3; k++)
         {
+            const std::string face = s.mem[k].empty() ? kind_portrait(s.kind) : s.mem[k];  // r131: a member's own
             if (s.sk[k].seasonGoals > boot.goals)
-                boot = Pick{s.names[k], i, s.sk[k].seasonGoals, 0.0, kind_portrait(s.kind)};
+                boot = Pick{sk_name(s, k), i, s.sk[k].seasonGoals, 0.0, face};
             if (s.skAge[k] == 0 && s.sk[k].seasonGoals > rookie.goals)
-                rookie = Pick{s.names[k], i, s.sk[k].seasonGoals, 0.0, kind_portrait(s.kind)};
+                rookie = Pick{sk_name(s, k), i, s.sk[k].seasonGoals, 0.0, face};
             const double sixthScore = s.sk[k].seasonGoals * 3.0 + s.sk[k].form * 1.5 + s.wins * 0.5 +
                                       (i == c.champion ? 3.0 : 0.0);
-            if (!s.names[k].empty() && sixthScore > sixth.score)
-                sixth = Pick{s.names[k], i, s.sk[k].seasonGoals, sixthScore, kind_portrait(s.kind)};
+            if ((!s.names[k].empty() || !s.mem[k].empty()) && sixthScore > sixth.score)
+                sixth = Pick{sk_name(s, k), i, s.sk[k].seasonGoals, sixthScore, face};
         }
     }
     int keeper = 0;
@@ -2128,6 +2572,8 @@ void off_season(Career& c)
         for (int k = 0; k < 3; k++)
         {
             s.skAge[k]++;
+            if (!s.mem[k].empty())
+                continue;  // r131: a member (a character, its own level) doesn't retire: only the generic sidekicks do
             const double p = s.skAge[k] >= 3 ? 0.25 * (s.skAge[k] - 2) : 0.0;
             if (rand01(c.rng) < p)
             {
@@ -2188,21 +2634,46 @@ void off_season(Career& c)
 
 // ------------------------------------------------------------------------------ r70c: evolutions
 // What a captain can evolve into at its level (its forms on this headset only), 0-2 of them.
-int evolutions_for(const std::string& key, const Prog& p, std::string out[2])
+// r131: a captain key this headset has (find_captain over captains(), without building the list: every club's slots
+// are asked each week now)
+bool has_captain(const std::string& key)
+{
+    for (int t = 0; t < 8; t++)
+        if (key == std::string("strikers_") + kTeamKey[t])
+            return true;
+    return PortGuestRosterFind(PORT_GUEST_CAPTAIN, key.c_str()) >= 0;
+}
+
+int evolutions_for(const std::string& key, const Prog& p, std::string out[5])
 {
     int n = 0;
-    const std::vector<Captain> caps = captains();
-    for (size_t i = 0; i < s_evos.size() && n < 2; i++)
-        if (s_evos[i].from == key && p.level >= s_evos[i].level && find_captain(caps, s_evos[i].to) != NULL)
+    for (size_t i = 0; i < s_evos.size() && n < 5; i++)  // r130: up to 5 (Eevee)
+        if (s_evos[i].from == key && p.level >= s_evos[i].level && has_captain(s_evos[i].to))
             out[n++] = s_evos[i].to;
     return n;
 }
 
 std::string name_of(const std::string& key)
 {
-    const std::vector<Captain> caps = captains();
-    const Captain* cp = find_captain(caps, key);
-    return cp != NULL ? cp->name : key;
+    // a captain's name (a Strikers one, a guest's), r130: else a Charged sidekick member's; r131: without building captains()
+    const std::string n = char_name(key);
+    return n.empty() ? key : n;
+}
+
+std::string sk_name(const ClubState& s, int k) { return s.mem[k].empty() ? s.names[k] : name_of(s.mem[k]); }
+
+// r130 (Lance: "let ANY spot be ANY character"): a player key as a character select menu pick: a Strikers captain
+// ("strikers_<name>"; r130's first take's "cap_<name>" packs too) PORT_GUEST_ORIGINAL + its eTeamID, a guest its roster
+// index (a captain's entry first, else a sidekick's), -1 none / unknown
+int member_pick(const std::string& key)
+{
+    if (key.empty())
+        return -1;
+    for (int t = 0; t < 8; t++)
+        if (key == std::string("strikers_") + kTeamKey[t] || key == std::string("cap_") + kTeamKey[t])
+            return PORT_GUEST_ORIGINAL + t;
+    const int cap = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, key.c_str());
+    return cap >= 0 ? cap : PortGuestRosterFindAny(PORT_GUEST_SIDEKICK, key.c_str());
 }
 
 std::string kind_name(const std::string& key)  // r71: "Toads", "Boos"
@@ -2216,23 +2687,34 @@ std::string kind_name(const std::string& key)  // r71: "Toads", "Boos"
 
 const int kShinyOdds = 128;  // Lance: 1 in 128 an evolution (and once shiny, always shiny)
 
-// Evolves a club's captain (or backup) into `to`: a shiny roll, the news.
-void do_evolve(Career& c, int club, bool backup, const std::string& to)
+// r130: a club's player by slot: 0 the captain, 1 the backup, 2-4 the sidekick members (mem / mp)
+std::string& slot_key(ClubState& s, int slot) { return slot <= 0 ? s.captain : (slot == 1 ? s.backup : s.mem[std::min(2, slot - 2)]); }
+Prog& slot_prog(ClubState& s, int slot) { return slot <= 0 ? s.cap : (slot == 1 ? s.bk : s.mp[std::min(2, slot - 2)]); }
+
+// Evolves a club's captain (or backup; r130: or a sidekick member, slot 2-4) into `to`: a shiny roll, the news.
+void do_evolve_slot(Career& c, int club, int slot, const std::string& to);
+void do_evolve(Career& c, int club, bool backup, const std::string& to) { do_evolve_slot(c, club, backup ? 1 : 0, to); }
+void do_evolve_slot(Career& c, int club, int slot, const std::string& to)
 {
     ClubState& s = c.clubs[club];
-    std::string& key = backup ? s.backup : s.captain;
-    Prog& p = backup ? s.bk : s.cap;
+    std::string& key = slot_key(s, slot);
+    Prog& p = slot_prog(s, slot);
     const std::string from = key;
     const bool wasShiny = p.shiny;
-    if (!p.shiny && next_rand(c.rng) % kShinyOdds == 0)
+    // r110: a Marvel hero's next costume (no shiny ones), in costume words
+    const bool costume = from.compare(0, 4, "mua_") == 0;
+    if (!costume && !p.shiny && next_rand(c.rng) % kShinyOdds == 0)
         p.shiny = true;
     key = to;
     p.declinedAt = 0;
-    std::string line = upper(s_clubs[club].place) + "'S " + upper(name_of(from)) + " EVOLVED INTO " + upper(name_of(to));
+    std::string line = upper(s_clubs[club].place) + "'S " + upper(name_of(from)) +
+                       (costume ? " SUITED UP: " : " EVOLVED INTO ") + upper(name_of(to));
     if (p.shiny && !wasShiny)
         line += " - SHINY!";
     c.news.push_back(line);
-    // r72 (Lance): a nemesis that evolves comes back angrier, with a new title
+    // r72 (Lance): a nemesis that evolves comes back angrier, with a new title (r130 review: captains / backups only -
+    // a sidekick member can share its key with someone's nemesis elsewhere)
+    if (slot <= 1)
     each_nemesis(c, from, [&](Nemesis* n) {  // r100: everyone's beef with it
         n->key = to;
         n->name = name_of(to);
@@ -2241,35 +2723,46 @@ void do_evolve(Career& c, int club, bool backup, const std::string& to)
             n->title = T_AVENGER;
             n->heat = std::min(100, n->heat + 15);
             const std::string whose = c.league.empty() ? std::string("YOUR NEMESIS") : upper(s_clubs[nem_owner(c, *n)].place) + "'S NEMESIS";
-            c.news.push_back(whose + " EVOLVED: " + upper(n->name) + " " + kTitles[n->title] + " IS ANGRIER THAN EVER");
-            nem_log(*n, "SEASON " + std::to_string(c.season) + ": EVOLVED INTO " + upper(n->name) + ", ANGRIER");
+            c.news.push_back(whose + (costume ? " SUITED UP: " : " EVOLVED: ") + upper(n->name) + " " + kTitles[n->title] +
+                             " IS ANGRIER THAN EVER");
+            nem_log(*n, "SEASON " + std::to_string(c.season) + (costume ? ": SUITED UP AS " : ": EVOLVED INTO ") +
+                            upper(n->name) + ", ANGRIER");
         }
     });
+    else  // r131: a sidekick member's beef (keyed by club and name) follows it into its new form
+        each_nemesis(c, "sk#" + std::to_string(club) + "#" + name_of(from), [&](Nemesis* n) {
+            n->key = "sk#" + std::to_string(club) + "#" + name_of(to);
+            n->name = name_of(to);
+        });
     fprintf(stderr, "[franchise] %s\n", line.c_str());
     fflush(stderr);
 }
 
 // The CPU clubs' Pokemon evolve when they can (a split: the stronger form). Yours wait for you.
+// r131: their sidekick members too (slots 2-4: every club deals them now)
 void evolve_cpu(Career& c)
 {
     for (int club = 0; club < PORT_FR_CLUBS; club++)
     {
         if (is_human(c, club))  // r100: every person's Pokemon wait for them
             continue;
-        for (int b = 0; b < 2; b++)
+        for (int b = 0; b < 5; b++)
         {
             ClubState& s = c.clubs[club];
             for (int step = 0; step < 3; step++)  // (a big jump in levels can go two forms at once)
             {
-                const std::string& key = b ? s.backup : s.captain;
+                const std::string& key = slot_key(s, b);
                 if (key.empty())
                     break;
-                std::string to[2];
-                const int n = evolutions_for(key, b ? s.bk : s.cap, to);
+                std::string to[5];
+                const int n = evolutions_for(key, slot_prog(s, b), to);
                 if (n == 0)
                     break;
-                const std::string pick = n == 2 && rating(to[1]) > rating(to[0]) ? to[1] : to[0];
-                do_evolve(c, club, b != 0, pick);
+                std::string pick = to[0];  // r130: the best rated of up to 5
+                for (int k = 1; k < n; k++)
+                    if (rating(to[k]) > rating(pick))
+                        pick = to[k];
+                do_evolve_slot(c, club, b, pick);
             }
         }
     }
@@ -2373,6 +2866,206 @@ void finish_week(Career& c)
         schedule_day(c);
 }
 
+// r131 (Lance: "each character is only chosen once per franchise ... i wanna upload more pokemon and maybe digimon
+// characters today"): the new season's signings, the CPU clubs' only (a person's club waits for its person: the member
+// editor). A character on two clubs (a career from before r131: an r130 member pick of yours could be a CPU club's
+// captain) stays with the first - a person's club before any other - and the others sign a free agent in its place (a
+// captain with none free promotes its backup; a roster too small keeps it); then every CPU club fills its empty spots
+// (no backup, a generic sidekick) from the free agents left - characters on no club, like ones added to the roster since -
+// the worst record first, a snake as the deal's. Each joins at its spot's level (a backup at its captain's, a member at
+// the sidekicks').
+void season_signings(Career& c)
+{
+    const std::vector<Captain> caps = captains();
+    const std::vector<Kind> ks = kinds();
+    std::unordered_map<std::string, int> holder;  // a character -> the club keeping it
+    for (int pass = 0; pass < 2; pass++)          // the people's clubs first
+        for (int i = 0; i < PORT_FR_CLUBS; i++)
+        {
+            if (is_human(c, i) != (pass == 0))
+                continue;
+            std::vector<std::string> ids;
+            club_ids(c.clubs[i], ids);
+            for (size_t k = 0; k < ids.size(); k++)
+                if (holder.find(ids[k]) == holder.end())
+                    holder[ids[k]] = i;
+        }
+    struct Free
+    {
+        std::string key;
+        double score;
+        bool captain;
+    };
+    std::vector<Free> fa;  // the free agents, best first
+    std::unordered_map<std::string, bool> listed;
+    auto add = [&](const std::string& key, bool captain) {
+        const std::string id = char_id(key);
+        if (id.empty() || holder.count(id) != 0 || listed.count(id) != 0)
+            return;
+        listed[id] = true;
+        Free f;
+        f.key = key;
+        f.score = rating(key) + 5.0 * rand01(c.rng);
+        f.captain = captain;
+        fa.push_back(f);
+    };
+    for (size_t i = 0; i < caps.size(); i++)
+        if (!caps[i].evolved)
+            add(caps[i].key, true);
+    for (size_t i = 0; i < ks.size(); i++)
+        if (ks[i].guest >= 0)
+            add(ks[i].key, false);
+    std::stable_sort(fa.begin(), fa.end(), [](const Free& a, const Free& b) { return a.score > b.score; });
+    std::vector<bool> gone(fa.size(), false);
+    auto sign = [&](bool captainOnly) -> std::string {
+        for (size_t i = 0; i < fa.size(); i++)
+            if (!gone[i] && (!captainOnly || fa[i].captain))
+            {
+                gone[i] = true;
+                return fa[i].key;
+            }
+        return std::string();
+    };
+    auto fresh = [](Prog& p, int level) {
+        init_prog(p);
+        p.level = p.startLevel = std::max(8, std::min(100, level));
+    };
+    std::vector<std::string> lines;
+    int signings = 0;
+    auto joined = [&](int club, const std::string& key, const std::string& was) {
+        holder[char_id(key)] = club;
+        signings++;
+        if (lines.size() < 6)
+            lines.push_back("SIGNED: " + upper(name_of(key)) + " JOINS " + upper(s_clubs[club].place) +
+                            (was.empty() ? std::string() : " (FOR " + upper(name_of(was)) + ")"));
+    };
+    // a released copy's beef goes with the one that kept the character
+    auto released = [&](int club, const std::string& key) {
+        std::unordered_map<std::string, int>::const_iterator it = holder.find(char_id(key));
+        const int keeper = it != holder.end() ? it->second : -1;
+        each_nemesis(c, key, [&](Nemesis* n) {
+            if (n->club != club)
+                return;
+            n->club = keeper;
+            n->active = false;
+            nem_log(*n, "SEASON " + std::to_string(c.season) + ": LEFT " + upper(s_clubs[club].place));
+        });
+    };
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        if (is_human(c, i))
+            continue;
+        ClubState& s = c.clubs[i];
+        auto dup = [&](const std::string& key) {
+            std::unordered_map<std::string, int>::const_iterator it = holder.find(char_id(key));
+            return !key.empty() && it != holder.end() && it->second != i;
+        };
+        if (dup(s.captain))
+        {
+            const std::string was = s.captain;
+            const std::string fk = sign(true);
+            if (!fk.empty() || (!s.backup.empty() && !dup(s.backup)))
+                released(i, was);  // (else it stays: a roster with too few captains)
+            if (!fk.empty())
+            {
+                s.captain = fk;
+                fresh(s.cap, s.cap.level);
+                init_stats(s.capSt, (int)(next_rand(c.rng) % PERS_COUNT));
+                joined(i, fk, was);
+            }
+            else if (!s.backup.empty() && !dup(s.backup))
+            {
+                s.captain = s.backup;
+                s.cap = s.bk;
+                s.capSt = s.bkSt;
+                s.backup.clear();
+                init_prog(s.bk);
+                init_stats(s.bkSt, (int)(next_rand(c.rng) % PERS_COUNT));
+                s.startsBackup = false;
+                c.news.push_back(upper(s_clubs[i].place) + " MAKE " + upper(name_of(s.captain)) + " THEIR CAPTAIN");
+            }
+        }
+        if (dup(s.backup))
+        {
+            const std::string was = s.backup;
+            released(i, was);
+            s.backup = sign(true);
+            s.startsBackup = false;
+            fresh(s.bk, s.cap.level);
+            init_stats(s.bkSt, (int)(next_rand(c.rng) % PERS_COUNT));
+            if (!s.backup.empty())
+                joined(i, s.backup, was);
+        }
+        for (int k = 0; k < 3; k++)
+            if (dup(s.mem[k]))
+            {
+                const std::string was = s.mem[k];
+                s.mem[k] = sign(false);
+                fresh(s.mp[k], s.side.level);
+                init_stats(s.sk[k], (int)(next_rand(c.rng) % PERS_COUNT));
+                s.skAge[k] = 0;
+                if (!s.mem[k].empty())
+                    joined(i, s.mem[k], was);
+            }
+        if (!generic_kind(s.kind) && dup(s.kind))
+        {
+            // its kind was a Charged sidekick guest another club keeps: Strikers sidekicks (new names) instead
+            s.kind = kind_for_members(c, s.mem);
+            std::vector<std::string> usedNames;
+            for (int k = 0; k < 3; k++)
+                s.names[k] = make_name(c, s.kind, i, k, usedNames);
+        }
+    }
+    // the empty spots, the worst record first: backups (a captain), then the sidekick members (on the field first)
+    std::vector<int> order;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        if (!is_human(c, i))
+            order.push_back(i);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ranks_above(c, b, a); });
+    const int n = (int)order.size();
+    for (int round = 0; round < 4; round++)
+        for (int j = 0; j < n; j++)
+        {
+            const int club = order[round % 2 == 0 ? j : n - 1 - j];
+            ClubState& s = c.clubs[club];
+            if (round == 0)
+            {
+                if (!s.backup.empty())
+                    continue;
+                const std::string fk = sign(true);
+                if (fk.empty())
+                    continue;
+                s.backup = fk;
+                s.startsBackup = false;
+                fresh(s.bk, s.cap.level);
+                init_stats(s.bkSt, (int)(next_rand(c.rng) % PERS_COUNT));
+                joined(club, fk, std::string());
+                continue;
+            }
+            const int prefs[2][3] = {{0, 1, 2}, {1, 2, 0}};  // (with a co-captain slot 1 sits: last)
+            const int* pref = prefs[s.backup.empty() ? 0 : 1];
+            int slot = -1;
+            for (int p = 0; p < 3 && slot < 0; p++)
+                if (s.mem[pref[p]].empty())
+                    slot = pref[p];
+            if (slot < 0)
+                continue;
+            const std::string fk = sign(false);
+            if (fk.empty())
+                continue;
+            s.mem[slot] = fk;
+            fresh(s.mp[slot], s.side.level);
+            init_stats(s.sk[slot], (int)(next_rand(c.rng) % PERS_COUNT));
+            s.skAge[slot] = 0;
+            joined(club, fk, std::string());
+        }
+    c.news.insert(c.news.end(), lines.begin(), lines.end());
+    if (signings > (int)lines.size())
+        c.news.push_back(std::to_string(signings - (int)lines.size()) + " MORE FREE AGENTS SIGNED AROUND THE LEAGUE");
+    fprintf(stderr, "[franchise] season %d signings: %d (%d free agents were left)\n", c.season, signings, (int)fa.size());
+    fflush(stderr);
+}
+
 // r70b: the champion crowned: next season, the same clubs and players, a new schedule.
 void next_season(Career& c)
 {
@@ -2381,6 +3074,7 @@ void next_season(Career& c)
     off_season(c);  // r71: retirements, rookies, the trade window
     c.season++;
     c.week = 1;
+    season_signings(c);  // r131: one character, one club; free agents (new guests too) fill the CPU clubs' empty spots
     for (int i = 0; i < PORT_FR_CLUBS; i++)
     {
         ClubState& s = c.clubs[i];
@@ -2388,6 +3082,8 @@ void next_season(Career& c)
         s.cap.startLevel = s.cap.level;  // r77: this season's levels count from here
         s.bk.startLevel = s.bk.level;
         s.side.startLevel = s.side.level;
+        for (int m = 0; m < 3; m++)  // r130: the sidekick members' too
+            s.mp[m].startLevel = s.mp[m].level;
     }
     reset_playoffs(c);
     c.results.clear();
@@ -2498,6 +3194,23 @@ void start_match()
             slot4[k] = who4[k]->team;
             free[slot4[k]] = false;
         }
+    // r130 (Lance: "let ANY spot be ANY character"): the clubs' Strikers-captain sidekick members play their own class
+    // only (include/port/lineup.h), so the guest captains below (who can move) leave those classes free when they can; a
+    // guest captain that finds nothing else free still takes one (that member then plays the club's sidekick class, logged)
+    bool memberHeld[8] = {};
+    for (int side = 0; side < 2; side++)
+    {
+        const ClubState& ms = c.clubs[clubs[side]];
+        for (int k = co[side] != NULL ? 1 : 0; k < 3; k++)
+        {
+            const int p = member_pick(ms.mem[k]);
+            if (p >= PORT_GUEST_ORIGINAL && p < PORT_GUEST_ORIGINAL + 8 && free[p - PORT_GUEST_ORIGINAL])
+            {
+                free[p - PORT_GUEST_ORIGINAL] = false;
+                memberHeld[p - PORT_GUEST_ORIGINAL] = true;
+            }
+        }
+    }
     for (int k = 0; k < 4; k++)
         if (who4[k] != NULL && slot4[k] < 0)
         {
@@ -2507,6 +3220,18 @@ void start_match()
                 for (int t = 0; t < 8 && slot4[k] < 0; t++)
                     if (free[t])
                         slot4[k] = t;
+            if (slot4[k] < 0)  // r130: nothing else free: a member's class after all
+            {
+                bool any[8];
+                for (int t = 0; t < 8; t++)
+                    any[t] = free[t] || memberHeld[t];
+                slot4[k] = who4[k]->guest >= 0 ? PortGuestSlotFor(who4[k]->guest, any) : -1;
+                for (int t = 0; t < 8 && slot4[k] < 0; t++)
+                    if (any[t])
+                        slot4[k] = t;
+                if (slot4[k] >= 0)
+                    memberHeld[slot4[k]] = false;
+            }
             if (slot4[k] >= 0)
                 free[slot4[k]] = false;
         }
@@ -2527,7 +3252,29 @@ void start_match()
         PortGuestSetPick(slot[side], PORT_GUEST_CAPTAIN, cap[side]->guest >= 0 ? cap[side]->guest : -1);
         PortGuestSetPick(slot[side], PORT_GUEST_SIDEKICK, kind[side]->guest >= 0 ? kind[side]->guest : -1);
         PortGuestSetShiny(side, cap[side]->guest >= 0 && starter_prog(c.clubs[clubs[side]]).shiny);  // r70c
+        // r130: the club's sidekick members, each in its own slot (m_ID 1-3; slot 1 is the co-captain's when there is
+        // one), each with its own shiny; a generic one is the club's kind
+        const ClubState& cs = c.clubs[clubs[side]];
+        const bool members = !cs.mem[0].empty() || !cs.mem[1].empty() || !cs.mem[2].empty();
+        if (members)
+        {
+            int picks[3];
+            for (int k = 0; k < 3; k++)
+            {
+                picks[k] = kind[side]->guest >= 0 ? kind[side]->guest : -1;
+                if (!cs.mem[k].empty())
+                    picks[k] = member_pick(cs.mem[k]);  // r130: a Strikers captain too (its own class, below)
+            }
+            PortGuestSetSlotPicks(slot[side], picks, co[side] != NULL ? 1 : 0);
+        }
+        for (int k = 0; k < 3; k++)
+            PortGuestSetSlotShiny(side, k + 1, members && !cs.mem[k].empty() && cs.mp[k].shiny);
     }
+    // r130 (Lance: "let ANY spot be ANY character"): each member's own class (a Strikers captain, a guest captain on its
+    // base or the nearest free captain class; include/port/lineup.h), each captain class once on the field after both
+    // captains and the co-captains; one whose class is taken this match plays the club's sidekick class (logged). The CPU
+    // clubs (no members: their slot picks cleared by the sidekick pick above) keep their generic sidekicks.
+    PortApplySlotCaptains();
     const int stadium = s_clubs[g->home].stadium;
     gi->SetStadium((eStadiumID)(stadium >= 0 && stadium < MAX_STADIUMS ? stadium : 0));
     // r70b: watching a CPU v CPU game: no pad on either side (both AI; Start still pauses, A ends it)
@@ -2806,12 +3553,129 @@ std::string kind_key_for(int pick)
     return std::string();
 }
 
+// r130 / r131: three sidekick-slot menu picks as member keys (a guest's pack, strikers_<name>; "" a generic one: a Strikers
+// sidekick, or the club's kind's own Charged sidekick guest). r131: never the same character as the club's captain or
+// backup, nor a named character twice (a Charged sidekick guest may fill several slots, as a kind does): those slots
+// get a generic sidekick.
+void member_keys(const int* picks, const std::string& kind, const std::string& captain, const std::string& backup,
+                 std::string out[3])
+{
+    const std::string kindGuest = generic_kind(kind) ? std::string() : kind;
+    const std::string capId = char_id(captain), bkId = char_id(backup);
+    for (int k = 0; k < 3; k++)
+    {
+        out[k].clear();
+        if (picks == NULL)
+            continue;
+        const char* pack = picks[k] >= 0 && picks[k] < PORT_GUEST_ORIGINAL ? PortGuestRosterPack(picks[k]) : NULL;
+        if (pack != NULL && kindGuest != pack)
+            out[k] = pack;
+        // r130 (Lance: "let ANY spot be ANY character"): a Strikers captain itself, keyed as the franchise's captains are
+        if (picks[k] >= PORT_GUEST_ORIGINAL && picks[k] < PORT_GUEST_ORIGINAL + 8)
+            out[k] = std::string("strikers_") + kTeamKey[picks[k] - PORT_GUEST_ORIGINAL];
+        const std::string id = char_id(out[k]);
+        if (id.empty())
+            continue;
+        bool twice = id == capId || id == bkId;
+        for (int j = 0; j < k && !twice && !sk_guest(out[k]); j++)
+            twice = char_id(out[j]) == id;
+        if (twice)
+        {
+            fprintf(stderr, "[franchise] sidekick %d: %s is one of your players already: a generic sidekick there\n", k + 1,
+                    out[k].c_str());
+            out[k].clear();
+        }
+    }
+}
+
 bool new_career(int slot, int club, const MyPicks& mine);
 }  // namespace
 
 bool PortFranchiseCaptainPickable(int pick) { return !captain_key_for(pick).empty(); }
 
-bool PortFranchiseNewPicked(int slot, int club, int captainPick, int backupPick, int sidekickPick)
+// r130 (Lance: "4 different levels for 4 different people for 4 different rewards"): your club's three sidekick members
+// (menu picks: a guest's roster index, or a Strikers sidekick / the club's own kind for a generic one). A new member joins
+// at the sidekicks' level and grows on its own from there.
+bool PortFranchiseSetMembers(const int picks[3])
+{
+    if (!s_active || s_match != MATCH_NONE || coop_blocked() || in_league())
+        return false;
+    Career& c = s_career;
+    ClubState& s = c.clubs[c.myClub];
+    // r130 (review): a member kept (in any slot) keeps its own level, evolutions and shiny
+    const std::string oldMem[3] = {s.mem[0], s.mem[1], s.mem[2]};
+    const Prog oldMp[3] = {s.mp[0], s.mp[1], s.mp[2]};
+    bool oldUsed[3] = {false, false, false};
+    std::string keys[3];
+    member_keys(picks, s.kind, s.captain, s.backup, keys);  // r131: not your captains again, no one twice
+    // r131 (Lance: "each character is only chosen once per franchise"): one another club has stays there (the menu greys
+    // them); yours already stay yours (a duplicate from a career before r131 too)
+    for (int k = 0; k < 3; k++)
+    {
+        if (keys[k].empty() || keys[k] == oldMem[0] || keys[k] == oldMem[1] || keys[k] == oldMem[2])
+            continue;
+        const int h = holder_of(c, char_id(keys[k]), c.myClub);
+        if (h >= 0)
+        {
+            fprintf(stderr, "[franchise] sidekick %d: %s plays for %s: a generic sidekick there\n", k + 1, keys[k].c_str(),
+                    s_clubs[h].id.c_str());
+            keys[k].clear();
+        }
+    }
+    bool placed[3] = {false, false, false};
+    for (int pass = 0; pass < 2; pass++)  // the same slot first, then any other
+        for (int k = 0; k < 3; k++)
+        {
+            if (placed[k] || keys[k].empty())
+                continue;
+            for (int j = 0; j < 3; j++)
+                if (!oldUsed[j] && oldMem[j] == keys[k] && (pass == 1 || j == k))
+                {
+                    oldUsed[j] = placed[k] = true;
+                    s.mem[k] = keys[k];
+                    s.mp[k] = oldMp[j];
+                    break;
+                }
+        }
+    for (int k = 0; k < 3; k++)
+    {
+        if (placed[k])
+            continue;
+        s.mem[k] = keys[k];
+        s.mp[k] = s.side;  // joins at the sidekicks' level
+        s.mp[k].shiny = false;
+        s.mp[k].declinedAt = 0;
+        s.mp[k].startLevel = s.mp[k].level;
+    }
+    c.headline = "Your sidekicks: " + (s.mem[0].empty() ? s.names[0] : name_of(s.mem[0])) + ", " +
+                 (s.mem[1].empty() ? s.names[1] : name_of(s.mem[1])) + " and " + (s.mem[2].empty() ? s.names[2] : name_of(s.mem[2])) + ".";
+    save();
+    fprintf(stderr, "[franchise] your sidekicks: %s / %s / %s\n", s.mem[0].empty() ? "(generic)" : s.mem[0].c_str(),
+            s.mem[1].empty() ? "(generic)" : s.mem[1].c_str(), s.mem[2].empty() ? "(generic)" : s.mem[2].c_str());
+    fflush(stderr);
+    return true;
+}
+
+// r130 (review): the member editor's start: your members now (roster indexes, -1 a generic one) + your captain and
+// backup (so they can't be picked again)
+bool PortFranchiseMemberPicks(int members[3], int* captain, int* backup)
+{
+    members[0] = members[1] = members[2] = -1;
+    *captain = *backup = -1;
+    if (!s_active)
+        return false;
+    const ClubState& s = s_career.clubs[s_career.myClub];
+    // r130: a Strikers captain (member, captain or backup) as its menu pick, PORT_GUEST_ORIGINAL + its eTeamID
+    for (int k = 0; k < 3; k++)
+        if (!s.mem[k].empty())
+            members[k] = member_pick(s.mem[k]);
+    *captain = member_pick(s.captain);
+    if (!s.backup.empty())
+        *backup = member_pick(s.backup);
+    return true;
+}
+
+bool PortFranchiseNewPicked(int slot, int club, int captainPick, int backupPick, int sidekickPick, const int* memberPicks)
 {
     read_data();
     MyPicks mine;
@@ -2819,16 +3683,63 @@ bool PortFranchiseNewPicked(int slot, int club, int captainPick, int backupPick,
     mine.backup = backupPick < 0 ? std::string() : captain_key_for(backupPick);
     mine.noBackup = backupPick < 0;
     mine.kind = kind_key_for(sidekickPick);
-    if (mine.captain.empty() || mine.kind.empty() || mine.backup == mine.captain || (!mine.noBackup && mine.backup.empty()))
+    if (mine.captain.empty() || mine.kind.empty() || mine.backup == mine.captain || (!mine.noBackup && mine.backup.empty()) ||
+        (!mine.backup.empty() && char_id(mine.backup) == char_id(mine.captain)))  // r131: one character, one spot
     {
         fprintf(stderr, "[franchise] new career: picks %d/%d/%d not usable\n", captainPick, backupPick, sidekickPick);
         fflush(stderr);
         return false;
     }
-    fprintf(stderr, "[franchise] your picks: captain %s, backup %s, sidekicks %s\n", mine.captain.c_str(),
-            mine.noBackup ? "(none)" : mine.backup.c_str(), mine.kind.c_str());
+    // r131 (Lance: "you pick first, and the league forms around your picks"): your three sidekick members, dealt with you
+    member_keys(memberPicks, mine.kind, mine.captain, mine.backup, mine.mem);
+    fprintf(stderr, "[franchise] your picks: captain %s, backup %s, sidekicks %s (%s / %s / %s)\n", mine.captain.c_str(),
+            mine.noBackup ? "(none)" : mine.backup.c_str(), mine.kind.c_str(), mine.mem[0].empty() ? "-" : mine.mem[0].c_str(),
+            mine.mem[1].empty() ? "-" : mine.mem[1].c_str(), mine.mem[2].empty() ? "-" : mine.mem[2].c_str());
     fflush(stderr);
     return new_career(slot, club, mine);
+}
+
+// r131: see franchise.h
+void PortFranchisePicksTaken(const int* picks, int count, const int* held, int heldCount, bool career, unsigned char* out)
+{
+    if (out == NULL || count <= 0)
+        return;
+    memset(out, 0, (size_t)count);
+    if (picks == NULL)
+        return;
+    read_data();
+    std::vector<std::string> ids;  // the characters taken
+    for (int i = 0; held != NULL && i < heldCount; i++)
+    {
+        const std::string key = pick_key(held[i]);
+        if (!sk_guest(key))  // (a Charged sidekick guest may fill several of your slots)
+            ids.push_back(char_id(key));
+    }
+    if (career && s_active)
+    {
+        const Career& c = s_career;
+        const ClubState& me = c.clubs[c.myClub];
+        ids.push_back(char_id(me.captain));
+        ids.push_back(char_id(me.backup));
+        std::vector<std::string> mine;  // your members stay yours (a duplicate from a career before r131 too)
+        for (int k = 0; k < 3; k++)
+            mine.push_back(char_id(me.mem[k]));
+        std::vector<std::string> theirs;
+        for (int i = 0; i < PORT_FR_CLUBS; i++)
+            if (i != c.myClub)
+                club_ids(c.clubs[i], theirs);
+        for (size_t k = 0; k < theirs.size(); k++)
+            if (std::find(mine.begin(), mine.end(), theirs[k]) == mine.end())
+                ids.push_back(theirs[k]);
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    for (int i = 0; i < count; i++)
+    {
+        const std::string id = char_id(pick_key(picks[i]));
+        if (!id.empty() && std::binary_search(ids.begin(), ids.end(), id))
+            out[i] = 1;
+    }
 }
 
 bool PortFranchiseNew(int slot, int club)
@@ -2954,9 +3865,10 @@ bool PortFranchiseGetView(PortFranchiseView* v)
             if (ks[k].key == me.kind)
                 kn = ks[k].name;
         copy_str(v->kind, sizeof v->kind, kn);
+        copy_str(v->kindKey, sizeof v->kindKey, kind_portrait(me.kind));  // r116
     }
     for (int k = 0; k < 3; k++)
-        copy_str(v->sidekicks[k], sizeof v->sidekicks[k], me.names[k]);
+        copy_str(v->sidekicks[k], sizeof v->sidekicks[k], sk_name(me, k));
     v->nextOpponent = -1;
     if (Game* g = my_game(c))
     {
@@ -2966,6 +3878,11 @@ bool PortFranchiseGetView(PortFranchiseView* v)
         v->oppWins = o.wins;
         v->oppLosses = o.losses;
         copy_str(v->oppCaptain, sizeof v->oppCaptain, captain_name(starter(o)));
+        // r131: and its co-captain (the other captain: both play) and its three sidekicks by name
+        if (!o.backup.empty())
+            copy_str(v->oppCoCaptain, sizeof v->oppCoCaptain, captain_name(o.startsBackup ? o.captain : o.backup));
+        for (int k = 0; k < 3; k++)
+            copy_str(v->oppSidekicks[k], sizeof v->oppSidekicks[k], sk_name(o, k));
     }
     std::vector<int> div;
     const int base = (c.myClub / 4) * 4;
@@ -2985,6 +3902,29 @@ bool PortFranchiseGetView(PortFranchiseView* v)
     v->resultCount = (int)std::min<size_t>(16, c.results.size());
     for (int i = 0; i < v->resultCount; i++)
         copy_str(v->results[i], sizeof v->results[i], c.results[i]);
+    // r113: the games behind those results, as numbers (the newspaper's logo v logo)
+    v->playedCount = 0;
+    v->lastWeek = 0;
+    for (size_t i = 0; i < c.games.size() && v->playedCount < 16; i++)
+    {
+        const Game& g = c.games[i];
+        if (g.week != c.week - 1 || !g.played)
+            continue;
+        PortFranchiseView::Played& p = v->played[v->playedCount++];
+        p.home = g.home;
+        p.away = g.away;
+        p.homeGoals = g.homeGoals;
+        p.awayGoals = g.awayGoals;
+        p.overtime = g.overtime;
+        p.mine = g.home == c.myClub || g.away == c.myClub;
+        v->lastWeek = g.week;
+    }
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        const ClubState& cs = c.clubs[i];
+        copy_str(v->clubCaptainKey[i], sizeof v->clubCaptainKey[i],
+                 cs.startsBackup && !cs.backup.empty() ? cs.backup : cs.captain);
+    }
     copy_str(v->headline, sizeof v->headline, c.headline);
 
     // r70b: the playoffs (in the regular season, the seeds as the table stands)
@@ -3093,21 +4033,30 @@ bool PortFranchiseGetView(PortFranchiseView* v)
     {
         std::string name;
         int club, goals, form;
+        std::string key;  // r113: its portrait
     };
     std::vector<Who> all;
     const std::vector<Captain> caps = captains();
+    // r113: a sidekick kind's portrait (the Strikers ones are strikers_<name>, Hammer Bro without the s)
+    auto kind_portrait = [](const std::string& kind) {
+        for (int k = 0; k < 4; k++)
+            if (kind == kSkKey[k])
+                return std::string(k == 2 ? "strikers_hammerbro" : std::string("strikers_") + kSkKey[k]);
+        return kind;
+    };
     for (int i = 0; i < PORT_FR_CLUBS; i++)
     {
         const ClubState& s = c.clubs[i];
         const Captain* cp = find_captain(caps, s.captain);
-        all.push_back(Who{cp != NULL ? cp->name : s.captain, i, s.capSt.seasonGoals, s.capSt.form});
+        all.push_back(Who{cp != NULL ? cp->name : s.captain, i, s.capSt.seasonGoals, s.capSt.form, s.captain});
         if (!s.backup.empty())
         {
             const Captain* bp = find_captain(caps, s.backup);
-            all.push_back(Who{bp != NULL ? bp->name : s.backup, i, s.bkSt.seasonGoals, s.bkSt.form});
+            all.push_back(Who{bp != NULL ? bp->name : s.backup, i, s.bkSt.seasonGoals, s.bkSt.form, s.backup});
         }
         for (int k = 0; k < 3; k++)
-            all.push_back(Who{s.names[k], i, s.sk[k].seasonGoals, s.sk[k].form});
+            all.push_back(Who{sk_name(s, k), i, s.sk[k].seasonGoals, s.sk[k].form,
+                              s.mem[k].empty() ? kind_portrait(s.kind) : s.mem[k]});  // r131: a member's own portrait
     }
     auto fill = [&](PortFranchiseView::Leader* out, int max, int* count, bool (*keep)(const Who&),
                     bool (*before)(const Who&, const Who&)) {
@@ -3123,6 +4072,7 @@ bool PortFranchiseGetView(PortFranchiseView* v)
             out[i].club = l[i].club;
             out[i].goals = l[i].goals;
             out[i].form = l[i].form;
+            copy_str(out[i].key, sizeof out[i].key, l[i].key);
         }
     };
     fill(v->leaders, 10, &v->leaderCount, [](const Who& w) { return w.goals > 0; },
@@ -3236,21 +4186,22 @@ static bool find_evolution(PortFranchiseEvolution* out, bool postponedToo, int o
     memset(out, 0, sizeof *out);
     if (!s_active || s_match != MATCH_NONE || coop_blocked())  // r76: co-op: the host's headset asks
         return false;
-    const ClubState& s = s_career.clubs[s_career.myClub];
-    for (int b = 0; b < 2; b++)
+    ClubState& s = s_career.clubs[s_career.myClub];
+    for (int b = 0; b < 5; b++)  // r130: and the sidekick members (slots 2-4)
     {
         if (onlySlot >= 0 && b != onlySlot)
             continue;
-        const std::string& key = b ? s.backup : s.captain;
-        const Prog& p = b ? s.bk : s.cap;
+        const std::string& key = slot_key(s, b);
+        const Prog& p = slot_prog(s, b);
         if (key.empty() || (!postponedToo && p.declinedAt == p.level))
             continue;
-        std::string to[2];
+        std::string to[5];
         const int n = evolutions_for(key, p, to);
         if (n == 0)
             continue;
         out->valid = true;
-        out->backup = b != 0;
+        out->backup = b == 1;
+        out->slot = b;
         out->level = p.level;
         out->shiny = p.shiny;
         out->postponed = p.declinedAt == p.level;
@@ -3277,24 +4228,32 @@ bool PortFranchiseEvolve(int choice, bool* shiny, bool* newShiny)
     PortFranchiseEvolution e;
     if (!PortFranchisePendingEvolution(&e))
         return false;
-    return PortFranchiseEvolveSlot(e.backup, choice, shiny, newShiny);
+    return PortFranchiseEvolvePlayer(e.slot, choice, shiny, newShiny);
 }
 
-static bool evolve_slot_impl(bool backup, int choice, bool* shiny, bool* newShiny);
+static bool evolve_slot_impl(int slot, int choice, bool* shiny, bool* newShiny);
 
 bool PortFranchiseEvolveSlot(bool backup, int choice, bool* shiny, bool* newShiny)
 {
+    return PortFranchiseEvolvePlayer(backup ? 1 : 0, choice, shiny, newShiny);
+}
+
+// r130: any of your players by slot (0 captain, 1 backup, 2-4 the sidekick members)
+bool PortFranchiseEvolvePlayer(int slot, int choice, bool* shiny, bool* newShiny)
+{
+    const bool backup = slot == 1;
     *shiny = *newShiny = false;
     if (!in_league())
-        return evolve_slot_impl(backup, choice, shiny, newShiny);
+        return evolve_slot_impl(slot, choice, shiny, newShiny);
     // r100: an online league's: an action on the league's career (kept when it's still due on a newer copy)
     static bool s_evolved, s_shiny, s_newShiny;
     s_evolved = s_shiny = s_newShiny = false;
-    league_do(choice < 0 ? "postpone" : "evolve", [backup, choice]() {
+    (void)backup;
+    league_do(choice < 0 ? "postpone" : "evolve", [slot, choice]() {
         PortFranchiseEvolution e;
-        if (!find_evolution(&e, true, backup ? 1 : 0))
+        if (!find_evolution(&e, true, slot))
             return false;  // no longer due (evolved already)
-        s_evolved = evolve_slot_impl(backup, choice, &s_shiny, &s_newShiny);
+        s_evolved = evolve_slot_impl(slot, choice, &s_shiny, &s_newShiny);
         return true;
     });
     *shiny = s_shiny;
@@ -3302,30 +4261,34 @@ bool PortFranchiseEvolveSlot(bool backup, int choice, bool* shiny, bool* newShin
     return s_evolved;
 }
 
-static bool evolve_slot_impl(bool backup, int choice, bool* shiny, bool* newShiny)
+static bool evolve_slot_impl(int slot, int choice, bool* shiny, bool* newShiny)
 {
     *shiny = *newShiny = false;
     PortFranchiseEvolution e;
-    if (!find_evolution(&e, true, backup ? 1 : 0))
+    if (!find_evolution(&e, true, slot))
         return false;
     Career& c = s_career;
     ClubState& s = c.clubs[c.myClub];
-    Prog& p = e.backup ? s.bk : s.cap;
+    Prog& p = slot_prog(s, e.slot);
     if (choice < 0 || choice >= e.options)
     {
         // r95: postponed: not asked again until its next level; the Evo Watch page's A evolves it any time
         p.declinedAt = p.level;
-        c.headline = std::string(e.fromName) + " will wait. Evolve it any time: Evo Watch page, A.";
+        c.headline = strncmp(e.fromKey, "mua_", 4) == 0  // r111: a Marvel hero's next costume
+                         ? std::string(e.fromName) + " will wait. Suit up any time: Evo Watch page, A."
+                         : std::string(e.fromName) + " will wait. Evolve it any time: Evo Watch page, A.";
         save();
         fprintf(stderr, "[franchise] evolution postponed: %s at Lv %d\n", e.fromKey, p.level);
         fflush(stderr);
         return false;
     }
     const bool was = p.shiny;
-    do_evolve(c, c.myClub, e.backup, e.toKey[choice]);
+    do_evolve_slot(c, c.myClub, e.slot, e.toKey[choice]);
     *shiny = p.shiny;
     *newShiny = p.shiny && !was;
-    c.headline = std::string("Your ") + e.fromName + " evolved into " + e.toName[choice] + (*newShiny ? " - and it's SHINY!" : "!");
+    c.headline = strncmp(e.fromKey, "mua_", 4) == 0  // r110: a Marvel hero's next costume
+                     ? std::string("Your ") + e.fromName + " suited up: " + e.toName[choice] + "!"
+                     : std::string("Your ") + e.fromName + " evolved into " + e.toName[choice] + (*newShiny ? " - and it's SHINY!" : "!");
     if (PortGuestUnlock(e.toKey[choice]))
         c.headline += " Unlocked for every mode.";
     save();
@@ -3600,6 +4563,12 @@ void personal_xp_from(Career& c, const Game& g, const PlayedResult& r)
         if (!s.backup.empty())
             gain(bs ? s.cap : s.bk, (co ? coXp : 0) + teamXp);
         gain(s.side, skXp + teamXp);
+        // r130: each sidekick member its own goals and assists (m_ID k+1; slot 1 is the co-captain's when there is one)
+        for (int k = 0; k < 3; k++)
+        {
+            const bool onField = !(co && k == 0);
+            gain(s.mp[k], onField ? personal_bonus(c, g, r.goals[side][k + 1], assists[k + 1]) + teamXp : teamXp / 2);
+        }
     }
 }
 
@@ -4144,12 +5113,14 @@ bool PortFranchiseLeagueFile(PortFranchiseSlot* out, char* code, int codeSize)
     return true;
 }
 
-bool PortFranchiseLeagueCreate(int club, int captainPick, int backupPick, int sidekickPick, int maxMembers)
+bool PortFranchiseLeagueCreate(int club, int captainPick, int backupPick, int sidekickPick, int maxMembers,
+                               const int* memberPicks)
 {
     if (s_match != MATCH_NONE)
         return false;
     s_lgJoin = LeagueJoin();
-    if (!PortFranchiseNewPicked(PORT_FR_LEAGUE_SLOT, club, captainPick, backupPick, sidekickPick))
+    // r131: the league dealt around your picks, your sidekick members too (the people who join take a club as dealt)
+    if (!PortFranchiseNewPicked(PORT_FR_LEAGUE_SLOT, club, captainPick, backupPick, sidekickPick, memberPicks))
         return false;
     Career& c = s_career;
     c.league = PortLeagueNewCode();
@@ -4538,6 +5509,8 @@ const char* PortFranchiseSidekickName(int side, int playerId)
 {
     if (s_match != MATCH_PLAYING || side < 0 || side > 1 || playerId < 1 || playerId > 3)
         return NULL;
+    if (PortNetOnline())  // r130 (review): online plays the generic sidekicks (members are offline only)
+        return NULL;
     const int club = s_matchClub[side];
     if (club < 0 || club >= PORT_FR_CLUBS)
         return NULL;
@@ -4546,6 +5519,14 @@ const char* PortFranchiseSidekickName(int side, int playerId)
     // are slots 2-3 (names[1], names[2])
     if (playerId == 1 && PortSecondCaptain(side) >= 0)
         return NULL;
+    // r130: a sidekick member (a Pokemon, a hero ...): its own name
+    const std::string& mem = s_career.clubs[club].mem[playerId - 1];
+    if (!mem.empty())
+    {
+        static std::string s_memName[2][4];
+        s_memName[side][playerId] = name_of(mem);
+        return s_memName[side][playerId].c_str();
+    }
     const std::string& n = s_career.clubs[club].names[playerId - 1];
     return n.empty() ? NULL : n.c_str();
 }
@@ -4605,6 +5586,7 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
     std::string to;
     out->evoLevel = next_evolution(key, &to);
     out->pokemon = out->evoLevel > 0 || key.compare(0, 3, "pk_") == 0;
+    out->costume = key.compare(0, 4, "mua_") == 0;  // r111
     if (out->evoLevel > 0)
     {
         copy_str(out->evoName, sizeof out->evoName, name_of(to));
@@ -4638,6 +5620,7 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
         std::string coTo;
         out->coEvoLevel = next_evolution(coKey, &coTo);
         out->coPokemon = out->coEvoLevel > 0 || coKey.compare(0, 3, "pk_") == 0;
+        out->coCostume = coKey.compare(0, 4, "mua_") == 0;  // r111
         if (out->coEvoLevel > 0)
         {
             copy_str(out->coEvoName, sizeof out->coEvoName, name_of(coTo));
@@ -4657,20 +5640,20 @@ int PortFranchiseEvoWatch(PortFranchiseEvoRow* out, int max)
     std::vector<PortFranchiseEvoRow> rows;
     for (int i = 0; i < PORT_FR_CLUBS; i++)
     {
-        const ClubState& s = c.clubs[i];
-        for (int b = 0; b < 2; b++)
+        ClubState& s = const_cast<ClubState&>(c.clubs[i]);
+        for (int b = 0; b < 5; b++)  // r130: and the sidekick members (slots 2-4)
         {
-            const std::string& key = b ? s.backup : s.captain;
-            if (key.compare(0, 3, "pk_") != 0)
-                continue;  // Pokemon only
-            const Prog& p = b ? s.bk : s.cap;
+            const std::string& key = slot_key(s, b);
+            if (key.compare(0, 3, "pk_") != 0 && key.compare(0, 4, "mua_") != 0)
+                continue;  // Pokemon only (r110: and the Marvel heroes, whose next costume is their "evolution")
+            const Prog& p = slot_prog(s, b);
             PortFranchiseEvoRow r;
             memset(&r, 0, sizeof r);
             copy_str(r.name, sizeof r.name, name_of(key));
             copy_str(r.key, sizeof r.key, key);
             r.club = i;
             r.mine = i == c.myClub;
-            r.backup = b != 0;
+            r.backup = b == 1;
             r.shiny = p.shiny;
             r.level = p.level;
             r.xp = p.xp;
@@ -4679,12 +5662,16 @@ int PortFranchiseEvoWatch(PortFranchiseEvoRow* out, int max)
             r.evoLevel = next_evolution(key, &to);
             if (r.evoLevel > 0)
                 copy_str(r.evoName, sizeof r.evoName, name_of(to));
-            std::string now[2];
+            std::string now[5];
             r.ready = r.mine && evolutions_for(key, p, now) > 0;  // r95
+            r.costume = key.compare(0, 4, "mua_") == 0;            // r111
             rows.push_back(r);
         }
     }
+    // r111: yours first (the page shows 33; with the Marvel heroes a league can deal more than that)
     std::sort(rows.begin(), rows.end(), [](const PortFranchiseEvoRow& a, const PortFranchiseEvoRow& b) {
+        if (a.mine != b.mine)
+            return a.mine;
         if (a.level != b.level)
             return a.level > b.level;
         if (a.xp != b.xp)
@@ -4733,11 +5720,18 @@ int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, i
     ClubState& me = c.clubs[c.myClub];
     if (what == 1 && me.backup.empty())
         return 0;
+    // r131: a sidekick trio with members: their names, values and levels (the members go with the trade)
+    auto trio_level = [](const ClubState& s) {
+        int sum = 0;
+        for (int k = 0; k < 3; k++)
+            sum += s.mem[k].empty() ? s.side.level : s.mp[k].level;
+        return sum / 3;
+    };
     if (what == 2)
     {
-        *myValue = rating(me.kind) + std::max(0, me.side.level - 8);
+        *myValue = trio_value(me);
         if (myName != NULL)
-            copy_str(myName, (size_t)nameSize, kind_name(me.kind) + " LV " + std::to_string(me.side.level));
+            copy_str(myName, (size_t)nameSize, trio_name(me) + " LV " + std::to_string(trio_level(me)));
     }
     else
     {
@@ -4760,11 +5754,17 @@ int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, i
             o.backup = b != 0;
             if (what == 2)
             {
-                if (s.kind == me.kind)
+                if (same_trio(s, me))  // r131: members count (the same kind, different members: a real trade)
                     continue;
-                copy_str(o.name, sizeof o.name, kind_name(s.kind));
-                o.level = s.side.level;
-                o.value = rating(s.kind) + std::max(0, s.side.level - 8);
+                copy_str(o.name, sizeof o.name, trio_name(s));
+                // r116; r131: its first member's portrait when it has members
+                std::string face = kind_portrait(s.kind);
+                for (int k = 2; k >= 0; k--)
+                    if (!s.mem[k].empty())
+                        face = s.mem[k];
+                copy_str(o.key, sizeof o.key, face);
+                o.level = trio_level(s);
+                o.value = trio_value(s);
             }
             else
             {
@@ -4772,6 +5772,7 @@ int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, i
                 if (their.key->empty())
                     continue;
                 copy_str(o.name, sizeof o.name, name_of(*their.key));
+                copy_str(o.key, sizeof o.key, *their.key);  // r116
                 o.level = their.prog->level;
                 o.shiny = their.prog->shiny;
                 o.value = player_value(*their.key, *their.prog);
@@ -4818,14 +5819,15 @@ static bool trade_impl(int what, int club, bool backup)
     int myValue = 0, theirValue = 0;
     if (what == 2)
     {
-        if (them.kind == me.kind)
+        if (same_trio(them, me))
             return false;
-        myValue = rating(me.kind) + std::max(0, me.side.level - 8);
-        theirValue = rating(them.kind) + std::max(0, them.side.level - 8);
+        // r131: the whole trio, its members too (one character, one club: a swap keeps it so)
+        myValue = trio_value(me);
+        theirValue = trio_value(them);
         if (myValue * 10 < theirValue * 9)
             return false;
-        gave = kind_name(me.kind);
-        got = kind_name(them.kind);
+        gave = trio_name(me);
+        got = trio_name(them);
         swap_sidekicks(c, c.myClub, club);
     }
     else
@@ -4947,6 +5949,9 @@ void PortFranchiseIntroBegin()
     {
         PortGuestSetShiny(0, false);  // r70c: shiny captains are franchise matches' only
         PortGuestSetShiny(1, false);
+        for (int s = 0; s < 2; s++)  // r130: and shiny sidekick members (review: carried into the next cup match)
+            for (int k = 1; k <= 3; k++)
+                PortGuestSetSlotShiny(s, k, false);
         return;
     }
     s_introSerial++;

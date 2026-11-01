@@ -27,12 +27,14 @@ public final class GuestSetup {
     private GuestSetup() {}
 
     /** The games guests come from, their names, and what each one gives. */
-    public static final String[] IDS = {"GALE01", "GC6E01", "R4QE01"};
-    public static final String[] NAMES = {"Super Smash Bros. Melee", "Pokemon Colosseum", "Mario Strikers Charged"};
+    public static final String[] IDS = {"GALE01", "GC6E01", "R4QE01", "RMUE52"};
+    public static final String[] NAMES = {"Super Smash Bros. Melee", "Pokemon Colosseum", "Mario Strikers Charged",
+        "Marvel: Ultimate Alliance (Wii)"};
     public static final String[] GIVES = {
         "17 Melee fighters, Pokemon voices, the evolution music",
         "70 Pokemon (+ shiny), the franchise's evolutions",
-        "Bowser, Bowser Jr., Diddy, Petey, Boo, Dry Bones, Monty Mole, Shy Guy",
+        "Bowser, Bowser Jr., Diddy, Petey, Boo, Dry Bones, Monty Mole, Shy Guy + the 3D home ground figures (captains too)",
+        "26 Marvel heroes + their costumes (franchise unlocks), celebrations, home ground figures, costume music",
     };
 
     private static final String[] EXT = {".iso", ".gcm", ".rvz", ".wia", ".ciso", ".gcz", ".nkit.iso"};
@@ -73,7 +75,8 @@ public final class GuestSetup {
             }
             // (Lance's test: his Melee and Colosseum were the .7z downloads, and the page just said "not found")
             if ((lower.endsWith(".7z") || lower.endsWith(".zip") || lower.endsWith(".rar")) && e.length() >= (100L << 20)
-                    && (lower.contains("melee") || lower.contains("colosseum") || lower.contains("charged"))) {
+                    && (lower.contains("melee") || lower.contains("colosseum") || lower.contains("charged")
+                    || lower.contains("ultimate alliance") || lower.contains("marvel"))) {
                 out.problems.add(name + ": zipped. Unzip it on your PC first, then copy the .iso or .rvz inside to"
                         + " the Quest.");
                 continue;
@@ -100,6 +103,9 @@ public final class GuestSetup {
             String id = ascii(h, 0, 6);
             if (id.equals("R4QE01"))
                 out.problems.add(f.getName() + ": Mario Strikers Charged as a plain Wii image is encrypted. Convert it"
+                        + " to .rvz in Dolphin (right-click the game, Convert File Format, RVZ).");
+            if (id.equals("RMUE52"))
+                out.problems.add(f.getName() + ": Marvel: Ultimate Alliance as a plain Wii image is encrypted. Convert it"
                         + " to .rvz in Dolphin (right-click the game, Convert File Format, RVZ).");
             return null;
         }
@@ -152,6 +158,7 @@ public final class GuestSetup {
                 Source melee = files.containsKey("GALE01") ? openOrWarn(files.get("GALE01").getPath(), NAMES[0], open) : null;
                 Source colo = files.containsKey("GC6E01") ? openOrWarn(files.get("GC6E01").getPath(), NAMES[1], open) : null;
                 Source charged = files.containsKey("R4QE01") ? openOrWarn(files.get("R4QE01").getPath(), NAMES[2], open) : null;
+                Source mua = files.containsKey("RMUE52") ? openOrWarn(files.get("RMUE52").getPath(), NAMES[3], open) : null;
                 Job job = new Job(strikers, melee, colo, charged, new AssetData(assets), new File(home, "guests"),
                         new Job.Progress() {
                             @Override
@@ -168,6 +175,7 @@ public final class GuestSetup {
                                 if (onChange != null) onChange.run();
                             }
                         });
+                job.mua = mua;
                 int made = Convert.run(job);
                 writeStamp(new File(home, "guests/converted.txt"), stamp(files));
                 result = made + " guest characters ready." + (warnings.isEmpty() ? "" : " " + warnings.size() + " problems (below).");

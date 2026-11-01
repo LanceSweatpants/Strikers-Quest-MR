@@ -468,8 +468,8 @@ bool PortPadMayControl(cTeam* team, int pad, cPlayer* player)
     if (index < 0 || index == 4)
         return true;  // the goalie: whoever's turn it is
     // r78: with a co-captain in slot 1 (include/port/lineup.h) each person has a captain: pad 0 the
-    // captain and slot 2, pad 1 the co-captain and slot 3
-    if (PortSecondCaptain(team->m_nSide) >= 0)
+    // captain and slot 2, pad 1 the co-captain and slot 3. r130: any captain class in slot 1 (a slot pick too).
+    if (PortSlotCaptain(team->m_nSide, 0) >= 0)
         return index % 2 == pad;
     return (index < 2 ? 0 : 1) == pad;
 }

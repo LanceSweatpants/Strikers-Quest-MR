@@ -898,8 +898,15 @@ public class LobbyActivity extends Activity {
         final List<HomeGuest> guests = homeGuests();
         final java.util.Map<String, String> guestNames = new java.util.HashMap<>();
         for (HomeGuest g : guests) guestNames.put(g.pack, g.name);
-        String current = pick.equals("-1") ? "Automatic" : homeName(pick, guestNames);
+        String current = pick.equals("-1") ? "Automatic" : (pick.equals("none") ? "None" : homeName(pick, guestNames));
         note("Your home captain now: " + current);
+        // r134 (Lance: "when they select home ground at the beginning they can choose (NONE) to have none"): no home
+        // ground at all - no board, no banners by the screen, no corner, no trophy shelf (the game reads "none")
+        page.addView(row("None: no home ground (no board, banners, corner or trophy shelf)"
+                + (pick.equals("none") ? "   (current)" : ""), true, v -> {
+            writeHomePick("none");
+            showHomeGround();
+        }));
         page.addView(row("Automatic: the captain you play most" + (pick.equals("-1") ? "   (current)" : ""), true, v -> {
             writeHomePick("-1");
             showHomeGround();
@@ -1029,7 +1036,8 @@ public class LobbyActivity extends Activity {
         guestProgress = null;
         title("Guest characters", 26);
         TextView rule = note("YOU NEED YOUR OWN GAME FILES FOR THE GUEST CHARACTERS.\nCopy them anywhere on the Quest"
-                + " (Download is fine) as .iso or .rvz. Mario Strikers Charged: .rvz only (Dolphin: Convert File Format)."
+                + " (Download is fine) as .iso or .rvz. The Wii games (Mario Strikers Charged, Marvel: Ultimate Alliance):"
+                + " .rvz only (Dolphin: Convert File Format)."
                 + " Nothing from these games comes with this app: your headset makes the characters from your files.");
         rule.setTextColor(ACCENT);
         if (found == null && !guestScanning) scanGuests();

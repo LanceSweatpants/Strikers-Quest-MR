@@ -296,6 +296,10 @@ void TournTeamSetupSceneV2::Update(float fDeltaT)
         {
             freeCaptains[t] = mCaptainGrid->IsValid((eTeamID)t);
         }
+        if (role == PORT_GUEST_SIDEKICK)
+        {
+            PortGuestPickerCaptainIs(0, (int)mCurrentCaptain);  // r130: the sidekick menu's own captain (no Strikers twin)
+        }
         PortGuestPickerOffer(0, role, freeCaptains);
         int guest = -1;
         if (PortGuestPickerTake(0, role, &guest))

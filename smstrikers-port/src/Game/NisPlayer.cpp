@@ -891,14 +891,16 @@ int NisPlayer::TargetToIndex(NisTarget target, int index, NisWinnerType winnerTy
     // strikers-quest r78: a side with a co-captain (include/port/lineup.h) has its sidekicks in slots 2-3:
     // a sidekick's cut-scene animation never goes to the co-captain (another class's skeleton: a garbled
     // pose, an out-of-range bone), a third one goes nowhere (10). Without a co-captain these are the
-    // game's own index + 1 / + 5 (a captain cut-scene's extra animations included).
+    // game's own index + 1 / + 5 (a captain cut-scene's extra animations included). r130: any sidekick slot
+    // playing a captain class: the sidekick animations go to the slots that play the sidekick class, in
+    // order, and none past them (PortSidekickSlot is the game's own base + k when no slot plays a captain class).
     if (target == NIS_TARGET_HOME_CAPTAIN)
     {
-        return index > 0 && PortSecondCaptain(0) >= 0 ? PortSidekickSlot(0, index - 1) : index;
+        return index > 0 ? PortSidekickSlot(0, index - 1) : index;
     }
     if (target == NIS_TARGET_AWAY_CAPTAIN)
     {
-        return index > 0 && PortSecondCaptain(1) >= 0 ? PortSidekickSlot(1, index - 1) : index + 4;
+        return index > 0 ? PortSidekickSlot(1, index - 1) : index + 4;
     }
     if (target == NIS_TARGET_HOME_SIDEKICK)
     {

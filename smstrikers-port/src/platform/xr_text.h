@@ -25,7 +25,7 @@ void goal_banner(uint8_t* rgba, int w, int h, const char* name, uint32_t teamRgb
 // r104: and two more rows: the trophy shelf + its RetroAchievements badge board on/off (one switch), and the
 // RetroAchievements pop-ups (2 all, 1 unlocks only, 0 off).
 void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row, bool shelf,
-                    int popups);
+                    int popups, bool home);
 
 // r46: a RetroAchievements pop-up: `header` ("ACHIEVEMENT UNLOCKED") with the points (none when
 // points <= 0), the title, and the description (wrapped onto two lines if it must), beside a gold
@@ -106,6 +106,96 @@ struct GuestTile {
 void guest_picker(uint8_t* rgba, int w, int h, const char* title, const GuestTile* tiles, int count, int columns,
                   int cursor, const char* hint);
 
+// r112 (Lance: "make that fuckin character selection screen way better. shit is waaay too puny to see who the
+// fuck im even selecting"): the character select menu by game. Tabs along the top (a game each; `onTabs`: the
+// stick is on them), that game's characters as big tiles (`firstRow` the top row shown, 5 a row, 3 rows: a
+// character with its evolutions / costumes is one tile, `forms` how many it has), and a spotlight on the one
+// under the cursor: its portrait big, its name, its card as bars, its forms strip (LT / RT; a locked one dark,
+// with the level it comes at). `title` small at the foot's left, the hints (a button and a word or two) beside
+// it. Pictures straight alpha, any size. w : h = 2160 : 1300.
+struct SelectTab {
+  const char* name;
+  uint32_t rgb;
+  int count;
+};
+struct SelectTile {
+  const uint8_t* rgba = nullptr;
+  int w = 0, h = 0;
+  const char* name = "";
+  int forms = 1;
+  bool taken = false;
+};
+struct SelectForm {
+  const uint8_t* rgba = nullptr;
+  int w = 0, h = 0;
+  bool locked = false;
+  int level = 0;  // the franchise level a locked one comes at, 0 unknown
+};
+struct SelectSpot {
+  const uint8_t* rgba = nullptr;
+  int w = 0, h = 0;
+  const char* name = "";
+  const char* note = "";  // under the name ("UNLOCK IN FRANCHISE", "TAKEN"), "" none
+  bool locked = false, taken = false;
+  bool hasCard = false;
+  float card[4] = {0, 0, 0, 0};  // speed, shooting, passing, tackling, 0..1
+  std::vector<SelectForm> forms;
+  int formAt = 0;
+};
+struct SelectHint {
+  const char* glyph;  // "A", "B", "X", "LT RT", "L" (the stick)
+  uint32_t rgb;
+  const char* words;
+};
+void character_select(uint8_t* rgba, int w, int h, const char* title, const SelectTab* tabs, int tabCount, int tab,
+                      bool onTabs, const SelectTile* tiles, int count, int cursor, int firstRow, const SelectSpot& spot,
+                      const SelectHint* hints, int hintCount);
+
+// r113 (Lance: "the franchise menu's to be redone and more attention grabbing/less words, maybe make an actual
+// newspaper ... we need more images or VR native experiences"): a picture made of pieces the caller places
+// (xr_quest.cpp lays out the franchise pages and the newspaper's with it), drawn in order over a clear
+// background. Pixels, top-left origin.
+//   kBox: a rounded box (x0, y0)-(x1, y1), `radius`, filled `rgb` (to `rgb2` at the bottom when rgb2 != 0).
+//   kRing: its outline only, `outline` px wide.
+//   kGlow: a soft round light filling the box (strongest in the middle).
+//   kImage: a straight-alpha picture fitted into the box (bottom-centred when `bottom`; `silhouette`: in `rgb`).
+//   kText / kTextLeft / kTextRight: `text` (capitals) `y1` px high on the line y0, centred on x0 / starting at
+//     x0 / ending at x0, shrunk to fit `x1` px; filled `rgb` (to `rgb2` at the bottom when rgb2 != 0), an
+//     `outline` px rim in `outlineRgb` (0: none).
+// r131 (STRIKERS ILLUSTRATED's covers):
+//   kBox: `alpha2` >= 0 fades its alpha to that at the bottom (rgb2 0 then = the same colour).
+//   kImage: `trim` cuts its see-through margins off first; `crop` fills the box (cut to it) instead of fitting
+//     inside it, `focusX` / `focusY` (0..1) the part kept; `flip` mirrors it; `duo`: duotone, dark `rgb` to light
+//     `rgb2` by its brightness.
+//   kText*: `xscale` < 1 condensed, `slant` leans it (x moved per px up), `angle` turns it (degrees, clockwise),
+//     `shadow` a drop shadow that many px down-right in `shadowRgb` at `shadowA`.
+//   kPoly: a convex polygon, `pts` = x, y, x, y ... filled `rgb`.
+//   kBurst: a star burst filling the box: `points` spikes, valleys at `inner` (0..1) of the way out, turned `angle`.
+//   kDots: halftone dots over the box, a dot a `radius` px cell, `dot0` .. `dot1` of the cell wide top to bottom.
+struct BoardPiece {
+  enum Kind { kBox, kRing, kGlow, kImage, kText, kTextLeft, kTextRight, kPoly, kBurst, kDots };
+  Kind kind = kBox;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  float radius = 0.0f, alpha = 1.0f, outline = 0.0f;
+  uint32_t rgb = 0xFFFFFF, rgb2 = 0, outlineRgb = 0x05070C;
+  const uint8_t* img = nullptr;
+  int iw = 0, ih = 0;
+  bool bottom = false, silhouette = false;
+  std::string text;
+  // r131
+  float alpha2 = -1.0f;
+  bool trim = false, crop = false, flip = false, duo = false;
+  float focusX = 0.5f, focusY = 0.5f;
+  float xscale = 1.0f, slant = 0.0f, angle = 0.0f, shadow = 0.0f, shadowA = 0.55f;
+  uint32_t shadowRgb = 0x000000;
+  std::vector<float> pts;
+  int points = 12;
+  float inner = 0.6f, dot0 = 0.1f, dot1 = 0.4f;
+};
+void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces);
+// The width of `text` (capitals) at `px` (to lay words out beside each other).
+float board_text_width(const std::string& text, float px);
+
 // r67: the small "Y: GUEST CHARACTERS" tip shown on a pick screen while the picker is closed.
 void guest_tip(uint8_t* rgba, int w, int h, const char* text);
 
@@ -168,6 +258,6 @@ struct EvoImage {
 };
 void evolution_scene(uint8_t* rgba, int w, int h, const EvoImage& from, const EvoImage& to, const EvoImage& alt,
                      int stage, float t, int choice, const char* title, const char* line, const char* hint, bool shiny,
-                     int options = 2);
+                     int options = 2, const EvoImage* all = nullptr);  // r130: all = every option's picture (3-5)
 
 }  // namespace xrtext

@@ -1,0 +1,6 @@
+# The heroes' costume-unlock music (tools/outside/mua/mua_evo_music.py CUTS): our cut of MUA's x_voice.zss streams.
+# out name, stream index, start s, length s (- = to its end), fade in s, fade out s, loops (1: the context wraps),
+# then the loudness to match: the Pokemon counterpart's peak and RMS in dBFS (music_build.evm / music_fanfare.evm,
+# measured by mua_evo_music.measure; exact doubles).
+music_hero_build 246 1.81 8.70 0.10 0.50 1 -0x1.19b172a49b09cp+0 -0x1.c12153146f423p+3
+music_hero_win 46 0.10 - 0.02 0.30 0 -0x1.22bb57cad5117p+1 -0x1.27f1497dfb512p+4

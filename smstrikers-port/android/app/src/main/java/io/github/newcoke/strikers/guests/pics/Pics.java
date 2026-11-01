@@ -186,6 +186,7 @@ public final class Pics {
         final Map<String, byte[][]> bySeries = new HashMap<>();
         for (Guest g : captains) {
             job.progress.step("Icon: " + g.pack, done[0]++, total);
+            if (g.game.equals("Ultimate Alliance")) continue;  // 1.16: the heroes' own banners (guests/mua)
             final String series = g.game.equals("Colosseum") || g.game.equals("Melee Pokemon") ? "pokemon" : t.series.get(g.pack);
             if (series == null) {
                 job.progress.warn("Icon " + g.pack + ": no series");

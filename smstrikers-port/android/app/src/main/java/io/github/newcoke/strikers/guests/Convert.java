@@ -2,7 +2,9 @@ package io.github.newcoke.strikers.guests;
 
 import io.github.newcoke.strikers.guests.audio.Audio;
 import io.github.newcoke.strikers.guests.charged.Charged;
+import io.github.newcoke.strikers.guests.charged.Home;
 import io.github.newcoke.strikers.guests.models.Models;
+import io.github.newcoke.strikers.guests.mua.Mua;
 import io.github.newcoke.strikers.guests.pics.Pics;
 import io.github.newcoke.strikers.guests.render.Render;
 
@@ -14,7 +16,8 @@ import java.util.Set;
 
 /**
  * strikers-quest 1.14: the whole guest converter, in order. Our own data first (the roster cut to the games the player
- * has: every later part, and the game's etching cells, go by it), then the models, Charged, the sounds, the pictures
+ * has: every later part, and the game's etching cells, go by it), then the models, Charged (+ the home corner's 3D
+ * figures of the Strikers captains and Charged guests, from the Charged disc), the sounds, the pictures
  * that come straight off the discs, the renders (evolution poses, Pokemon portraits, etching) and last the pictures made
  * from portraits (icons, loading pictures, kits). Plain Java: the PC checks run the very same thing.
  */
@@ -22,12 +25,15 @@ public final class Convert {
     private Convert() {}
 
     /** Raised whenever the converter's output changes: headsets make their guests again (GuestSetup's stamp). */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;  // 2 (1.16): + home figures (charged/Home), Melee standing poses (render/Evo),
+                                          // r127 / r130's 82 Pokemon (models/Fix + Stand: their post-build fixes),
+                                          // the Marvel heroes (mua: RMUE52, its own stamp line)
 
     /** Makes everything it can; returns how many guests are ready. One guest's failure is a warning, not the end. */
     public static int run(Job job) throws IOException {
-        final String[] names = {"Our data", "Models", "Charged", "Sounds", "Pictures", "Portraits + poses", "Kits + loading"};
-        final int[] weight = {1, 30, 5, 4, 3, 32, 25};
+        final String[] names = {"Our data", "Models", "Charged", "Home figures", "Sounds", "Pictures", "Portraits + poses",
+            "Marvel heroes", "Kits + loading"};
+        final int[] weight = {1, 30, 5, 5, 4, 3, 32, 20, 25};
         int total = 0;
         for (int w : weight) total += w;
         final int[] base = new int[weight.length];
@@ -37,10 +43,14 @@ public final class Convert {
         Set<String> kept = writeBase(sub(job, names[0], base[0], weight[0], all));
         Models.run(sub(job, names[1], base[1], weight[1], all));
         Charged.run(sub(job, names[2], base[2], weight[2], all));
-        Audio.run(sub(job, names[3], base[3], weight[3], all));
-        Pics.portraits(sub(job, names[4], base[4], weight[4], all));
-        Render.run(sub(job, names[5], base[5], weight[5], all));
-        Pics.run(sub(job, names[6], base[6], weight[6], all));
+        Home.run(sub(job, names[3], base[3], weight[3], all));  // r118: the corner's 3D captains + Charged guests
+        Audio.run(sub(job, names[4], base[4], weight[4], all));
+        Pics.portraits(sub(job, names[5], base[5], weight[5], all));
+        Render.run(sub(job, names[6], base[6], weight[6], all));
+        // 1.16: the Marvel heroes (packs, poses, home figures, music, portraits, banners, their etch cells into the
+        // atlas Render just wrote); before the loading pictures and kits, which go by the portraits and colours
+        Mua.run(sub(job, names[7], base[7], weight[7], all));
+        Pics.run(sub(job, names[8], base[8], weight[8], all));
         job.progress.step("Done", all, all);
 
         int ready = 0;
@@ -52,7 +62,7 @@ public final class Convert {
 
     /** A part's own steps (done / total of its own) as its share of the whole run. */
     private static Job sub(final Job job, final String part, final int base, final int weight, final int all) {
-        return new Job(job.strikers, job.melee, job.colo, job.charged, job.data, job.guests, new Job.Progress() {
+        final Job j = new Job(job.strikers, job.melee, job.colo, job.charged, job.data, job.guests, new Job.Progress() {
             @Override
             public void step(String what, int done, int total) {
                 final int t = Math.max(1, total);
@@ -64,6 +74,8 @@ public final class Convert {
                 job.progress.warn(what);
             }
         });
+        j.mua = job.mua;
+        return j;
     }
 
     /**
@@ -108,6 +120,8 @@ public final class Convert {
                 return job.colo != null;
             case "charged":
                 return job.charged != null;
+            case "ultimate alliance":
+                return job.mua != null;
             default:
                 return false;
         }

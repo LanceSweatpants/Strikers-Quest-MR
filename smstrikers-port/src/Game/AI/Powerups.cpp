@@ -472,8 +472,13 @@ u8 PowerupCreateAndThrow(cFielder* pThrower, ePowerUpType eType, int nnumOfPower
             cFielder* pFielder = pThrower;
             if (pThrower->IsCaptain())
             {
-                // strikers-quest r78: the team's sidekick, past a co-captain (include/port/lineup.h)
-                pFielder = pThrower->m_pTeam->GetFielder(PortSecondCaptain(pThrower->m_pTeam->m_nSide) >= 0 ? 2 : 1);
+                // strikers-quest r78: the team's sidekick, past a co-captain (include/port/lineup.h). r130: its first
+                // player of the sidekick class; none (every slot a captain class): no sidekick's speciality (the
+                // thrower's own class, which no case below has)
+                const int sk = PortFirstSidekickPlayer(pThrower->m_pTeam->m_nSide);
+                cFielder* pSk = sk >= 1 && sk <= 3 ? pThrower->m_pTeam->GetFielder(sk) : NULL;
+                if (pSk != NULL)
+                    pFielder = pSk;
             }
 
             switch (pFielder->m_eCharacterClass)
@@ -1166,7 +1171,12 @@ int PowerupBase::AwardPowerup(cTeam* pTeam)
     }
 
     cFielder* pCaptain = pTeam->GetCaptain();
-    cFielder* pSideKick = pTeam->GetFielder(PortSecondCaptain(pTeam->m_nSide) >= 0 ? 2 : 1);  // r78: past a co-captain
+    // r78: past a co-captain; r130: the first player of the sidekick class, else (every slot a captain class) slot 1's
+    // own item chances (every fielder has them)
+    const int skPlayer = PortFirstSidekickPlayer(pTeam->m_nSide);
+    cFielder* pSideKick = pTeam->GetFielder(skPlayer >= 1 && skPlayer <= 3 ? skPlayer : 1);
+    if (pSideKick == NULL)
+        pSideKick = pCaptain;
 
     int nChanceForStar = ((nChanceForChainChomp) > 0 ? (nChanceForChainChomp) : 0);
     nChanceForStar = nChanceForStar + g_pGame->m_pGameTweaks->nChanceForStar - nDifference;

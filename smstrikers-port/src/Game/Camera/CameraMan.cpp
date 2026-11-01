@@ -24,6 +24,7 @@
 #include "math.h"
 
 extern float g_fSimulationTick;
+#include "port/xr_quest.h"  // strikers-quest r106: PortXrFrameScale
 
 static f32 CANT_COLLIDE = *(f32*)__float_max;
 
@@ -139,7 +140,9 @@ void cCameraManager::Update(float fDeltaT)
         {
         case eCT_EASE_IN:
         {
-            float fSimTick = g_fSimulationTick;
+            // strikers-quest r106: per 60 Hz frame (the original ran this once a 60 Hz frame); at a game
+            // frame every 72 Hz display frame a step is 60/72 of one
+            float fSimTick = g_fSimulationTick * PortXrFrameScale();
             pCamera = nlDLRingGetStart<cBaseCamera>(m_cameraStack);
             if (pCamera != NULL)
             {

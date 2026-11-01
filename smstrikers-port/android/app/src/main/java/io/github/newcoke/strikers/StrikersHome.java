@@ -371,6 +371,11 @@ final class StrikersHome {
             // player's own game files (guests/GuestSetup).
             copyAssetTree(context.getAssets(), "franchise", new File(home, "franchise"));
             copyAssetTree(context.getAssets(), "guestart/portraits", new File(home, "guests/portraits"));
+            // r105 (Lance: "grovyle was WAY too small"): our guest sizes / arm sizes (xr_guest.cpp limbs.txt) with
+            // every update, so a change reaches guests made by an older converter without making them again.
+            copyAssetFile(context.getAssets(), "guestdata/base/limbs.txt", new File(home, "guests/limbs.txt"));
+            // r124: every Strikers bone's standing pose (xr_guest.cpp: the Marvel heroes turn from it and their own idle)
+            copyAssetFile(context.getAssets(), "guestdata/base/hostref_all.txt", new File(home, "guests/hostref_all.txt"));
             prefs.edit().putLong(KEY_STAGED_VERSION, installed).apply();
         } catch (IOException e) {
             // Not fatal: the game says so on stderr and keeps the GameCube prompts.

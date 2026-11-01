@@ -42,7 +42,18 @@ bool PortFranchiseNew(int slot, int club); // a new career with that club; the p
 // character select menu's picks (a guest's roster index, or PORT_GUEST_ORIGINAL(_SIDEKICK) + the
 // Strikers id; unevolved captains only); backupPick -1 = no backup captain. Every other club is dealt at
 // random from the rest, as before.
-bool PortFranchiseNewPicked(int slot, int club, int captainPick, int backupPick, int sidekickPick);
+// r131 (Lance: "each character is only chosen once per franchise. you as the 1UP in single player, you pick first, and
+// the league forms around your picks, never duplicating"): memberPicks = your three sidekick slots' menu picks (as
+// PortFranchiseSetMembers takes them; null: generic sidekicks). A character (its whole evolution line, every costume of a
+// hero) is on one club only: the 31 others are dealt around your picks - a captain, a backup and three named sidekick
+// members each from what's left, a snake by rating - and only when that runs out a club has no backup / generic
+// sidekicks (a roster with fewer captains than clubs: those clubs get a dealt captain again).
+bool PortFranchiseNewPicked(int slot, int club, int captainPick, int backupPick, int sidekickPick,
+                            const int* memberPicks = nullptr);
+// r131: which of `count` menu picks are characters already taken (out[i] = 1): the same character as one of `held`
+// (your captain, backup, earlier sidekick slots in this pick; a Charged sidekick guest may fill several of your slots),
+// and with `career` (the member editor) one another club of the loaded career has. The Strikers sidekicks never are.
+void PortFranchisePicksTaken(const int* picks, int count, const int* held, int heldCount, bool career, unsigned char* out);
 // r75: whether a character select menu pick can start a career as your captain (an unevolved captain).
 bool PortFranchiseCaptainPickable(int pick);
 void PortFranchiseDelete(int slot);
@@ -129,6 +140,7 @@ struct PortFranchiseView
     {
         char name[48];
         int club, goals, form;  // form -3 (slump) .. +3 (on fire)
+        char key[48];           // r113: its portrait (guests/portraits/<key>.png)
     } leaders[10], hot[5], cold[5];
     int leaderCount, hotCount, coldCount;
     char feed[8][128];           // "@NAME: ..." (last week's posts)
@@ -157,6 +169,7 @@ struct PortFranchiseView
     int wins, losses, goalsFor, goalsAgainst, divisionRank;
     char captain[48], backup[48], kind[32], sidekicks[3][48];
     char captainKey[48], backupKey[48];  // portraits (guests/portraits/<key>.png)
+    char kindKey[48];                    // r116: the sidekicks' portrait
     bool startsBackup;                   // your backup captain starts the next match
     int nextOpponent;                    // club, -1 none
     bool nextHome;
@@ -166,7 +179,19 @@ struct PortFranchiseView
     PortFranchiseRow conference[2][16];  // both conferences, ranked
     char results[16][96];                // last week's results ("CINDER CITY 3 - 1 MUTE CITY")
     int resultCount;
+    // r113 (the newspaper, logo v logo): last week's / game day's games as numbers
+    struct Played
+    {
+        int home, away, homeGoals, awayGoals;
+        bool overtime, mine;
+    } played[16];
+    int playedCount;
+    int lastWeek;                        // the week they were (0 none yet)
+    char clubCaptainKey[PORT_FR_CLUBS][48];  // r113: each club's starting captain (its portrait key)
     char headline[224];                  // your last match, or the season's state
+    // r131: your next opponent's other players: its co-captain ("" none) and the three sidekicks by name (a member's own)
+    char oppCoCaptain[48];
+    char oppSidekicks[3][48];
 };
 bool PortFranchiseGetView(PortFranchiseView* v);
 
@@ -188,8 +213,9 @@ struct PortFranchiseEvolution
     bool backup;                  // your backup captain (else your captain)
     int level;
     char fromKey[48], fromName[48];
-    int options;                  // 1, or 2 for a split
-    char toKey[2][48], toName[2][48];
+    int options;                  // 1, or 2-5 for a split (r130: Eevee's five, Tyrogue's three)
+    int slot;                     // r130: 0 your captain, 1 the backup, 2-4 your sidekick members
+    char toKey[5][48], toName[5][48];
     bool shiny;                   // already shiny (stays shiny)
     bool postponed;               // r95: you said "not now" at this level (the hub doesn't ask again)
 };
@@ -203,6 +229,13 @@ bool PortFranchiseEvolve(int choice, bool* shiny, bool* newShiny);
 // r95: the same for your captain (backup false) or backup captain, postponed or not; choice -1 =
 // postpone (not asked again until its next level; the Evo Watch page can still evolve it).
 bool PortFranchiseEvolveSlot(bool backup, int choice, bool* shiny, bool* newShiny);
+// r130: the same by slot: 0 captain, 1 backup, 2-4 your sidekick members
+bool PortFranchiseEvolvePlayer(int slot, int choice, bool* shiny, bool* newShiny);
+// r130: your club's three sidekick members (menu picks: a guest's roster index, a Strikers sidekick for a generic one);
+// each its own level, evolutions / costumes and shiny. Not in an online league. r131: a character another club has (or
+// your captain / backup, or one already in an earlier slot) is left out: a generic sidekick in that slot.
+bool PortFranchiseSetMembers(const int picks[3]);
+bool PortFranchiseMemberPicks(int members[3], int* captain, int* backup);  // r130: the member editor's start
 
 // r97 (Lance: "we need a difficulty setting for franchise mode ... a real life nemesis/A-Life system where im
 // not always dominating or being the MVP"): the career's difficulty, 1 Rookie, 2 Professional (older
@@ -224,6 +257,7 @@ struct PortFranchiseLive
 {
     bool valid;
     bool pokemon;            // the captain can evolve at all
+    bool costume;            // r111: a Marvel hero (its next form is its next costume)
     char name[48];
     int level, xp, gain, newLevel, newXp;
     int goals, assists;      // its own, this match
@@ -240,7 +274,7 @@ struct PortFranchiseLive
     int coGoals, coAssists;
     int coEvoLevel;
     char coEvoName[48];
-    bool coEvolves, coPokemon;
+    bool coEvolves, coPokemon, coCostume;
 };
 bool PortFranchiseLiveXp(PortFranchiseLive* out);
 // r77 (Lance: "an evo watch where we see the current levels of all pokemon that are in our franchise"):
@@ -258,6 +292,7 @@ struct PortFranchiseEvoRow
     int evoLevel;            // 0: its last form
     char evoName[48];
     bool ready;              // r95: yours and ready to evolve now (A on the Evo Watch page)
+    bool costume;            // r111: a Marvel hero (its next form is its next costume)
 };
 int PortFranchiseEvoWatch(PortFranchiseEvoRow* out, int max);
 // r77 (Lance: "i couldnt see how tf to operate trades"): your own trades, until the deadline (week 12)
@@ -273,6 +308,7 @@ struct PortFranchiseTradeOffer
     char name[48];
     int level, value;
     bool shiny, fair;
+    char key[48];         // r116: its portrait
 };
 // The players you could get for `what`, best value first; *myValue / myName = what you'd give.
 int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, int* myValue, char* myName, int nameSize);
@@ -336,8 +372,9 @@ bool PortFranchiseWatch(int index);      // index into PortFranchiseTodayGames
 // when both say ready (the hub), the home club's headset hosting it.
 bool PortFranchiseLeagueFile(PortFranchiseSlot* out, char* code, int codeSize);  // the league saved here, its code
 // A new league with your club and picks (as PortFranchiseNewPicked), up to maxMembers people; its code comes out
-// in the hub's headline and the league view.
-bool PortFranchiseLeagueCreate(int club, int captainPick, int backupPick, int sidekickPick, int maxMembers);
+// in the hub's headline and the league view. r131: memberPicks as PortFranchiseNewPicked's (the league dealt around them).
+bool PortFranchiseLeagueCreate(int club, int captainPick, int backupPick, int sidekickPick, int maxMembers,
+                               const int* memberPicks = nullptr);
 // Joining one by its code ("" stops): the lobby below says how it goes; pick a free club, then it opens
 // (PortFranchiseLeagueTakeOpened, once: the hub goes to it).
 void PortFranchiseLeagueJoin(const char* code);

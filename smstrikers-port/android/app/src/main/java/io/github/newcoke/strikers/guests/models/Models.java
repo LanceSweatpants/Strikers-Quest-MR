@@ -41,6 +41,16 @@ public final class Models {
         double flameSize;
         final Set<Integer> drop = new TreeSet<>();
         final List<Integer> retex = new ArrayList<>();
+        // r127 / r130: what the PC did to some packs after the build (Fix), in this order: repose / rebind / fix, reparent
+        String upright;                                   // meleepack --upright (Slaking z+90)
+        final Map<Integer, String> skin = new LinkedHashMap<>();  // a DObj owner's skin mode forced (Flaaffy 50 owner)
+        String[] repose;                                  // gpk_repose.py ops
+        double rebindFlat = Double.NaN;                   // gpk_rebind.py --flat <deg> <nodes>
+        int[] rebindNodes;
+        String fix;                                       // hariyama (hariyama_fix.py)
+        final List<int[]> reparent = new ArrayList<>();   // gpk_reparent.py <node>:<parent>
+        String stand;                                     // vaporeon (vap_stand.py + vap_applymap.py)
+        double[] standFit;                                // its fit's last-bit nudges (sc, Rm, tv: 13 differences)
     }
 
     /** Converts everything the player's games allow. Per-guest failures are warned about and skipped. */
@@ -102,6 +112,30 @@ public final class Models {
         return Trig.hash(x);
     }
 
+    /** As recordAngles, for atan2 (r130 Vaporeon's re-pose): "y x" as Double.toHexString each; null stops it. */
+    public static void recordAtan2(java.util.Set<String> sink) {
+        Trig.record2 = sink;
+        Trig.load("");
+    }
+
+    public static int libmHash2(double y, double x) {
+        return Trig.hash2(y, x);
+    }
+
+    /**
+     * For the PC data tool (ModelsData): a re-posed pack's (r130 Vaporeon: "stand") own fit numbers (sc, Rm row by row,
+     * tv) before its stand_fit nudges, to work those out against numpy's.
+     */
+    public static double[] standFit(Job job, String pack) throws IOException {
+        for (Spec s : specs(job.data)) {
+            if (s.pack.equals(pack) && s.stand != null) {
+                final byte[] fsys = job.colo.read("pkx_" + s.file + ".fsys");
+                return Stand.fitValues(s, Colo.datOf(fsys));
+            }
+        }
+        throw new IOException("no re-posed pack " + pack);
+    }
+
     // ------------------------------------------------------------------------------------------------ building
     private static Map<String, byte[]> build(Job job, Spec s, Map<String, List<Shiny.Rule>> maps) throws IOException {
         final Map<String, byte[]> out = new LinkedHashMap<>();
@@ -119,8 +153,14 @@ public final class Models {
         final byte[] fsys = colo.read("pkx_" + s.file + ".fsys");
         // the pack as colo_guests.py built it, with colo_resize_finish.py's fixes = colo-guests/final
         final Colo.Dat dat = Colo.datOf(fsys);
-        byte[] fin = MeleePack.run(dat.dat, coloOptions(s, dat)).gpk;
+        byte[] fin = s.stand != null ? Stand.build(s, dat, fsys) : MeleePack.run(dat.dat, coloOptions(s, dat)).gpk;
         if (!s.drop.isEmpty()) fin = Colo.drop(fin, s.drop);
+        // r127 / r130: the PC's fixes on the built pack (the shiny below is made from the fixed pack, as colo_shiny did)
+        if (s.repose != null) fin = Fix.repose(fin, s.repose);
+        if (s.rebindNodes != null) fin = Fix.rebindFlat(fin, s.rebindFlat, s.rebindNodes);
+        if ("hariyama".equals(s.fix)) fin = Fix.hariyama(fin);
+        else if (s.fix != null) throw new IOException("unknown fix " + s.fix);
+        if (!s.reparent.isEmpty()) fin = Fix.reparent(fin, s.reparent);
         // shiny: the final's pictures recoloured, or the rare_ model's pictures in it (a pack without its shiny
         // still plays: the shiny's failure is only warned about)
         byte[] shiny = null;
@@ -164,6 +204,8 @@ public final class Models {
         }
         if (s.gasOpacity != null && Py.num(s.gasOpacity) != 0.0) o.gasOpacity = pctG(Py.num(s.gasOpacity));
         if (s.yaw != null && Py.num(s.yaw) != 0.0) o.upright = "y" + new BigDecimal(pctG(Py.num(s.yaw))).toPlainString();
+        else if (s.upright != null) o.upright = s.upright;  // (colo_guests.py r130: _upright, meleepack's own spelling)
+        if (!s.skin.isEmpty()) o.forceSkin = s.skin;
         o.ground = Py.num(Py.fixed(hover, 3));
         o.retex = s.retex.isEmpty() ? null : s.retex;
         return o;
@@ -240,6 +282,30 @@ public final class Models {
                 }
                 case "drop": for (int i = 1; i < f.length; i++) cur.drop.add(Integer.parseInt(f[i])); break;
                 case "retex": for (int i = 1; i < f.length; i++) cur.retex.add(Integer.parseInt(f[i], 16)); break;
+                case "upright": cur.upright = f[1]; break;
+                case "skin": cur.skin.put(Integer.parseInt(f[1]), f[2]); break;
+                case "repose": cur.repose = java.util.Arrays.copyOfRange(f, 1, f.length); break;
+                case "rebind": {
+                    if (!f[1].equals("flat")) throw new IOException("guest data: " + l);
+                    cur.rebindFlat = Py.num(f[2]);
+                    cur.rebindNodes = new int[f.length - 3];
+                    for (int i = 3; i < f.length; i++) cur.rebindNodes[i - 3] = Integer.parseInt(f[i]);
+                    break;
+                }
+                case "fix": cur.fix = f[1]; break;
+                case "reparent": {
+                    for (int i = 1; i < f.length; i++) {
+                        final String[] np = f[i].split(":");
+                        cur.reparent.add(new int[] {Integer.parseInt(np[0]), Integer.parseInt(np[1])});
+                    }
+                    break;
+                }
+                case "stand": cur.stand = f[1]; break;
+                case "stand_fit": {
+                    cur.standFit = new double[f.length - 1];
+                    for (int i = 1; i < f.length; i++) cur.standFit[i - 1] = Double.parseDouble(f[i]);
+                    break;
+                }
                 default: break;  // (unknown keys: newer data, ignored)
             }
         }

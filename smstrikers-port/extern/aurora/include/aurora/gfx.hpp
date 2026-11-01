@@ -196,6 +196,16 @@ bool create_pass_external(const ExternalPassTarget& target);
 /// texture must outlive every pass that uses it); the pass's sample count comes with each begin.
 void register_xr_eye_target(uint32_t slot, const ExternalPassTarget& target) noexcept;
 
+/// strikers-quest r131: the headset's GPU-direct big screen. Aurora frame `frame` (current_frame() while it is being
+/// recorded) copies its presented picture (the GX framebuffer the XR readback reads) into `texture` on the frame's own
+/// encoder, just before its submit, so the submit callback (aurora_xr_set_submit_callback) ends a shared texture's
+/// access as usual. `texture`: the picture's size, its format or that format's sRGB twin, CopyDst; null, or a frame
+/// whose sizes differ (or whose readback is skipped), gets no copy. readback: the frame callback's CPU readback for
+/// that frame too; a frame set here has none otherwise. Set during the frame, before its aurora_end_frame (game thread).
+void set_xr_screen_copy(uint32_t frame, const wgpu::Texture& texture, bool readback) noexcept;
+/// r131: whether frame `frame`'s screen copy was recorded: from its submit callback on, for 4 frames.
+bool xr_screen_copied(uint32_t frame) noexcept;
+
 /// What GX viewport/scissor scaling treats as the "logical" frame size while an offscreen pass is
 /// open: off (default), the pass's own size; on, the native configured size, for callers that
 /// replay the full-scene draw path (which sets its viewport in native units) into a larger target.

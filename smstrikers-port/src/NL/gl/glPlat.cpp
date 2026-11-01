@@ -313,8 +313,13 @@ void glplatFinish()
 /**
  * Offset/Address/Size: 0x12C | 0x801B4720 | size: 0x34
  */
+// strikers-quest r129: the headset's pipelined frame (include/port/xr_quest.h): the last game frame's Aurora frame,
+// left open so the FIFO worker could finish it during this frame's simulation, ends here and this one begins.
+extern "C" void PortXrFrameBoundary(void);
+
 void glplatAbortFrame()
 {
+    PortXrFrameBoundary(); // strikers-quest r129
     glplatFrameAllocNextFrame();
     glx_NumVirtMisses = 0;
     glx_VirtLatency = 0;
@@ -424,6 +429,7 @@ static inline void glx_SendFrame(bool bSend)
  */
 void glplatSendFrame()
 {
+    PortXrFrameBoundary(); // strikers-quest r129: before anything of this frame goes into the GX stream
     glxSwapPre(true);
     glx_SendFrame(true);
     glx_SendViews();

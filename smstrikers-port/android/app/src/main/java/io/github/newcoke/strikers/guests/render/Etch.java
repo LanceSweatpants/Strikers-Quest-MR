@@ -4,16 +4,18 @@ import java.util.Arrays;
 
 /**
  * etchres.py: each guest's outline for the etching on your controllers when it's your captain (xr_fx.cpp make_etch,
- * xr_fx_mesh.frag sdGuest): the guest standing in its idle seen from three-quarters in front (orthographic, fitted
- * to its box), its silhouette (Blender Workbench there, a supersampled rasteriser here: coverage over half), then a
- * distance map per 64 x 64 cell (the same numbers, float32 as numpy) of an 8 x 8 atlas: guests/etch.r8, 512 x 512
- * bytes, 128 = the outline, below inside, above outside, a quarter of a cell either way over the range. A cell with
- * no guest stays 255 (far outside: nothing etched), as the game's own default.
+ * xr_fx_mesh.frag sdGuest) and the home ground banners' emblem: the guest standing in its idle seen from
+ * three-quarters in front (orthographic, fitted to its box), its silhouette (Blender Workbench there, a supersampled
+ * rasteriser here: coverage over half, rendered 3x the cell), then a distance map per 128 x 128 cell (the same numbers,
+ * float32 as numpy) of a 16 x 16 atlas (r121 --grid 16 + r124 --cell 128, as the headset has it: guests/etch.r8,
+ * 2048 x 2048 bytes; the cell = the guest's place in roster.txt, the franchise-only forms keeping their place empty),
+ * 128 = the outline, below inside, above outside, a quarter of a cell either way over the range. A cell with no guest
+ * stays 255 (far outside: nothing etched), as the game's own default.
  */
 public final class Etch {
     private Etch() {}
 
-    public static final int CELL = 64, GRID = 8, RES = 192;
+    public static final int CELL = 128, GRID = 16, RES = 3 * CELL;
     static final double RANGE = 0.25, MARGIN = 0.1;
     /** The share of a pixel's (filtered) coverage that makes it inside (etchres.py: alpha over 0.5). */
     static final double THRESHOLD = 0.5;
@@ -173,15 +175,48 @@ public final class Etch {
                 pts[ne * 2 + 1] = (float) ((r + 0.5) / n - 0.5);
                 ne++;
             }
+        // the nearest outline point: the same float32 sums as etchres.py's brute force, only the far points skipped
+        // (buckets searched ring by ring until no nearer point can be left: the very same minimum)
+        final int nb = 64;
+        final int[] start = new int[nb * nb + 1], bucketOf = new int[ne];
+        for (int e = 0; e < ne; e++) {
+            final int bx = clip((int) Math.floor((pts[e * 2] + 0.5) * nb), 0, nb - 1);
+            final int by = clip((int) Math.floor((pts[e * 2 + 1] + 0.5) * nb), 0, nb - 1);
+            bucketOf[e] = by * nb + bx;
+            start[bucketOf[e] + 1]++;
+        }
+        for (int b = 0; b < nb * nb; b++) start[b + 1] += start[b];
+        final float[] bp = new float[ne * 2];
+        final int[] fill = Arrays.copyOf(start, nb * nb);
+        for (int e = 0; e < ne; e++) {
+            final int at = fill[bucketOf[e]]++;
+            bp[at * 2] = pts[e * 2];
+            bp[at * 2 + 1] = pts[e * 2 + 1];
+        }
+        final double h = 1.0 / nb;
         for (int r = 0; r < CELL; r++) {
             final float qy = (float) ((r + 0.5) / CELL - 0.5);
+            final int qby = clip((int) Math.floor((qy + 0.5) * nb), 0, nb - 1);
             for (int c = 0; c < CELL; c++) {
                 final float qx = (float) ((c + 0.5) / CELL - 0.5);
+                final int qbx = clip((int) Math.floor((qx + 0.5) * nb), 0, nb - 1);
                 float best = 1e9f;
-                for (int e = 0; e < ne; e++) {
-                    final float dx = qx - pts[e * 2], dy = qy - pts[e * 2 + 1];
-                    final float dd = dx * dx + dy * dy;
-                    if (dd < best) best = dd;
+                for (int ring = 0; ring <= nb; ring++) {
+                    // every point in a ring further out is at least ring * h away
+                    if (ring > 0 && best < (ring - 1) * h * ((ring - 1) * h) * 0.999) break;
+                    for (int by = qby - ring; by <= qby + ring; by++) {
+                        if (by < 0 || by >= nb) continue;
+                        final boolean edgeRow = by == qby - ring || by == qby + ring;
+                        for (int bx = qbx - ring; bx <= qbx + ring; bx += edgeRow ? 1 : Math.max(1, 2 * ring)) {
+                            if (bx < 0 || bx >= nb) continue;
+                            final int b = by * nb + bx;
+                            for (int e = start[b]; e < start[b + 1]; e++) {
+                                final float dx = qx - bp[e * 2], dy = qy - bp[e * 2 + 1];
+                                final float dd = dx * dx + dy * dy;
+                                if (dd < best) best = dd;
+                            }
+                        }
+                    }
                 }
                 final float dist = (float) Math.sqrt(best);
                 int in = 0;

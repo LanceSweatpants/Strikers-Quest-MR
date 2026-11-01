@@ -123,7 +123,8 @@ public final class Out {
 
     public static void save(File f, byte[] data, int len) throws IOException {
         File dir = f.getParentFile();
-        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) throw new IOException("can't make " + dir);
+        // (mkdirs is false when another thread made the folder a moment ago: only a folder still missing is a failure)
+        if (dir != null && !dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory()) throw new IOException("can't make " + dir);
         File tmp = new File(f.getPath() + ".tmp");
         try (FileOutputStream o = new FileOutputStream(tmp)) {
             o.write(data, 0, len);

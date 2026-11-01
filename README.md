@@ -14,9 +14,9 @@ APK.*
 
 > ## ⚠️ **GUEST CHARACTERS NEED YOUR OWN GAME FILES**
 >
-> **THE GUEST CHARACTERS (MELEE FIGHTERS, POKÉMON, MARIO STRIKERS CHARGED CHARACTERS) ARE NOT IN THIS
-> APP OR THIS REPOSITORY. YOUR QUEST MAKES THEM FROM YOUR OWN COPIES OF *SUPER SMASH BROS. MELEE*,
-> *POKÉMON COLOSSEUM* AND *MARIO STRIKERS CHARGED*.**
+> **THE GUEST CHARACTERS (MELEE FIGHTERS, POKÉMON, MARIO STRIKERS CHARGED CHARACTERS, MARVEL HEROES) ARE NOT
+> IN THIS APP OR THIS REPOSITORY. YOUR QUEST MAKES THEM FROM YOUR OWN COPIES OF *SUPER SMASH BROS. MELEE*,
+> *POKÉMON COLOSSEUM*, *MARIO STRIKERS CHARGED* AND *MARVEL: ULTIMATE ALLIANCE* (WII).**
 >
 > **NO FILE FROM A GAME = NO GUESTS FROM THAT GAME.** Super Mario Strikers itself still plays as
 > always. See [Guest characters](#guest-characters-alpha-114).
@@ -70,12 +70,15 @@ And around the game:
   not just the picture.
 - **Controller rumble**: the game's rumble reaches the Touch controllers, with an extra buzz on your
   goals.
-- **Guest characters** (alpha 1.14): Melee fighters, Pokémon and Mario Strikers Charged characters,
-  each with their own name, look, portrait, banner, stats and (many of them) voice, **made on your
-  headset from your own game files** (see [Guest characters](#guest-characters-alpha-114)). A big
+- **Guest characters** (alpha 1.14, 1.16): Melee fighters, 152 Pokémon, Mario Strikers Charged characters and
+  (alpha 1.16) 26 Marvel: Ultimate Alliance heroes with their costumes, each with their own name, look, portrait,
+  banner, stats and (many of them) voice, **made on your headset from your own game files** (see [Guest characters](#guest-characters-alpha-114)). A big
   **character select** menu with everyone on it opens on every pick screen.
 - **Co-captains** (alpha 1.14): 2 captains + 2 sidekicks, each captain with his own Super Strike. See
   [Co-captains](#co-captains-alpha-114).
+- **No sidekicks? No problem!** (alpha 1.16): pick each of your 3 sidekicks yourself from the **Sidekicks** tab:
+  the Strikers sidekicks, the Strikers captains (Mario, Luigi, Peach ...) and every guest. They play as themselves
+  (Mario in a sidekick spot is the real Mario). Every mode and online. In Franchise each one levels up on its own.
 - **Franchise mode** (alpha 1.14): the Strikers Super League, 32 clubs, a 20-week season and playoffs,
   levels, Pokémon evolving in front of you, shinies, nemeses, trades, awards night. See
   [Franchise mode](#franchise-mode-alpha-114).
@@ -103,7 +106,7 @@ And around the game:
   you just won spins and sparkles. Over the shelf, your RetroAchievements badges: point a controller
   at one to see whether you've earned it.
 - **Home ground** (alpha 1.13): pick your home captain with **Home ground** on the app's first screen.
-  Your room gets their banner, a board with your record against the computer and against each online
+  (Alpha 1.16: or **None**, for no home ground at all.) Your room gets their banner, a board with your record against the computer and against each online
   friend, comebacks, your best win and Super Strikes, and a gloat banner when a rival is ahead of you.
   Alpha 1.14: any character can be your home captain, guests too, and your room gets their own corner
   by the trophy shelf: a rug, a display with their things, their portrait standing there and their own
@@ -114,7 +117,8 @@ And around the game:
   screen, or in the game's pause settings.
 - **Pause settings**: crowd volume, voice chat, and your eye height in the stadium (for playing seated,
   or if you're shorter or taller). Alpha 1.15: the trophy shelf and its badges on or off, and the
-  RetroAchievements pop-ups (all, unlocks only, or off). Pause, then **right stick** up/down picks a
+  RetroAchievements pop-ups (all, unlocks only, or off). Alpha 1.16: **HOME GROUND** on or off (the home board, the
+  banners by the screen, your corner and the trophy shelf all at once; or pick **None** on the Home ground page). Pause, then **right stick** up/down picks a
   row and left/right changes it.
 - **Button mapping** (alpha 1.6): put pass, shoot, items, hit, swap items, L, R, pause and (alpha 1.8)
   the long pass on whichever buttons you like, with **Controls** on the app's first screen.
@@ -167,8 +171,8 @@ has tried it yet. Expect rough edges, and see [Known issues](#known-issues).
 1. In SideQuest, click the **folder icon** at the top.
 2. Open **Download**.
 3. Drag your `.iso`, `.rvz` or `.wia` in. *(Zipped? Unzip it first.)*
-4. *(Optional, alpha 1.14)* Your Melee, Pokémon Colosseum or Mario Strikers Charged file goes in the
-   same place, for the [guest characters](#guest-characters-alpha-114).
+4. *(Optional, alpha 1.14)* Your Melee, Pokémon Colosseum, Mario Strikers Charged or (alpha 1.16) Marvel:
+   Ultimate Alliance file goes in the same place, for the [guest characters](#guest-characters-alpha-114).
 
 ### Step 5 · Play
 1. Unplug the Quest and put it on.
@@ -193,20 +197,21 @@ You get only those games' guests.
 | Your game file | What it gives you |
 |---|---|
 | **Super Smash Bros. Melee** (GameCube, USA: `GALE01`) `.iso` or `.rvz` | 17 Melee fighters, the voices of 10 Pokémon, the evolution music |
-| **Pokémon Colosseum** (GameCube, USA: `GC6E01`) `.iso` or `.rvz` | 70 Pokémon (29 to start + their 41 evolutions, shiny versions too). **Franchise mode's Pokémon and evolutions need it** |
-| **Mario Strikers Charged** (Wii, USA: `R4QE01`) **`.rvz` only** | Bowser, Bowser Jr., Diddy Kong, Petey Piranha, Boo, Dry Bones, Monty Mole, Shy Guy |
+| **Pokémon Colosseum** (GameCube, USA: `GC6E01`) `.iso` or `.rvz` | 152 Pokémon (59 to start + their evolutions, shiny versions too). **Franchise mode's Pokémon and evolutions need it** |
+| **Mario Strikers Charged** (Wii, USA: `R4QE01`) **`.rvz` only** | Bowser, Bowser Jr., Diddy Kong, Petey Piranha, Boo, Dry Bones, Monty Mole, Shy Guy, and the 3D figures in your room |
+| **Marvel: Ultimate Alliance** (Wii, USA: `RMUE52`) **`.rvz` only** | 26 Marvel heroes with up to 4 costumes each (unlocked in Franchise), their own moves and goal celebrations, the costume music |
 
 1. Copy the files onto the Quest the same way as your Strikers file (SideQuest → folder icon →
    **Download**). **Unzipped:** a `.7z` / `.zip` can't be read; unzip it on your PC and copy the `.iso`
    or `.rvz` that comes out.
-   - **Charged is a Wii game: its `.iso` / `.wbfs` is encrypted and can't be read.** Convert it to
-     `.rvz` first: in [Dolphin](https://dolphin-emu.org), right-click the game → **Convert File
+   - **Charged and Marvel: Ultimate Alliance are Wii games: their `.iso` / `.wbfs` is encrypted and can't be
+     read.** Convert them to `.rvz` first: in [Dolphin](https://dolphin-emu.org), right-click the game → **Convert File
      Format** → **RVZ** → **Convert**.
 2. In the app, press **Guest characters**. It lists what it found.
 3. Press **Make guest characters** and keep the app open until it's done (a few minutes).
 4. Play. The guests are in every mode's character select (the big menu opens on every pick screen).
 
-Nothing from Melee, Colosseum or Charged is in this app or on GitHub: the converter reads your files
+Nothing from Melee, Colosseum, Charged or Marvel: Ultimate Alliance is in this app or on GitHub: the converter reads your files
 on your headset and writes the characters into the Quest's `Strikers/guests` folder.
 
 ## The character select menu (alpha 1.14)

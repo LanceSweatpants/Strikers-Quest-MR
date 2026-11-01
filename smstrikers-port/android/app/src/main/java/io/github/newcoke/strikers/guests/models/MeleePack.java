@@ -38,6 +38,8 @@ final class MeleePack {
         BoneMap map;                   // --map: this pack's entry (null: no map file)
         boolean texturesOnly;          // just the texture records (the shiny rare_ builds)
         List<Integer> retex;           // texture records "tex/<data>" made again from the picture as it is
+        Map<Integer, String> forceSkin; // a DObj owner (joint index) -> its skin mode, if a candidate (r130 Flaaffy:
+                                       // colo-maps\g13\fixtest\meleepack_fix.py, env G13_FORCE)
     }
 
     /** One pack's bone-map entry (melee-bone-map.json / colo-bone-map.json, as shipped). */
@@ -595,6 +597,8 @@ final class MeleePack {
                         mk = k;
                     }
                 }
+                if (o.forceSkin != null && o.forceSkin.containsKey(ow) && cands.contains(o.forceSkin.get(ow)))
+                    mbest = o.forceSkin.get(ow);
                 modes.put(ow, mbest);
                 total += sc.get(mbest) * vs.size();
                 count += vs.size();

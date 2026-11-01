@@ -6,6 +6,7 @@
 #include <aurora/time.hpp>
 
 #ifdef AURORA_ENABLE_GX
+#include <aurora/gfx.hpp> // strikers-quest r131: set_xr_screen_copy
 #include "gfx/resources.hpp"
 #include "gfx/frame.hpp"
 #include "gfx/recording.hpp"
@@ -420,9 +421,57 @@ bool skip_frame(uint32_t frame) {
   return false;
 }
 
+// strikers-quest r131: GPU-direct screen copies by frame (aurora::gfx::set_xr_screen_copy): number + 1 (0 = empty), the
+// texture the frame's picture goes into (none: no copy), whether it is read back for the frame callback too; and the
+// frames whose copy was recorded (aurora::gfx::xr_screen_copied). Written by the game thread during its frame, read in
+// that frame's end on the render worker: FrameSlotCount (2) frames in flight at most, so 4 entries never wrap onto a
+// live one.
+struct ScreenCopy {
+  std::atomic<uint32_t> frame{0};
+  wgpu::Texture texture;
+  bool readback = false;
+};
+ScreenCopy g_screenCopies[4];
+std::atomic<uint32_t> g_screenCopied[4] = {};
+
+// r131: the frame's screen copy, if one was set for it (else *readback stays as it was: the readback as before r131)
+void record_screen_copy(const wgpu::CommandEncoder& encoder, uint32_t frame, bool* readback) {
+  ScreenCopy& e = g_screenCopies[frame & 3u];
+  if (e.frame.load(std::memory_order_acquire) != frame + 1) {
+    return;
+  }
+  const wgpu::Texture target = std::move(e.texture);
+  e.texture = nullptr;
+  *readback = e.readback;
+  e.frame.store(0, std::memory_order_relaxed);
+  const auto& src = webgpu::present_source();
+  if (!target || src.texture == nullptr || skip_frame(frame) || target.GetWidth() != src.size.width ||
+      target.GetHeight() != src.size.height) {
+    return;
+  }
+  const wgpu::TexelCopyTextureInfo copySrc{
+      .texture = src.texture,
+      .mipLevel = 0,
+      .origin = {0, 0, 0},
+      .aspect = wgpu::TextureAspect::All,
+  };
+  const wgpu::TexelCopyTextureInfo copyDst{
+      .texture = target,
+      .mipLevel = 0,
+      .origin = {0, 0, 0},
+      .aspect = wgpu::TextureAspect::All,
+  };
+  const wgpu::Extent3D extent{src.size.width, src.size.height, 1};
+  encoder.CopyTextureToTexture(&copySrc, &copyDst, &extent);
+  g_screenCopied[frame & 3u].store(frame + 1, std::memory_order_release);
+}
+
 void record(const wgpu::CommandEncoder& encoder, uint32_t frame) {
   g_recordedSlot = -1;
-  if (g_callback.load(std::memory_order_acquire) == nullptr || skip_frame(frame)) {
+  // strikers-quest r131: a GPU-direct screen frame's picture goes into its texture; read back only when asked for too
+  bool readback = true;
+  record_screen_copy(encoder, frame, &readback);
+  if (!readback || g_callback.load(std::memory_order_acquire) == nullptr || skip_frame(frame)) {
     return;
   }
   const auto& src = webgpu::present_source();
@@ -542,6 +591,28 @@ void resolve() {
 }
 } // namespace xr_present
 
+// strikers-quest r129: a frame begun and not yet ended (aurora_frame_is_open)
+bool g_frameOpen = false;
+
+// strikers-quest r129: begin_frame's checks alone (aurora_frame_ready)
+bool frame_ready() noexcept {
+#ifdef AURORA_ENABLE_GX
+  if (xr_present::g_suppressSurface.load(std::memory_order_acquire)) {
+    return !window::is_paused();
+  }
+  if (!window::is_presentable() || window::is_paused()) {
+    return false;
+  }
+  if (!g_surface) {
+    webgpu::refresh_surface(true);
+    if (!g_surface) {
+      return false;
+    }
+  }
+#endif
+  return true;
+}
+
 bool begin_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
@@ -572,6 +643,7 @@ bool begin_frame() noexcept {
     return false;
   }
   gx::fifo::begin_frame();
+  g_frameOpen = true;
 #endif
   return true;
 }
@@ -579,6 +651,7 @@ bool begin_frame() noexcept {
 void end_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
+  g_frameOpen = false;
   // smstrikers-port: how long this thread waits for the FIFO worker, for AURORA_TEX_LOG.
   const uint64_t drainStart = gfx::tex_log_enabled() ? gfx::tex_log_now_ns() : 0;
   gx::fifo::drain();
@@ -794,6 +867,19 @@ void end_frame() noexcept {
 } // namespace
 } // namespace aurora
 
+// strikers-quest r131: see aurora/gfx.hpp
+namespace aurora::gfx {
+void set_xr_screen_copy(uint32_t frame, const wgpu::Texture& texture, bool readback) noexcept {
+  auto& e = ::aurora::xr_present::g_screenCopies[frame & 3u];
+  e.texture = texture;
+  e.readback = readback;
+  e.frame.store(frame + 1, std::memory_order_release);
+}
+bool xr_screen_copied(uint32_t frame) noexcept {
+  return ::aurora::xr_present::g_screenCopied[frame & 3u].load(std::memory_order_acquire) == frame + 1;
+}
+} // namespace aurora::gfx
+
 // C API bindings
 AuroraInfo aurora_initialize(int argc, char* argv[], const AuroraConfig* config) {
   return aurora::initialize(argc, argv, *config);
@@ -832,6 +918,8 @@ void aurora_capture_frame(const char* path) {
 const AuroraEvent* aurora_update() { return aurora::update(); }
 bool aurora_begin_frame() { return aurora::begin_frame(); }
 void aurora_end_frame() { aurora::end_frame(); }
+bool aurora_frame_ready() { return aurora::frame_ready(); }
+bool aurora_frame_is_open() { return aurora::g_frameOpen; }
 void aurora_xr_set_surface_suppressed(bool suppressed) {
   // Before aurora_initialize this also means "never create a window surface" (gpu.hpp g_xrHeadless).
   aurora::webgpu::g_xrHeadless = suppressed;

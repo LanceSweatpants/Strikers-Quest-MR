@@ -47,4 +47,24 @@ public final class DirSource implements Source {
         if (f == null) throw new FileNotFoundException(id + ": " + path);
         return Files.readAllBytes(f.toPath());
     }
+
+    @Override
+    public byte[] read(String path, long off, int len) throws IOException {
+        File f = find(path);
+        if (f == null) throw new FileNotFoundException(id + ": " + path);
+        try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(f, "r")) {
+            if (off < 0 || off + len > r.length()) throw new IOException(id + ": " + path + ": read past its end");
+            byte[] b = new byte[len];
+            r.seek(off);
+            r.readFully(b);
+            return b;
+        }
+    }
+
+    @Override
+    public long size(String path) throws IOException {
+        File f = find(path);
+        if (f == null) throw new FileNotFoundException(id + ": " + path);
+        return f.length();
+    }
 }

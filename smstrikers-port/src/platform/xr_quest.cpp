@@ -7,7 +7,9 @@
 // Two picture paths:
 //  - The flat game frame (Jumbotron, and the scoreboard over the Tabletop): Aurora reads the
 //    presented frame back to the CPU every game frame (aurora_xr_set_frame_callback), and this file
-//    uploads it into a quad-layer swapchain on its own Vulkan device.
+//    uploads it into a quad-layer swapchain on its own Vulkan device. r131: Jumbotron · Living Room
+//    (and the cup suite) instead GPU-direct (ScreenSlot): Dawn copies the frame into a shared image,
+//    a SyncFD fence gates its blit into that swapchain.
 //  - The 3D modes (Tabletop, Stadium): glPlat.cpp re-sends the frame's render lists once per eye
 //    with the head's matrices (PortXrStereo*), into opaque-fd VkImages this device exports and
 //    Dawn imports (create_pass_external); a SyncFD fence from Dawn gates a blit into the eye
@@ -27,6 +29,7 @@
 #include <openxr/openxr_platform.h>
 
 #include <android/log.h>
+#include <poll.h>  // r131: Dawn's sync fd, polled (finish_screen_slots)
 #include <time.h>
 #include <unistd.h>
 
@@ -54,6 +57,7 @@
 #include "../../include/port/lineup.h"     // r81: the co-captains
 
 #include <algorithm>
+#include <array>  // r112
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -127,7 +131,7 @@ namespace {
 
 constexpr const char* kTag = "strikers_xr";
 // Bumped every headset round; the first log line of a session says which build is running.
-constexpr const char* kBuildTag = "STRIKERS_XR build=r104";
+constexpr const char* kBuildTag = "STRIKERS_XR build=r134";
 
 // r39: every line also goes to the game log (stderr -> /sdcard/Strikers/strikers-log.txt): the
 // headset's system log turns over within minutes, so a session's stats and errors were lost.
@@ -310,6 +314,27 @@ struct StereoSlot {
 std::atomic<uint32_t> g_slotState[kStereoSlots];
 std::atomic<uint32_t> g_slotFrame[kStereoSlots];  // the Aurora frame that drew it
 
+// r131 (Lance's r130 play: Jumbotron · Living Room 65.8-69 fps in matches, "the Hz just felt lower than 72"; its loop:
+// aurora_end_frame's FIFO drain 3-4 ms + PortXrEndFrame's synchronize 1-2.8 + upload 0.9 on the game thread): the
+// GPU-direct big screen. A game frame's picture is copied on Dawn's queue into one of these shared images
+// (aurora::gfx::set_xr_screen_copy, recorded just before the frame's submit) and blitted into the screen swapchain on the
+// XR queue gated on Dawn's fence: no CPU readback, no upload, no synchronize, and the frame can be left open (pipelined)
+// like the 3D views'. Four: the open frame's, the one being submitted, one whose copy is still on the GPU (its blit
+// waits for that, finish_screen_slots), the one last blitted (its blit's fence) - none of them waited for on the CPU.
+constexpr uint32_t kScreenSlots = 4;
+struct ScreenSlot {
+  EyeImage img;            // the shared image and its hand-off (as an eye image's)
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  VkFence fence = VK_NULL_HANDLE;
+  bool pending = false;    // its last submit (the blit) not yet seen done
+};
+// Per screen slot (outside State, which is reset by assignment): 0 free, 1 armed (Dawn's access open, waiting for its
+// frame's submit), 2 released (the render worker ended the access after the submit); the Aurora frame it holds; whether
+// that frame's copy was recorded (0: no picture in it)
+std::atomic<uint32_t> g_screenState[kScreenSlots];
+std::atomic<uint32_t> g_screenFrame[kScreenSlots];
+std::atomic<uint32_t> g_screenCopied[kScreenSlots];
+
 // Where the Tabletop field sits in the room (LOCAL space) and how big it is.
 struct Table {
   XrVector3f position{0.0f, -0.55f, -0.95f};  // about waist height in front of where you started
@@ -349,6 +374,27 @@ constexpr const char* kSourceNames[kSrcCount] = {"a", "b", "x", "y", "lt", "rt",
 constexpr const char* kActionNames[kActCount] = {"A", "B", "X", "Y", "Z", "L", "R", "START", "LONG"};
 constexpr int kDefaultControls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu,
                                              kSrcNone};
+
+// r131: what STRIKERS ILLUSTRATED knows beyond the league's view: your last played franchise match's own numbers
+// (a hat trick) and your player's evolution / new costume, each with the season and week it was in.
+struct MagNews {
+  PortFranchiseLive live = {};
+  int liveSeason = -1, liveWeek = -1;
+  std::string evoFrom, evoTo, evoToKey;  // names (as shown) and the new form's portrait key
+  bool evoShiny = false, evoCostume = false;
+  int evoSeason = -1, evoWeek = -1;
+};
+// r131 (Lance: "i do want the strikers illustrated to be produced at random, it shouldnt always be the hottest team or
+// player to be on the cover ... make sure no cover is duplicated"): an issue's cover as drawn at random (mag_pick_issue):
+// its season / week, template, headline (index into its pool), variant (colours, sash, mirrored star), the cover star
+// (anyone in the league) and a rival (FACEOFF), and the issue's own seed (its cover lines). Kept per career in
+// STRIKERS_HOME/franchise/magazine_<slot>.txt: no star + template + headline twice, never the same star twice running.
+struct MagPick {
+  bool valid = false;
+  int season = -1, week = -1, tmpl = 0, head = 0, variant = 0, club = -1, rivalClub = -1;
+  std::string key, name, rival, rivalName;
+  uint32_t seed = 1;
+};
 
 struct State {
   bool active = false;
@@ -404,6 +450,9 @@ struct State {
 
   PFN_xrEnumerateDisplayRefreshRatesFB enumerateRefreshRates = nullptr;
   PFN_xrRequestDisplayRefreshRateFB requestRefreshRate = nullptr;
+  PFN_xrGetDisplayRefreshRateFB getRefreshRate = nullptr;  // r124
+  float wantRefresh = 72.0f;  // r124: asked for again once the session runs (its first ask, before, was ignored)
+  uint64_t refreshCheckNs = 0;
 
   Actions actions;
   Rumble rumble;
@@ -554,6 +603,7 @@ struct State {
   // one switch for the trophy shelf (your room and the cup suite, picking trophies up too) and the
   // RetroAchievements badge board over it. xr_room_options.txt
   bool showShelf = true;
+  bool showHome = true;  // r133 (Lance: "make the home ground an optional thing"): the board, banners, corner + shelf
   int raPopups = 2;                   // RetroAchievements pop-ups: 2 all, 1 unlocks only, 0 none
   // r46: the button map (ControlSource per ControlAction), and when xr_controls.txt was last looked at.
   int controls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu, kSrcNone};
@@ -586,7 +636,14 @@ struct State {
   uint64_t gpOpenNs = 0;              // r68g: when it opened
   // r79: a Grudge Match side's sidekick pick starts with its co-captain (the captains' menu; X: none)
   bool gpCo = false, gpPrevX = false;
+  // r130: the sidekick pick, one slot at a time (SIDEKICK 1-3; a co-captain has slot 1): the slot being picked
+  // (-1 not started), the first one, and the menu picks so far
+  int gpSkSlot = -1, gpSkFirst = 0;
+  int gpSkPick[3] = {-1, -1, -1};
   unsigned gpCoTaken = 0;             // the Strikers captains it can't be (bit = eTeamID)
+  unsigned gpSkCapTaken = 0;          // r130: the Strikers captains its sidekick slots can't have (as last drawn)
+  // r112: the menu by game: the stick on the game tabs; LT / RT through a character's forms (as last sync)
+  bool gpOnTabs = false, gpPrevLT = false, gpPrevRT = false;
   int scorerPlayerId = -1;           // r68h: the scorer's m_ID (PortXrScorerPlayer)
   bool lastGoalOwn = false;          // r85: the last goal was an own goal (PortXrGoal)
   bool scorerFaceOff = false;         // r73: the show is a franchise nemesis's face-off (PortXrScorerFaceOff)
@@ -601,6 +658,50 @@ struct State {
   bool frOpen = false, frOnMenu = false;
   int frMode = 0, frCursor = 0, frSlot = 0, frPage = 0, frGen = 0, frDir = 0;
   bool frPrevY = false, frHoldA = false, frHoldB = false, frPrevX = false, frConfirmDelete = false;
+  bool frOnTabs = false, frPrevLT = false, frPrevRT = false;  // r112: the new-career picks (as gpOnTabs ...)
+  // r113 (Lance: "an actual newspaper ... that ppl can literally flip through after each game"): THE DAILY
+  // STRIKE, in front of you after each franchise match (and the hub's PAPER page, A). r131: STRIKERS ILLUSTRATED,
+  // a magazine (Lance: "make the magazine grabbable, and with that, the pages flippable"): open (due after a match),
+  // placed in front of you, its pages drawn (generation), the triggers as last sync.
+  bool paperOpen = false, paperDue = false, paperPlaced = false;
+  int paperGen = 0;
+  bool paperPrevLT = false, paperPrevRT = false;
+  // r131: its leaves turned to the left (0 = closed on the cover, 3 = closed on the back cover); the leaf turning (-1
+  // none; magSide 0 flat on the right .. 1 flat on the left), animated magFrom -> magTo since magTurnNs, or held by
+  // a hand's trigger (magDrag the hand, from magDragX / magDragSide); where it is (magPos its middle, magRelYaw its
+  // turn away from facing you, magScale its size); the grips holding it (magHand; magSpent: a grip that took it,
+  // until it opens), the two-hand grab's start; the triggers it took; the free hand's sweeps (a swipe turns a page).
+  int magLeaves = 0, magTurn = -1, magDrag = -1;
+  float magSide = 0.0f, magFrom = 0.0f, magTo = 0.0f, magDragX = 0.0f, magDragSide = 0.0f;
+  uint64_t magTurnNs = 0;
+  uint64_t magOpenNs = 0;  // r131: when it opened (buttons wait 0.9 s: the A mashed through the match's end screens)
+  // r131 (Lance: "make the magazine more flimsy"): its pages as paper in the effects layer (mag_paper_frame): the
+  // issue whose pictures are up (-1 none), the posed vertices, shown this frame; each side's free edge bent back
+  // (radians) and how fast, the magazine's own motion (velocity, acceleration, its turn), a flutter
+  int magModelGen = -1;
+  std::vector<float> magVerts;
+  bool magMeshShown = false;
+  float magFlop[2] = {0.0f, 0.0f}, magFlopV[2] = {0.0f, 0.0f}, magFlutter = 0.0f, magLastAng = 0.0f;
+  XrVector3f magVel{0.0f, 0.0f, 0.0f}, magAcc{0.0f, 0.0f, 0.0f}, magLastPos{0.0f, 0.0f, 0.0f};
+  uint64_t magPhysNs = 0;
+  XrVector3f magPos{0.0f, 0.0f, 0.0f};
+  float magRelYaw = 0.0f, magScale = 1.0f;
+  bool magHand[2] = {false, false}, magSpent[2] = {false, false}, magPrevGrip[2] = {false, false};
+  bool magPrevTrig[2] = {false, false}, magTrigBusy[2] = {false, false};
+  int magGrabHands = 0;
+  XrVector3f magGrabOff{0.0f, 0.0f, 0.0f}, magTwoPos{0.0f, 0.0f, 0.0f}, magTwoMid{0.0f, 0.0f, 0.0f};
+  float magTwoAngle = 0.0f, magTwoYaw = 0.0f, magTwoDist = 1.0f, magTwoScale = 1.0f;
+  struct SwipeAt {
+    uint64_t ns;
+    float x, y, z;  // the free hand in the magazine's own frame (m)
+  } magSweep[24] = {};
+  int magSweepAt = 0, magSwipeDir = 0;
+  uint64_t magSwipeNs = 0;
+  MagNews magNews;  // r131: the last match's numbers, the week's evolution (copied into the hub's snapshot)
+  std::vector<MagPick> magHistory;  // r131: this career's covers so far (its magazine file), read for magHistSlot
+  int magHistSlot = -1;
+  bool frWasMatch = false;  // r113: a franchise match was on last sync (its photos start fresh)
+  Panel paperPanel[6];      // r113: the paper's pages (g_paperP draws them); r131: the magazine's 6
   bool frAfterMatch = false;          // a franchise match was played: the hub opens back on the menu
   // r70c: the hub's mode 3, one of your Pokemon evolving (stage 0 a split's choice, 1 evolving, 2 evolved,
   // 3 stopped), from when (the animation's clock).
@@ -611,6 +712,11 @@ struct State {
   // r75: the hub's mode 4, a new career's own players on the character select menu: stage 0 your
   // captain, 1 your backup captain (X: none), 2 your sidekicks; the club and the picks so far.
   int frPickStage = 0, frPickClub = 0, frPickCap = -1, frPickBk = -1;
+  // r130: stages 2-4 your three sidekicks one at a time (menu picks), and whether this is the EVO page's X (your
+  // career's sidekick members, not a new career)
+  int frPickSk[3] = {-1, -1, -1};
+  bool frEditMembers = false;
+  int frMemNow[3] = {-1, -1, -1};  // r130: the members when the editor opened (kept ones may be evolved forms)
   // r76, co-op: the loaded career's outside changes seen, and the co-op card's state as last drawn
   unsigned frChangeSerial = 0;
   long long frCoopKey = -1;
@@ -620,7 +726,7 @@ struct State {
   std::string frTradeMsg;
   bool frHubPrevY = false;
   // (the menu cursor kept per stage, so B goes back to where you were)
-  int frPickCursor[3] = {0, 0, 0};
+  int frPickCursor[5] = {0, 0, 0, 0, 0};  // r130: 5 stages
   // r100, online leagues: the hub's mode 6 (make one: how many people; join one: its code typed, stage 1) and
   // mode 7 (joining: the league's club picker)
   int frLgStage = 0, frLgMax = 8, frLgPos = 0;
@@ -675,6 +781,45 @@ struct State {
   int lastModeKey = -1;               // r44g: the view (tabletop / room bits) last loop
   uint64_t modeChangedNs = 0;         // r44g: when it last changed
   bool onlineHalfRate = false;        // online and too slow: 3D view every other game frame
+  // r106 (Lance: "lets try and actually reach 72FPS"): offline, a game frame every display frame while
+  // this view keeps up (the sim is its own fixed 50 Hz step and every frame is drawn blended between
+  // two steps, so more frames = smoother, not faster); a view that can't is held at the 60 cadence
+  // until the view changes. frameScale = 60 / game frames a second, for what counts frames (1 at 60).
+  bool fullRate = false;
+  int fullRateBlockedKey = -1;        // the view (modeKey) that couldn't keep up
+  uint64_t fullRateSlowSinceNs = 0;
+  // r129: a view held at 60 tries full rate again after fullRateRetryNs (10 s, doubling to 60 s; one slow moment -
+  // the scorer's show, the stadium's pipelines compiling - no longer holds it at 60 for the session)
+  uint64_t fullRateBlockedNs = 0, fullRateRetryNs = 0;
+  // r129, the pipelined frame (xr_quest.h): on (xr_tune "pipeline <0|1>"); this game frame's Aurora frame is to be
+  // left open (decided as its eyes begin); one is open from the last loop; time spent at the boundary and in the
+  // simulation before the send (loopStartNs .. the send), and pipelined game frames, since the stats line
+  bool pipelineOn = true, pipelineThisFrame = false, framePending = false;
+  // r130: missed display frames since the last load check (xrfx::set_load_scale), the last predicted display time;
+  // a goal's show (from the goal to a few seconds after play is live again): slowness then doesn't hold the view at
+  // 60; full rate's run without a block since (the retry's backoff starts over after a minute of it)
+  XrTime lastPredictedDisplayTime = 0;
+  uint64_t scaleCheckNs = 0, celebStartNs = 0, celebEndNs = 0, fullRateOkSinceNs = 0;
+  uint32_t missedSinceScale = 0;
+  uint64_t loopStartNs = 0, boundaryNsSinceStats = 0, simNsSinceStats = 0;
+  uint32_t pipelinedSinceStats = 0, sendsSinceStats = 0;
+  // r131, the GPU-direct big screen (ScreenSlot): its images (one size, the game picture's), on (xr_tune "screendirect
+  // <0|1>"), unavailable (set once: the readback path stays), this game frame's picture goes that way, the Aurora frame
+  // armed last; this game frame sent (PortXrFrameBoundary ran: only such a 2D frame is left open); counts since the stats
+  // line: game frames copied, pictures shown (and how many frames behind the newest drawn, summed), older ones dropped,
+  // frames with no free image, released with no picture, CPU fence waits, display frames whose newest picture was still
+  // on the GPU; 2D game frames pipelined
+  ScreenSlot screenSlots[kScreenSlots];
+  uint32_t screenW = 0, screenH = 0;
+  bool screenDirectOn = true, screenDirectFailed = false, screenDirectThisFrame = false;
+  bool screenArmedValid = false, sentThisFrame = false;
+  uint32_t screenArmedFrame = 0;
+  uint32_t screenCopiesSinceStats = 0, screenShownSinceStats = 0, screenDroppedSinceStats = 0;
+  uint32_t screenNoSlotSinceStats = 0, screenBlankSinceStats = 0, screenCpuWaitsSinceStats = 0, pipelined2DSinceStats = 0;
+  uint32_t screenNotDoneSinceStats = 0;
+  uint64_t screenBehindSinceStats = 0;
+  float frameScale = 1.0f;
+  float raAccum = 0.0f;               // RetroAchievements checks 60 times a second (rcheevos counts frames)
   uint32_t onlineParity = 0;
   bool stadiumHalf = false;           // r42b: Jumbotron · Stadium eyes every other frame (xr_tune)
   // r44 (players: input lag): wait up to kHandoffWaitNs after xrBeginFrame for the render worker to
@@ -706,6 +851,21 @@ struct State {
   uint32_t blastsLogged = 0;
   // r57: the trophy shelf in your room (xr_shelf.txt): where it is, which hands hold it, and the
   // cups won (the save's trophy bits and win counts, from Game.cpp), the last one won and when.
+  // r120 (Lance: "scyther is RIGHT in my face, back him the fuck up, and make it so theyre anchored and we can move
+  // them so theyre not in the way"): the home figure's own spot on your floor (xr_homespot.txt), off the shelf;
+  // one grip drags it, both turn it and size it. `shown`, `feet`, `reach`, `height`: last frame's (for the grab).
+  struct HomeSpot {
+    bool placed = false;
+    float x = 0.0f, z = 0.0f, yaw = 0.0f, scale = 1.0f;
+    bool handL = false, handR = false;
+    int grabHands = 0;
+    XrVector3f grabOffset{0.0f, 0.0f, 0.0f};
+    float twoAngle = 0.0f, twoYaw = 0.0f, twoDist = 1.0f, twoScale = 1.0f;
+    XrVector3f twoPos{0.0f, 0.0f, 0.0f}, twoMid{0.0f, 0.0f, 0.0f};
+    bool prevGripL = false, prevGripR = false;
+    bool shown = false;
+    float floorY = 0.0f, reach = 0.5f, height = 1.8f;
+  } homeSpot;
   struct ShelfState {
     bool placed = false;
     XrVector3f position{0.0f, 0.0f, 0.0f};
@@ -766,6 +926,13 @@ struct State {
   // suites/suite_<name>.*) is loaded on a thread.
   int suiteCaptain = -2;  // the one loaded or loading
   std::string suiteLoaded;     // r73: the room loaded or loading ("mario" ... or a guest series' "pokemon")
+  bool evoRoomOn = false;      // r119: an evolution's backdrop is up (VR)
+  bool homeEnvOn = false;      // r124: the home screen's suite is up (VR, out of a match)
+  bool worldQuietLogged = false;  // r128: the last "world:" log line said there's no stadium (g_worldDrawnNs)
+  XrVector3f homeEnvOrigin{0.0f, 0.0f, 0.0f};
+  float homeEnvYaw = 0.0f;
+  std::string evoRoomTheme;    // r119: which (evo_<theme>), "" none on this headset
+  std::string evoRoomKey;      // r132: whose evolution it was picked for
   std::string suiteGuestName;  // r73: a guest series' suite: the guest's name for its plaque, "" none
   XrVector3f suiteOrigin{0.0f, 0.0f, 0.0f};
   float suiteYaw = 0.0f;
@@ -809,12 +976,19 @@ struct State {
   uint64_t uploadNsSinceStats = 0;
 };
 State g;
+// r134: the home ground shows unless switched off here (pause settings) or NONE on the Home ground panel
+bool home_on() { return g.showHome && !xrhome::home_none(); }
+
+// r128: the last time the game drew its stadium (World::Render, the game thread: PortXrWorldRendered). r126 took any
+// eye / split-stadium picture going out instead, but the Stadium views send one every frame at the menus too (black),
+// so the home screen's suite never came up there (Lance's r127 test: "it just goes to a black screen").
+std::atomic<uint64_t> g_worldDrawnNs{0};
 
 // r42: the goal banner's picture, drawn on a thread of its own (xr_text.cpp takes tens of ms).
 std::vector<uint8_t> g_bannerPixels;
 std::atomic<bool> g_bannerReady{false};
 constexpr uint32_t kBannerW = 1024, kBannerH = 560;  // r43d: 420 + the stats line
-constexpr uint32_t kSliderW = 640, kSliderH = 548;  // r44g: the settings panel's rows (r104: five, was 380 for three)
+constexpr uint32_t kSliderW = 640, kSliderH = 632;  // r133: six rows (+ HOME GROUND)  // r44g: the settings panel's rows (r104: five, was 380 for three)
 // r51b: the achievements list: one tall picture of every row (xrtext::achievements_list), 8 rows of
 // it in view at a time, under a title bar (xrtext::achievements_header).
 constexpr uint32_t kAchW = 1000, kAchRowH = 94, kAchShownRows = 8, kAchHeadH = 150;
@@ -877,8 +1051,10 @@ struct FrClubInfo {
   uint32_t c1 = 0, c2 = 0;
 };
 struct FrSnapshot {
+  unsigned serial = 0;  // r131: + 1 each snapshot (fr_refresh): a picture drawn from an older one says so
   int mode = 0, cursor = 0, page = 0, slot = 0;
   bool confirmDelete = false, canPlay = false;
+  bool onTabs = false;  // r112: the new-career picks' stick is on the game tabs
   PortFranchiseSlot slots[PORT_FR_SLOTS] = {};
   PortFranchiseView view = {};
   PortFranchiseToday today = {};  // r70b: today's other games (to watch one)
@@ -889,6 +1065,9 @@ struct FrSnapshot {
   bool evoNewShiny = false;
   // r75: picking your own players (mode 4): the stage, the club, the captain picked (menu pick, -1 none)
   int pickStage = 0, pickClub = 0, pickCap = -1;
+  int pickSk[3] = {-1, -1, -1};  // r130
+  int pickBk = -1;               // r130: the backup captain picked (a Strikers one is no sidekick then)
+  std::vector<unsigned char> pickTaken;  // r131: per menu entry of the stage's menu: a character taken already
   // r76, co-op: the careers screen's co-op card (shown with a friend in the room or one saved), its
   // state (PortFranchiseCoopState) and saved career; the loaded career is co-op (and run by the friend)
   bool coopShown = false, coopActive = false, coopGuest = false;
@@ -897,6 +1076,9 @@ struct FrSnapshot {
   std::string coopName;
   std::vector<PortFranchiseEvoRow> evoWatch;  // r77: the Evo Watch page
   std::string evoReadyName;                   // r95: one of yours ready to evolve (postponed too), "" none
+  bool evoReadyCostume = false;               // r111: ... a Marvel hero's next costume
+  MagNews mag;                                // r131: STRIKERS ILLUSTRATED's own news (g.magNews)
+  MagPick pick;                               // r131: this issue's random cover (mag_pick_issue)
   // r77: trades (mode 5): the stage, what you give and its value per option, their offers, the answer
   int tradeStage = 0, tradeWhat = 0;
   bool tradeOpen = false;
@@ -918,6 +1100,14 @@ struct FrSnapshot {
 constexpr const char* kFrCodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 std::mutex g_frMutex;
 FrSnapshot g_frSnap;
+// r113: the newspaper's front-page photo: the game's own frame a moment after your last goal in a franchise
+// match (on_aurora_frame takes it), cleared when a franchise match starts; who scored it.
+std::mutex g_photoMutex;
+std::vector<uint8_t> g_photo;
+int g_photoW = 0, g_photoH = 0;
+std::string g_photoBy;
+std::atomic<uint64_t> g_photoWantNs{0};
+AsyncPanel g_paperP[6];  // r113: the newspaper's pages; r131: STRIKERS ILLUSTRATED's 6
 PortFranchiseCard g_frCard = {};  // r70b: under g_frMutex
 // r73: what the news wire and the TV show (under g_frMutex)
 struct FrRoom {
@@ -936,11 +1126,14 @@ void fr_club_place(int club, int* row, int* col) {
   *row = conf * 2 + div / 2;
   *col = (div % 2) * 4 + k;
 }
+void fr_pick_taken_fill(std::vector<unsigned char>& out);  // r131 (after the menu's entries)
 // The hub's state as the game has it now, for the next picture (game thread).
+void mag_pick_issue(FrSnapshot& s);  // r131 (below)
 void fr_refresh() {
   FrSnapshot s;
   s.mode = g.frMode;
   s.cursor = g.frCursor;
+  s.onTabs = g.frOnTabs;  // r112
   s.page = g.frPage;
   s.slot = g.frSlot;
   s.confirmDelete = g.frConfirmDelete;
@@ -953,8 +1146,11 @@ void fr_refresh() {
   s.evoChoice = g.frEvoChoice;
   s.evoNewShiny = g.frEvoNewShiny;
   s.pickStage = g.frPickStage;
+  for (int k = 0; k < 3; ++k) s.pickSk[k] = g.frPickSk[k];  // r130
   s.pickClub = g.frPickClub;
   s.pickCap = g.frPickCap;
+  s.pickBk = g.frPickBk;  // r130
+  if (g.frMode == 4) fr_pick_taken_fill(s.pickTaken);  // r131: one character, one club
   // r76, co-op
   s.coopState = PortFranchiseCoopState();
   const bool coopSaved = g.frMode == 0 && PortFranchiseCoopFile(&s.coopSlot);
@@ -977,9 +1173,12 @@ void fr_refresh() {
   if (s.league.active) s.today.count = 0;  // (no watching in a league: the week waits on its people)
   if (g.frMode == 2) {  // r95: the page bar marks the Evo Watch while one of yours is ready
     PortFranchiseEvolution ready;
-    if (PortFranchiseReadyEvolution(&ready)) s.evoReadyName = ready.fromName;
+    if (PortFranchiseReadyEvolution(&ready)) {
+      s.evoReadyName = ready.fromName;
+      s.evoReadyCostume = std::strncmp(ready.fromKey, "mua_", 4) == 0;  // r111
+    }
   }
-  if (g.frMode == 2 && g.frPage == 8) {  // r77
+  if (g.frMode == 2) {  // r77 (r113: the paper's star watch too, every page)
     s.evoWatch.resize(80);
     s.evoWatch.resize(
         static_cast<size_t>(PortFranchiseEvoWatch(s.evoWatch.data(), static_cast<int>(s.evoWatch.size()))));
@@ -1014,9 +1213,456 @@ void fr_refresh() {
     c.c2 = PortFranchiseClubColor(i, 1);
     s.clubs.push_back(c);
   }
+  static std::atomic<unsigned> serial{0};  // r131
+  s.serial = ++serial;
+  s.mag = g.magNews;  // r131
+  if (g.frMode == 2 && s.view.active) mag_pick_issue(s);  // r131: this week's random cover (kept in the career's file)
   std::lock_guard<std::mutex> lock(g_frMutex);
   g_frSnap = std::move(s);
   ++g.frGen;
+  // r113: the paper's pages too. r131: not while the magazine is open (its pages don't change while you read it;
+  // every stick flip came here and drew all of them again)
+  if (!g.paperOpen) ++g.paperGen;
+}
+// r113: THE DAILY STRIKE's pages (front page, around the league, the table, star watch, rivals), opened in front
+// of you, turned with the stick / triggers / a swipe of your right hand.
+// r131: STRIKERS ILLUSTRATED (Lance: "make the magazine grabbable, and with that, the pages flippable ... right now
+// the cover shows up for .34 seconds then disappears. i want the cover to be the first page by default"). Why the
+// cover went (his r129 / r130 logs: "today's paper" and at once "the paper swiped on", then on / back / on): r113's
+// swipe took any 16 cm sweep of the right hand within 40 cm above or below the paper and up to 35 cm in front of it,
+// where a resting hand is, so the front page turned by itself (and "back" when the hand came back). Now 6 pages on 3
+// leaves (each leaf a page on either side: cover | scorecard, the table | star watch, rivals | back cover); the closed
+// magazine shows its cover alone; only the stick / triggers / A, a trigger pulled ON a page (dragging that page over
+// the spine) or a sweep of your free hand across it while the other hand holds it turn a page.
+constexpr int kMagPages = 6, kMagLeaves = 3;
+constexpr uint32_t kMagW = 1080, kMagH = 1440;  // a page (3 : 4)
+constexpr float kMagPageW = 0.31f;              // a page's width at size 1 (m)
+XrVector3f q_rot(const XrQuaternionf& q, const XrVector3f& v);  // below
+XrQuaternionf q_conj(const XrQuaternionf& q);
+XrQuaternionf q_mul(const XrQuaternionf& a, const XrQuaternionf& b);
+XrQuaternionf yaw_quat(float yaw);
+float get_float(XrAction action);
+uint64_t now_ns();
+std::string mag_cover_name(const FrSnapshot& s);  // (below)
+// Where the spine is from the magazine's middle, in pages: closed on its cover the cover's middle is there (the spine
+// half a page left), open the spine is, closed on its back the back cover's middle.
+float mag_shift(int leaves) { return leaves <= 0 ? 0.5f : (leaves >= kMagLeaves ? -0.5f : 0.0f); }
+struct MagFrame {
+  XrQuaternionf q{0.0f, 0.0f, 0.0f, 1.0f};  // its turn (its pages face +z)
+  XrVector3f fold{0.0f, 0.0f, 0.0f};        // the spine's middle
+  float pageW = kMagPageW, pageH = kMagPageW * 4.0f / 3.0f;
+  float shift = 0.5f;                       // the spine from the middle (pages, + = left)
+  float x0 = 0.0f, x1 = 0.0f;               // the pages showing, from the spine (m)
+};
+// As it is now: facing you (turned magRelYaw more), leaning back to your eyes as a magazine held to read.
+MagFrame mag_frame() {
+  MagFrame f;
+  f.pageW = kMagPageW * g.magScale;
+  f.pageH = f.pageW * static_cast<float>(kMagH) / static_cast<float>(kMagW);
+  const XrVector3f& p = g.magPos;
+  const XrVector3f& h = g.headPose.position;
+  const float dx = h.x - p.x, dz = h.z - p.z;
+  const float yaw = std::atan2(dx, dz) + g.magRelYaw;
+  const float up = std::atan2(h.y - p.y, std::max(0.05f, std::sqrt(dx * dx + dz * dz)));
+  const float tilt = std::max(-1.2f, std::min(1.0f, -(up + 0.13f)));  // its top away from you
+  f.q = q_mul(yaw_quat(yaw), XrQuaternionf{std::sin(0.5f * tilt), 0.0f, 0.0f, std::cos(0.5f * tilt)});
+  const bool turning = g.magTurn >= 0;
+  f.shift = turning ? mag_shift(g.magTurn) + (mag_shift(g.magTurn + 1) - mag_shift(g.magTurn)) * g.magSide
+                    : mag_shift(g.magLeaves);
+  const XrVector3f off = q_rot(f.q, XrVector3f{-f.shift * f.pageW, 0.0f, 0.0f});
+  f.fold = {p.x + off.x, p.y + off.y, p.z + off.z};
+  f.x0 = turning || g.magLeaves > 0 ? -f.pageW : 0.0f;
+  f.x1 = turning || g.magLeaves < kMagLeaves ? f.pageW : 0.0f;
+  return f;
+}
+// A point in the magazine's own frame, from its middle (m).
+XrVector3f mag_local(const MagFrame& f, const XrVector3f& w) {
+  return q_rot(q_conj(f.q), XrVector3f{w.x - g.magPos.x, w.y - g.magPos.y, w.z - g.magPos.z});
+}
+// Where hand h's pointer is on the magazine's plane, from its middle: its tip when that's at the page (12 cm), else
+// where its ray meets the plane (up to 2.5 m). False: pointing away.
+bool mag_point(const MagFrame& f, int h, float* x, float* y) {
+  if (!g.aimValid[h]) return false;
+  const XrVector3f tip = mag_local(f, g.aim[h].position);
+  if (std::fabs(tip.z) < 0.12f) {
+    *x = tip.x;
+    *y = tip.y;
+    return true;
+  }
+  const XrVector3f d = q_rot(q_conj(f.q), q_rot(g.aim[h].orientation, XrVector3f{0.0f, 0.0f, -1.0f}));
+  if (std::fabs(d.z) < 1e-3f) return false;
+  const float t = -tip.z / d.z;
+  if (t < 0.0f || t > 2.5f) return false;
+  *x = tip.x + d.x * t;
+  *y = tip.y + d.y * t;
+  return true;
+}
+// On a page showing (x, y from the middle), `margin` round it.
+bool mag_on(const MagFrame& f, float x, float y, float margin) {
+  const float xf = x + f.shift * f.pageW;  // from the spine
+  return xf >= f.x0 - margin && xf <= f.x1 + margin && std::fabs(y) <= 0.5f * f.pageH + margin;
+}
+// The leaf turning comes down where it's going (or where it is, past half way).
+void mag_settle() {
+  if (g.magTurn < 0) return;
+  g.magLeaves = g.magTo >= 0.5f ? std::min(kMagLeaves, g.magTurn + 1) : g.magTurn;
+  g.magTurn = -1;
+  g.magSide = 0.0f;
+}
+void mag_animate(float to) {
+  g.magFrom = g.magSide;
+  g.magTo = to;
+  g.magTurnNs = now_ns();
+}
+// A page turned by the stick / triggers / A / a swipe (+1 on, -1 back): over the spine in 0.45 s, the face to you.
+// False: no page that way (or a hand holds one).
+bool mag_flip(int dir) {
+  if (g.magDrag >= 0) return false;
+  mag_settle();
+  if (dir > 0 && g.magLeaves < kMagLeaves) {
+    g.magTurn = g.magLeaves;
+    g.magSide = 0.0f;
+    mag_animate(1.0f);
+    return true;
+  }
+  if (dir < 0 && g.magLeaves > 0) {
+    --g.magLeaves;
+    g.magTurn = g.magLeaves;
+    g.magSide = 1.0f;
+    mag_animate(0.0f);
+    return true;
+  }
+  return false;
+}
+void mag_tick(uint64_t now) {
+  if (g.magTurn < 0 || g.magDrag >= 0) return;
+  const float dur = std::max(0.08f, 0.45f * std::fabs(g.magTo - g.magFrom));
+  const float t = static_cast<float>(static_cast<double>(now - g.magTurnNs) * 1e-9) / dur;
+  if (t >= 1.0f) {
+    g.magSide = g.magTo;
+    mag_settle();
+    return;
+  }
+  const float e = t * t * (3.0f - 2.0f * t);
+  g.magSide = g.magFrom + (g.magTo - g.magFrom) * e;
+}
+// Opened closed, its cover to you (placed in front of you when it's next drawn); its size stays what you made it.
+void paper_open() {
+  g.paperOpen = true;
+  g.paperPlaced = false;
+  g.magLeaves = 0;
+  g.magTurn = -1;
+  g.magDrag = -1;
+  g.magSide = 0.0f;
+  g.magRelYaw = 0.0f;
+  g.magGrabHands = 0;
+  g.magHand[0] = g.magHand[1] = false;
+  g.magSweepAt = 0;
+  g.magSwipeDir = 0;
+  for (auto& s : g.magSweep) s.ns = 0;
+  g.magOpenNs = now_ns();
+  ++g.paperGen;
+  XLOG("franchise: this week's STRIKERS ILLUSTRATED (the %s cover)", mag_cover_name(g_frSnap).c_str());
+}
+// r131: the magazine in your hands (Lance's rule, every project: one grip moves it, both grips turn and size it).
+// A grip closing on it (the hand at it, or its pointer on it) takes it: one hand carries it (it keeps facing you),
+// both turn it (as the hands turn round each other) and size it (as they part: 0.5 - 2.2 of 31 cm a page); let go, it
+// floats where it is. A trigger pulled on a page (pointing at it or touching it) holds that page: it follows the
+// hand over the spine and goes over past a third of the way (or back). A sweep of the free hand across the pages
+// while the other hand holds it turns one (right to left on, left to right back; the hand coming back is no swipe).
+// The grips it took (g.magHand / magSpent) and triggers (magTrigBusy) are the magazine's until let go.
+void update_magazine(const bool grip[2], const bool have[2], const XrVector3f hand[2], uint64_t now) {
+  mag_tick(now);
+  const bool live = g.paperOpen && g.paperPlaced && g.frOpen && g.frMode != 3 && g.headValid;
+  const MagFrame f = mag_frame();
+  const float trig[2] = {get_float(g.actions.triggerL), get_float(g.actions.triggerR)};
+  for (int h = 0; h < 2; ++h) {
+    if (live && grip[h] && !g.magPrevGrip[h] && have[h]) {
+      const XrVector3f l = mag_local(f, hand[h]);
+      float px = 0.0f, py = 0.0f;
+      const bool at = std::fabs(l.z) < 0.15f && mag_on(f, l.x, l.y, 0.08f);
+      const bool aimed = !at && mag_point(f, h, &px, &py) && mag_on(f, px, py, 0.03f);
+      if (at || aimed) {
+        g.magHand[h] = true;
+        g.magSpent[h] = true;
+        XLOG("franchise: the magazine taken by the %s grip%s", h == 0 ? "left" : "right", aimed ? " (pointing at it)" : "");
+      }
+    }
+    if (!grip[h] || !have[h] || !live) g.magHand[h] = false;
+    if (!grip[h]) g.magSpent[h] = false;
+    g.magPrevGrip[h] = grip[h];
+  }
+  const int hands = (g.magHand[0] ? 1 : 0) | (g.magHand[1] ? 2 : 0);
+  const XrVector3f mid{0.5f * (hand[0].x + hand[1].x), 0.5f * (hand[0].y + hand[1].y), 0.5f * (hand[0].z + hand[1].z)};
+  const float apart = std::sqrt((hand[1].x - hand[0].x) * (hand[1].x - hand[0].x) + (hand[1].y - hand[0].y) * (hand[1].y - hand[0].y) +
+                                (hand[1].z - hand[0].z) * (hand[1].z - hand[0].z));
+  if (hands != g.magGrabHands) {
+    if (hands == 3) {
+      g.magTwoAngle = std::atan2(hand[1].x - hand[0].x, hand[1].z - hand[0].z);
+      g.magTwoYaw = g.magRelYaw;
+      g.magTwoPos = g.magPos;
+      g.magTwoMid = mid;
+      g.magTwoDist = std::max(0.05f, apart);
+      g.magTwoScale = g.magScale;
+    } else if (hands != 0) {
+      const XrVector3f& p = hand[hands == 1 ? 0 : 1];
+      g.magGrabOff = {g.magPos.x - p.x, g.magPos.y - p.y, g.magPos.z - p.z};
+    } else {
+      XLOG("franchise: the magazine left at (%.2f, %.2f, %.2f), size %.2f, turned %.0f deg", g.magPos.x, g.magPos.y,
+           g.magPos.z, g.magScale, g.magRelYaw * 57.29578f);
+    }
+    g.magGrabHands = hands;
+  }
+  if (hands == 3) {
+    float turn = std::atan2(hand[1].x - hand[0].x, hand[1].z - hand[0].z) - g.magTwoAngle;
+    while (turn > 3.14159265f) turn -= 6.2831853f;
+    while (turn < -3.14159265f) turn += 6.2831853f;
+    g.magRelYaw = std::max(-1.3f, std::min(1.3f, g.magTwoYaw + turn));
+    g.magPos = {g.magTwoPos.x + mid.x - g.magTwoMid.x, g.magTwoPos.y + mid.y - g.magTwoMid.y,
+                g.magTwoPos.z + mid.z - g.magTwoMid.z};
+    g.magScale = std::max(0.5f, std::min(2.2f, g.magTwoScale * apart / g.magTwoDist));
+  } else if (hands != 0) {
+    const XrVector3f& p = hand[hands == 1 ? 0 : 1];
+    g.magPos = {p.x + g.magGrabOff.x, p.y + g.magGrabOff.y, p.z + g.magGrabOff.z};
+  }
+  // r131 (Lance: "make it so the Right trigger can turn the page forward and the L trigger turns the page backwards"):
+  // the right trigger (whichever hand holds it) turns a page on, the left one back, one page a pull (its curl; the
+  // trigger-drag of a page is gone). Not in its first 0.9 s (a trigger squeezed through the match's end screens). The
+  // hub keeps the triggers from the game while it's open.
+  for (int h = 0; h < 2; ++h) {
+    const bool down = trig[h] > 0.55f;
+    if (live && down && !g.magPrevTrig[h] && now - g.magOpenNs > 900000000ull) {
+      const int dir = h == 1 ? 1 : -1;
+      if (mag_flip(dir)) XLOG("franchise: a magazine page turned %s (%s trigger), leaf %d", dir > 0 ? "on" : "back", h == 1 ? "right" : "left", g.magTurn);
+    }
+    if (down) g.magPrevTrig[h] = true;
+    g.magTrigBusy[h] = g.magPrevTrig[h];  // (the hub's own LT / RT turns stay off while a trigger is the magazine's)
+    if (trig[h] < 0.35f) {
+      g.magPrevTrig[h] = false;
+      g.magTrigBusy[h] = false;
+    }
+  }
+  g.magDrag = -1;
+  // the free hand sweeping across it while the other holds it
+  const int freeHand = g.magGrabHands == 1 ? 1 : (g.magGrabHands == 2 ? 0 : -1);
+  int swipe = 0;
+  if (live && freeHand >= 0 && g.aimValid[freeHand] && g.magDrag < 0 && trig[freeHand] < 0.35f) {
+    const XrVector3f l = mag_local(f, g.aim[freeHand].position);
+    const bool near = l.z > -0.05f && l.z < 0.2f && mag_on(f, l.x, l.y, 0.06f);
+    g.magSweep[g.magSweepAt] = {near ? now : 0, l.x, l.y, l.z};
+    g.magSweepAt = (g.magSweepAt + 1) % 24;
+    if (near && now - g.magSwipeNs > 450000000ull) {
+      for (const auto& s : g.magSweep) {
+        if (s.ns == 0 || now - s.ns > 300000000ull) continue;
+        const float dx = l.x - s.x;
+        if (std::fabs(dx) > 0.15f) {
+          const int dir = dx < 0.0f ? 1 : -1;
+          if (!(dir == -g.magSwipeDir && now - g.magSwipeNs < 900000000ull)) swipe = dir;
+          break;
+        }
+      }
+    }
+  } else {
+    for (auto& s : g.magSweep) s.ns = 0;
+  }
+  if (swipe != 0) {
+    g.magSwipeNs = now;
+    g.magSwipeDir = swipe;
+    for (auto& s : g.magSweep) s.ns = 0;
+    if (mag_flip(swipe)) XLOG("franchise: a magazine page swiped %s", swipe > 0 ? "on" : "back");
+  }
+}
+// r131 (Lance: "im nitpicking so i want you to make the magazine more flimsy like a magazine would actually be???"):
+// the pages as paper, a bending grid each in the effects layer (model slot kMagSlot, its pictures the pages as drawn,
+// mipmapped + anisotropic, the paper shading of xr_fx_model.frag: as drawn where it faces you). Each leaf's cross
+// section across the page is walked along its own length (so the paper never stretches): an open magazine's pages
+// rise a little from the spine (a gull wing) and each side's free edge bends back by its "flop", a damped spring
+// (underdamped: it overshoots and sways when it stops / is let go): resting it hangs slightly bent; held in one hand
+// the side farther from the hand droops most (more open than closed); held in both it pulls nearly flat; the
+// magazine's own acceleration (toward / away from you, its turn) throws the edges back and forth, and moving fast it
+// flutters. A turning leaf rolls over the spine with its outer part lagging (a curl travelling across it, the bottom
+// corner first), its back page showing on its other side. Until all six pages are drawn (or without the effects
+// layer) the flat quads stand in.
+constexpr int kMagSlot = xrfx::kModelSlots - 1;
+constexpr int kMagNX = 24, kMagNY = 8;  // a page's grid: across (it bends this way), down
+constexpr int kMagNV = (kMagNX + 1) * (kMagNY + 1);
+bool mag_paper_frame(xrfx::Scene& scene, const MagFrame& f, uint64_t now) {
+  if (!g.fxReady) return false;
+  if (g.magModelGen != g.paperGen) {
+    // this issue's pictures up once all six are drawn
+    for (int pg = 0; pg < kMagPages; ++pg) {
+      AsyncPanel& a = g_paperP[pg];
+      if (a.forGeneration != g.paperGen || a.ready.load() != a.requested || a.width != kMagW || a.height != kMagH) return false;
+    }
+    xrfx::Model m;
+    m.vertexCount = static_cast<uint32_t>(kMagPages * kMagNV);
+    for (int pg = 0; pg < kMagPages; ++pg) {
+      {
+        std::lock_guard<std::mutex> lock(g_paperP[pg].mutex);
+        m.texRgba.push_back(g_paperP[pg].pixels);
+      }
+      m.texW.push_back(kMagW);
+      m.texH.push_back(kMagH);
+      const uint32_t base = static_cast<uint32_t>(pg * kMagNV);
+      for (int i = 0; i <= kMagNY; ++i)
+        for (int j = 0; j <= kMagNX; ++j) {
+          const float u = static_cast<float>(j) / kMagNX;
+          m.uv.push_back(pg % 2 == 0 ? u : 1.0f - u);  // a back page (odd) is read from the leaf's other side
+          m.uv.push_back(static_cast<float>(i) / kMagNY);
+        }
+      xrfx::ModelPart part;
+      part.tex = pg;
+      part.firstIndex = static_cast<uint32_t>(m.indices.size());
+      for (int i = 0; i < kMagNY; ++i)
+        for (int j = 0; j < kMagNX; ++j) {
+          const uint32_t a = base + static_cast<uint32_t>(i * (kMagNX + 1) + j), b = a + 1, c = a + kMagNX + 1, d = c + 1;
+          m.indices.insert(m.indices.end(), {a, c, b, b, c, d});
+        }
+      part.indexCount = static_cast<uint32_t>(m.indices.size()) - part.firstIndex;
+      m.parts.push_back(part);
+    }
+    xrfx::set_model(kMagSlot, std::move(m));
+    g.magModelGen = g.paperGen;
+    g.magVerts.assign(static_cast<size_t>(kMagPages) * kMagNV * 6, 0.0f);
+    g.magPhysNs = 0;
+    XLOG("franchise: the magazine's pages up as paper (%d x %d a page)%s", kMagNX, kMagNY,
+         xrfx::model_up(kMagSlot) ? "" : " - failed, flat pages");
+  }
+  if (!xrfx::model_up(kMagSlot)) return false;
+  // its motion: velocity, acceleration (smoothed), its turn's rate
+  const float dt = g.magPhysNs != 0 ? std::min(0.05f, static_cast<float>(static_cast<double>(now - g.magPhysNs) * 1e-9)) : 0.0f;
+  const XrVector3f xa = q_rot(f.q, XrVector3f{1.0f, 0.0f, 0.0f});
+  const float ang = std::atan2(-xa.z, xa.x);
+  if (dt > 1e-4f) {
+    const XrVector3f v{(g.magPos.x - g.magLastPos.x) / dt, (g.magPos.y - g.magLastPos.y) / dt, (g.magPos.z - g.magLastPos.z) / dt};
+    const float k = std::min(1.0f, dt * 20.0f);
+    const XrVector3f a{(v.x - g.magVel.x) / dt, (v.y - g.magVel.y) / dt, (v.z - g.magVel.z) / dt};
+    g.magAcc = {g.magAcc.x + (a.x - g.magAcc.x) * k, g.magAcc.y + (a.y - g.magAcc.y) * k, g.magAcc.z + (a.z - g.magAcc.z) * k};
+    g.magVel = {g.magVel.x + (v.x - g.magVel.x) * k, g.magVel.y + (v.y - g.magVel.y) * k, g.magVel.z + (v.z - g.magVel.z) * k};
+  } else {
+    g.magVel = g.magAcc = {0.0f, 0.0f, 0.0f};
+  }
+  float turnRate = 0.0f;
+  if (dt > 1e-4f) {
+    float d = ang - g.magLastAng;
+    while (d > 3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    turnRate = std::max(-8.0f, std::min(8.0f, d / dt));
+  }
+  g.magLastAng = ang;
+  g.magLastPos = g.magPos;
+  g.magPhysNs = now;
+  const int T = g.magTurn, L = g.magLeaves;
+  const bool open = T >= 0 || (L > 0 && L < kMagLeaves);
+  const float W = f.pageW, H = f.pageH;
+  // each side's flop: where it's going (how it's held), what throws it, a spring
+  const XrVector3f accL = q_rot(q_conj(f.q), g.magAcc);
+  float handX = 0.0f;  // the holding hand across the magazine, from the spine
+  if (g.magGrabHands == 1 || g.magGrabHands == 2)
+    handX = q_rot(q_conj(f.q), XrVector3f{-g.magGrabOff.x, -g.magGrabOff.y, -g.magGrabOff.z}).x + f.shift * W;
+  for (int side = 0; side < 2; ++side) {
+    float target = open ? 0.10f : 0.05f;  // floating: a slight bend
+    if (g.magGrabHands == 3) {
+      target = 0.02f;  // both hands pull it flat
+    } else if (g.magGrabHands != 0) {
+      const float edge = side == 0 ? -W : W;
+      const float far = std::min(1.0f, std::fabs(edge - handX) / (2.0f * W));
+      target = (open ? 0.42f : 0.2f) * (0.3f + 0.9f * far);  // the side away from the hand droops most
+    }
+    const float push = -3.0f * accL.z + (side == 1 ? -0.9f : 0.9f) * turnRate;
+    g.magFlopV[side] += (70.0f * (target - g.magFlop[side]) - 5.0f * g.magFlopV[side] + push) * dt;
+    g.magFlop[side] = std::max(-0.6f, std::min(1.2f, g.magFlop[side] + g.magFlopV[side] * dt));
+  }
+  const float speed = std::sqrt(g.magVel.x * g.magVel.x + g.magVel.y * g.magVel.y + g.magVel.z * g.magVel.z);
+  g.magFlutter += (std::min(0.07f, 0.05f * speed) - g.magFlutter) * std::min(1.0f, dt * 4.0f);
+  const float t = static_cast<float>(static_cast<double>(now % 100000000000ull) * 1e-9);
+  const float rest = open ? 0.16f : 0.03f;
+  auto theta = [&](int leafSide, float u, float v) {  // 0 the right side, 1 the left, the angle across (from +x to +z)
+    const float flut = g.magFlutter * u * std::sin(20.0f * t + 6.0f * u + 4.0f * v);
+    if (leafSide == 0) return rest * (1.0f - u) * (1.0f - u) - g.magFlop[1] * u * u + flut;
+    return 3.14159265f - rest * (1.0f - u) * (1.0f - u) + g.magFlop[0] * u * u - flut;
+  };
+  float* out = g.magVerts.data();
+  for (int i = 0; i < kMagPages * kMagNV; ++i) {  // nothing shows but the pages filled below
+    float* o = out + static_cast<size_t>(i) * 6;
+    o[0] = f.fold.x;
+    o[1] = f.fold.y;
+    o[2] = f.fold.z;
+    o[3] = o[4] = o[5] = 0.0f;
+  }
+  // a leaf (its front page 2 x leaf, its back 2 x leaf + 1): e 0 flat on the right .. 1 flat on the left; which of its
+  // sides to fill; lifted toward you (the turning one over the stacks)
+  const float dir = g.magTo >= g.magFrom ? 1.0f : -1.0f;
+  auto leaf = [&](int idx, float e, bool front, bool back, float lift, bool turning) {
+    for (int i = 0; i <= kMagNY; ++i) {
+      const float v = static_cast<float>(i) / kMagNY;
+      const float y = (0.5f - v) * H;
+      const float lagRow = 0.55f + 0.45f * std::fabs(v - 0.95f);  // the bottom corner leads
+      auto ang2 = [&](float u) {
+        float a = (1.0f - e) * theta(0, u, v) + e * theta(1, u, v);
+        if (turning) a -= dir * 1.05f * std::sin(3.14159265f * e) * std::pow(u, 1.4f) * lagRow;
+        return a;
+      };
+      float x = 0.0f, z = 0.0f;
+      for (int j = 0; j <= kMagNX; ++j) {
+        if (j > 0) {
+          const float am = ang2((j - 0.5f) / kMagNX);
+          x += std::cos(am) * W / kMagNX;
+          z += std::sin(am) * W / kMagNX;
+        }
+        const float a = ang2(static_cast<float>(j) / kMagNX);
+        const XrVector3f nl{-std::sin(a), 0.0f, std::cos(a)};
+        const XrVector3f p = q_rot(f.q, XrVector3f{x, y, z + lift});
+        const XrVector3f n = q_rot(f.q, nl);
+        const XrVector3f at{f.fold.x + p.x, f.fold.y + p.y, f.fold.z + p.z};
+        const int vi = i * (kMagNX + 1) + j;
+        if (front) {
+          float* o = out + (static_cast<size_t>(2 * idx) * kMagNV + vi) * 6;
+          o[0] = at.x;
+          o[1] = at.y;
+          o[2] = at.z;
+          o[3] = n.x;
+          o[4] = n.y;
+          o[5] = n.z;
+        }
+        if (back && 2 * idx + 1 < kMagPages) {
+          float* o = out + (static_cast<size_t>(2 * idx + 1) * kMagNV + vi) * 6;
+          o[0] = at.x - n.x * 0.0012f;
+          o[1] = at.y - n.y * 0.0012f;
+          o[2] = at.z - n.z * 0.0012f;
+          o[3] = -n.x;
+          o[4] = -n.y;
+          o[5] = -n.z;
+        }
+      }
+    }
+  };
+  if (T >= 0) {
+    if (T >= 1) leaf(T - 1, 1.0f, false, true, 0.0f, false);
+    if (T + 1 < kMagLeaves) leaf(T + 1, 0.0f, true, false, 0.0f, false);
+    leaf(T, std::max(0.0f, std::min(1.0f, g.magSide)), true, true, 0.003f, true);
+  } else {
+    if (L >= 1) leaf(L - 1, 1.0f, false, true, 0.0f, false);
+    if (L < kMagLeaves) leaf(L, 0.0f, true, false, 0.0f, false);
+  }
+  xrfx::Scene::ModelDraw& md = scene.models[kMagSlot];
+  md.on = true;
+  md.posNrm = g.magVerts.data();
+  md.white = 0.0f;
+  md.alpha = 1.0f;
+  md.glow = 0.0f;
+  md.under = -1.0f;  // the paper shading
+  md.glowRgb = 0xFFFFFF;
+  md.flameFrame = -1;
+  md.shine = 0.0f;
+  md.frame = -1;
+  return true;
+}
+// Its pictures let go (the magazine put down).
+void mag_paper_drop() {
+  if (g.magModelGen < 0) return;
+  xrfx::set_model(kMagSlot, xrfx::Model{});
+  g.magModelGen = -1;
 }
 // r68e: the character select menu (Lance: "the large ass character selection menu"): everyone on one
 // big panel, the Strikers characters and the guests, a section per game, each starting a row.
@@ -1053,10 +1699,2525 @@ const GuestPortrait& guest_portrait(const std::string& pack) {
 }
 void draw_franchise_pick(uint8_t* px, int w, int h, const FrSnapshot& s);  // r75 (after the menu's entries)
 std::string fr_upper(std::string s);                                         // (below)
+
+// r113 (Lance: "the franchise menu's to be redone and more attention grabbing/less words, maybe make an actual
+// newspaper ... we need more images or VR native experiences that can do the same thing we're trying to force
+// people to read"): the franchise hub's pages and THE DAILY STRIKE's, laid out as pieces for xrtext::board.
+// A transform (ox, oy, k) lets a page be drawn small inside another (the paper's front page on the hub).
+struct Pieces {
+  std::vector<xrtext::BoardPiece> v;
+  float ox = 0.0f, oy = 0.0f, k = 1.0f;
+  // r131 (STRIKERS ILLUSTRATED): how the words look until changed: leaning, condensed, turned, a drop shadow, the
+  // outline's colour (plain(): upright, full width, none, dark)
+  float tSlant = 0.0f, tXscale = 1.0f, tAngle = 0.0f, tShadow = 0.0f, tShadowA = 0.55f;
+  uint32_t tShadowRgb = 0x000000, tRim = 0x05070C;
+  void plain() {
+    tSlant = tAngle = tShadow = 0.0f;
+    tXscale = 1.0f;
+    tShadowA = 0.55f;
+    tShadowRgb = 0x000000;
+    tRim = 0x05070C;
+  }
+  void style(float slant, float xscale = 1.0f, float angle = 0.0f, float shadow = 0.0f, uint32_t shadowRgb = 0x000000,
+             float shadowA = 0.55f) {
+    tSlant = slant;
+    tXscale = xscale;
+    tAngle = angle;
+    tShadow = shadow;
+    tShadowRgb = shadowRgb;
+    tShadowA = shadowA;
+  }
+  void rim(uint32_t rgb) { tRim = rgb; }
+  xrtext::BoardPiece& add(xrtext::BoardPiece::Kind kind, float x0, float y0, float x1, float y1) {
+    xrtext::BoardPiece p;
+    p.kind = kind;
+    p.x0 = ox + x0 * k;
+    p.y0 = oy + y0 * k;
+    p.x1 = ox + x1 * k;
+    p.y1 = oy + y1 * k;
+    v.push_back(p);
+    return v.back();
+  }
+  void box(float x0, float y0, float x1, float y1, float r, uint32_t rgb, float a = 1.0f, uint32_t rgb2 = 0,
+           float a2 = -1.0f) {
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kBox, x0, y0, x1, y1);
+    p.radius = r * k;
+    p.rgb = rgb;
+    p.alpha = a;
+    p.rgb2 = rgb2;
+    p.alpha2 = a2;  // r131: fading to it at the bottom
+  }
+  void ring(float x0, float y0, float x1, float y1, float r, float width, uint32_t rgb, float a = 1.0f) {
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kRing, x0, y0, x1, y1);
+    p.radius = r * k;
+    p.outline = width * k;
+    p.rgb = rgb;
+    p.alpha = a;
+  }
+  void glow(float x0, float y0, float x1, float y1, uint32_t rgb, float a) {
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kGlow, x0, y0, x1, y1);
+    p.rgb = rgb;
+    p.alpha = a;
+  }
+  void image(const uint8_t* rgba, int w, int h, float x0, float y0, float x1, float y1, bool bottom, float a = 1.0f,
+             uint32_t silhouette = 0) {
+    if (rgba == nullptr || w <= 0 || h <= 0) return;
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kImage, x0, y0, x1, y1);
+    p.img = rgba;
+    p.iw = w;
+    p.ih = h;
+    p.bottom = bottom;
+    p.alpha = a;
+    p.silhouette = silhouette != 0;
+    p.rgb = silhouette;
+  }
+  void image(const GuestPortrait& g, float x0, float y0, float x1, float y1, bool bottom, float a = 1.0f,
+             uint32_t silhouette = 0) {
+    image(g.rgba.empty() ? nullptr : g.rgba.data(), g.w, g.h, x0, y0, x1, y1, bottom, a, silhouette);
+  }
+  // r131: a cut-out (a portrait), its see-through margins trimmed: fitted with its feet on the box's bottom, or
+  // cropped to fill the box (fx, fy: the part kept); mirrored; duotone dark -> light (both 0: its own colours)
+  void figure(const GuestPortrait& g, float x0, float y0, float x1, float y1, bool crop, float fx, float fy,
+              bool flip = false, uint32_t dark = 0, uint32_t light = 0, float a = 1.0f) {
+    if (g.rgba.empty() || g.w <= 0 || g.h <= 0) return;
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kImage, x0, y0, x1, y1);
+    p.img = g.rgba.data();
+    p.iw = g.w;
+    p.ih = g.h;
+    p.bottom = true;
+    p.alpha = a;
+    p.trim = true;
+    p.crop = crop;
+    p.focusX = fx;
+    p.focusY = fy;
+    p.flip = flip;
+    p.duo = (dark | light) != 0;
+    p.rgb = dark;
+    p.rgb2 = light;
+  }
+  // r131: a photo cropped to fill the box (fx, fy: the part kept)
+  void photo(const uint8_t* rgba, int w, int h, float x0, float y0, float x1, float y1, float fx, float fy,
+             float a = 1.0f) {
+    if (rgba == nullptr || w <= 0 || h <= 0) return;
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kImage, x0, y0, x1, y1);
+    p.img = rgba;
+    p.iw = w;
+    p.ih = h;
+    p.alpha = a;
+    p.crop = true;
+    p.focusX = fx;
+    p.focusY = fy;
+  }
+  // r131: a convex polygon (x, y pairs), a star burst, halftone dots
+  void poly(std::initializer_list<float> xy, uint32_t rgb, float a = 1.0f) {
+    xrtext::BoardPiece p;
+    p.kind = xrtext::BoardPiece::kPoly;
+    int i = 0;
+    for (float f : xy) p.pts.push_back((i++ % 2) == 0 ? ox + f * k : oy + f * k);
+    p.rgb = rgb;
+    p.alpha = a;
+    v.push_back(p);
+  }
+  void burst(float x0, float y0, float x1, float y1, int points, float inner, float angle, uint32_t rgb, float a = 1.0f) {
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kBurst, x0, y0, x1, y1);
+    p.points = points;
+    p.inner = inner;
+    p.angle = angle;
+    p.rgb = rgb;
+    p.alpha = a;
+  }
+  void dots(float x0, float y0, float x1, float y1, float cell, float f0, float f1, uint32_t rgb, float a) {
+    xrtext::BoardPiece& p = add(xrtext::BoardPiece::kDots, x0, y0, x1, y1);
+    p.radius = cell * k;
+    p.dot0 = f0;
+    p.dot1 = f1;
+    p.rgb = rgb;
+    p.alpha = a;
+  }
+  // words: centred on x (kText), from x (kTextLeft) or ending at x (kTextRight), `px` high, shrunk into `room`
+  // (r131: in the style set, the outline in the rim colour)
+  void words(xrtext::BoardPiece::Kind kind, const std::string& t, float x, float y, float px, float room, uint32_t rgb,
+             float outline = 0.0f, uint32_t rgb2 = 0) {
+    xrtext::BoardPiece p;
+    p.kind = kind;
+    p.x0 = ox + x * k;
+    p.y0 = oy + y * k;
+    p.x1 = room * k;
+    p.y1 = px * k;
+    p.rgb = rgb;
+    p.rgb2 = rgb2;
+    p.outline = outline * k;
+    p.outlineRgb = tRim;
+    p.text = t;
+    p.slant = tSlant;
+    p.xscale = tXscale;
+    p.angle = tAngle;
+    p.shadow = tShadow * k;
+    p.shadowRgb = tShadowRgb;
+    p.shadowA = tShadowA;
+    v.push_back(p);
+  }
+  void text(const std::string& t, float x, float y, float px, float room, uint32_t rgb, float outline = 0.0f,
+            uint32_t rgb2 = 0) {
+    words(xrtext::BoardPiece::kText, t, x, y, px, room, rgb, outline, rgb2);
+  }
+  void left(const std::string& t, float x, float y, float px, float room, uint32_t rgb, float outline = 0.0f,
+            uint32_t rgb2 = 0) {
+    words(xrtext::BoardPiece::kTextLeft, t, x, y, px, room, rgb, outline, rgb2);
+  }
+  void right(const std::string& t, float x, float y, float px, float room, uint32_t rgb, float outline = 0.0f,
+             uint32_t rgb2 = 0) {
+    words(xrtext::BoardPiece::kTextRight, t, x, y, px, room, rgb, outline, rgb2);
+  }
+  float width(const std::string& t, float px) const { return xrtext::board_text_width(t, px * k) / k * tXscale; }
+  // a controller button (a circle, or a pill for "LT RT"), left edge at x; its width
+  float button(const std::string& glyph, float x, float cy, float size, uint32_t rgb) {
+    struct {
+      float tSlant, tXscale, tAngle, tShadow, tShadowA;
+      uint32_t tShadowRgb, tRim;
+    } const keep = {tSlant, tXscale, tAngle, tShadow, tShadowA, tShadowRgb, tRim};  // r131: plain words for it
+    plain();
+    const float r = 0.5f * size;
+    const float wide = glyph.size() > 1 ? std::max(size, width(glyph, 0.62f * size) + 0.7f * size) : size;
+    box(x - 3.0f, cy - r - 3.0f, x + wide + 3.0f, cy + r + 3.0f, r + 3.0f, 0xFFFFFF);
+    box(x, cy - r, x + wide, cy + r, r, rgb);
+    text(glyph, x + 0.5f * wide, cy, 0.62f * size, wide, 0xFFFFFF, 2.0f);
+    tSlant = keep.tSlant;
+    tXscale = keep.tXscale;
+    tAngle = keep.tAngle;
+    tShadow = keep.tShadow;
+    tShadowA = keep.tShadowA;
+    tShadowRgb = keep.tShadowRgb;
+    tRim = keep.tRim;
+    return wide;
+  }
+};
+struct HubHint {
+  std::string glyph, words;
+  uint32_t rgb;
+};
+// the foot: buttons and a word or two each, centred
+void hub_hints(Pieces& P, float w, float cy, const std::vector<HubHint>& hints) {
+  const float size = 54.0f, px = 40.0f;
+  float total = 0.0f;
+  for (const HubHint& h : hints) {
+    const float gw = h.glyph.size() > 1 ? std::max(size, P.width(h.glyph, 0.62f * size) + 0.7f * size) : size;
+    total += gw + 16.0f + P.width(h.words, px) + 56.0f;
+  }
+  float x = 0.5f * (w - total + 56.0f);
+  for (const HubHint& h : hints) {
+    x += P.button(h.glyph, x, cy, size, h.rgb) + 16.0f;
+    P.left(h.words, x, cy, px, 600.0f, 0xE6ECF5, 2.0f);
+    x += P.width(h.words, px) + 56.0f;
+  }
+}
+// The form a franchise form evolves / suits up into (franchise/evolutions.txt's first line from it), "" none.
+std::string next_form_key(const std::string& from) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, std::string> next;
+  static bool read = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!read) {
+    read = true;
+    const char* home = std::getenv("STRIKERS_HOME");
+    FILE* f = home != nullptr ? std::fopen((std::string(home) + "/franchise/evolutions.txt").c_str(), "r") : nullptr;
+    if (f != nullptr) {
+      char a[96], b[96], line[256];
+      int level = 0;
+      while (std::fgets(line, sizeof(line), f) != nullptr)
+        if (line[0] != '#' && std::sscanf(line, "%95s %95s %d", a, b, &level) == 3 && next.find(a) == next.end())
+          next[a] = b;
+      std::fclose(f);
+    }
+  }
+  auto it = next.find(from);
+  return it != next.end() ? it->second : "";
+}
+// A club's mascot: its full name without its place ("Death Mountain Dodongos" -> "Dodongos").
+std::string club_mascot(const FrClubInfo& c) {
+  if (c.name.size() > c.place.size() + 1 && c.name.compare(0, c.place.size(), c.place) == 0)
+    return c.name.substr(c.place.size() + 1);
+  return c.name;
+}
+// Words split in two near the middle (a story's two lines on the paper).
+void split_two(const std::string& s, std::string* a, std::string* b) {
+  if (s.size() < 26) {
+    *a = s;
+    b->clear();
+    return;
+  }
+  size_t best = std::string::npos;
+  for (size_t i = 0; i < s.size(); ++i)
+    if (s[i] == ' ' && (best == std::string::npos ||
+                        std::abs(static_cast<int>(i) - static_cast<int>(s.size() / 2)) <
+                            std::abs(static_cast<int>(best) - static_cast<int>(s.size() / 2))))
+      best = i;
+  if (best == std::string::npos) {
+    *a = s;
+    b->clear();
+    return;
+  }
+  *a = s.substr(0, best);
+  *b = s.substr(best + 1);
+}
+
+// --- r131 (Lance: "i said magazine, changing it from newspaper to magazine, and the reason is i want you to get freaky
+// with some of these magazine cover designs ... each cover should be an early 2000's nod to the sports illustrated
+// covers. we can even call this magazine "Strikers Illustrated""): STRIKERS ILLUSTRATED (r113's THE DAILY STRIKE), a
+// page 1080 x 1440: 0 the cover, 1 scorecard (around the league), 2 the table, 3 star watch, 4 rivals, 5 the back
+// cover (a made-up ad). The cover's template comes from what happened (mag_story): CLASSIC (a win, a hat trick, the
+// golden boot's leader), SPECIAL (your player evolved / suited up), GOLD (champions), MOODY (a big loss, a losing
+// streak "THE JINX?", the season over), FACEOFF (your nemesis), BRACKET (the playoffs), STREAK (4+ wins in a row),
+// PREVIEW (a new season); each a big condensed masthead behind the cover star's head, a huge leaning headline, cover
+// lines, a corner sash, the date / price / a barcode. All our own drawing on the player's own goal photo and the
+// portraits / logos made on the headset. PC check: tools\outside\magazine_preview.py (this, line for line) ->
+// C:\StrikersMR\logs\magazine.
+enum { kMagClassic, kMagSpecial, kMagGold, kMagMoody, kMagFaceoff, kMagBracket, kMagStreak, kMagPreview };
+const char* const kMagTemplates[8] = {"CLASSIC", "SPECIAL", "GOLD", "MOODY", "FACEOFF", "BRACKET", "STREAK", "PREVIEW"};
+constexpr float kMagWf = 1080.0f, kMagHf = 1440.0f;
+constexpr uint32_t kMagRed = 0xD3202A, kMagYellow = 0xFFD23F, kMagInk = 0x111111;
+constexpr uint32_t kPaperRed = 0xB3261E;  // r113's red (the hub's wanted posters still use it)
+struct MagStory {
+  int tmpl = kMagClassic;
+  std::string kicker, head1, head2, sub, banner, star, starName, rival, rivalName, big, date, issue, before;
+  std::string inset, insetText;  // CLASSIC's small "PLUS:" picture
+  int starClub = -1, rivalClub = -1;
+  uint32_t seed = 0, c1 = 0x1E5AC8, c2 = 0xF2C230;
+  bool shiny = false;
+  int variant = 0;                 // r131: the random cover's colours / sash / mirrored star
+  std::string bigWord = "STRAIGHT";  // r131: STREAK's burst word under the number
+  std::vector<std::pair<std::string, std::string>> lines;  // the cover lines: a label, its words
+};
+// The form a franchise form evolves / suits up FROM (evolutions.txt's first line to it), "" none.
+std::string prev_form_key(const std::string& to) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, std::string> prev;
+  static bool read = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!read) {
+    read = true;
+    const char* home = std::getenv("STRIKERS_HOME");
+    FILE* f = home != nullptr ? std::fopen((std::string(home) + "/franchise/evolutions.txt").c_str(), "r") : nullptr;
+    if (f != nullptr) {
+      char a[96], b[96], line[256];
+      int level = 0;
+      while (std::fgets(line, sizeof(line), f) != nullptr)
+        if (line[0] != '#' && std::sscanf(line, "%95s %95s %d", a, b, &level) == 3 && prev.find(b) == prev.end())
+          prev[b] = a;
+      std::fclose(f);
+    }
+  }
+  auto it = prev.find(to);
+  return it != prev.end() ? it->second : "";
+}
+std::string mag_ordinal(int n) {
+  const int t = n % 100, o = n % 10;
+  const char* suf = (t >= 10 && t <= 20) ? "TH" : (o == 1 ? "ST" : (o == 2 ? "ND" : (o == 3 ? "RD" : "TH")));
+  return std::to_string(n) + suf;
+}
+// Today as a magazine's cover date ("NOVEMBER 1, 2026").
+std::string mag_date() {
+  static const char* const kMonths[12] = {"JANUARY", "FEBRUARY", "MARCH",     "APRIL",   "MAY",      "JUNE",
+                                          "JULY",    "AUGUST",   "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"};
+  const std::time_t t = std::time(nullptr);
+  std::tm tm{};
+  localtime_r(&t, &tm);
+  return std::string(kMonths[std::max(0, std::min(11, tm.tm_mon))]) + " " + std::to_string(tm.tm_mday) + ", " +
+         std::to_string(1900 + tm.tm_year);
+}
+// What this issue is about: the cover's template, its words, its stars (your last game, the week's news about you,
+// the last played match's own numbers, your nemesis, the playoffs, the season).
+MagStory mag_story_real(const FrSnapshot& s) {
+  const PortFranchiseView& v = s.view;
+  const int n = static_cast<int>(s.clubs.size());
+  const int me = v.myClub;
+  MagStory st;
+  auto place = [&](int c) { return c >= 0 && c < n ? fr_upper(s.clubs[c].place) : std::string("?"); };
+  auto mascot = [&](int c) { return c >= 0 && c < n ? fr_upper(club_mascot(s.clubs[c])) : std::string("?"); };
+  st.date = mag_date();
+  if (v.lastWeek > PORT_FR_WEEKS) st.issue = "PLAYOFFS, DAY " + std::to_string(v.lastWeek - PORT_FR_WEEKS);
+  else if (v.lastWeek > 0) st.issue = "WEEK " + std::to_string(v.lastWeek);
+  else st.issue = "PRESEASON";
+  st.seed = static_cast<uint32_t>(v.season * 131 + v.lastWeek * 7 + std::max(0, me));
+  st.starClub = me;
+  // your last game
+  const PortFranchiseView::Played* mine = nullptr;
+  for (int i = 0; i < v.playedCount && i < 16; ++i)
+    if (v.played[i].mine) mine = &v.played[i];
+  if (me < 0 || me >= n) mine = nullptr;
+  int opp = -1, my = 0, their = 0, margin = 0;
+  bool won = false, ot = false;
+  std::string verb;
+  if (mine != nullptr) {
+    const bool home = mine->home == me;
+    opp = home ? mine->away : mine->home;
+    my = home ? mine->homeGoals : mine->awayGoals;
+    their = home ? mine->awayGoals : mine->homeGoals;
+    won = my > their;
+    margin = std::abs(my - their);
+    ot = mine->overtime;
+    if (won) verb = ot ? " STUN " : (margin >= 4 ? " CRUSH " : (margin >= 2 ? " BEAT " : " EDGE "));
+    else verb = ot ? " FALL IN OT TO " : (margin >= 4 ? " CRUSHED BY " : " FALL TO ");
+  }
+  const std::string result =
+      mascot(me) + verb + place(opp) + " " + std::to_string(my) + "-" + std::to_string(their) + (ot ? " (OT)" : "");
+  // the cover star: your starting captain
+  st.star = me >= 0 && me < n ? std::string(v.clubCaptainKey[me]) : std::string(v.captainKey);
+  st.starName = fr_upper(v.startsBackup && v.backup[0] != '\0' ? v.backup : v.captain);
+  const std::string myPlace = place(me);
+  // the week's news about you: a hat trick, a streak, an evolution / new costume
+  std::string hat, evoFrom, evoTo, evoKey;
+  int hatGoals = 0, streakWon = 0, streakLost = 0;
+  bool costume = false;
+  for (int i = 0; i < v.newsCount && i < 8; ++i) {
+    const std::string line = v.news[i];
+    const size_t scored = line.find(" SCORED ");
+    if (line.starts_with("HAT TRICK: ") && line.ends_with(" FOR " + myPlace) && scored != std::string::npos) {
+      hat = line.substr(11, scored - 11);
+      hatGoals = std::atoi(line.c_str() + scored + 8);
+    }
+    if (line.starts_with(myPlace + " HAVE WON ") && line.ends_with(" IN A ROW"))
+      streakWon = std::atoi(line.c_str() + myPlace.size() + 10);
+    if (line.starts_with(myPlace + " HAVE LOST ") && line.ends_with(" STRAIGHT"))
+      streakLost = std::atoi(line.c_str() + myPlace.size() + 11);
+    const bool evolved = line.find(" EVOLVED INTO ") != std::string::npos, suited = line.find(" SUITED UP: ") != std::string::npos;
+    if (line.starts_with(myPlace + "'S ") && (evolved || suited)) {
+      costume = suited;
+      const std::string sep = costume ? " SUITED UP: " : " EVOLVED INTO ";
+      const size_t at = line.find(sep);
+      evoFrom = line.substr(myPlace.size() + 3, at - myPlace.size() - 3);
+      evoTo = line.substr(at + sep.size());
+      st.shiny = evoTo.ends_with(" - SHINY!");
+      if (st.shiny) evoTo.resize(evoTo.size() - 9);
+    }
+  }
+  // what the hub saw itself (r131 MagNews): your evolution this week, the last played match's own numbers
+  const MagNews& mn = s.mag;
+  if (!mn.evoTo.empty() && mn.evoSeason == v.season && mn.evoWeek == v.lastWeek) {
+    evoFrom = fr_upper(mn.evoFrom);
+    evoTo = fr_upper(mn.evoTo);
+    evoKey = mn.evoToKey;
+    costume = mn.evoCostume;
+    st.shiny = mn.evoShiny;
+  }
+  const bool liveHere = mn.live.valid && mn.liveSeason == v.season && mn.liveWeek == v.lastWeek;
+  if (hat.empty() && liveHere && mn.live.goals >= 3) {
+    hat = fr_upper(mn.live.name);
+    hatGoals = mn.live.goals;
+  }
+  if (hat.empty() && liveHere && mn.live.co && mn.live.coGoals >= 3) {
+    hat = fr_upper(mn.live.coName);
+    hatGoals = mn.live.coGoals;
+  }
+  // your nemesis: the last game against its club, or the next
+  int nemLast = -1;
+  for (int i = 0; i < v.nemCount && i < 8; ++i)
+    if (v.nems[i].active && !v.nems[i].teammate && v.nems[i].club == opp && opp >= 0) nemLast = i;
+  const int nem = nemLast >= 0 ? nemLast : v.nextNemesis;
+  auto key_of = [&](const std::string& name) -> std::string {
+    if (name == fr_upper(v.captain)) return v.captainKey;
+    if (v.backup[0] != '\0' && name == fr_upper(v.backup)) return v.backupKey;
+    for (const PortFranchiseEvoRow& r : s.evoWatch)
+      if (r.mine && fr_upper(r.name) == name) return r.key;
+    return v.kindKey[0] != '\0' ? std::string(v.kindKey) : st.star;
+  };
+  const PortFranchiseView::Leader* lead = v.leaderCount > 0 ? &v.leaders[0] : nullptr;
+  if (v.phase == PORT_FR_PHASE_DONE && v.champion == me && me >= 0 && me < n) {
+    st.tmpl = kMagGold;
+    st.kicker = "SEASON " + std::to_string(v.season) + " SUPER STRIKE SERIES";
+    st.head1 = v.titles <= 1 ? "CHAMPIONS!" : (v.titles == 2 ? "BACK-TO-BACK!" : "DYNASTY!");
+    st.sub = "THE " + mascot(me) + " WIN IT ALL";
+    st.banner = "COMMEMORATIVE ISSUE";
+  } else if (v.phase == PORT_FR_PHASE_DONE) {
+    st.tmpl = kMagMoody;
+    st.kicker = "SEASON " + std::to_string(v.season) + " IS OVER";
+    st.head1 = "WAIT TILL";
+    st.head2 = "NEXT YEAR";
+    st.sub = place(v.champion) + " WON IT ALL. THE " + mascot(me) + " WATCHED.";
+    st.banner = "SEASON WRAP";
+  } else if (!evoTo.empty()) {
+    st.tmpl = kMagSpecial;
+    st.kicker = costume ? "A NEW LOOK" : "IT'S HAPPENING";
+    st.head1 = costume ? "SUITED UP!" : "EVOLVED!";
+    st.sub = evoFrom + " IS NOW " + evoTo;
+    st.banner = "COLLECTOR'S EDITION";
+    st.star = !evoKey.empty() ? evoKey : key_of(evoTo);
+    st.starName = evoTo;
+    st.before = prev_form_key(st.star);
+  } else if (v.phase == PORT_FR_PHASE_PLAYOFFS) {
+    st.tmpl = kMagBracket;
+    st.kicker = fr_upper(v.roundName);
+    if (fr_upper(v.status).find("ELIMINATED") != std::string::npos) st.head1 = "IT'S OVER";
+    else if (v.round == 4) st.head1 = "THE FINAL";
+    else if (mine != nullptr && won) st.head1 = v.mySeriesMe < 3 ? "ONE STEP CLOSER" : "SURVIVE & ADVANCE";
+    else if (mine != nullptr) st.head1 = "BACKS TO THE WALL";
+    else st.head1 = "PLAYOFF FEVER";
+    if (mine != nullptr) st.sub = result;
+    if (v.myGameNo > 0 && v.nextOpponent >= 0)
+      st.sub = "SERIES: " + myPlace + " " + std::to_string(v.mySeriesMe) + " - " + std::to_string(v.mySeriesThem) + " " +
+               place(v.nextOpponent);
+    st.banner = "PLAYOFF PREVIEW";
+  } else if (nem >= 0 && nem < v.nemCount && nem < 8) {
+    st.tmpl = kMagFaceoff;
+    const PortFranchiseView::Nem& nm = v.nems[nem];
+    st.kicker = fr_upper(nm.title);
+    st.head1 = nemLast >= 0 ? (won ? "SCORE SETTLED" : "BAD BLOOD") : "GRUDGE MATCH";
+    st.rival = nm.key[0] != '\0' ? std::string(nm.key) : (nm.club >= 0 && nm.club < n ? std::string(v.clubCaptainKey[nm.club]) : "");
+    st.rivalName = fr_upper(nm.name);
+    st.rivalClub = nm.club;
+    st.sub = "BEAT YOU " + std::to_string(nm.beatYou) + "  -  LOST TO YOU " + std::to_string(nm.lostToYou);
+    st.banner = "THE RIVALRY ISSUE";
+  } else if (!hat.empty()) {
+    st.tmpl = kMagClassic;
+    st.kicker = hat + " GOES OFF";
+    st.head1 = "HAT TRICK!";
+    st.sub = hat + " SCORES " + std::to_string(hatGoals) + (mine != nullptr ? " AS THE " + result : std::string());
+    st.banner = "EXCLUSIVE";
+    st.star = key_of(hat);
+    st.starName = hat;
+  } else if (streakLost >= 4) {
+    st.tmpl = kMagMoody;
+    st.kicker = std::to_string(streakLost) + " STRAIGHT LOSSES";
+    st.head1 = "THE";
+    st.head2 = "JINX?";
+    st.sub = "IS IT THIS COVER? (SORRY, " + mascot(me) + ".)";
+    st.banner = "SPECIAL REPORT";
+  } else if (streakWon >= 4) {
+    st.tmpl = kMagStreak;
+    st.kicker = "THE " + mascot(me) + " CAN'T LOSE";
+    st.head1 = "UNSTOPPABLE";
+    st.big = std::to_string(streakWon);
+    if (mine != nullptr) st.sub = result;
+    st.banner = "HOT STREAK";
+  } else if (mine != nullptr && !won && margin >= 3) {
+    st.tmpl = kMagMoody;
+    st.kicker = "OUCH.";
+    st.head1 = "WHAT WENT";
+    st.head2 = "WRONG?";
+    st.sub = place(opp) + " " + std::to_string(their) + "-" + std::to_string(my) + " " + myPlace;
+    st.banner = "SPECIAL REPORT";
+  } else if (v.lastWeek == 0) {
+    st.tmpl = kMagPreview;
+    st.kicker = "SEASON " + std::to_string(v.season) + " PREVIEW";
+    st.head1 = "YEAR OF THE";
+    st.head2 = mascot(me) + "?";
+    st.sub = v.nextOpponent >= 0 ? "UP FIRST: " + place(v.nextOpponent) : std::string("THE STRIKERS SUPER LEAGUE IS BACK");
+    st.banner = "PREVIEW ISSUE";
+  } else if (mine != nullptr && won) {
+    st.tmpl = kMagClassic;
+    st.kicker = st.issue;
+    st.head1 = ot ? "OVERTIME!" : (margin >= 4 ? "BLOWOUT!" : (margin >= 2 ? "STATEMENT WIN" : "CLUTCH!"));
+    st.sub = result;
+    st.banner = "EXCLUSIVE";
+  } else if (mine != nullptr) {
+    st.tmpl = kMagMoody;
+    st.kicker = st.issue;
+    st.head1 = margin <= 1 ? "HEART" : "REALITY";
+    st.head2 = margin <= 1 ? "BREAK" : "CHECK";
+    st.sub = result;
+    st.banner = "SPECIAL REPORT";
+  } else {
+    st.tmpl = kMagClassic;
+    if (lead != nullptr) {
+      st.kicker = "THE GOLDEN BOOT RACE";
+      st.head1 = "THE MACHINE";
+      st.sub = fr_upper(lead->name) + " LEADS THE LEAGUE WITH " + std::to_string(lead->goals) + " GOALS";
+      st.star = lead->key;
+      st.starName = fr_upper(lead->name);
+      st.starClub = lead->club;
+    } else {
+      st.kicker = st.issue;
+      st.head1 = "WATCH AND WAIT";
+      st.sub = v.status[0] != '\0' ? fr_upper(v.status) : std::string("NO GAME FOR YOU THIS TIME");
+    }
+    st.banner = "EXCLUSIVE";
+  }
+  if (st.starClub >= 0 && st.starClub < n) {
+    st.c1 = s.clubs[st.starClub].c1;
+    st.c2 = s.clubs[st.starClub].c2;
+  }
+  // the cover lines: the rest of the issue
+  if (lead != nullptr && st.head1 != "THE MACHINE")
+    st.lines.push_back({"GOLDEN BOOT", fr_upper(lead->name) + ", " + std::to_string(lead->goals) + " GOALS"});
+  if (v.nemCount > 0 && st.tmpl != kMagFaceoff)
+    st.lines.push_back({"WANTED", fr_upper(v.nems[0].name) + " " + fr_upper(v.nems[0].title)});
+  if (me >= 0 && me < n) {
+    int rank = 0;
+    for (int c = 0; c < 2; ++c)
+      for (int i = 0; i < 16; ++i)
+        if (v.conference[c][i].club == me) rank = i + 1;
+    st.lines.push_back({"THE TABLE", myPlace + " " + std::to_string(v.wins) + "-" + std::to_string(v.losses) + ", " +
+                                         mag_ordinal(std::max(1, rank))});
+  }
+  for (const PortFranchiseEvoRow& r : s.evoWatch) {
+    if (st.lines.size() < 4 && r.mine && r.evoLevel > 0 && fr_upper(r.name) != st.starName) {
+      st.lines.push_back({"RISING", fr_upper(r.name) + " NEARS LV " + std::to_string(r.evoLevel)});
+      break;
+    }
+  }
+  if (v.nemCount > 0 && st.tmpl != kMagFaceoff && v.nems[0].key[0] != '\0') {
+    st.inset = v.nems[0].key;
+    st.insetText = "PLUS: WANTED";
+  } else if (lead != nullptr && st.star != lead->key) {
+    st.inset = lead->key;
+    st.insetText = "PLUS: " + fr_upper(lead->name);
+  }
+  if (st.lines.size() < 4 && v.feedCount > 0) {
+    const std::string f = v.feed[0];
+    const size_t at = f.find(": ");
+    if (f.starts_with("@") && at != std::string::npos && at > 0)
+      st.lines.push_back({fr_upper(f.substr(0, at)), "\"" + fr_upper(f.substr(at + 2)) + "\""});
+  }
+  return st;
+}
+// --- r131 (Lance: "i do want the strikers illustrated to be produced at random, it shouldnt always be the hottest team
+// or player to be on the cover, i almost want them randomly generated, as so to make sure no cover is duplicated or the
+// idea gets bland"): each issue's cover drawn at random, once, on the game thread (mag_pick_issue) and kept in the
+// career's magazine file: the star anyone in the league (each club's captain, the Pokemon / heroes, the scorers, your
+// own players; the week's real stories weighted up), the template at random where it fits (GOLD only for champions,
+// BRACKET only in the playoffs, SPECIAL only when your player evolved / suited up that week), a headline from its
+// template's pool, a variant (colours, sash words, the star mirrored). Never the same star + template + headline twice
+// in a career, never the same star two issues running, the same template twice running only for GOLD / SPECIAL.
+// Seeded from the league as it stands (season, week, every score): both co-op headsets roll the same cover.
+// The pools (PC check tools\outside\magazine_preview.py reads them from here): {N} the star, {M} its club's mascot,
+// {P} its club's place; "A|B" two lines (MOODY, PREVIEW); a leading '-' = only when its club is losing.
+static const char* const kMagHeadClassic[] = {
+    "THE CHOSEN ONE", "SHOWTIME", "PRIME TIME", "THE NATURAL", "HOW DOES {N} DO IT?", "BETTER THAN EVER?",
+    "THE REAL DEAL", "MONEY", "LIGHTS OUT", "BELIEVE IT", "STAR POWER", "THE FRANCHISE", "MAKE WAY", "GAME CHANGER",
+    "NEXT LEVEL", "HERE TO STAY", "ALL IN", "THE NEXT ONE?", "MR. CLUTCH", "NO DOUBT"};
+static const char* const kMagHeadSpecial[] = {
+    "EVOLVED!", "THE NEW {N}", "LEVEL UP!", "REBORN", "TRANSFORMED", "GLOW UP", "NEW AND IMPROVED", "THE UPGRADE",
+    "FINAL FORM?", "BIGGER. BADDER.", "IT'S HERE", "A NEW ERA", "WHOLE NEW LOOK", "NEXT CHAPTER", "THE REVEAL",
+    "METAMORPHOSIS"};
+static const char* const kMagHeadGold[] = {
+    "CHAMPIONS!", "ON TOP OF THE WORLD", "DYNASTY?", "KINGS OF THE LEAGUE", "PARADE TIME", "HOIST IT!",
+    "THE BEST. PERIOD.", "FINALLY!", "WORTH THE WAIT", "CROWNED", "TITLE TOWN", "GLORY!", "NUMBER ONE",
+    "THE LAST WORD", "PERFECT ENDING", "CHAMPS!"};
+static const char* const kMagHeadMoody[] = {
+    "-WHAT WENT|WRONG?", "-THE|JINX?", "-WAIT TILL|NEXT YEAR", "REDEMPTION|SONG", "SNUBBED", "THE QUIET|STORM",
+    "ALONE AT|THE TOP", "-THE|COMEBACK?", "UNDER|PRESSURE", "WHAT|NOW?", "THE|DARK HORSE", "-HEART|BREAK",
+    "-REALITY|CHECK", "PROVE|THEM WRONG", "STILL|HUNGRY", "THE|SURVIVOR", "NO|EXCUSES", "THE LONELY|ROAD"};
+static const char* const kMagHeadFaceoff[] = {
+    "SHOWDOWN", "BAD BLOOD", "GRUDGE MATCH", "HEAD TO HEAD", "CLASH OF TITANS", "ONLY ONE CAN WIN", "FACE OFF",
+    "THE RIVALRY", "TALE OF THE TAPE", "BEEF", "MANO A MANO", "OLD SCORES", "DUEL", "THE BIG ONE",
+    "WHO BLINKS FIRST?", "IT'S PERSONAL"};
+static const char* const kMagHeadBracket[] = {
+    "PLAYOFF FEVER", "ONE STEP CLOSER", "SURVIVE & ADVANCE", "WHO STOPS THEM?", "THE ROAD TO GLORY",
+    "MARCH TO THE FINAL", "WIN OR GO HOME", "POSTSEASON MAGIC", "BRACKET BUSTERS", "CROWN IN SIGHT",
+    "THE CHASE IS ON", "NO TOMORROW", "DO OR DIE", "MONEY TIME", "HEAT CHECK", "SUDDEN DEATH"};
+static const char* const kMagHeadStreak[] = {
+    "UNSTOPPABLE", "WHO STOPS THEM?", "ON FIRE", "RED HOT", "ROLLING", "THE MACHINE", "CAN'T STOP. WON'T STOP.",
+    "FULL THROTTLE", "RUNAWAY TRAIN", "ON A ROLL", "STREAKING", "UNBEATABLE?", "HEATING UP", "NO BRAKES", "MOMENTUM",
+    "HOT HOT HOT"};
+static const char* const kMagHeadPreview[] = {
+    "YEAR OF THE|{M}?", "THE NEXT|ONE?", "WATCH|OUT", "RISING|STAR", "THE|NATURAL", "BIG THINGS|AHEAD", "THE|CONTENDER",
+    "READY OR|NOT", "DON'T SLEEP ON|THE {M}", "THE|FUTURE", "HERE COMES|{N}", "SECOND HALF|SURGE", "SLEEPER|ALERT",
+    "THE|BREAKOUT", "HYPE|TRAIN", "ALL EYES|ON {N}"};
+static const char* const kMagKickers[] = {
+    "{N} UNCOVERED", "THE {N} STORY", "{N} SPEAKS", "MEET {N}", "{N}: THE INTERVIEW", "INSIDE {P}", "THE {M} FILES",
+    "{N} UP CLOSE", "THE TRUTH ABOUT {N}", "{N} LIKE NEVER BEFORE", "WHY {N} MATTERS", "{P}'S SECRET WEAPON"};
+static const char* const kMagSashes[] = {
+    "EXCLUSIVE", "SPECIAL REPORT", "BONUS ISSUE", "DOUBLE ISSUE", "NEW!", "FIRST LOOK", "HOT!", "MUST READ",
+    "ALL-ACCESS", "SNEAK PEEK", "POWER RANKINGS", "INSIDE!"};
+const char* const* mag_heads(int tmpl, int* n) {
+  switch (tmpl) {
+    case kMagSpecial: *n = static_cast<int>(sizeof(kMagHeadSpecial) / sizeof(kMagHeadSpecial[0])); return kMagHeadSpecial;
+    case kMagGold: *n = static_cast<int>(sizeof(kMagHeadGold) / sizeof(kMagHeadGold[0])); return kMagHeadGold;
+    case kMagMoody: *n = static_cast<int>(sizeof(kMagHeadMoody) / sizeof(kMagHeadMoody[0])); return kMagHeadMoody;
+    case kMagFaceoff: *n = static_cast<int>(sizeof(kMagHeadFaceoff) / sizeof(kMagHeadFaceoff[0])); return kMagHeadFaceoff;
+    case kMagBracket: *n = static_cast<int>(sizeof(kMagHeadBracket) / sizeof(kMagHeadBracket[0])); return kMagHeadBracket;
+    case kMagStreak: *n = static_cast<int>(sizeof(kMagHeadStreak) / sizeof(kMagHeadStreak[0])); return kMagHeadStreak;
+    case kMagPreview: *n = static_cast<int>(sizeof(kMagHeadPreview) / sizeof(kMagHeadPreview[0])); return kMagHeadPreview;
+    default: *n = static_cast<int>(sizeof(kMagHeadClassic) / sizeof(kMagHeadClassic[0])); return kMagHeadClassic;
+  }
+}
+uint32_t mag_rand(uint32_t& s) {  // xorshift32
+  s ^= s << 13;
+  s ^= s >> 17;
+  s ^= s << 5;
+  return s;
+}
+uint32_t mag_hash(const std::string& t) {  // FNV-1a
+  uint32_t h = 2166136261u;
+  for (unsigned char c : t) h = (h ^ c) * 16777619u;
+  return h != 0 ? h : 1u;
+}
+std::string mag_fill(std::string t, const std::string& name, const std::string& mascot, const std::string& place) {
+  const std::pair<const char*, const std::string*> subs[3] = {{"{N}", &name}, {"{M}", &mascot}, {"{P}", &place}};
+  for (const auto& sb : subs)
+    for (size_t at = t.find(sb.first); at != std::string::npos; at = t.find(sb.first, at + sb.second->size()))
+      t.replace(at, 3, *sb.second);
+  return t;
+}
+// A club's record and place in its conference (rank 0: not found).
+void mag_record(const PortFranchiseView& v, int club, int* wins, int* losses, int* rank) {
+  *wins = *losses = *rank = 0;
+  for (int c = 0; c < 2; ++c)
+    for (int i = 0; i < 16; ++i)
+      if (v.conference[c][i].club == club) {
+        *wins = v.conference[c][i].wins;
+        *losses = v.conference[c][i].losses;
+        *rank = i + 1;
+      }
+}
+// A club's last game (the issue's week): its goals, the other's, the other club; false none.
+bool mag_last_game(const PortFranchiseView& v, int club, int* mine, int* theirs, int* opp, bool* ot) {
+  for (int i = 0; i < v.playedCount && i < 16; ++i) {
+    const PortFranchiseView::Played& p = v.played[i];
+    if (p.home != club && p.away != club) continue;
+    const bool home = p.home == club;
+    *mine = home ? p.homeGoals : p.awayGoals;
+    *theirs = home ? p.awayGoals : p.homeGoals;
+    *opp = home ? p.away : p.home;
+    *ot = p.overtime;
+    return true;
+  }
+  return false;
+}
+// A cover star's name from its portrait key (the roster's name for a guest; else the key's words).
+std::string mag_name_of(const std::string& key) {
+  const int idx = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, key.c_str());
+  const char* n = idx >= 0 ? PortGuestRosterName(idx) : nullptr;
+  if (n != nullptr && n[0] != '\0') return fr_upper(n);
+  std::string k = key;
+  for (const char* pre : {"strikers_", "pk_", "mua_"})
+    if (k.starts_with(pre)) k = k.substr(std::strlen(pre));
+  if (k == "donkeykong") k = "donkey kong";
+  for (char& c : k)
+    if (c == '_') c = ' ';
+  return fr_upper(k);
+}
+std::string mag_history_path(int slot) {
+  const char* home = std::getenv("STRIKERS_HOME");
+  return std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/franchise/magazine_" +
+         std::to_string(slot) + ".txt";
+}
+std::vector<MagPick> mag_history_load(int slot) {
+  std::vector<MagPick> out;
+  FILE* f = std::fopen(mag_history_path(slot).c_str(), "r");
+  if (f == nullptr) return out;
+  char line[512];
+  while (std::fgets(line, sizeof(line), f) != nullptr) {
+    if (line[0] == '#') continue;
+    std::vector<std::string> col;
+    std::string cur;
+    for (const char* c = line; *c != '\0' && *c != '\n' && *c != '\r'; ++c) {
+      if (*c == '\t') {
+        col.push_back(cur);
+        cur.clear();
+      } else {
+        cur += *c;
+      }
+    }
+    col.push_back(cur);
+    if (col.size() < 12) continue;
+    MagPick p;
+    p.valid = true;
+    p.season = std::atoi(col[0].c_str());
+    p.week = std::atoi(col[1].c_str());
+    p.tmpl = std::max(0, std::min(7, std::atoi(col[2].c_str())));
+    p.head = std::max(0, std::atoi(col[3].c_str()));
+    p.variant = std::max(0, std::atoi(col[4].c_str()));
+    p.club = std::atoi(col[5].c_str());
+    p.rivalClub = std::atoi(col[6].c_str());
+    p.seed = static_cast<uint32_t>(std::strtoul(col[7].c_str(), nullptr, 10));
+    p.key = col[8];
+    p.name = col[9];
+    p.rival = col[10];
+    p.rivalName = col[11];
+    out.push_back(p);
+  }
+  std::fclose(f);
+  return out;
+}
+void mag_history_save(int slot, const std::vector<MagPick>& h) {
+  FILE* f = std::fopen(mag_history_path(slot).c_str(), "w");
+  if (f == nullptr) return;
+  std::fprintf(f, "# STRIKERS ILLUSTRATED covers (r131): season week template headline variant club rivalclub seed star name rival rivalname\n");
+  for (const MagPick& p : h)
+    std::fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%u\t%s\t%s\t%s\t%s\n", p.season, p.week, p.tmpl, p.head, p.variant, p.club,
+                 p.rivalClub, p.seed, p.key.c_str(), p.name.c_str(), p.rival.c_str(), p.rivalName.c_str());
+  std::fclose(f);
+}
+// This week's cover (game thread, from fr_refresh): the one already drawn for it, else a new one at random.
+void mag_pick_issue(FrSnapshot& s) {
+  const PortFranchiseView& v = s.view;
+  if (v.evolutionPending) return;  // the week's evolution first (its SPECIAL cover)
+  if (v.slot != g.magHistSlot) {
+    g.magHistory = mag_history_load(v.slot);
+    g.magHistSlot = v.slot;
+  }
+  if (!g.magHistory.empty()) {  // a new career in this slot: its file starts again
+    const MagPick& last = g.magHistory.back();
+    if (last.season > v.season || (last.season == v.season && last.week > v.lastWeek)) {
+      g.magHistory.clear();
+      mag_history_save(v.slot, g.magHistory);
+    }
+  }
+  for (const MagPick& p : g.magHistory)
+    if (p.season == v.season && p.week == v.lastWeek) {
+      s.pick = p;
+      return;
+    }
+  const MagStory real = mag_story_real(s);
+  const int nClubs = static_cast<int>(s.clubs.size());
+  const int me = v.myClub;
+  // who could be on it, and how likely
+  struct Cand {
+    std::string key, name;
+    int club;
+    float w;
+  };
+  std::vector<Cand> cands;
+  const char* home = std::getenv("STRIKERS_HOME");
+  auto has_picture = [&](const std::string& key) {  // (its file there: not loaded here, on the game thread)
+    if (home == nullptr) return false;
+    FILE* f = std::fopen((std::string(home) + "/guests/portraits/" + key + ".png").c_str(), "rb");
+    if (f != nullptr) std::fclose(f);
+    return f != nullptr;
+  };
+  auto add = [&](const std::string& key, const std::string& name, int club, float w) {
+    if (key.empty() || !has_picture(key)) return;  // only someone with a picture
+    for (Cand& c : cands)
+      if (c.key == key) {
+        c.w += w;
+        return;
+      }
+    cands.push_back({key, name.empty() ? mag_name_of(key) : name, club, w});
+  };
+  for (int c = 0; c < nClubs && c < PORT_FR_CLUBS; ++c) add(v.clubCaptainKey[c], "", c, c == me ? 2.0f : 1.0f);
+  for (const PortFranchiseEvoRow& r : s.evoWatch) add(r.key, fr_upper(r.name), r.club, 1.0f);
+  for (int i = 0; i < v.leaderCount && i < 10; ++i) add(v.leaders[i].key, fr_upper(v.leaders[i].name), v.leaders[i].club, 1.5f);
+  for (int i = 0; i < v.nemCount && i < 8; ++i) add(v.nems[i].key, fr_upper(v.nems[i].name), v.nems[i].club, 1.0f);
+  add(v.captainKey, fr_upper(v.captain), me, 1.0f);
+  add(v.backupKey, fr_upper(v.backup), me, 1.0f);
+  add(v.kindKey, fr_upper(v.kind), me, 0.5f);
+  add(real.star, real.starName, real.starClub, real.tmpl == kMagSpecial ? 10.0f : 4.0f);  // the week's real story
+  if (!real.rival.empty()) add(real.rival, real.rivalName, real.rivalClub, 2.0f);
+  if (cands.empty()) return;
+  // the templates that fit this week
+  const bool champs = v.phase == PORT_FR_PHASE_DONE && v.champion == me;
+  float tw[8] = {3.0f, 0.0f, 0.0f, 2.0f, 2.0f, 0.0f, 2.0f, 1.5f};
+  if (champs) tw[kMagGold] = 8.0f;
+  if (v.phase == PORT_FR_PHASE_PLAYOFFS) tw[kMagBracket] = 3.0f;
+  if (real.tmpl == kMagSpecial) tw[kMagSpecial] = 10.0f;
+  if (v.lastWeek == 0) tw[kMagPreview] = 6.0f;
+  std::string seedText = std::to_string(v.season) + "/" + std::to_string(v.lastWeek) + "/" + std::to_string(me) + "/" +
+                         std::to_string(v.slot);
+  for (int i = 0; i < v.playedCount && i < 16; ++i)
+    seedText += "/" + std::to_string(v.played[i].home) + ":" + std::to_string(v.played[i].homeGoals) + "-" +
+                std::to_string(v.played[i].away) + ":" + std::to_string(v.played[i].awayGoals);
+  uint32_t rng = mag_hash(seedText) ^ (static_cast<uint32_t>(g.magHistory.size()) * 2654435761u);
+  if (rng == 0) rng = 1;
+  for (int k = 0; k < 4; ++k) mag_rand(rng);
+  auto pick_weighted = [&](const float* w, int n) {
+    float total = 0.0f;
+    for (int i = 0; i < n; ++i) total += w[i];
+    float r = static_cast<float>(mag_rand(rng) % 100000u) / 100000.0f * total;
+    for (int i = 0; i < n; ++i) {
+      if (r < w[i]) return i;
+      r -= w[i];
+    }
+    return n - 1;
+  };
+  std::vector<float> cw;
+  for (const Cand& c : cands) cw.push_back(c.w);
+  const MagPick* prev = g.magHistory.empty() ? nullptr : &g.magHistory.back();
+  MagPick p;
+  for (int attempt = 0; attempt < 400; ++attempt) {
+    p = MagPick();
+    p.valid = true;
+    p.season = v.season;
+    p.week = v.lastWeek;
+    p.tmpl = pick_weighted(tw, 8);
+    int ci = pick_weighted(cw.data(), static_cast<int>(cw.size()));
+    if (p.tmpl == kMagSpecial) {  // the one who evolved
+      for (size_t i = 0; i < cands.size(); ++i)
+        if (cands[i].key == real.star) ci = static_cast<int>(i);
+    } else if (p.tmpl == kMagGold && cands[ci].club != me) {  // one of the champions
+      std::vector<int> mine;
+      for (size_t i = 0; i < cands.size(); ++i)
+        if (cands[i].club == me) mine.push_back(static_cast<int>(i));
+      if (!mine.empty()) ci = mine[mag_rand(rng) % mine.size()];
+    }
+    const Cand& c = cands[ci];
+    p.key = c.key;
+    p.name = c.name;
+    p.club = c.club;
+    int n = 0;
+    const char* const* heads = mag_heads(p.tmpl, &n);
+    p.head = static_cast<int>(mag_rand(rng) % static_cast<uint32_t>(n));
+    p.variant = static_cast<int>(mag_rand(rng) % 4u);
+    p.seed = mag_rand(rng);
+    if (p.seed == 0) p.seed = 1;
+    {
+      // a down headline only for a club that lost its last game or is losing; STREAK only for one that won or is winning
+      int w = 0, l = 0, rank = 0, a = 0, b = 0, o = -1;
+      bool ot = false;
+      mag_record(v, p.club, &w, &l, &rank);
+      const bool playedIt = mag_last_game(v, p.club, &a, &b, &o, &ot);
+      if (heads[p.head][0] == '-' && !(playedIt && a < b) && w >= l) continue;
+      if (p.tmpl == kMagStreak && !(playedIt && a > b) && w <= l) continue;
+    }
+    if (p.tmpl == kMagFaceoff) {  // a rival: your nemesis (yours), its last opponent's captain, or any other captain
+      if (p.club == me && !real.rival.empty() && real.rival != p.key) {
+        p.rival = real.rival;
+        p.rivalName = real.rivalName;
+        p.rivalClub = real.rivalClub;
+      } else {
+        int a = 0, b = 0, o = -1;
+        bool ot = false;
+        int rc = mag_last_game(v, p.club, &a, &b, &o, &ot) ? o : static_cast<int>(mag_rand(rng) % static_cast<uint32_t>(std::max(1, nClubs)));
+        if (rc == p.club) rc = (rc + 1) % std::max(1, nClubs);
+        if (rc >= 0 && rc < nClubs) {
+          p.rival = v.clubCaptainKey[rc];
+          p.rivalName = mag_name_of(p.rival);
+          p.rivalClub = rc;
+        }
+      }
+      if (p.rival.empty() || p.rival == p.key) continue;
+    }
+    if (attempt >= 380) break;  // (nothing new left: take this one)
+    bool seen = false;
+    for (const MagPick& h : g.magHistory)
+      if (h.key == p.key && h.tmpl == p.tmpl && h.head == p.head) seen = true;
+    if (seen) continue;
+    if (prev != nullptr && prev->key == p.key) continue;
+    if (prev != nullptr && prev->tmpl == p.tmpl && p.tmpl != kMagGold && p.tmpl != kMagSpecial) continue;
+    break;
+  }
+  g.magHistory.push_back(p);
+  mag_history_save(v.slot, g.magHistory);
+  s.pick = p;
+  int n = 0;
+  const char* const* heads = mag_heads(p.tmpl, &n);
+  XLOG("franchise: STRIKERS ILLUSTRATED season %d week %d: %s cover, %s, \"%s\" (variant %d, %d covers in this career)",
+       p.season, p.week, kMagTemplates[p.tmpl], p.name.c_str(), heads[p.head], p.variant, static_cast<int>(g.magHistory.size()));
+}
+// The issue: the true story of the week (mag_story_real), then this issue's random cover on it: its template, star,
+// headline from the pool, kicker, sash, variant; the subline a true fact about that star (its club's last game, its
+// goals, its record); four cover lines drawn at random from the league.
+MagStory mag_story(const FrSnapshot& s) {
+  MagStory st = mag_story_real(s);
+  const MagPick& p = s.pick;
+  const PortFranchiseView& v = s.view;
+  if (!p.valid || p.season != v.season || p.week != v.lastWeek) return st;
+  const int nClubs = static_cast<int>(s.clubs.size());
+  auto place = [&](int c) { return c >= 0 && c < nClubs ? fr_upper(s.clubs[c].place) : std::string("?"); };
+  auto mascot = [&](int c) { return c >= 0 && c < nClubs ? fr_upper(club_mascot(s.clubs[c])) : std::string("?"); };
+  const bool storyStar = p.key == st.star;
+  const int realTmpl = st.tmpl;
+  const std::string realSub = st.sub, realKicker = st.kicker, realBanner = st.banner;
+  st.tmpl = p.tmpl;
+  st.variant = p.variant;
+  st.star = p.key;
+  st.starName = p.name;
+  st.starClub = p.club;
+  if (p.club >= 0 && p.club < nClubs) {
+    st.c1 = s.clubs[p.club].c1;
+    st.c2 = s.clubs[p.club].c2;
+  }
+  if (p.tmpl == kMagFaceoff) {
+    st.rival = p.rival;
+    st.rivalName = p.rivalName;
+    st.rivalClub = p.rivalClub;
+  }
+  uint32_t rng = p.seed;
+  const std::string M = mascot(p.club), P = place(p.club);
+  int nh = 0;
+  const char* const* heads = mag_heads(p.tmpl, &nh);
+  std::string head = heads[std::min(p.head, nh - 1)];
+  if (!head.empty() && head[0] == '-') head = head.substr(1);
+  if (p.tmpl == kMagSpecial && p.head == 0 && realKicker == "A NEW LOOK") head = "SUITED UP!";
+  head = mag_fill(head, p.name, M, P);
+  const size_t bar = head.find('|');
+  if (bar == std::string::npos) {
+    st.head1 = head;
+    st.head2.clear();
+  } else if (p.tmpl == kMagMoody || p.tmpl == kMagPreview) {
+    st.head1 = head.substr(0, bar);
+    st.head2 = head.substr(bar + 1);
+  } else {
+    st.head1 = head.substr(0, bar) + " " + head.substr(bar + 1);
+    st.head2.clear();
+  }
+  if (p.tmpl == kMagPreview && st.head2.empty()) {  // one-line pool entries split for its two lines
+    const size_t sp = st.head1.rfind(' ');
+    st.head2 = sp != std::string::npos ? st.head1.substr(sp + 1) : st.head1;
+    st.head1 = sp != std::string::npos ? st.head1.substr(0, sp) : std::string();
+  }
+  // true facts about the star
+  int w = 0, l = 0, rank = 0, a = 0, b = 0, opp = -1;
+  bool ot = false;
+  mag_record(v, p.club, &w, &l, &rank);
+  const bool played = mag_last_game(v, p.club, &a, &b, &opp, &ot);
+  std::string fact;
+  if (played) {
+    fact = M + (a > b ? (ot ? " STUN " : (a - b >= 4 ? " CRUSH " : (a - b >= 2 ? " BEAT " : " EDGE ")))
+                      : (ot ? " FALL IN OT TO " : (b - a >= 4 ? " CRUSHED BY " : " FALL TO "))) +
+           place(opp) + " " + std::to_string(a) + "-" + std::to_string(b);
+  } else if (rank > 0) {
+    fact = P + " ARE " + std::to_string(w) + "-" + std::to_string(l) + ", " + mag_ordinal(rank) + " IN THEIR CONFERENCE";
+  }
+  for (int i = 0; i < v.leaderCount && i < 10; ++i)
+    if (p.key == v.leaders[i].key && (!played || (mag_rand(rng) & 1u) != 0))
+      fact = p.name + ": " + std::to_string(v.leaders[i].goals) + " GOALS, " + mag_ordinal(i + 1) + " IN THE GOLDEN BOOT RACE";
+  const bool keepStory = storyStar && p.tmpl == realTmpl;
+  int nk = static_cast<int>(sizeof(kMagKickers) / sizeof(kMagKickers[0]));
+  const std::string kick = mag_fill(kMagKickers[mag_rand(rng) % static_cast<uint32_t>(nk)], p.name, M, P);
+  int ns = static_cast<int>(sizeof(kMagSashes) / sizeof(kMagSashes[0]));
+  const std::string sash = kMagSashes[mag_rand(rng) % static_cast<uint32_t>(ns)];
+  switch (p.tmpl) {
+    case kMagSpecial:  // the evolution's own words
+      st.kicker = realKicker;
+      st.sub = realSub;
+      st.banner = "COLLECTOR'S EDITION";
+      break;
+    case kMagGold:
+      st.kicker = realKicker;
+      st.sub = "THE " + mascot(v.myClub) + " WIN IT ALL";
+      st.banner = (mag_rand(rng) & 1u) ? "COMMEMORATIVE ISSUE" : "CHAMPIONS EDITION";
+      break;
+    case kMagBracket:
+      st.kicker = realKicker;
+      st.sub = p.club == v.myClub ? realSub : (fact.empty() ? realSub : fact);
+      st.banner = (mag_rand(rng) & 1u) ? "PLAYOFF PREVIEW" : "POSTSEASON SPECIAL";
+      break;
+    case kMagFaceoff: {
+      st.kicker = kick;
+      int rw = 0, rl = 0, rr = 0;
+      mag_record(v, p.rivalClub, &rw, &rl, &rr);
+      st.sub = (p.club == v.myClub && p.rival == s.view.nems[0].key && s.view.nemCount > 0)
+                   ? "BEAT YOU " + std::to_string(s.view.nems[0].beatYou) + "  -  LOST TO YOU " + std::to_string(s.view.nems[0].lostToYou)
+                   : P + " " + std::to_string(w) + "-" + std::to_string(l) + "  VS  " + place(p.rivalClub) + " " +
+                         std::to_string(rw) + "-" + std::to_string(rl);
+      st.banner = sash;
+      break;
+    }
+    case kMagStreak: {
+      st.kicker = kick;
+      st.sub = fact;
+      // the number: a real win streak (the week's news), else the club's wins
+      int streak = 0;
+      for (int i = 0; i < v.newsCount && i < 8; ++i) {
+        const std::string line = v.news[i];
+        if (line.starts_with(P + " HAVE WON ") && line.ends_with(" IN A ROW")) streak = std::atoi(line.c_str() + P.size() + 10);
+      }
+      st.big = std::to_string(streak > 0 ? streak : w);
+      st.bigWord = streak > 0 ? "STRAIGHT" : (w == 1 ? "WIN" : "WINS");
+      st.banner = sash;
+      break;
+    }
+    default:
+      st.kicker = keepStory ? realKicker : kick;
+      st.sub = keepStory ? realSub : fact;
+      st.banner = sash;
+      break;
+  }
+  if (st.sub.empty()) st.sub = realSub;
+  // the cover lines: four true things from around the league, at random
+  std::vector<std::pair<std::string, std::string>> pool;
+  for (int i = 0; i < v.leaderCount && i < 3; ++i)
+    if (v.leaders[i].key != p.key)
+      pool.push_back({i == 0 ? "GOLDEN BOOT" : "SCORING RACE",
+                      fr_upper(v.leaders[i].name) + ", " + std::to_string(v.leaders[i].goals) + " GOALS"});
+  for (int i = 0; i < v.nemCount && i < 2; ++i)
+    if (v.nems[i].key != p.key) pool.push_back({"WANTED", fr_upper(v.nems[i].name) + " " + fr_upper(v.nems[i].title)});
+  for (int k = 0; k < 2 && v.playedCount > 0; ++k) {
+    const PortFranchiseView::Played& g2 = v.played[mag_rand(rng) % static_cast<uint32_t>(std::min(16, v.playedCount))];
+    pool.push_back({k == 0 ? "FINAL" : "ALSO", place(g2.home) + " " + std::to_string(g2.homeGoals) + ", " + place(g2.away) + " " +
+                                              std::to_string(g2.awayGoals) + (g2.overtime ? " (OT)" : "")});
+  }
+  for (int k = 0; k < 2; ++k) {
+    const int c = static_cast<int>(mag_rand(rng) % 2u), i = static_cast<int>(mag_rand(rng) % 16u);
+    const PortFranchiseRow& r = v.conference[c][i];
+    if (r.club >= 0 && r.club < nClubs)
+      pool.push_back({i < 3 ? "CONTENDERS" : (i > 11 ? "FALLING" : "THE TABLE"),
+                      place(r.club) + " " + std::to_string(r.wins) + "-" + std::to_string(r.losses) + ", " + mag_ordinal(i + 1)});
+  }
+  for (const PortFranchiseEvoRow& r : s.evoWatch)
+    if (r.evoLevel > 0 && r.key != p.key && (mag_rand(rng) % 4u) == 0) {
+      pool.push_back({"RISING", fr_upper(r.name) + " NEARS LV " + std::to_string(r.evoLevel)});
+      break;
+    }
+  if (v.feedCount > 0) {
+    const std::string f = v.feed[mag_rand(rng) % static_cast<uint32_t>(std::min(8, v.feedCount))];
+    const size_t at = f.find(": ");
+    if (f.starts_with("@") && at != std::string::npos && at > 0)
+      pool.push_back({fr_upper(f.substr(0, at)), "\"" + fr_upper(f.substr(at + 2)) + "\""});
+  }
+  st.lines.clear();
+  while (!pool.empty() && st.lines.size() < 4) {
+    const size_t i = mag_rand(rng) % pool.size();
+    st.lines.push_back(pool[i]);
+    pool.erase(pool.begin() + static_cast<long>(i));
+  }
+  // CLASSIC's "PLUS:" picture: someone else
+  if (st.inset == st.star) st.inset.clear();
+  return st;
+}
+std::string mag_cover_name(const FrSnapshot& s) {
+  const MagStory st = mag_story(s);
+  return std::string(kMagTemplates[st.tmpl]) + ": " + st.head1 + (st.head2.empty() ? "" : " " + st.head2);
+}
+
+// --- the shared bits
+uint32_t mag_darker(uint32_t c, float k) {
+  const float r = static_cast<float>((c >> 16) & 255), gg = static_cast<float>((c >> 8) & 255), b = static_cast<float>(c & 255);
+  return (static_cast<uint32_t>(r * k) << 16) | (static_cast<uint32_t>(gg * k) << 8) | static_cast<uint32_t>(b * k);
+}
+uint32_t mag_lighter(uint32_t c, float k) {
+  const float r = static_cast<float>((c >> 16) & 255), gg = static_cast<float>((c >> 8) & 255), b = static_cast<float>(c & 255);
+  return (static_cast<uint32_t>(r + (255.0f - r) * k) << 16) | (static_cast<uint32_t>(gg + (255.0f - gg) * k) << 8) |
+         static_cast<uint32_t>(b + (255.0f - b) * k);
+}
+bool mag_has_sash(const MagStory& st) { return st.tmpl != kMagSpecial && st.tmpl != kMagMoody; }
+// the name across the top, condensed (the star's head goes in front of it); left of the corner's sash
+void mag_masthead(Pieces& P, const MagStory& st, float y, float px, uint32_t rgb, uint32_t rim, float outline,
+                  uint32_t rgb2 = 0) {
+  P.style(0.0f, 0.62f);
+  P.rim(rim);
+  if (mag_has_sash(st)) P.text("STRIKERS ILLUSTRATED", 40.0f + 445.0f, y, px, 890, rgb, outline, rgb2);
+  else P.text("STRIKERS ILLUSTRATED", kMagWf / 2, y, px, 1020, rgb, outline, rgb2);
+  P.plain();
+}
+void mag_dateline(Pieces& P, const MagStory& st, float y, uint32_t rgb) {
+  P.plain();
+  P.left(st.date, 44, y, 26, 400, rgb);
+  P.right(st.issue + "  -  $3.99", mag_has_sash(st) ? kMagWf - 270 : kMagWf - 44, y, 26, 400, rgb);
+}
+uint32_t mag_lcg(uint32_t r) { return (r * 1103515245u + 12345u) & 0x7FFFFFFFu; }
+void mag_barcode(Pieces& P, float x0, float y0, const MagStory& st) {
+  P.box(x0, y0, x0 + 190, y0 + 118, 4, 0xFFFFFF);
+  uint32_t r = st.seed * 7919u + 17u;
+  float x = x0 + 14.0f;
+  while (x < x0 + 172) {
+    r = mag_lcg(r);
+    const float bw = static_cast<float>(2 + (r >> 8) % 4);
+    if ((r >> 4) % 3 != 0) P.box(x, y0 + 10, x + bw, y0 + 82, 0, kMagInk);
+    x += bw + 1 + static_cast<float>((r >> 12) % 3);
+  }
+  P.text("0 74470 " + std::to_string(10000 + st.seed % 90000) + " 7", x0 + 95, y0 + 100, 22, 170, kMagInk);
+}
+// a band across the top right corner
+void mag_sash(Pieces& P, const std::string& text, uint32_t bg, uint32_t fg) {
+  const float W = kMagWf;
+  P.poly({W - 240, 0, W - 140, 0, W, 140, W, 240}, mag_darker(bg, 0.55f), 0.6f);
+  P.poly({W - 250, 0, W - 150, 0, W, 150, W, 250}, bg);
+  P.style(0.0f, 0.9f, 45.0f);
+  P.text(text, W - 100, 100, 38, 230, fg);
+  P.plain();
+}
+void mag_cover_lines(Pieces& P, const MagStory& st, float x, float y0, float step, int align, uint32_t label,
+                     uint32_t detail, float outline, int count) {
+  float y = y0;
+  for (int i = 0; i < std::min(count, static_cast<int>(st.lines.size())); ++i) {
+    std::string d1, d2;
+    split_two(st.lines[i].second, &d1, &d2);
+    if (align < 0) {
+      P.left(st.lines[i].first, x, y, 46, 330, label, outline);
+      P.left(d1, x, y + 46, 30, 330, detail, outline * 0.75f);
+      if (!d2.empty()) P.left(d2, x, y + 80, 30, 330, detail, outline * 0.75f);
+    } else {
+      P.right(st.lines[i].first, x, y, 46, 330, label, outline);
+      P.right(d1, x, y + 46, 30, 330, detail, outline * 0.75f);
+      if (!d2.empty()) P.right(d2, x, y + 80, 30, 330, detail, outline * 0.75f);
+    }
+    y += step;
+  }
+}
+void mag_confetti(Pieces& P, const MagStory& st, int count, const std::vector<uint32_t>& colours, float y0, float y1) {
+  uint32_t r = st.seed * 31u + 5u;
+  for (int i = 0; i < count; ++i) {
+    r = mag_lcg(r);
+    const float x = static_cast<float>((r >> 4) % 1080);
+    r = mag_lcg(r);
+    const float y = y0 + static_cast<float>((r >> 4) % static_cast<uint32_t>(y1 - y0));
+    r = mag_lcg(r);
+    const float a = static_cast<float>((r >> 4) % 628) / 100.0f;
+    r = mag_lcg(r);
+    const uint32_t c = colours[(r >> 4) % colours.size()];
+    const float dx = 14 * std::cos(a), dy = 14 * std::sin(a), ex = -6 * std::sin(a), ey = 6 * std::cos(a);
+    P.poly({x - dx - ex, y - dy - ey, x + dx - ex, y + dy - ey, x + dx + ex, y + dy + ey, x - dx + ex, y - dy + ey}, c);
+  }
+}
+const GuestPortrait& mag_logo(const FrSnapshot& s, int club) {
+  static const GuestPortrait none;
+  return club >= 0 && club < static_cast<int>(s.clubs.size()) ? guest_portrait("club_" + s.clubs[club].id) : none;
+}
+
+// --- the covers
+void mag_cover_classic(Pieces& P, const MagStory& st, const std::vector<uint8_t>& photo, int photoW, int photoH) {
+  const float W = kMagWf, H = kMagHf;
+  const int va = st.variant & 3;  // r131: the random cover's variant
+  const uint32_t c1 = va == 1 ? st.c2 : (va == 2 ? 0x3A1A6A : st.c1);
+  const uint32_t mast[4] = {kMagRed, kMagYellow, 0xFFFFFF, kMagRed}, mastRim[4] = {0xFFFFFF, 0x05070C, kMagRed, kMagYellow};
+  if (!photo.empty() && photoW > 0 && photoH > 0) {
+    P.photo(photo.data(), photoW, photoH, 0, 0, W, H, 0.5f, 0.4f);
+    P.box(0, 0, W, 520, 0, 0x000001, 0.7f, 0, 0.0f);
+    P.box(0, 860, W, H, 0, 0x000001, 0.0f, 0, 0.9f);
+    mag_masthead(P, st, 150, 210, mast[va], mastRim[va], 6);
+  } else {
+    P.box(0, 0, W, H, 0, mag_darker(c1, 0.55f), 1.0f, 0x05070C);
+    P.dots(0, 0, W, 1000, 14, 0.04f, 0.3f, mag_lighter(c1, 0.25f), 0.45f);
+    P.glow(-260, -200, 520, 560, 0xFFF4C8, 0.6f);
+    P.glow(560, -200, 1340, 560, 0xFFF4C8, 0.6f);
+    P.box(0, 1000, W, H, 0, 0x2F8F3A, 1.0f, 0x0B3315);
+    P.box(0, 1056, W, 1062, 0, 0xFFFFFF, 0.45f);
+    mag_masthead(P, st, 150, 210, mast[va], mastRim[va], 6);
+    P.glow(140, 260, 940, 1260, mag_lighter(c1, 0.5f), 0.55f);
+    P.figure(guest_portrait(st.star), 110, 120, W - 30, 1330, false, 0.5f, 1.0f, (va & 1) != 0);
+  }
+  mag_dateline(P, st, 34, 0xFFFFFF);
+  mag_cover_lines(P, st, 44, 330, 150, -1, kMagYellow, 0xFFFFFF, 4, 3);
+  // PLUS: a small picture of the next story (your nemesis, or the golden boot's leader) at the right
+  if (!st.inset.empty()) {
+    P.box(W - 252, 286, W - 40, 498, 6, 0xFFFFFF);
+    P.box(W - 244, 294, W - 48, 490, 4, mag_darker(st.c1, 0.4f), 1.0f, 0x05070C);
+    P.figure(guest_portrait(st.inset), W - 240, 300, W - 52, 486, false, 0.5f, 1.0f);
+    P.box(W - 252, 498, W - 40, 548, 0, kMagRed);
+    P.text(st.insetText, W - 146, 523, 30, 196, 0xFFFFFF);
+  }
+  // the headline: a red kicker tab, the words huge and leaning, the story under them
+  P.plain();
+  const float kw = P.width(st.kicker, 38) + 36;
+  P.box(40, 1004, 40 + std::min(1000.0f, kw), 1058, 6, kMagRed);
+  P.left(st.kicker, 58, 1031, 38, 960, 0xFFFFFF);
+  P.style(0.16f, 0.86f, 0.0f, 10, 0x000000, 0.6f);
+  P.left(st.head1, 34, 1158, 220, 1012, 0xFFFFFF, 8, 0xFFE27A);
+  P.plain();
+  P.left(st.sub, 44, 1282, 40, 790, kMagYellow, 3);
+  mag_sash(P, st.banner, va == 1 ? kMagRed : (va == 2 ? 0xFFFFFF : kMagYellow), va == 1 ? 0xFFFFFF : kMagInk);
+  mag_barcode(P, W - 234, H - 152, st);
+}
+void mag_cover_special(Pieces& P, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const uint32_t gold = 0xC9A227;
+  const int va = st.variant & 3;  // r131
+  const uint32_t aura[4] = {mag_lighter(st.c1, 0.2f), 0x5AC8FF, 0xFF6AD8, 0x6AFF9A};
+  P.box(0, 0, W, H, 0, 0x050505);
+  P.burst(W / 2 - 900, 600 - 900, W / 2 + 900, 600 + 900, 30, 0.8f, 0.0f, 0x1C1A14);
+  P.glow(W / 2 - 560, 180, W / 2 + 560, 1180, aura[va], 0.8f);
+  P.glow(W / 2 - 330, 360, W / 2 + 330, 1000, 0xFFF4C8, 0.55f);
+  P.box(0, 0, W, 66, 0, kMagRed);
+  P.text("SPECIAL " + st.banner, W / 2, 34, 36, 1000, 0xFFFFFF);
+  mag_masthead(P, st, 176, 200, 0xFFF1B0, 0x2A1A00, 4, 0xC9A227);
+  P.glow(16, 760, 356, 1160, 0x8A8A8A, 0.35f);
+  P.figure(guest_portrait(st.before), 36, 820, 336, 1110, false, 0.5f, 1.0f, false, 0x4A4A4A, 0x4A4A4A);
+  P.text("BEFORE", 186, 1140, 30, 280, 0x9A9A9A);
+  P.figure(guest_portrait(st.star), 170, 250, W - 40, 1150, false, 0.5f, 1.0f);
+  P.ring(22, 22, W - 22, H - 22, 0, 4, gold);
+  if (st.shiny) {
+    P.burst(W - 360, 290, W - 70, 580, 16, 0.62f, 10.0f, kMagYellow);
+    P.style(0.0f, 1.0f, -12.0f);
+    P.text("SHINY!", W - 215, 435, 66, 230, kMagRed, 4);
+    P.plain();
+  }
+  P.text(st.kicker, W / 2, 1176, 40, 900, gold);
+  P.style(0.12f, 0.88f, 0.0f, 0.0f);
+  P.rim(0x2A1A00);
+  P.text(st.head1, W / 2, 1270, 200, 1000, 0xFFF1B0, 6, 0xC98A1A);
+  P.plain();
+  P.text(st.sub, W / 2, 1372, 40, 960, 0xFFFFFF);
+  mag_cover_lines(P, st, 52, 330, 150, -1, gold, 0xFFFFFF, 3, 3);
+}
+void mag_cover_gold(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  P.box(0, 0, W, H, 0, 0xFFE27A, 1.0f, 0xC8901C);
+  P.burst(W / 2 - 1000, 640 - 1000, W / 2 + 1000, 640 + 1000, 36, 0.84f, 0.0f, 0xFFF3C0, 0.5f);
+  P.glow(W / 2 - 600, 160, W / 2 + 600, 1200, 0xFFFFFF, 0.75f);
+  mag_confetti(P, st, 90, {st.c1, st.c2, 0xFFFFFF, kMagRed, 0x1E5AC8}, 60, 1100);
+  mag_masthead(P, st, 150, 210, kMagRed, 0xFFFFFF, 7);
+  P.image(mag_logo(s, s.view.myClub), W / 2 - 400, 260, W / 2 + 400, 1060, false, 0.3f);
+  P.figure(guest_portrait(st.star), 130, 250, W - 130, 1130, false, 0.5f, 1.0f);
+  mag_dateline(P, st, 34, 0x3A1A00);
+  P.box(W / 2 - 330, 1098, W / 2 + 330, 1150, 26, 0x3A1A00);
+  P.text(st.kicker, W / 2, 1124, 34, 620, kMagYellow);
+  P.style(0.1f, 0.84f, 0.0f, 12, 0x5A2A00, 0.45f);
+  P.rim(0xFFFFFF);
+  P.text(st.head1, W / 2, 1236, 210, 1030, kMagRed, 9, 0x8E1010);
+  P.plain();
+  P.text(st.sub, W / 2 - 110, 1350, 46, 800, 0x3A1A00);
+  mag_sash(P, st.banner, kMagRed, 0xFFFFFF);
+  mag_barcode(P, W - 234, H - 152, st);
+}
+void mag_cover_moody(Pieces& P, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const int va = st.variant & 3;  // r131: black and white, sepia, cold blue, blood red
+  const uint32_t light[4] = {0xF4F4F4, 0xF2DCB4, 0xC8DCFF, 0xFFC8C0};
+  P.box(0, 0, W, H, 0, 0x1A1B20, 1.0f, 0x050506);
+  P.glow(W / 2 - 650, 40, W / 2 + 650, 1200, 0x7A7E88, 0.5f);
+  mag_masthead(P, st, 150, 210, va == 3 ? kMagRed : 0xFFFFFF, 0x000000, 0);
+  P.figure(guest_portrait(st.star), -140, 170, W + 140, 1500, false, 0.5f, 1.0f, (va & 1) != 0, 0x0A0A0C, light[va]);
+  P.dots(0, 170, W, H, 9, 0.5f, 0.05f, 0x000000, 0.28f);
+  P.box(0, 900, W, H, 0, 0x000001, 0.0f, 0, 0.94f);
+  mag_dateline(P, st, 34, 0xB8BCC6);
+  P.box(40, 236, 40 + P.width(st.banner, 30) + 30, 280, 0, kMagRed);
+  P.left(st.banner, 55, 258, 30, 600, 0xFFFFFF);
+  P.text(st.kicker, W / 2, 1030, 40, 960, kMagRed);
+  P.style(0.0f, 0.8f);
+  if (!st.head2.empty()) {
+    P.text(st.head1, W / 2, 1140, 150, 1030, 0xFFFFFF);
+    P.text(st.head2, W / 2, 1282, 170, 1030, 0xFFFFFF);
+  } else {
+    P.text(st.head1, W / 2, 1210, 170, 1030, 0xFFFFFF);
+  }
+  P.plain();
+  P.text(st.sub, W / 2, 1384, 36, 940, 0xB8BCC6);
+  mag_cover_lines(P, st, W - 44, 330, 140, 1, 0xFFFFFF, 0xD8DCE6, 3, 3);
+}
+void mag_cover_faceoff(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const uint32_t them = st.rivalClub >= 0 && st.rivalClub < static_cast<int>(s.clubs.size()) ? s.clubs[st.rivalClub].c1 : 0x6E1414;
+  P.poly({0, 0, 610, 0, 470, H, 0, H}, mag_darker(st.c1, 0.6f));
+  P.poly({610, 0, W, 0, W, H, 470, H}, mag_darker(them, 0.6f));
+  P.glow(-200, 300, 700, 1300, mag_lighter(st.c1, 0.3f), 0.6f);
+  P.glow(380, 300, 1280, 1300, mag_lighter(them, 0.3f), 0.6f);
+  P.dots(0, 0, W, H, 12, 0.05f, 0.3f, 0x000000, 0.3f);
+  P.box(0, 0, W, 300, 0, 0x000001, 0.85f, 0, 0.0f);
+  mag_masthead(P, st, 140, 200, 0xFFFFFF, kMagRed, 5);
+  const int va = st.variant & 3;  // r131
+  const uint32_t vs[4] = {kMagYellow, 0xFFFFFF, 0xFF8A1E, 0x5AE8FF};
+  P.figure(guest_portrait(st.star), -60, 330, 610, 1190, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.figure(guest_portrait(st.rival), 470, 330, W + 60, 1190, false, 0.5f, 1.0f, (va & 1) == 0);
+  P.poly({592, 0, 628, 0, 488, H, 452, H}, 0xFFFFFF);
+  P.text(st.kicker, W / 2, 272, 44, 900, kMagYellow, 4);
+  P.burst(W / 2 - 170, 600, W / 2 + 170, 940, 14, 0.62f, 0.0f, vs[va]);
+  P.style(0.12f);
+  P.rim(0xFFFFFF);
+  P.text("VS", W / 2, 770, 140, 260, kMagRed, 6);
+  P.plain();
+  P.box(0, 1000, W, H, 0, 0x000001, 0.0f, 0, 0.9f);
+  P.text(st.starName, 250, 1206, 50, 440, 0xFFFFFF, 4);
+  P.text(st.rivalName, 830, 1206, 50, 440, 0xFFFFFF, 4);
+  P.style(0.16f, 0.84f, 0.0f, 10, 0x000000, 0.6f);
+  P.text(st.head1, W / 2, 1306, 170, 1030, 0xFFFFFF, 7, 0xFF8A80);
+  P.plain();
+  P.text(st.sub, W / 2, 1398, 32, 900, 0xE6ECF5);
+  mag_dateline(P, st, 34, 0xFFFFFF);
+  mag_sash(P, st.banner, kMagRed, 0xFFFFFF);
+}
+// one playoff series: two logos stacked, their wins; the one out faded; yours ringed gold; nil = not decided yet
+void mag_bracket_slot(Pieces& P, const FrSnapshot& s, float x0, float y0, float w, const PortFranchiseSeries* sr) {
+  const int me = s.view.myClub;
+  P.box(x0, y0, x0 + w, y0 + 128, 12, 0x0A1430, 0.85f);
+  if (sr == nullptr) {
+    P.ring(x0, y0, x0 + w, y0 + 128, 12, 3, 0x3A5AA8);
+    P.text("?", x0 + w / 2, y0 + 64, 60, w, 0x3A5AA8);
+    return;
+  }
+  const bool mineHere = sr->hi == me || sr->lo == me;
+  P.ring(x0, y0, x0 + w, y0 + 128, 12, mineHere ? 4.0f : 3.0f, mineHere ? kMagYellow : 0x3A5AA8);
+  for (int k = 0; k < 2; ++k) {
+    const int club = k == 0 ? sr->hi : sr->lo;
+    const int wins = k == 0 ? sr->winsHi : sr->winsLo;
+    const bool out = sr->winner >= 0 && sr->winner != club;
+    const float yy = y0 + 8 + k * 58;
+    P.image(mag_logo(s, club), x0 + 8, yy, x0 + 62, yy + 54, false, out ? 0.35f : 1.0f);
+    P.text(std::to_string(wins), x0 + w - 28, yy + 28, 44, 50, out ? 0x6A7690 : 0xFFFFFF);
+  }
+}
+void mag_cover_bracket(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const PortFranchiseView& v = s.view;
+  const int va = st.variant & 3;  // r131
+  const uint32_t top[4] = {0x0B1B4A, 0x4A0B1B, 0x0B3A1B, 0x202020}, bottom[4] = {0x040818, 0x18040A, 0x041808, 0x050505};
+  P.box(0, 0, W, H, 0, top[va], 1.0f, bottom[va]);
+  P.dots(0, 0, W, H, 16, 0.06f, 0.28f, 0x2A4A9A, 0.55f);
+  P.glow(W / 2 - 520, 280, W / 2 + 520, 1000, 0x2A5AD8, 0.45f);
+  mag_masthead(P, st, 150, 210, kMagYellow, 0x05070C, 6);
+  P.text(st.kicker, W / 2, 278, 44, 900, 0xFFFFFF, 3);
+  // the bracket: each conference's rounds toward the middle, the final on top
+  auto nth = [&](int round, int conf, int k) -> const PortFranchiseSeries* {
+    int seen = 0;
+    for (int i = 0; i < v.seriesCount && i < 15; ++i)
+      if (v.series[i].round == round && v.series[i].conf == conf && seen++ == k) return &v.series[i];
+    return nullptr;
+  };
+  static const float kColX[3] = {30, 196, 362};
+  static const float kColY[3][4] = {{330, 480, 630, 780}, {405, 705, 0, 0}, {555, 0, 0, 0}};
+  static const int kColN[3] = {4, 2, 1};
+  for (int conf = 0; conf < 2; ++conf)
+    for (int c = 0; c < 3; ++c)
+      for (int k = 0; k < kColN[c]; ++k)
+        mag_bracket_slot(P, s, conf == 0 ? kColX[c] : W - kColX[c] - 150, kColY[c][k], 150, nth(c + 1, conf, k));
+  P.text("THE FINAL", W / 2, 352, 30, 220, kMagYellow);
+  mag_bracket_slot(P, s, W / 2 - 85, 374, 170, nth(4, -1, 0));
+  P.figure(guest_portrait(st.star), 300, 640, 780, 1190, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.box(0, 1020, W, H, 0, 0x000001, 0.0f, 0, 0.9f);
+  P.style(0.16f, 0.84f, 0.0f, 10, 0x000000, 0.6f);
+  P.text(st.head1, W / 2, 1250, 170, 1030, 0xFFFFFF, 7, kMagYellow);
+  P.plain();
+  P.text(st.sub, W / 2, 1352, 38, 980, kMagYellow, 2);
+  mag_dateline(P, st, 34, 0xC8D2E6);
+  mag_sash(P, st.banner, va == 1 ? 0xFFFFFF : kMagYellow, kMagInk);
+}
+void mag_cover_streak(Pieces& P, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const int va = st.variant & 3;  // r131: electric blue, fire, poison green, black and gold
+  const uint32_t top[4] = {0x1440C8, 0xD8301E, 0x0FA36A, 0x222222}, bottom[4] = {0x2A0A6A, 0x5A0A10, 0x063A3A, 0x000001};
+  const uint32_t halo[4] = {0x6AD8FF, 0xFFB84A, 0xB8FF6A, 0xFFD23F};
+  P.box(0, 0, W, H, 0, top[va], 1.0f, bottom[va]);
+  for (int i = 0; i < 7; ++i) {
+    const float x = 140.0f + i * 190.0f;
+    P.poly({x, 0, x + 90, 0, x - 410, H, x - 500, H}, 0xFFFFFF, 0.07f + 0.02f * (i % 3));
+  }
+  P.glow(80, 300, 900, 1240, halo[va], 0.5f);
+  mag_masthead(P, st, 150, 210, va == 1 ? 0xFFFFFF : 0xFFE600, 0x05070C, 7);
+  P.figure(guest_portrait(st.star), 40, 230, 860, 1240, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.burst(W - 450, 310, W - 30, 730, 18, 0.7f, 8.0f, 0xFFE600);
+  P.style(0.1f);
+  P.rim(0xFFFFFF);
+  P.text(st.big, W - 240, 490, 200, 300, kMagRed, 6);
+  P.plain();
+  P.text(st.bigWord, W - 240, 618, 48, 280, kMagInk);
+  P.box(0, 1060, W, H, 0, 0x000001, 0.0f, 0, 0.85f);
+  P.text(st.kicker, W / 2, 1126, 42, 960, 0xFFE600, 3);
+  P.style(0.2f, 0.82f, 0.0f, 10, 0x000000, 0.6f);
+  P.text(st.head1, W / 2, 1250, 200, 1030, 0xFFFFFF, 8, 0x9AE8FF);
+  P.plain();
+  P.text(st.sub, W / 2 - 110, 1366, 38, 780, 0xFFFFFF, 2);
+  mag_dateline(P, st, 34, 0xFFFFFF);
+  mag_cover_lines(P, st, 44, 330, 150, -1, 0xFFE600, 0xFFFFFF, 4, 2);
+  mag_barcode(P, W - 234, H - 152, st);
+  mag_sash(P, st.banner, kMagRed, 0xFFFFFF);
+}
+void mag_cover_preview(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const PortFranchiseView& v = s.view;
+  const int va = st.variant & 3;  // r131: teal and orange, purple and lime, red and yellow, navy and pink
+  const uint32_t top[4] = {0x12B5B0, 0x7A3AD8, 0xE8402A, 0x1E2A6E}, bottom[4] = {0x064C6E, 0x2A0A6A, 0x7A0A10, 0x05070C};
+  const uint32_t band1[4] = {0xFF8A1E, 0xB8FF3A, 0xFFD23F, 0xFF5AB8}, band2[4] = {0xFFD23F, 0xFFFFFF, 0xFFFFFF, 0x5AE8FF};
+  P.box(0, 0, W, H, 0, top[va], 1.0f, bottom[va]);
+  P.style(0.0f, 0.7f);
+  P.text(std::to_string(v.season), W / 2 + 120, 760, 1000, 1200, 0xFFFFFF);
+  P.v.back().alpha = 0.12f;
+  P.plain();
+  P.poly({0, 1000, W, 820, W, 900, 0, 1080}, band1[va]);
+  P.poly({0, 1090, W, 910, W, 940, 0, 1120}, band2[va]);
+  mag_masthead(P, st, 150, 210, 0xFFFFFF, mag_darker(band1[va], 0.8f), 6);
+  P.image(mag_logo(s, st.starClub >= 0 ? st.starClub : v.myClub), 40, 300, 330, 590, false);
+  P.figure(guest_portrait(st.star), 200, 230, W - 20, 1180, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.box(0, 1100, W, H, 0, 0x000001, 0.0f, 0, 0.75f);
+  P.text(st.kicker, W / 2, 1150, 40, 900, 0xFFD23F, 3);
+  P.style(0.1f, 0.84f);
+  P.text(st.head1, W / 2, 1222, 76, 900, 0xFFFFFF, 4);
+  P.style(0.14f, 0.82f, 0.0f, 10, 0x000000, 0.5f);
+  P.text(st.head2, W / 2, 1318, 150, 1030, band1[va], 7, band2[va]);
+  P.plain();
+  P.text(st.sub, W / 2, 1404, 32, 900, 0xFFFFFF);
+  mag_dateline(P, st, 34, 0xFFFFFF);
+  mag_cover_lines(P, st, 44, 640, 140, -1, 0xFFD23F, 0xFFFFFF, 4, 2);
+  mag_sash(P, st.banner, band1[va], va == 1 ? kMagInk : 0xFFFFFF);
+}
+
+// --- inside: magazine pages (a red section tab at the outer corner, the title condensed, the fold's shadow on the
+// inner edge, the page number and the running foot)
+void mag_inside_frame(Pieces& P, const MagStory& st, int page, const std::string& section, const std::string& title,
+                      const std::string& sub) {
+  const float W = kMagWf, H = kMagHf;
+  const bool leftPage = page % 2 == 1;
+  P.box(0, 0, W, H, 0, 0xFCFBF8, 1.0f, 0xEFEDE6);
+  for (int i = 0; i < 14; ++i) {
+    const float x = leftPage ? W - 70 + i * 5.0f : 65 - i * 5.0f;
+    P.box(x, 0, x + 5, H, 0, 0x000001, 0.012f * (i + 1));
+  }
+  const float outer = leftPage ? 44 : W - 44;
+  const float tw = P.width(section, 34) + 40;
+  if (leftPage) {
+    P.box(outer, 40, outer + tw, 92, 0, kMagRed);
+    P.left(section, outer + 20, 66, 34, 600, 0xFFFFFF);
+  } else {
+    P.box(outer - tw, 40, outer, 92, 0, kMagRed);
+    P.right(section, outer - 20, 66, 34, 600, 0xFFFFFF);
+  }
+  P.box(44, 118, W - 44, 122, 0, kMagInk);
+  P.style(0.0f, 0.8f);
+  P.text(title, W / 2, 196, 116, 1000, kMagInk);
+  P.plain();
+  P.text(sub, W / 2, 278, 30, 1000, 0x6A645A);
+  if (leftPage) {
+    P.left(std::to_string(page + 1), 44, H - 44, 34, 100, kMagInk);
+    P.right("STRIKERS ILLUSTRATED  -  " + st.date, W - 90, H - 44, 22, 700, 0x8A847A);
+  } else {
+    P.right(std::to_string(page + 1), W - 44, H - 44, 34, 100, kMagInk);
+    P.left("STRIKERS ILLUSTRATED  -  " + st.date, 90, H - 44, 22, 700, 0x8A847A);
+  }
+}
+void mag_page_scores(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const PortFranchiseView& v = s.view;
+  mag_inside_frame(P, st, 1, "SCORECARD", "AROUND THE LEAGUE", st.issue);
+  const int n = std::min(16, v.playedCount);
+  if (n == 0) P.text("NO GAMES PLAYED YET", W / 2, 760, 60, 1000, 0x6A645A);
+  const int rows = std::max(1, (n + 1) / 2);
+  const float th = std::min(250.0f, (H - 330.0f - 110.0f) / rows - 12.0f);
+  for (int i = 0; i < n; ++i) {
+    const PortFranchiseView::Played& g2 = v.played[i];
+    const int c = i % 2, r = i / 2;
+    const float x0 = 50.0f + c * 500, y0 = 330.0f + r * (th + 12);
+    P.box(x0, y0, x0 + 480, y0 + th, 14, g2.mine ? 0xFFF1B0 : 0xFFFFFF);
+    P.ring(x0, y0, x0 + 480, y0 + th, 14, g2.mine ? 4.0f : 2.0f, g2.mine ? kMagRed : 0xD6D0C4);
+    const bool homeWon = g2.homeGoals > g2.awayGoals;
+    P.image(mag_logo(s, g2.home), x0 + 10, y0 + 8, x0 + 10 + th - 16, y0 + th - 8, false, homeWon ? 1.0f : 0.5f);
+    P.image(mag_logo(s, g2.away), x0 + 470 - (th - 16), y0 + 8, x0 + 470, y0 + th - 8, false, homeWon ? 0.5f : 1.0f);
+    P.style(0.0f, 0.85f);
+    P.text(std::to_string(g2.homeGoals) + "-" + std::to_string(g2.awayGoals), x0 + 240, y0 + 0.47f * th, 0.62f * th,
+           470 - 2 * th, kMagInk);
+    P.plain();
+    if (g2.overtime) P.text("OT", x0 + 240, y0 + th - 16, 24, 100, kMagRed);
+  }
+}
+void mag_page_table(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const PortFranchiseView& v = s.view;
+  const int nClubs = static_cast<int>(s.clubs.size());
+  mag_inside_frame(P, st, 2, "THE TABLE", "THE STANDINGS", "GOLD = IN THE PLAYOFFS");
+  for (int conf = 0; conf < 2; ++conf) {
+    const float x0 = 44.0f + conf * 506;
+    const int first = v.conference[conf][0].club;
+    P.box(x0, 316, x0 + 486, 362, 0, kMagInk);
+    P.text(first >= 0 && first < nClubs ? fr_upper(s.clubs[first].conf) : std::string(conf == 0 ? "CROWN" : "STAR"),
+           x0 + 243, 339, 34, 460, 0xFFFFFF);
+    for (int i = 0; i < 16; ++i) {
+      const PortFranchiseRow& r = v.conference[conf][i];
+      if (r.club < 0 || r.club >= nClubs) continue;
+      const float y = 372.0f + i * 62;
+      bool seeded = false;
+      for (int k = 0; k < 7; ++k)
+        if (v.seeds[conf][k] == r.club) seeded = true;
+      if (r.mine) P.box(x0, y, x0 + 486, y + 58, 6, 0xFFE27A);
+      else if (i % 2 == 1) P.box(x0, y, x0 + 486, y + 58, 0, 0x000001, 0.04f);
+      if (seeded) P.box(x0, y + 4, x0 + 8, y + 54, 0, 0xC89B2A);
+      P.text(std::to_string(i + 1), x0 + 36, y + 29, 30, 50, 0x6A645A);
+      P.image(mag_logo(s, r.club), x0 + 60, y + 3, x0 + 112, y + 55, false);
+      P.left(fr_upper(s.clubs[r.club].place), x0 + 124, y + 29, 30, 240, kMagInk);
+      P.right(std::to_string(r.wins) + "-" + std::to_string(r.losses), x0 + 478, y + 29, 36, 120, kMagInk);
+    }
+  }
+}
+void mag_page_stars(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf;
+  const PortFranchiseView& v = s.view;
+  mag_inside_frame(P, st, 3, "STAR WATCH", "THE GOLDEN BOOT RACE", "WHO'S SCORING, WHO'S RISING");
+  for (int i = 0; i < 3; ++i) {
+    const float x0 = 44.0f + i * 336, y0 = 320;
+    P.box(x0, y0, x0 + 320, y0 + 500, 16, i == 0 ? kMagInk : 0xFFFFFF);
+    P.ring(x0, y0, x0 + 320, y0 + 500, 16, 3, i == 0 ? 0xC9A227 : 0xD6D0C4);
+    if (i >= v.leaderCount) {
+      P.text("-", x0 + 160, y0 + 250, 80, 200, 0x6A645A);
+      continue;
+    }
+    const PortFranchiseView::Leader& l = v.leaders[i];
+    P.glow(x0 + 10, y0 + 40, x0 + 310, y0 + 400, i == 0 ? 0xFFD23F : 0xC8D2E6, 0.5f);
+    P.text("#" + std::to_string(i + 1), x0 + 44, y0 + 44, 48, 80, i == 0 ? kMagYellow : 0x6A645A);
+    P.image(mag_logo(s, l.club), x0 + 236, y0 + 12, x0 + 308, y0 + 84, false);
+    P.figure(guest_portrait(l.key), x0 + 15, y0 + 70, x0 + 305, y0 + 390, false, 0.5f, 1.0f);
+    P.text(fr_upper(l.name), x0 + 160, y0 + 420, 38, 296, i == 0 ? 0xFFFFFF : kMagInk);
+    P.text(std::to_string(l.goals) + " GOALS", x0 + 160, y0 + 468, 40, 296, i == 0 ? kMagYellow : kMagRed);
+  }
+  P.box(44, 870, W - 44, 916, 0, kMagRed);
+  P.text("RISING", W / 2, 893, 34, 600, 0xFFFFFF);
+  // the nearest to their next form (yours first)
+  std::vector<const PortFranchiseEvoRow*> rising;
+  for (const PortFranchiseEvoRow& r : s.evoWatch)
+    if (r.evoLevel > 0) rising.push_back(&r);
+  std::stable_sort(rising.begin(), rising.end(), [](const PortFranchiseEvoRow* a, const PortFranchiseEvoRow* b) {
+    if (a->mine != b->mine) return a->mine;
+    return a->evoLevel - a->level < b->evoLevel - b->level;
+  });
+  for (int i = 0; i < 3 && i < static_cast<int>(rising.size()); ++i) {
+    const PortFranchiseEvoRow& r = *rising[i];
+    const float y0 = 932.0f + i * 142;
+    P.box(44, y0, W - 44, y0 + 130, 12, r.mine ? 0xFFF1B0 : 0xFFFFFF);
+    P.ring(44, y0, W - 44, y0 + 130, 12, 2, 0xD6D0C4);
+    P.figure(guest_portrait(r.key), 60, y0 + 8, 190, y0 + 124, false, 0.5f, 1.0f);
+    P.left(fr_upper(r.name), 210, y0 + 44, 44, 420, kMagInk);
+    P.left("LV " + std::to_string(r.level), 210, y0 + 96, 34, 200, 0x6A645A);
+    P.figure(guest_portrait(next_form_key(r.key)), W - 210, y0 + 8, W - 64, y0 + 124, false, 0.5f, 1.0f, false, 0x2A2620,
+             0x2A2620);
+    P.right((r.costume ? "COSTUME AT LV " : "EVOLVES AT LV ") + std::to_string(r.evoLevel), W - 230, y0 + 66, 32, 380,
+            kMagRed);
+  }
+  if (rising.empty()) P.text("NOBODY CLOSE TO A NEW FORM", W / 2, 1100, 40, 1000, 0x6A645A);
+}
+void mag_page_rivals(Pieces& P, const FrSnapshot& s, const MagStory& st) {
+  const float W = kMagWf, H = kMagHf;
+  const PortFranchiseView& v = s.view;
+  mag_inside_frame(P, st, 4, "RIVALS", "THE MOST WANTED", "BEAT THEM BADLY. THEY'LL REMEMBER.");
+  if (v.nemCount == 0) {
+    P.text("NOBODY HAS BEEF", W / 2, 700, 80, 1000, kMagInk);
+    P.text("WITH YOU... YET", W / 2, 800, 80, 1000, kMagInk);
+    return;
+  }
+  const PortFranchiseView::Nem& n = v.nems[v.nextNemesis >= 0 && v.nextNemesis < 8 ? v.nextNemesis : 0];
+  P.box(110, 320, W - 110, H - 100, 10, 0xE9D2A0, 1.0f, 0xD8BC84);
+  P.ring(110, 320, W - 110, H - 100, 10, 6, 0x5A3A1A);
+  P.text("WANTED", W / 2, 420, 160, 800, 0x5A1A10);
+  P.text(v.nextNemesis >= 0 ? "YOUR NEXT GAME!" : "FOR BEEF WITH YOUR CAPTAIN", W / 2, 518, 38, 800, kMagRed);
+  P.box(200, 560, W - 200, 1060, 6, 0xF4E6C4);
+  P.figure(guest_portrait(n.key), 220, 580, W - 220, 1050, false, 0.5f, 1.0f);
+  if (n.club >= 0) P.image(mag_logo(s, n.club), W - 320, 570, W - 210, 680, false);
+  P.ring(200, 560, W - 200, 1060, 6, 4, 0x5A3A1A);
+  P.text(fr_upper(n.name), W / 2, 1120, 84, 800, 0x2A1A0E);
+  P.text(fr_upper(n.title), W / 2, 1194, 44, 800, kMagRed);
+  P.box(230, 1236, W - 230, 1272, 18, 0x5A3A1A, 0.35f);
+  P.box(230, 1236, 230 + (W - 460) * std::max(0.05f, std::min(1.0f, n.heat / 100.0f)), 1272, 18, kMagRed);
+  P.text("HEAT", W / 2, 1254, 26, 300, 0xFFFFFF);
+  P.text("BEAT YOU " + std::to_string(n.beatYou) + "   -   LOST TO YOU " + std::to_string(n.lostToYou), W / 2, 1306, 36,
+         800, 0x2A1A0E);
+}
+// the back cover: an ad, as the magazines had (made up: nobody's real product), one of two by the week
+void mag_page_back(Pieces& P, const FrSnapshot& s) {
+  const float W = kMagWf, H = kMagHf;
+  const PortFranchiseView& v = s.view;
+  if ((v.lastWeek + v.season) % 2 == 0) {
+    P.box(0, 0, W, H, 0, 0x0A0C12, 1.0f, 0x000001);
+    P.burst(W / 2 - 900, 560 - 900, W / 2 + 900, 560 + 900, 24, 0.7f, 0.0f, 0x1C2333);
+    P.glow(W / 2 - 420, 200, W / 2 + 420, 920, 0xFFD23F, 0.35f);
+    P.style(0.14f, 0.86f, -8.0f, 10, 0x000000, 0.6f);
+    P.text("FREE!", W / 2, 190, 230, 900, kMagYellow, 8, 0xFF8A1E);
+    P.plain();
+    // the ball phone: a ball with a keypad on it
+    P.box(W / 2 - 250, 330, W / 2 + 250, 830, 250, 0xF4F4F4, 1.0f, 0xC8CCD4);
+    P.poly({W / 2, 470, W / 2 + 76, 525, W / 2 + 47, 615, W / 2 - 47, 615, W / 2 - 76, 525}, kMagInk);
+    for (int k = 0; k < 5; ++k) {
+      const float a = -1.5708f + k * 1.2566f;
+      const float cx = W / 2 + 205 * std::cos(a), cy = 580 + 205 * std::sin(a);
+      P.poly({cx + 40 * std::cos(a + 1.5708f), cy + 40 * std::sin(a + 1.5708f), cx + 45 * std::cos(a), cy + 45 * std::sin(a),
+              cx - 40 * std::cos(a + 1.5708f), cy - 40 * std::sin(a + 1.5708f)},
+             kMagInk);
+    }
+    for (int r = 0; r < 4; ++r)
+      for (int c = 0; c < 3; ++c) {
+        const float x = W / 2 - 66 + c * 44.0f, y = 640.0f + r * 40;
+        P.box(x - 16, y - 14, x + 16, y + 14, 6, 0x2A4A9A);
+      }
+    P.box(W / 2 + 180, 300, W / 2 + 196, 420, 6, 0x9AA0AA);
+    P.text("THE STRIKERS BALL PHONE", W / 2, 920, 70, 1000, 0xFFFFFF, 4);
+    P.text("WHEN YOU SUBSCRIBE TO STRIKERS ILLUSTRATED", W / 2, 1000, 36, 1000, 0xC8D2E6);
+    P.box(140, 1060, W - 140, 1220, 24, kMagRed);
+    P.text("52 ISSUES", W / 2, 1110, 70, 760, 0xFFFFFF);
+    P.text("ONLY 99 COINS AN ISSUE", W / 2, 1180, 40, 760, kMagYellow);
+    P.text("CALL 1-800-SUPER-STRIKE", W / 2, 1300, 46, 1000, 0xFFFFFF);
+    P.text("BALL PHONE MAY NOT CONNECT TO ANYTHING. NOT A REAL BALL.", W / 2, 1380, 22, 1000, 0x6A7690);
+  } else {
+    const std::string cap = v.myClub >= 0 && v.myClub < static_cast<int>(s.clubs.size()) ? std::string(v.clubCaptainKey[v.myClub]) : "";
+    P.box(0, 0, W, H, 0, 0xFFE600, 1.0f, 0xFF8A1E);
+    for (int i = 0; i < 9; ++i) {
+      const float x = i * 150.0f;
+      P.poly({x - 60, 0, x + 20, 0, x - 240, H, x - 320, H}, 0xFFFFFF, 0.12f);
+    }
+    P.style(0.18f, 0.8f, 0.0f, 10, 0x7A2A00, 0.5f);
+    P.rim(0xFFFFFF);
+    P.text("BANANA BLAST", W / 2, 170, 190, 1030, 0x3A2A9A, 8);
+    P.plain();
+    P.text("THE SPORTS DRINK OF THE STRIKERS SUPER LEAGUE", W / 2, 280, 34, 1000, 0x3A1A00);
+    // the bottle
+    P.box(W / 2 + 60, 420, W / 2 + 130, 480, 8, 0x3A2A9A);
+    P.box(W / 2 + 20, 470, W / 2 + 170, 1130, 60, 0x3A2A9A, 1.0f, 0x1A124A);
+    P.box(W / 2 + 34, 640, W / 2 + 156, 900, 16, 0xFFE600);
+    P.style(0.0f, 1.0f, -90.0f);
+    P.text("BANANA BLAST", W / 2 + 95, 770, 46, 250, 0x3A2A9A);
+    P.plain();
+    P.box(W / 2 + 40, 500, W / 2 + 60, 1100, 10, 0xFFFFFF, 0.25f);
+    P.figure(guest_portrait(cap), 40, 360, W / 2 + 40, 1180, false, 0.5f, 1.0f);
+    P.style(0.12f, 0.86f);
+    P.text("DRINK LIKE A STRIKER.", W / 2, 1270, 80, 1000, 0x3A2A9A);
+    P.plain();
+    P.text("100% BANANA. 0% PEEL. MAY CAUSE SUPER STRIKES.", W / 2, 1360, 30, 1000, 0x3A1A00);
+  }
+}
+// One page of this week's issue (the cover: the goal photo when there is one, on CLASSIC).
+void mag_page(Pieces& P, const FrSnapshot& s, int page, const std::vector<uint8_t>& photo, int photoW, int photoH) {
+  const MagStory st = mag_story(s);
+  if (page == 0) {
+    switch (st.tmpl) {
+      case kMagSpecial: mag_cover_special(P, st); break;
+      case kMagGold: mag_cover_gold(P, s, st); break;
+      case kMagMoody: mag_cover_moody(P, st); break;
+      case kMagFaceoff: mag_cover_faceoff(P, s, st); break;
+      case kMagBracket: mag_cover_bracket(P, s, st); break;
+      case kMagStreak: mag_cover_streak(P, st); break;
+      case kMagPreview: mag_cover_preview(P, s, st); break;
+      default: mag_cover_classic(P, st, photo, photoW, photoH); break;
+    }
+  } else if (page == 1) {
+    mag_page_scores(P, s, st);
+  } else if (page == 2) {
+    mag_page_table(P, s, st);
+  } else if (page == 3) {
+    mag_page_stars(P, s, st);
+  } else if (page == 4) {
+    mag_page_rivals(P, s, st);
+  } else {
+    mag_page_back(P, s);
+  }
+}
+
+// --- r131 (Lance: "in franchise mode, you have the awards, in 3D (trophies) but everything and everyone else is 2D.
+// fix that shit with haste, it should all be 3D models at that point"): the characters on the hub's pages and the
+// trades screen stand as 3D figures in front of the panel, each where its portrait was, and the awards night's
+// winners in your room (fr_figs_frame, the render thread). A picture's drawing thread says who stands where
+// (FrFigAsk); once a figure stands, the picture is drawn again without its portrait. A character with no 3D figure on
+// this headset (no pack + pose file: guests/<pack>.gpk + guests/evo/<pack>.gev, ...) keeps its portrait.
+struct FrFigAsk {
+  std::string key;  // its portrait key (a guest pack, strikers_<name>)
+  bool shiny = false;
+  bool omitted = false;  // this picture left its portrait out (its figure stands there)
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // its portrait's box in the picture (0..1 across, 0..1 down)
+  bool operator==(const FrFigAsk& o) const {
+    return key == o.key && shiny == o.shiny && omitted == o.omitted && x0 == o.x0 && y0 == o.y0 && x1 == o.x1 && y1 == o.y1;
+  }
+};
+constexpr int kFrFigs = xrfx::kModelSlots - 4;  // their model slots 3.. (0-1 the evolution / the menu's, 2 the home corner's; r131: the last the magazine's)
+struct FrFigShared {
+  std::mutex mutex;
+  std::vector<FrFigAsk> asks;         // the newest picture's
+  unsigned serial = 0;                // its snapshot's (an older snapshot's picture finishing late changes nothing)
+  int askGen = 0;                     // + 1 whenever the asks change
+  std::vector<std::string> standing;  // the figures standing in 3D now (the pictures leave their portraits out)
+};
+FrFigShared g_frFig;
+std::atomic<int> g_frFigGen{0};  // + 1 when `standing` changes: the hub's picture is drawn again
+
+std::string fr_fig_name(const std::string& key, bool shiny) { return shiny ? key + "_shiny" : key; }
+// A portrait key a figure can stand for: a character's (not a club's logo, the league's)
+bool fr_fig_key(const std::string& key) {
+  return !key.empty() && key.compare(0, 5, "club_") != 0 && key.compare(0, 10, "franchise_") != 0;
+}
+bool fr_fig_standing(const std::string& name) {
+  std::lock_guard<std::mutex> lock(g_frFig.mutex);
+  return std::find(g_frFig.standing.begin(), g_frFig.standing.end(), name) != g_frFig.standing.end();
+}
+// (a picture `w` x `h` pixels: its boxes as parts of it)
+void fr_figs_publish(unsigned serial, std::vector<FrFigAsk> asks, float w, float h) {
+  for (FrFigAsk& a : asks) {
+    a.x0 /= std::max(1.0f, w);
+    a.x1 /= std::max(1.0f, w);
+    a.y0 /= std::max(1.0f, h);
+    a.y1 /= std::max(1.0f, h);
+  }
+  std::lock_guard<std::mutex> lock(g_frFig.mutex);
+  if (serial < g_frFig.serial) return;
+  g_frFig.serial = serial;
+  if (asks == g_frFig.asks) return;
+  g_frFig.asks = std::move(asks);
+  ++g_frFig.askGen;
+}
+// A picture's characters: each one asked for, its portrait drawn unless its figure stands there (the same one twice
+// on a page: the second a portrait - a model stands in one place)
+struct FrFigPicture {
+  std::vector<FrFigAsk> asks;
+  void person(Pieces& P, const std::string& key, bool shiny, float x0, float y0, float x1, float y1) {
+    bool twice = false;
+    for (const FrFigAsk& b : asks) twice = twice || (b.key == key && b.shiny == shiny);
+    if (fr_fig_key(key) && !twice && static_cast<int>(asks.size()) < kFrFigs && x1 > x0 && y1 > y0) {
+      FrFigAsk a;
+      a.key = key;
+      a.shiny = shiny;
+      a.x0 = P.ox + x0 * P.k;
+      a.y0 = P.oy + y0 * P.k;
+      a.x1 = P.ox + x1 * P.k;
+      a.y1 = P.oy + y1 * P.k;
+      a.omitted = fr_fig_standing(fr_fig_name(key, shiny));
+      asks.push_back(a);
+      if (a.omitted) return;
+    }
+    P.image(guest_portrait(key), x0, y0, x1, y1, true);
+  }
+};
+
+// --- the hub (mode 2), 2160 x 1300: pill tabs, a big visual page, button hints
+bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
+  const PortFranchiseView& v = s.view;
+  const PortFranchiseLeagueView& lg = s.league;
+  const int nClubs = static_cast<int>(s.clubs.size());
+  const int me = v.myClub;
+  auto logo = [&](int club) -> const GuestPortrait& {
+    static const GuestPortrait none;
+    return club >= 0 && club < nClubs ? guest_portrait("club_" + s.clubs[club].id) : none;
+  };
+  auto place = [&](int club) { return club >= 0 && club < nClubs ? fr_upper(s.clubs[club].place) : std::string("?"); };
+  const float W = static_cast<float>(w), H = static_cast<float>(h);
+  std::vector<uint8_t> paperPhoto;  // (the PAPER page's front page: its pixels live until the board is drawn)
+  std::vector<uint8_t> magCover;    // r131: the MAG page's cover, drawn on its own (lives until the board is drawn)
+  int paperPhotoW = 0, paperPhotoH = 0;
+  Pieces P;
+  FrFigPicture figs;  // r131: the page's characters, standing in 3D in front of it
+  P.box(6, 6, W - 6, H - 6, 30, 0xFFD23F);
+  P.box(16, 16, W - 16, H - 16, 24, 0x1E2A4E, 0.97f, 0x070A14);
+  // the pages as pills
+  static const char* const kTabs[11] = {"HOME", "TABLE", "PLAYOFFS", "RESULTS", "STARS", "MAG",  // r131: MAG
+                                        "HISTORY", "RIVALS", "EVO", "LEVEL", "LEAGUE"};
+  const int pages = lg.active ? 11 : 10;
+  const float tw = (W - 60.0f) / pages;
+  for (int i = 0; i < pages; ++i) {
+    const float x0 = 30 + i * tw + 5, x1 = x0 + tw - 10;
+    const bool on = i == s.page;
+    P.box(x0, 28, x1, 104, 38, on ? 0xFFD23F : 0x26335E);
+    P.text(kTabs[i], 0.5f * (x0 + x1), 66, 38, x1 - x0 - 24, on ? 0x14141E : 0xD2DAEB);
+    if (i == 8 && !s.evoReadyName.empty()) P.box(x1 - 26, 34, x1 - 8, 52, 9, 0xFF5A4A);  // one of yours is ready
+  }
+  // the line under them: the season, the week, the difficulty (and co-op / league)
+  static const char* const kLevelShort[5] = {"", "ROOKIE", "PRO", "SUPERSTAR", "LEGEND"};
+  std::string sub = "SEASON " + std::to_string(v.season) + "  -  ";
+  if (v.phase == PORT_FR_PHASE_DONE) sub += "CHAMPIONS CROWNED";
+  else if (v.phase == PORT_FR_PHASE_PLAYOFFS) sub += fr_upper(v.roundName);
+  else sub += "WEEK " + std::to_string(v.week);
+  sub += std::string("  -  ") + kLevelShort[std::max(1, std::min(4, v.difficulty))];
+  if (s.coopActive) sub = "CO-OP  -  " + sub;
+  if (lg.active) sub = std::string("LEAGUE ") + lg.code + "  -  " + sub;
+  P.text(sub, W / 2, 148, 42, W - 200, 0xFFD23F, 2.0f);
+  std::vector<HubHint> hints = {{"L", "PAGES", 0x3A4A70}};
+  const float top = 190, bottom = 1190;
+  if (s.page == 0) {
+    // HOME: your club v theirs, both captains, the buttons stacked in the middle (up / down + A)
+    auto team = [&](int club, const char* capKey, bool left, const std::string& record, bool shiny) {
+      const float cx = left ? 420.0f : W - 420.0f;
+      const uint32_t c1 = club >= 0 && club < nClubs ? s.clubs[club].c1 : 0x31406A;
+      P.glow(cx - 400, 230, cx + 400, 900, c1 != 0 ? c1 : 0x31406A, 0.7f);
+      P.image(logo(club), left ? cx - 380 : cx - 20, 230, left ? cx + 20 : cx + 380, 650, false);
+      figs.person(P, capKey, shiny, left ? cx - 10 : cx - 330, 300, left ? cx + 330 : cx + 10, 860);  // r131: in 3D
+      P.text(club >= 0 && club < nClubs ? place(club) : std::string(""), cx, 920, 80, 760, 0xFFFFFF, 5.0f);
+      if (!record.empty()) P.text(record, cx, 1000, 62, 400, 0xFFD23F, 4.0f);
+    };
+    auto record = [](int wins, int losses) { return std::to_string(wins) + "-" + std::to_string(losses); };
+    const bool hasMatch = v.nextOpponent >= 0 && v.nextOpponent < nClubs;
+    const bool backupStarts = v.startsBackup && v.backup[0] != '\0';
+    team(me, backupStarts ? v.backupKey : v.captainKey, true, record(v.wins, v.losses),
+         backupStarts ? v.backupShiny : v.captainShiny);
+    auto button = [&](int row, const std::string& label, uint32_t rgb, bool on, bool can) {
+      const float y0 = 600 + row * 135.0f;
+      P.box(W / 2 - 300, y0, W / 2 + 300, y0 + 115, 44, can ? rgb : 0x30384E);
+      if (on) P.ring(W / 2 - 308, y0 - 8, W / 2 + 308, y0 + 123, 50, 9, 0xFFD23F);
+      P.text(label, W / 2, y0 + 58, 68, 560, can ? 0xFFFFFF : 0x8A94AA, 4.0f);
+    };
+    if (hasMatch) {
+      const int o = v.nextOpponent;
+      team(o, v.clubCaptainKey[o], false, v.phase == PORT_FR_PHASE_PLAYOFFS ? std::string("") : record(v.oppWins, v.oppLosses),
+           false);
+      P.text("VS", W / 2, 320, 200, 400, 0xFFF7B0, 8.0f);
+      std::string where = v.nextHome ? "HOME" : "AWAY";
+      if (v.phase == PORT_FR_PHASE_PLAYOFFS)
+        where += "  -  GAME " + std::to_string(v.myGameNo) + "  -  " + std::to_string(v.mySeriesMe) + "-" +
+                 std::to_string(v.mySeriesThem);
+      P.text(where, W / 2, 450, 40, 560, 0xC8D2E6, 2.0f);
+      if (v.nextNemesis >= 0) {
+        P.box(W / 2 - 170, 490, W / 2 + 170, 560, 34, 0x6E1414);
+        P.ring(W / 2 - 170, 490, W / 2 + 170, 560, 34, 4, 0xFF5A4A);
+        P.text("NEMESIS!", W / 2, 525, 48, 320, 0xFFFFFF);
+      }
+      if (lg.active && lg.vsMember >= 0 && lg.vsMember < lg.memberCount) {
+        const std::string who = fr_upper(lg.members[lg.vsMember].name);
+        const bool can = lg.meReady || (s.canPlay && lg.synced);
+        button(0, lg.meReady ? "WAITING..." : "READY", 0x2EA043, s.cursor == 0 && can, can);
+        P.text((lg.themReady ? "VS " + who + " - THEY'RE READY!" : "VS " + who + (lg.members[lg.vsMember].online ? " (ONLINE)" : " (OFFLINE)")),
+               W / 2, 800, 40, 700, 0xFFD23F, 2.0f);
+        hints.push_back({"A", lg.meReady ? "NOT READY" : "READY", 0x2EA043});
+      } else {
+        button(0, s.canPlay ? "PLAY" : "MAIN MENU", 0x2EA043, s.cursor == 0 && s.canPlay, s.canPlay);
+        button(1, "SIM", 0x3A4A70, s.cursor == 1, true);
+        if (v.phase == PORT_FR_PHASE_REGULAR && !lg.active) button(2, "SIM SEASON", 0x3A4A70, s.cursor == 2, true);
+        hints.push_back({"A", "GO", 0x2EA043});
+      }
+      if (v.backup[0] != '\0') hints.push_back({"X", "SWAP CAPTAIN", 0x2F6FD0});
+    } else {
+      // no game of yours today: the day's status big, play it out or watch one of today's games
+      std::string st = v.phase == PORT_FR_PHASE_DONE ? std::string("CHAMPIONS!")
+                                                      : (v.status[0] != '\0' ? fr_upper(v.status) : std::string("NO GAME TODAY"));
+      if (v.phase == PORT_FR_PHASE_DONE && v.champion >= 0 && v.champion < nClubs) {
+        P.glow(W - 820, 230, W - 20, 900, 0xFFD23F, 0.6f);
+        P.image(logo(v.champion), W - 640, 240, W - 200, 680, false);
+        P.text(place(v.champion), W - 420, 760, 80, 760, 0xFFFFFF, 5.0f);
+        P.text("CHAMPIONS!", W - 420, 860, 70, 760, 0xFFD23F, 4.0f);
+        button(0, "SEASON " + std::to_string(v.season + 1), 0x2EA043, true, true);
+        hints.push_back({"A", "NEXT SEASON", 0x2EA043});
+      } else {
+        P.text(st, W / 2, 360, 110, 700, 0xFFF7B0, 6.0f);
+        if (v.canSimDay) {
+          const float y0 = 470;
+          P.box(W / 2 - 300, y0, W / 2 + 300, y0 + 115, 44, 0x2EA043);
+          if (s.cursor == 0) P.ring(W / 2 - 308, y0 - 8, W / 2 + 308, y0 + 123, 50, 9, 0xFFD23F);
+          P.text("PLAY THE DAY", W / 2, y0 + 58, 64, 560, 0xFFFFFF, 4.0f);
+          // today's games to watch, logo v logo, under it on the right
+          for (int i = 0; i < s.today.count && i < 6; ++i) {
+            const float y = 610 + i * 92.0f, x0 = W - 820, x1 = W - 60;
+            const bool on = s.cursor == i + 1;
+            P.box(x0, y, x1, y + 82, 30, on ? 0x2B4690 : 0x151C36);
+            if (on) P.ring(x0 - 4, y - 4, x1 + 4, y + 86, 34, 6, 0xFFD23F);
+            P.image(logo(s.today.home[i]), x0 + 14, y + 4, x0 + 88, y + 78, false);
+            P.image(logo(s.today.away[i]), x1 - 88, y + 4, x1 - 14, y + 78, false);
+            P.text(place(s.today.home[i]) + "  V  " + place(s.today.away[i]), 0.5f * (x0 + x1), y + 41, 34, x1 - x0 - 220,
+                   0xFFFFFF, 2.0f);
+          }
+          if (s.today.count > 0) P.text("WATCH ONE", W - 440, 575, 36, 400, 0xC8D2E6, 2.0f);
+          hints.push_back({"A", "GO", 0x2EA043});
+          hints.push_back({"X", "SKIP AHEAD", 0x2F6FD0});
+        }
+      }
+    }
+    if (s.coopGuest) P.text("YOUR FRIEND RUNS THIS CAREER: THEY START THE MATCHES", W / 2, 1100, 36, 1600, 0xFFD23F, 2.0f);
+    else if (v.headline[0] != '\0') P.text(fr_upper(v.headline), W / 2, 1110, 34, 1700, 0xB8C2D6, 2.0f);
+  } else if (s.page == 1) {
+    // TABLE: both conferences, logos, the record big
+    for (int conf = 0; conf < 2; ++conf) {
+      const float x0 = 60 + conf * 1030, x1 = x0 + 980;
+      const int first = v.conference[conf][0].club;
+      P.text((first >= 0 && first < nClubs ? fr_upper(s.clubs[first].conf) : std::string(conf == 0 ? "CROWN" : "STAR")),
+             0.5f * (x0 + x1), 215, 48, 900, 0xFFD23F, 3.0f);
+      for (int i = 0; i < 16; ++i) {
+        const PortFranchiseRow& r = v.conference[conf][i];
+        if (r.club < 0 || r.club >= nClubs) continue;
+        const float y = 250 + i * 58.0f;
+        bool seeded = false;
+        for (int k = 0; k < 7; ++k)
+          if (v.seeds[conf][k] == r.club) seeded = true;
+        P.box(x0, y, x1, y + 52, 14, r.mine ? 0x3B5AA8 : (seeded ? 0x22305A : 0x121A30));
+        if (seeded) P.box(x0, y + 6, x0 + 8, y + 46, 3, 0xFFD23F);
+        P.text(std::to_string(i + 1), x0 + 42, y + 26, 32, 60, 0xB8C2D6);
+        P.image(logo(r.club), x0 + 76, y + 1, x0 + 126, y + 51, false);
+        P.left(place(r.club), x0 + 140, y + 26, 34, 520, r.mine ? 0xFFF7B0 : 0xFFFFFF, 2.0f);
+        const int gd = r.goalsFor - r.goalsAgainst;
+        P.right((gd > 0 ? "+" : "") + std::to_string(gd), x1 - 190, y + 26, 30, 120, 0x9AA6BE);
+        P.right(std::to_string(r.wins) + "-" + std::to_string(r.losses), x1 - 20, y + 26, 40, 160, 0xFFFFFF, 2.0f);
+      }
+    }
+    P.text("GOLD EDGE = IN THE PLAYOFFS", W / 2, 1200 - 20, 30, 900, 0xB8C2D6);
+  } else if (s.page == 2) {
+    // r130 (Lance: "fix that playoff tree. it should mimic a NCAA college basketball bracket"): a bracket. Each
+    // conference's half runs in toward the middle - Kickoff (the 1 seed's bye on top), Semis, Conference Final - each
+    // matchup a box of two team rows (seed, logo, place, series wins; the loser dimmed), lines joining each pair to the
+    // box it feeds; the Super Strike Series in the middle under the round's logo (the champion once crowned). In the
+    // regular season: the bracket if the season ended today (seeds 2 v 7, 3 v 6, 4 v 5).
+    const bool projected = v.phase == PORT_FR_PHASE_REGULAR;
+    struct Match {
+      int hi = -1, lo = -1, hiSeed = 0, loSeed = 0, winsHi = -1, winsLo = -1, winner = -1;
+    };
+    constexpr float kBw = 270.0f, kGap = 28.0f, kLine = 60.0f, kMargin = 24.0f;
+    constexpr uint32_t kWire = 0x4A5A82, kWon = 0xFFD23F;
+    const float centreY = 675.0f;
+    static const float kKickY[4] = {330.0f, 560.0f, 790.0f, 1020.0f};  // the bye, then the three Kickoff matchups
+    const float semiY[2] = {0.5f * (kKickY[0] + kKickY[1]), 0.5f * (kKickY[2] + kKickY[3])};
+    auto colX = [&](int conf, int col) {  // a box's left edge
+      return conf == 0 ? kMargin + col * (kBw + kGap) : W - kMargin - kBw - col * (kBw + kGap);
+    };
+    auto seed_of = [&](int conf, int club) {
+      for (int k = 0; k < 7; ++k)
+        if (club >= 0 && v.seeds[conf][k] == club) return k + 1;
+      return 0;
+    };
+    auto from = [&](const PortFranchiseSeries& sr) {
+      Match m;
+      m.hi = sr.hi;
+      m.lo = sr.lo;
+      m.hiSeed = sr.hiSeed;
+      m.loSeed = sr.loSeed;
+      m.winsHi = sr.winsHi;
+      m.winsLo = sr.winsLo;
+      m.winner = sr.winner;
+      return m;
+    };
+    auto has = [](const Match& m, int club) { return club >= 0 && (m.hi == club || m.lo == club); };
+    // one team's row: seed, logo, place, wins (or a word: BYE / TBD)
+    auto row = [&](int club, int seed, int wins, bool lost, float x0, float y0, const char* word) {
+      const float yc = y0 + kLine * 0.5f;
+      if (club < 0 || club >= nClubs) {
+        P.left("TBD", x0 + 70, yc, 28, kBw - 90, 0x6A7896);
+        return;
+      }
+      const uint32_t ink = lost ? 0x7A849A : 0xFFFFFF;
+      if (seed > 0) P.text(std::to_string(seed), x0 + 22, yc, 28, 34, lost ? 0x7A849A : 0xFFD23F, 2.0f);
+      P.image(logo(club), x0 + 42, y0 + 5, x0 + 92, y0 + kLine - 5, false, lost ? 0.35f : 1.0f);
+      P.left(place(club), x0 + 100, yc, 30, kBw - (word != nullptr ? 168 : 150), ink, 2.0f);
+      if (word != nullptr)
+        P.right(word, x0 + kBw - 14, yc, 26, 70, 0xB8C2D6, 1.5f);
+      else if (wins >= 0)
+        P.right(std::to_string(wins), x0 + kBw - 16, yc, 40, 44, lost ? 0x7A849A : 0xFFFFFF, 3.0f);
+    };
+    // a matchup's box, centred on yc
+    auto box = [&](const Match& m, float x0, float yc) {
+      const bool mineM = has(m, me);
+      const float y0 = yc - kLine, y1 = yc + kLine;
+      P.box(x0, y0, x0 + kBw, y1, 18, mineM ? 0x3B5AA8 : 0x151C36);
+      if (mineM) P.ring(x0 - 4, y0 - 4, x0 + kBw + 4, y1 + 4, 22, 5, 0xFFD23F);
+      P.box(x0 + 12, yc - 1.5f, x0 + kBw - 12, yc + 1.5f, 0, 0x2C3858);
+      row(m.hi, m.hiSeed, m.winsHi, m.winner >= 0 && m.winner != m.hi, x0, y0, nullptr);
+      row(m.lo, m.loSeed, m.winsLo, m.winner >= 0 && m.winner != m.lo, x0, yc, nullptr);
+    };
+    // the lines from two feeding boxes (centres ya, yb in column col) to the box they feed (centre yt, column col + 1)
+    auto wires = [&](int conf, int col, float ya, bool aWon, float yb, bool bWon, float yt) {
+      const float edge = conf == 0 ? colX(conf, col) + kBw : colX(conf, col);
+      const float next = conf == 0 ? colX(conf, col + 1) : colX(conf, col + 1) + kBw;
+      const float xm = 0.5f * (edge + next), xa = std::min(edge, xm), xb = std::max(edge, xm);
+      P.box(xa, ya - 2, xb, ya + 2, 0, aWon ? kWon : kWire);
+      P.box(xa, yb - 2, xb, yb + 2, 0, bWon ? kWon : kWire);
+      P.box(xm - 2, std::min(ya, yb) - 2, xm + 2, std::max(ya, yb) + 2, 0, kWire);
+      P.box(std::min(xm, next), yt - 2, std::max(xm, next), yt + 2, 0, (aWon || bWon) ? kWon : kWire);
+    };
+    Match finalM;
+    bool finalSet = false;
+    int confChamp[2] = {-1, -1};
+    float confFinalEdge[2] = {0, 0};
+    static const char* const kConf[2] = {"CROWN CONFERENCE", "STAR CONFERENCE"};
+    for (int conf = 0; conf < 2; ++conf) {
+      std::vector<Match> kick, semi, cfin;
+      if (projected) {
+        for (int k = 0; k < 3; ++k) {
+          Match m;
+          m.hiSeed = 2 + k;
+          m.loSeed = 7 - k;
+          m.hi = v.seeds[conf][m.hiSeed - 1];
+          m.lo = v.seeds[conf][m.loSeed - 1];
+          kick.push_back(m);
+        }
+      } else {
+        for (int i = 0; i < v.seriesCount; ++i) {
+          const PortFranchiseSeries& sr = v.series[i];
+          if (sr.round == 4 && !finalSet) {
+            finalM = from(sr);
+            finalSet = true;
+          }
+          if ((sr.conf == 1 ? 1 : 0) != conf || sr.round < 1 || sr.round > 3) continue;
+          (sr.round == 1 ? kick : (sr.round == 2 ? semi : cfin)).push_back(from(sr));
+        }
+      }
+      const int bye = v.seeds[conf][0];
+      // the semis: the one with the 1 seed on top; before they're drawn, the bye v the 4 / 5 winner and the other two
+      Match semiM[2];
+      for (const Match& m : semi) semiM[has(m, bye) ? 0 : 1] = m;
+      // the Kickoff boxes in the order they feed: the one into the 1 seed's semi first, then the other two by seed
+      std::sort(kick.begin(), kick.end(), [](const Match& a, const Match& b) { return a.hiSeed < b.hiSeed; });
+      Match kickM[3];
+      bool kickSet[3] = {false, false, false};
+      int intoA = -1;
+      for (int k = 0; k < static_cast<int>(kick.size()); ++k)
+        if (kick[k].winner >= 0 && has(semiM[0], kick[k].winner)) intoA = k;
+      if (intoA < 0)
+        for (int k = 0; k < static_cast<int>(kick.size()); ++k)
+          if (kick[k].hiSeed == 4) intoA = k;
+      int slot = 1;
+      for (int k = 0; k < static_cast<int>(kick.size()) && k < 3; ++k) {
+        const int to = k == intoA ? 0 : slot++;
+        if (to < 3) {
+          kickM[to] = kick[k];
+          kickSet[to] = true;
+        }
+      }
+      // a semi not drawn yet: who's through so far
+      if (semiM[0].hi < 0 && semiM[0].lo < 0) {
+        semiM[0].hi = bye;
+        semiM[0].hiSeed = 1;
+        if (kickSet[0] && kickM[0].winner >= 0) {
+          semiM[0].lo = kickM[0].winner;
+          semiM[0].loSeed = seed_of(conf, kickM[0].winner);
+        }
+      }
+      if (semiM[1].hi < 0 && semiM[1].lo < 0) {
+        int a = kickSet[1] ? kickM[1].winner : -1, b = kickSet[2] ? kickM[2].winner : -1;
+        if (a >= 0 && b >= 0 && seed_of(conf, b) < seed_of(conf, a)) std::swap(a, b);
+        semiM[1].hi = a >= 0 ? a : b;
+        semiM[1].lo = a >= 0 ? b : -1;
+        semiM[1].hiSeed = seed_of(conf, semiM[1].hi);
+        semiM[1].loSeed = seed_of(conf, semiM[1].lo);
+      }
+      Match cf;
+      if (!cfin.empty()) {
+        cf = cfin[0];
+      } else {
+        int a = semiM[0].winner, b = semiM[1].winner;
+        if (a >= 0 && b >= 0 && seed_of(conf, b) < seed_of(conf, a)) std::swap(a, b);
+        cf.hi = a >= 0 ? a : b;
+        cf.lo = a >= 0 ? b : -1;
+        cf.hiSeed = seed_of(conf, cf.hi);
+        cf.loSeed = seed_of(conf, cf.lo);
+      }
+      confChamp[conf] = cf.winner;
+      // headers
+      static const char* const kHead[3] = {"KICKOFF", "SEMIS", "CONF FINAL"};
+      for (int col = 0; col < 3; ++col) P.text(kHead[col], colX(conf, col) + kBw / 2, 226, 32, kBw, 0xFFD23F, 2.0f);
+      P.text(kConf[conf], conf == 0 ? kMargin + (3 * kBw + 2 * kGap) / 2 : W - kMargin - (3 * kBw + 2 * kGap) / 2, 1150, 34,
+             3 * kBw, 0xB8C2D6, 2.0f);
+      // Kickoff: the 1 seed's bye on top, then the three
+      const float x0 = colX(conf, 0);
+      P.box(x0, kKickY[0] - kLine / 2, x0 + kBw, kKickY[0] + kLine / 2, 18, bye == me ? 0x3B5AA8 : 0x151C36);
+      row(bye, 1, -1, false, x0, kKickY[0] - kLine / 2, "BYE");
+      for (int k = 0; k < 3; ++k)
+        if (kickSet[k]) box(kickM[k], x0, kKickY[k + 1]);
+      // the wires and the later rounds
+      wires(conf, 0, kKickY[0], !semi.empty(), kKickY[1], kickSet[0] && kickM[0].winner >= 0, semiY[0]);
+      wires(conf, 0, kKickY[2], kickSet[1] && kickM[1].winner >= 0, kKickY[3], kickSet[2] && kickM[2].winner >= 0, semiY[1]);
+      box(semiM[0], colX(conf, 1), semiY[0]);
+      box(semiM[1], colX(conf, 1), semiY[1]);
+      wires(conf, 1, semiY[0], semiM[0].winner >= 0, semiY[1], semiM[1].winner >= 0, centreY);
+      box(cf, colX(conf, 2), centreY);
+      confFinalEdge[conf] = conf == 0 ? colX(conf, 2) + kBw : colX(conf, 2);
+    }
+    // the middle: the Super Strike Series
+    const float fx0 = W / 2 - 150, fx1 = W / 2 + 150;
+    if (!finalSet) {
+      finalM.hi = confChamp[0];
+      finalM.lo = confChamp[1];
+      finalM.hiSeed = seed_of(0, confChamp[0]);
+      finalM.loSeed = seed_of(1, confChamp[1]);
+    }
+    P.box(confFinalEdge[0], centreY - 2, fx0, centreY + 2, 0, confChamp[0] >= 0 ? kWon : kWire);
+    P.box(fx1, centreY - 2, confFinalEdge[1], centreY + 2, 0, confChamp[1] >= 0 ? kWon : kWire);
+    P.text(projected ? "IF THE SEASON ENDED TODAY" : "SUPER STRIKE SERIES", W / 2, 226, 32, 300, 0xFFD23F, 2.0f);
+    {
+      // (the final's box is 300 wide: its rows use the same layout, a little wider)
+      const bool mineM = has(finalM, me);
+      P.box(fx0, centreY - kLine, fx1, centreY + kLine, 18, mineM ? 0x3B5AA8 : 0x151C36);
+      P.ring(fx0 - 5, centreY - kLine - 5, fx1 + 5, centreY + kLine + 5, 23, 5, 0xFFD23F);
+      P.box(fx0 + 12, centreY - 1.5f, fx1 - 12, centreY + 1.5f, 0, 0x2C3858);
+      row(finalM.hi, 0, finalM.winsHi, finalM.winner >= 0 && finalM.winner != finalM.hi, fx0 + 15, centreY - kLine, nullptr);
+      row(finalM.lo, 0, finalM.winsLo, finalM.winner >= 0 && finalM.winner != finalM.lo, fx0 + 15, centreY, nullptr);
+    }
+    if (v.champion >= 0 && v.champion < nClubs) {
+      P.glow(W / 2 - 170, 270, W / 2 + 170, 590, 0xFFD23F, 0.5f);
+      P.image(logo(v.champion), W / 2 - 140, 290, W / 2 + 140, 570, false);
+      P.text("CHAMPIONS", W / 2, 820, 56, 320, 0xFFD23F, 4.0f);
+    } else if (!projected && v.roundLogo[0] != '\0') {
+      P.image(guest_portrait(v.roundLogo), W / 2 - 140, 290, W / 2 + 140, 570, false, 0.9f);
+    } else {
+      P.image(guest_portrait("franchise_league"), W / 2 - 140, 290, W / 2 + 140, 570, false, 0.9f);
+    }
+  } else if (s.page == 3) {
+    // RESULTS: last week's games, logo v logo, the score big
+    P.text(v.lastWeek > PORT_FR_WEEKS ? "LAST GAME DAY" : (v.lastWeek > 0 ? "WEEK " + std::to_string(v.lastWeek) : "NO GAMES YET"),
+           W / 2, 215, 48, 900, 0xFFD23F, 3.0f);
+    const int n = std::min(16, v.playedCount);
+    for (int i = 0; i < n; ++i) {
+      const PortFranchiseView::Played& g2 = v.played[i];
+      const int c = i % 4, r = i / 4;
+      const float x0 = 60 + c * 515, y0 = 255 + r * 230;
+      P.box(x0, y0, x0 + 495, y0 + 215, 26, g2.mine ? 0x3B5AA8 : 0x151C36);
+      if (g2.mine) P.ring(x0 - 4, y0 - 4, x0 + 499, y0 + 219, 30, 6, 0xFFD23F);
+      const bool homeWon = g2.homeGoals > g2.awayGoals;
+      P.image(logo(g2.home), x0 + 12, y0 + 22, x0 + 172, y0 + 182, false, homeWon ? 1.0f : 0.45f);
+      P.image(logo(g2.away), x0 + 323, y0 + 22, x0 + 483, y0 + 182, false, homeWon ? 0.45f : 1.0f);
+      P.text(std::to_string(g2.homeGoals) + "-" + std::to_string(g2.awayGoals), x0 + 247, y0 + 100, 84, 150, 0xFFFFFF, 4.0f);
+      if (g2.overtime) P.text("OT", x0 + 247, y0 + 180, 32, 100, 0xFFD23F, 2.0f);
+    }
+  } else if (s.page == 4) {
+    // STARS: the golden boot's top 3 big, the rest small, who's hot
+    P.text("GOLDEN BOOT", W / 2, 215, 48, 900, 0xFFD23F, 3.0f);
+    for (int i = 0; i < 3 && i < v.leaderCount; ++i) {
+      const PortFranchiseView::Leader& l = v.leaders[i];
+      const float cx = W / 2 + (i == 0 ? 0.0f : (i == 1 ? -560.0f : 560.0f)), big = i == 0 ? 1.0f : 0.82f;
+      const float y0 = 250 + (i == 0 ? 0.0f : 60.0f);
+      P.glow(cx - 300 * big, y0, cx + 300 * big, y0 + 640 * big, i == 0 ? 0xFFD23F : 0x6A9AE0, 0.45f);
+      figs.person(P, l.key, false, cx - 260 * big, y0, cx + 260 * big, y0 + 540 * big);  // r131: in 3D
+      P.image(logo(l.club), cx + 150 * big, y0, cx + 260 * big, y0 + 110 * big, false);
+      P.text("#" + std::to_string(i + 1), cx - 200 * big, y0 + 40, 70 * big, 140, i == 0 ? 0xFFD23F : 0xC8D2E6, 4.0f);
+      P.text(fr_upper(l.name), cx, y0 + 580 * big, 56 * big, 520, 0xFFFFFF, 4.0f);
+      P.text(std::to_string(l.goals) + " GOALS", cx, y0 + 650 * big, 50 * big, 400, 0xFFD23F, 3.0f);
+    }
+    if (v.leaderCount == 0) P.text("NO GOALS YET", W / 2, 600, 90, 1200, 0xC8D2E6, 4.0f);
+    // the rest of the top 10, small
+    for (int i = 3; i < v.leaderCount && i < 10; ++i) {
+      const PortFranchiseView::Leader& l = v.leaders[i];
+      const float x0 = 110 + (i - 3) * 280.0f, y0 = 990;
+      P.box(x0, y0, x0 + 260, y0 + 190, 20, l.club == me ? 0x3B5AA8 : 0x151C36);
+      figs.person(P, l.key, false, x0 + 10, y0 + 6, x0 + 130, y0 + 150);  // r131: in 3D
+      P.text(std::to_string(l.goals), x0 + 196, y0 + 70, 64, 110, 0xFFD23F, 3.0f);
+      P.text(fr_upper(l.name), x0 + 130, y0 + 168, 28, 240, 0xFFFFFF, 2.0f);
+    }
+  } else if (s.page == 5) {
+    // PAPER: today's front page, small, and A to read it in front of you. r131: MAG, this week's STRIKERS
+    // ILLUSTRATED cover small
+    {
+      std::lock_guard<std::mutex> plock(g_photoMutex);
+      paperPhoto = g_photo;
+      paperPhotoW = g_photoW;
+      paperPhotoH = g_photoH;
+    }
+    // (drawn on its own and then placed: the cover's lights and its star run past its edges)
+    const int coverW = static_cast<int>(kMagW * 0.66f), coverH = static_cast<int>(kMagH * 0.66f);
+    Pieces F;
+    F.k = 0.66f;
+    mag_page(F, s, 0, paperPhoto, paperPhotoW, paperPhotoH);
+    magCover.assign(static_cast<size_t>(coverW) * coverH * 4, 0);
+    xrtext::board(magCover.data(), coverW, coverH, F.v);
+    const float coverX = W / 2 - 0.5f * coverW - 300;
+    P.image(magCover.data(), coverW, coverH, coverX, 190, coverX + coverW, 190.0f + coverH, false);
+    P.box(W / 2 + 330, 560, W / 2 + 830, 700, 50, 0x2EA043);
+    P.ring(W / 2 + 322, 552, W / 2 + 838, 708, 56, 9, 0xFFD23F);
+    P.text("READ IT", W / 2 + 580, 630, 80, 460, 0xFFFFFF, 4.0f);
+    P.text("GRAB IT. FLIP IT.", W / 2 + 580, 760, 38, 520, 0xC8D2E6, 2.0f);
+    hints.push_back({"A", "READ", 0x2EA043});
+  } else if (s.page == 6) {
+    // HISTORY: this season's awards (with who won them) and the hall of fame
+    P.text(v.phase == PORT_FR_PHASE_DONE ? "AWARDS NIGHT" : "LAST AWARDS NIGHT", 560, 215, 46, 900, 0xFFD23F, 3.0f);
+    for (int i = 0; i < v.awardCount && i < 8; ++i) {
+      const float y = 250 + i * 116.0f;
+      P.box(60, y, 1060, y + 104, 20, 0x151C36);
+      figs.person(P, v.awardKeys[i], false, 70, y + 4, 166, y + 100);  // r131: a winner in 3D (a club's logo stays)
+      P.left(fr_upper(v.awards[i]), 186, y + 52, 34, 860, 0xFFFFFF, 2.0f);
+    }
+    if (v.awardCount == 0) P.text("AFTER THE SUPER STRIKE SERIES", 560, 400, 40, 900, 0xC8D2E6, 2.0f);
+    P.text("HALL OF FAME", 1620, 215, 46, 900, 0xFFD23F, 3.0f);
+    for (int i = 0; i < v.historyCount && i < 16; ++i)
+      P.left(fr_upper(v.history[i]), 1130, 262 + i * 58.0f, 32, 960, 0xE6ECF5, 2.0f);
+    if (v.historyCount == 0) P.text("NO SEASONS FINISHED YET", 1620, 400, 40, 900, 0xC8D2E6, 2.0f);
+  } else if (s.page == 7) {
+    // RIVALS: wanted posters
+    if (v.nemCount == 0) {
+      P.text("NOBODY HAS BEEF WITH YOU... YET", W / 2, 560, 90, 1800, 0xFFF7B0, 5.0f);
+      P.text("BEAT THEM, EMBARRASS THEM, KNOCK THEM OUT. THEY'LL REMEMBER.", W / 2, 700, 40, 1800, 0xC8D2E6, 2.0f);
+    }
+    const int n = std::min(4, v.nemCount);
+    for (int i = 0; i < n; ++i) {
+      const PortFranchiseView::Nem& nm = v.nems[i];
+      const float pw2 = 470, x0 = W / 2 - 0.5f * (n * pw2 + (n - 1) * 30) + i * (pw2 + 30), y0 = 220;
+      P.box(x0, y0, x0 + pw2, y0 + 960, 10, nm.active ? 0xE9D2A0 : 0x9A9080, 1.0f, nm.active ? 0xD8BC84 : 0x7A7262);
+      P.ring(x0, y0, x0 + pw2, y0 + 960, 10, 5, 0x5A3A1A);
+      if (i == v.nextNemesis) P.ring(x0 - 8, y0 - 8, x0 + pw2 + 8, y0 + 968, 16, 8, 0xFF5A4A);
+      P.text("WANTED", x0 + pw2 / 2, y0 + 80, 96, pw2 - 40, 0x5A1A10);
+      P.box(x0 + 40, y0 + 140, x0 + pw2 - 40, y0 + 620, 6, 0xF4E6C4);
+      figs.person(P, nm.key, false, x0 + 50, y0 + 150, x0 + pw2 - 50, y0 + 610);  // r131: in 3D
+      if (nm.club >= 0) P.image(logo(nm.club), x0 + pw2 - 150, y0 + 150, x0 + pw2 - 50, y0 + 250, false);
+      P.text(fr_upper(nm.name), x0 + pw2 / 2, y0 + 680, 52, pw2 - 40, 0x2A1A0E);
+      P.text(fr_upper(nm.title), x0 + pw2 / 2, y0 + 740, 34, pw2 - 40, kPaperRed);
+      P.box(x0 + 50, y0 + 790, x0 + pw2 - 50, y0 + 826, 18, 0x5A3A1A, 0.35f);
+      P.box(x0 + 50, y0 + 790, x0 + 50 + (pw2 - 100) * std::max(0.05f, std::min(1.0f, nm.heat / 100.0f)), y0 + 826, 18, kPaperRed);
+      P.text("HEAT", x0 + pw2 / 2, y0 + 808, 24, 200, 0xFFFFFF);
+      P.text(std::to_string(nm.beatYou) + " - " + std::to_string(nm.lostToYou), x0 + pw2 / 2, y0 + 890, 64, pw2 - 60, 0x2A1A0E);
+      P.text(i == v.nextNemesis ? "YOUR NEXT GAME!" : (nm.teammate ? "YOUR OWN TEAMMATE" : "THEM - YOU"), x0 + pw2 / 2,
+             y0 + 940, 28, pw2 - 60, i == v.nextNemesis ? kPaperRed : 0x5A3A1A);
+    }
+  } else if (s.page == 8) {
+    // EVO: everyone in the league with a next form, as portraits: its level, its next form at what level
+    const int cols = 6, rows = 3;
+    for (int i = 0; i < cols * rows && i < static_cast<int>(s.evoWatch.size()); ++i) {
+      const PortFranchiseEvoRow& r = s.evoWatch[i];
+      const int c = i % cols, rw = i / cols;
+      const float x0 = 60 + c * 343.0f, y0 = 200 + rw * 330.0f, x1 = x0 + 325, y1 = y0 + 315;
+      P.box(x0, y0, x1, y1, 24, r.mine ? 0x3B5AA8 : 0x151C36);
+      if (r.ready) P.ring(x0 - 4, y0 - 4, x1 + 4, y1 + 4, 28, 7, 0xFFD23F);
+      P.image(logo(r.club), x0 + 8, y0 + 8, x0 + 72, y0 + 72, false);
+      figs.person(P, r.key, r.shiny, x0 + 20, y0 + 20, x1 - 110, y1 - 70);  // r131: in 3D (its next form stays a shadow)
+      if (r.evoLevel > 0)
+        P.image(guest_portrait(next_form_key(r.key)), x1 - 120, y0 + 100, x1 - 10, y1 - 70, true, 1.0f, 0x0A0E1A);
+      P.text("LV " + std::to_string(r.level), x0 + 90, y1 - 36, 40, 150, 0xFFFFFF, 3.0f);
+      P.text(r.ready ? (r.costume ? "SUIT UP!" : "EVOLVE!") : (r.evoLevel > 0 ? "> LV " + std::to_string(r.evoLevel) : "TOP FORM"),
+             x1 - 80, y1 - 36, 30, 140, r.ready ? 0xFFD23F : 0xB8C2D6, 2.0f);
+      if (r.shiny) P.text("SHINY", x1 - 60, y0 + 40, 28, 110, 0xFFD23F, 2.0f);
+    }
+    if (s.evoWatch.empty()) P.text("NO POKEMON OR HEROES IN THIS LEAGUE", W / 2, 600, 70, 1800, 0xC8D2E6, 3.0f);
+    if (!s.evoReadyName.empty())
+      hints.push_back({"A", (s.evoReadyCostume ? "SUIT UP " : "EVOLVE ") + fr_upper(s.evoReadyName), 0x2EA043});
+    if (!lg.active) hints.push_back({"X", "YOUR SIDEKICKS (ANYBODY)", 0x2E6FD0});  // r130: pick your sidekick members
+  } else if (s.page == 9) {
+    // LEVEL: four big cards
+    static const char* const kLevels[4] = {"ROOKIE", "PRO", "SUPERSTAR", "LEGEND"};
+    static const char* const kOne[4] = {"THE LEAGUE LETS YOU SHINE", "A REAL GAME", "THE CPU PLAYS HARD",
+                                        "THEY HUNT YOU ALL GAME"};
+    const int now = std::max(1, std::min(4, v.difficulty));
+    for (int i = 0; i < 4; ++i) {
+      const float x0 = 80 + i * 510.0f, y0 = 260, x1 = x0 + 470, y1 = 1080;
+      const bool on = i + 1 == now, cur = s.cursor == i;
+      P.box(x0, y0, x1, y1, 30, on ? 0x3B5AA8 : 0x151C36);
+      if (cur) P.ring(x0 - 8, y0 - 8, x1 + 8, y1 + 8, 36, 9, 0xFFD23F);
+      for (int k = 0; k <= i; ++k) {
+        const float sx = 0.5f * (x0 + x1) + (k - 0.5f * i) * 90.0f;
+        P.text("*", sx, y0 + 220, 150, 120, on ? 0xFFD23F : 0x6A748A, 4.0f);
+      }
+      P.text(kLevels[i], 0.5f * (x0 + x1), y0 + 470, 76, x1 - x0 - 40, 0xFFFFFF, 4.0f);
+      P.text(kOne[i], 0.5f * (x0 + x1), y0 + 570, 34, x1 - x0 - 40, 0xC8D2E6, 2.0f);
+      if (on) P.text("ON", 0.5f * (x0 + x1), y0 + 700, 70, 200, 0xFFD23F, 4.0f);
+    }
+    if (lg.active && !lg.owner) P.text("ONLINE LEAGUE: ITS OWNER SETS IT", W / 2, 1140, 36, 1200, 0xFFD23F, 2.0f);
+    hints.push_back({"A", "SET IT", 0x2EA043});
+  } else if (s.page == 10 && lg.active) {
+    // LEAGUE: its people, their clubs, who's in
+    P.text(std::string("LEAGUE ") + lg.code, W / 2, 220, 60, 900, 0xFFD23F, 3.0f);
+    for (int i = 0; i < lg.memberCount; ++i) {
+      const PortFranchiseLeagueView::Member& m = lg.members[i];
+      const int c = i % 2, r = i / 2;
+      const float x0 = 120 + c * 980, y0 = 280 + r * 190.0f;
+      P.box(x0, y0, x0 + 940, y0 + 170, 26, m.me ? 0x3B5AA8 : 0x151C36);
+      P.image(logo(m.club), x0 + 10, y0 + 10, x0 + 160, y0 + 160, false, m.online || m.me ? 1.0f : 0.45f);
+      P.left(fr_upper(m.name) + (m.owner ? " (OWNER)" : ""), x0 + 180, y0 + 60, 50, 560, 0xFFFFFF, 3.0f);
+      P.left(place(m.club), x0 + 180, y0 + 122, 34, 560, 0xB8C2D6, 2.0f);
+      P.right(!m.online ? "OFFLINE" : (m.ready ? "READY" : "ONLINE"), x0 + 920, y0 + 60, 40, 260,
+              !m.online ? 0x8A94AA : 0x6ED36E, 2.0f);
+      P.right(m.done ? "PLAYED" : "TO PLAY", x0 + 920, y0 + 122, 34, 260, m.done ? 0xFFD23F : 0xB8C2D6, 2.0f);
+    }
+    if (lg.owner && lg.canSimRest) hints.push_back({"A", "SIM THE REST", 0x2EA043});
+  }
+  hints.push_back({"B", "CAREERS", 0xC0392B});
+  if (!s.coopGuest) hints.push_back({"Y", "TRADES", 0xC9A227});
+  hub_hints(P, W, 1245, hints);
+  xrtext::board(px, w, h, P.v);
+  fr_figs_publish(s.serial, std::move(figs.asks), W, H);  // r131
+  return true;
+}
+
+// r116 (Lance: "for the franchise screens do that all over"): the careers, a new career's club, trades and the
+// online league's screens in the hub's look (big pictures, buttons, a few words). Modes 0, 1, 5, 6, 7.
+void fr_frame(Pieces& P, float W, float H, const std::string& title, const std::string& sub, const GuestPortrait* logo) {
+  P.box(6, 6, W - 6, H - 6, 30, 0xFFD23F);
+  P.box(16, 16, W - 16, H - 16, 24, 0x1E2A4E, 0.97f, 0x070A14);
+  if (logo != nullptr) P.image(*logo, 40, 24, 180, 164, false);
+  P.text(title, W / 2, 80, 86, W - 520, 0xFFF7B0, 5.0f);
+  if (!sub.empty()) P.text(sub, W / 2, 152, 38, W - 420, 0xC8D2E6, 2.0f);
+}
+void fr_button(Pieces& P, float cx, float y0, float wide, const std::string& label, uint32_t rgb, bool on, bool can = true) {
+  P.box(cx - wide / 2, y0, cx + wide / 2, y0 + 104, 40, can ? rgb : 0x30384E);
+  if (on) P.ring(cx - wide / 2 - 8, y0 - 8, cx + wide / 2 + 8, y0 + 112, 46, 8, 0xFFD23F);
+  P.text(label, cx, y0 + 52, 58, wide - 40, can ? 0xFFFFFF : 0x8A94AA, 4.0f);
+}
+bool draw_fr_screens(uint8_t* px, int w, int h, const FrSnapshot& s) {
+  if (s.mode != 0 && s.mode != 1 && s.mode != 5 && s.mode != 6 && s.mode != 7) return false;
+  const int nClubs = static_cast<int>(s.clubs.size());
+  auto logo = [&](int club) -> const GuestPortrait& {
+    static const GuestPortrait none;
+    return club >= 0 && club < nClubs ? guest_portrait("club_" + s.clubs[club].id) : none;
+  };
+  auto club_by_id = [&](const char* id) {
+    for (int k = 0; k < nClubs; ++k)
+      if (s.clubs[k].id == id) return k;
+    return -1;
+  };
+  const float W = static_cast<float>(w), H = static_cast<float>(h);
+  Pieces P;
+  FrFigPicture figs;  // r131: the trades' characters, standing in 3D in front of it
+  std::vector<HubHint> hints;
+  const GuestPortrait& league = guest_portrait("franchise_league");
+  // the 32 clubs as a grid (a new career's club, an online league's free ones): conference by conference, a
+  // division to four columns
+  auto club_grid = [&](const bool* taken, const char (*who)[32]) {
+    const float x0 = 40, tw = (W - 80 - 24) / 8.0f, th = 205;
+    P.text("CROWN CONFERENCE", W / 2, 214, 34, 800, 0xFFD23F, 2.0f);
+    P.text("STAR CONFERENCE", W / 2, 676, 34, 800, 0xFFD23F, 2.0f);
+    for (int i = 0; i < nClubs && i < PORT_FR_CLUBS; ++i) {
+      int r = 0, c = 0;
+      fr_club_place(i, &r, &c);
+      const float tx0 = x0 + c * tw + (c >= 4 ? 24 : 0) + 6, ty0 = (r < 2 ? 236 : 698) + (r % 2) * (th + 8);
+      const float tx1 = tx0 + tw - 12, ty1 = ty0 + th;
+      const bool on = i == s.cursor, gone = taken != nullptr && taken[i];
+      if (on) P.glow(tx0 - 60, ty0 - 60, tx1 + 60, ty1 + 60, 0xFFD23F, 0.55f);
+      P.box(tx0, ty0, tx1, ty1, 22, on ? 0x2B4690 : 0x151C36);
+      if (on) P.ring(tx0 - 4, ty0 - 4, tx1 + 4, ty1 + 4, 26, 7, 0xFFD23F);
+      P.image(logo(i), tx0 + 10, ty0 + 6, tx1 - 10, ty1 - 44, false, gone ? 0.3f : 1.0f);
+      P.text(fr_upper(s.clubs[i].place), 0.5f * (tx0 + tx1), ty1 - 24, 30, tx1 - tx0 - 16, on ? 0xFFF7B0 : 0xFFFFFF, 2.0f);
+      if (gone) {
+        P.text("TAKEN", 0.5f * (tx0 + tx1), ty0 + 70, 46, tx1 - tx0 - 20, 0xFF8A80, 3.0f);
+        if (who != nullptr && who[i][0] != '\0') P.text(fr_upper(who[i]), 0.5f * (tx0 + tx1), ty0 + 118, 28, tx1 - tx0 - 20, 0xFFD23F, 2.0f);
+      }
+    }
+    if (s.cursor >= 0 && s.cursor < nClubs) {
+      const FrClubInfo& c = s.clubs[s.cursor];
+      P.text(fr_upper(c.name) + "   -   " + fr_upper(c.conf) + " - " + fr_upper(c.div), W / 2, 1172, 44, W - 200, 0xFFFFFF, 3.0f);
+    }
+  };
+  if (s.mode == 0) {
+    // the careers: three slots, the co-op one (a friend in the room or one saved), the online league
+    fr_frame(P, W, H, "FRANCHISE MODE", "STRIKERS SUPER LEAGUE", &league);
+    std::vector<int> order = {0, 1, 2};
+    if (s.coopShown) order.push_back(PORT_FR_COOP_SLOT);
+    order.push_back(PORT_FR_LEAGUE_SLOT);
+    const int n = static_cast<int>(order.size());
+    const float gap = 30, cw = (W - 80 - gap * (n - 1)) / n, y0 = 200, y1 = 1170;
+    bool usedHere = false;
+    for (int k = 0; k < n; ++k) {
+      const int slot = order[k];
+      const bool on = s.cursor == slot;
+      const float x0 = 40 + k * (cw + gap), x1 = x0 + cw, cx = 0.5f * (x0 + x1);
+      if (on) P.glow(x0 - 40, y0 - 40, x1 + 40, y1 + 40, 0xFFD23F, 0.35f);
+      P.box(x0, y0, x1, y1, 30, on ? 0x2B4690 : 0x151C36);
+      if (on) P.ring(x0 - 5, y0 - 5, x1 + 5, y1 + 5, 34, 8, 0xFFD23F);
+      const PortFranchiseSlot* sl = slot < PORT_FR_SLOTS ? &s.slots[slot] : (slot == PORT_FR_COOP_SLOT ? &s.coopSlot : &s.leagueSlot);
+      const bool used = slot == PORT_FR_LEAGUE_SLOT ? s.leagueSaved : sl->used;
+      std::string head = slot < PORT_FR_SLOTS ? "CAREER " + std::to_string(slot + 1) : (slot == PORT_FR_COOP_SLOT ? "CO-OP" : "ONLINE");
+      P.text(head, cx, y0 + 50, 46, cw - 40, 0xFFD23F, 3.0f);
+      std::string action;
+      bool can = true;
+      if (used) {
+        const int club = club_by_id(sl->clubId);
+        P.image(logo(club), x0 + 30, y0 + 90, x1 - 30, y0 + 420, false);
+        P.text(club >= 0 ? fr_upper(s.clubs[club].place) : fr_upper(sl->club), cx, y0 + 470, 52, cw - 40, 0xFFFFFF, 3.0f);
+        P.text("SEASON " + std::to_string(sl->season), cx, y0 + 540, 36, cw - 40, 0xC8D2E6, 2.0f);
+        P.text(sl->week > PORT_FR_WEEKS ? std::string("PLAYOFFS") : "WEEK " + std::to_string(sl->week), cx, y0 + 590, 36,
+               cw - 40, 0xC8D2E6, 2.0f);
+        P.text(std::to_string(sl->wins) + "-" + std::to_string(sl->losses), cx, y0 + 690, 96, cw - 40, 0xFFD23F, 5.0f);
+        action = "CONTINUE";
+        usedHere = usedHere || on;
+      } else {
+        P.box(cx - 120, y0 + 160, cx + 120, y0 + 400, 120, 0x26335E);
+        P.text("+", cx, y0 + 285, 200, 200, 0xFFD23F, 5.0f);
+        action = slot == PORT_FR_LEAGUE_SLOT ? "MAKE / JOIN" : "NEW";
+      }
+      if (slot == PORT_FR_COOP_SLOT) {
+        std::string friendName = fr_upper(s.coopName);
+        if (friendName.empty()) friendName = "YOUR FRIEND";
+        P.text(s.coopState == 0 ? std::string("NO FRIEND HERE") : "WITH " + friendName, cx, y0 + 760, 32, cw - 40,
+               s.coopState == 0 ? 0x8A94AA : 0xFFF7B0, 2.0f);
+        switch (s.coopState) {
+          case 0: action = "HOST FIRST"; can = false; break;
+          case 1: action = "WAIT..."; can = false; break;
+          case 2: action = used ? "PLAY" : "NEW"; break;
+          case 3: action = "THEY HOST"; can = false; break;
+          case 4: action = "JOIN"; break;
+          default: action = "GETTING IT..."; can = false; break;
+        }
+      }
+      if (slot == PORT_FR_LEAGUE_SLOT) {
+        P.text(used ? "CODE " + s.leagueCode : std::string("UP TO 8 PEOPLE"), cx, y0 + 760, 36, cw - 40, 0xFFF7B0, 2.0f);
+        if (used) action = "CONTINUE";
+      }
+      fr_button(P, cx, y1 - 200, cw - 60, action, 0x2EA043, on && can, can);
+      if (on && s.confirmDelete) P.text(slot == PORT_FR_LEAGUE_SLOT ? "X AGAIN: LEAVE IT" : "X AGAIN: DELETE IT", cx, y1 - 50, 34,
+                                        cw - 30, 0xFF5A4A, 2.0f);
+    }
+    hints = {{"L", "MOVE", 0x3A4A70}, {"A", "GO", 0x2EA043}};
+    if (usedHere || (s.cursor == PORT_FR_LEAGUE_SLOT && s.leagueSaved)) hints.push_back({"X", s.cursor == PORT_FR_LEAGUE_SLOT ? "LEAVE" : "DELETE", 0x2F6FD0});
+    hints.push_back({"B", "CLOSE", 0xC0392B});
+  } else if (s.mode == 1) {
+    std::string sub = s.slot == PORT_FR_COOP_SLOT ? std::string("NEW CO-OP CAREER")
+                      : s.slot == PORT_FR_LEAGUE_SLOT ? "NEW ONLINE LEAGUE (UP TO " + std::to_string(s.lgMax) + " PEOPLE)"
+                                                      : "NEW CAREER " + std::to_string(s.slot + 1);
+    fr_frame(P, W, H, "CHOOSE YOUR CLUB", sub, &league);
+    club_grid(nullptr, nullptr);
+    hints = {{"L", "MOVE", 0x3A4A70}, {"A", "THIS CLUB", 0x2EA043}, {"B", "BACK", 0xC0392B}};
+  } else if (s.mode == 7) {
+    const PortFranchiseLeagueLobby& lb = s.lobby;
+    if (lb.state == 3) {
+      fr_frame(P, W, H, "PICK A FREE CLUB",
+               std::string("LEAGUE ") + lb.code + "  -  " + std::to_string(lb.members) + " OF " + std::to_string(lb.max) + " PEOPLE" +
+                   (lb.error[0] != '\0' ? "  -  " + fr_upper(lb.error) : std::string()),
+               &league);
+      club_grid(lb.taken, lb.takenBy);
+      hints = {{"L", "MOVE", 0x3A4A70}, {"A", "THIS CLUB", 0x2EA043}, {"B", "BACK", 0xC0392B}};
+    } else {
+      fr_frame(P, W, H, std::string("LEAGUE ") + lb.code, "JOINING WITH A CODE", &league);
+      std::string what;
+      switch (lb.state) {
+        case 1: what = "CONNECTING..."; break;
+        case 2: what = "NO LEAGUE WITH THAT CODE"; break;
+        case 4: what = "JOINING..."; break;
+        case 5: what = "JOINED!"; break;
+        case 6: what = "THAT LEAGUE IS FULL"; break;
+        default: what = "..."; break;
+      }
+      P.text(what, W / 2, 560, 110, W - 300, 0xFFF7B0, 6.0f);
+      if (lb.owner[0] != '\0') P.text("ITS OWNER: " + fr_upper(lb.owner), W / 2, 720, 50, W - 400, 0xFFFFFF, 3.0f);
+      if (lb.max > 0 && lb.state != 2)
+        P.text(std::to_string(lb.members) + " OF " + std::to_string(lb.max) + " PEOPLE", W / 2, 800, 46, W - 400, 0xC8D2E6, 2.0f);
+      if (lb.error[0] != '\0') P.text(fr_upper(lb.error), W / 2, 900, 38, W - 400, 0xFF8A80, 2.0f);
+      hints = {{"B", "BACK", 0xC0392B}};
+    }
+  } else if (s.mode == 6) {
+    // make a league (how many people) or join one by its code
+    fr_frame(P, W, H, "ONLINE LEAGUE", "UP TO 8 PEOPLE, ONE CLUB EACH, ONE SEASON TOGETHER", &league);
+    for (int k = 0; k < 2; ++k) {
+      const bool on = s.cursor == k;
+      const float x0 = k == 0 ? 120 : W / 2 + 40, x1 = k == 0 ? W / 2 - 40 : W - 120, cx = 0.5f * (x0 + x1);
+      if (on) P.glow(x0 - 40, 180, x1 + 40, 1170, 0xFFD23F, 0.35f);
+      P.box(x0, 210, x1, 1150, 30, on ? 0x2B4690 : 0x151C36);
+      if (on) P.ring(x0 - 5, 205, x1 + 5, 1155, 34, 8, 0xFFD23F);
+      P.text(k == 0 ? "MAKE ONE" : "JOIN ONE", cx, 290, 76, x1 - x0 - 60, 0xFFF7B0, 4.0f);
+      if (k == 0) {
+        P.text("PEOPLE", cx, 420, 44, 400, 0xC8D2E6, 2.0f);
+        P.text(std::to_string(s.lgMax), cx, 600, 260, 400, 0xFFFFFF, 7.0f);
+        if (on) {
+          P.text("UP", cx, 470, 34, 200, 0xFFD23F, 2.0f);
+          P.text("DOWN", cx, 750, 34, 200, 0xFFD23F, 2.0f);
+        }
+        P.text("YOUR FRIENDS JOIN WITH THE CODE", cx, 850, 34, x1 - x0 - 80, 0xC8D2E6, 2.0f);
+        fr_button(P, cx, 960, x1 - x0 - 160, "MAKE IT", 0x2EA043, on);
+      } else {
+        P.text("THE CODE YOUR FRIEND GAVE YOU", cx, 420, 36, x1 - x0 - 80, 0xC8D2E6, 2.0f);
+        const float bw = 104, gap = 18, bx0 = cx - 0.5f * (6 * bw + 5 * gap);
+        for (int i = 0; i < 6; ++i) {
+          const char ch = i < static_cast<int>(s.lgTyped.size()) ? s.lgTyped[i] : 'A';
+          const bool here = on && s.lgStage == 1 && i == s.lgPos;
+          const float bx = bx0 + i * (bw + gap);
+          P.box(bx, 500, bx + bw, 660, 18, here ? 0xFFD23F : 0x0B1020);
+          P.ring(bx, 500, bx + bw, 660, 18, 4, 0x6A748A);
+          P.text(std::string(1, ch), bx + bw / 2, 580, 110, bw - 10, here ? 0x14141E : 0xFFFFFF, here ? 0.0f : 3.0f);
+        }
+        P.text("THEN PICK A FREE CLUB", cx, 850, 34, x1 - x0 - 80, 0xC8D2E6, 2.0f);
+        fr_button(P, cx, 960, x1 - x0 - 160, on && s.lgStage == 1 ? "JOIN" : "TYPE THE CODE", 0x2EA043, on);
+      }
+    }
+    if (s.lgStage == 1)
+      hints = {{"L", "LETTER", 0x3A4A70}, {"A", "JOIN", 0x2EA043}, {"B", "BACK", 0xC0392B}};
+    else
+      hints = {{"L", "MAKE OR JOIN", 0x3A4A70}, {"A", "CHOOSE", 0x2EA043}, {"B", "BACK", 0xC0392B}};
+  } else {
+    // trades: what you give (your captain, backup, sidekicks), then who you could get and whether they'd say yes
+    const PortFranchiseView& v = s.view;
+    const int me = v.myClub;
+    fr_frame(P, W, H, "TRADES", me >= 0 && me < nClubs ? fr_upper(s.clubs[me].name) : std::string(""), &logo(me));
+    static const char* const kWhat[3] = {"YOUR CAPTAIN", "YOUR BACKUP", "YOUR SIDEKICKS"};
+    const char* keys[3] = {v.captainKey, v.backupKey, v.kindKey};
+    auto give_card = [&](int i, float x0, float y0, float x1, float y1, bool on) {
+      const bool has = !s.tradeGive[i].empty();
+      P.box(x0, y0, x1, y1, 30, on ? 0x2B4690 : 0x151C36);
+      if (on) P.ring(x0 - 5, y0 - 5, x1 + 5, y1 + 5, 34, 8, 0xFFD23F);
+      const float cx = 0.5f * (x0 + x1);
+      P.text(kWhat[i], cx, y0 + 50, 42, x1 - x0 - 40, 0xFFD23F, 3.0f);
+      if (!has) {
+        P.text("NONE", cx, 0.5f * (y0 + y1), 90, x1 - x0 - 40, 0x6A748A, 4.0f);
+        return;
+      }
+      figs.person(P, keys[i], i == 0 ? v.captainShiny : (i == 1 && v.backupShiny), x0 + 40, y0 + 90, x1 - 40, y1 - 240);  // r131
+      P.text(fr_upper(s.tradeGive[i]), cx, y1 - 190, 44, x1 - x0 - 40, 0xFFFFFF, 3.0f);
+      P.text(std::to_string(s.tradeGiveValue[i]), cx, y1 - 105, 90, x1 - x0 - 40, 0xFFD23F, 5.0f);
+      P.text("VALUE", cx, y1 - 40, 30, 300, 0xC8D2E6, 2.0f);
+    };
+    if (s.tradeStage == 0) {
+      for (int i = 0; i < 3; ++i) {
+        const float x0 = 100 + i * 670.0f;
+        give_card(i, x0, 210, x0 + 620, 1080, s.cursor == i);
+      }
+      hints = {{"L", "WHO", 0x3A4A70}, {"A", "SEE OFFERS", 0x2EA043}, {"B", "BACK", 0xC0392B}};
+    } else {
+      give_card(s.tradeWhat, 60, 210, 640, 1080, false);
+      P.text("FOR", 720, 640, 60, 120, 0xFFD23F, 4.0f);
+      const int n = static_cast<int>(s.offers.size());
+      const int rows = 7;
+      const int first = std::max(0, std::min(s.cursor - rows / 2, n - rows));
+      for (int i = first; i < n && i < first + rows; ++i) {
+        const PortFranchiseTradeOffer& o = s.offers[i];
+        const float y0 = 210 + (i - first) * 126.0f, x0 = 800, x1 = W - 60;
+        const bool on = i == s.cursor;
+        P.box(x0, y0, x1, y0 + 114, 24, on ? 0x2B4690 : 0x151C36);
+        if (on) P.ring(x0 - 4, y0 - 4, x1 + 4, y0 + 118, 28, 7, 0xFFD23F);
+        P.image(logo(o.club), x0 + 10, y0 + 7, x0 + 110, y0 + 107, false);
+        figs.person(P, o.key, o.shiny, x0 + 120, y0 + 4, x0 + 230, y0 + 110);  // r131: in 3D
+        std::string t = fr_upper(o.name) + (o.shiny ? "  SHINY" : "");
+        P.left(t, x0 + 250, y0 + 40, 42, 560, o.fair ? 0xFFFFFF : 0x8A94AA, 3.0f);
+        P.left("LV " + std::to_string(o.level) + (s.tradeWhat != 2 ? (o.backup ? "  -  BACKUP" : "  -  CAPTAIN") : ""), x0 + 250,
+               y0 + 86, 30, 560, 0xB8C2D6, 2.0f);
+        P.right(std::to_string(o.value), x1 - 200, y0 + 57, 64, 160, 0xFFD23F, 4.0f);
+        P.box(x1 - 170, y0 + 30, x1 - 20, y0 + 84, 27, o.fair ? 0x2EA043 : 0x8E2A2A);
+        P.text(o.fair ? "YES" : "NO", x1 - 95, y0 + 57, 38, 130, 0xFFFFFF, 2.0f);
+      }
+      if (n == 0) P.text("NOBODY TO TRADE WITH", 1400, 600, 70, 1100, 0xC8D2E6, 3.0f);
+      hints = {{"L", "WHO", 0x3A4A70}, {"A", "OFFER", 0x2EA043}, {"B", "BACK", 0xC0392B}};
+    }
+    if (!s.tradeOpen) {
+      P.box(W / 2 - 520, 1100, W / 2 + 520, 1180, 40, 0x8E2A2A);
+      P.text("THE TRADE WINDOW IS SHUT (OPEN TO WEEK 12 + AFTER THE SEASON)", W / 2, 1140, 36, 1000, 0xFFFFFF, 2.0f);
+    } else if (!s.tradeMsg.empty()) {
+      P.box(W / 2 - 620, 1100, W / 2 + 620, 1180, 40, s.tradeMsg.compare(0, 4, "DONE") == 0 ? 0x2EA043 : 0x8E2A2A);
+      P.text(fr_upper(s.tradeMsg), W / 2, 1140, 40, 1200, 0xFFFFFF, 2.0f);
+    } else {
+      P.text("THEY SAY YES WHEN THEY GET 90% OF WHAT THEY GIVE", W / 2, 1140, 32, 1400, 0x9AA6BE, 2.0f);
+    }
+  }
+  hub_hints(P, W, 1245, hints);
+  xrtext::board(px, w, h, P.v);
+  fr_figs_publish(s.serial, std::move(figs.asks), W, H);  // r131 (none but the trades')
+  return true;
+}
 // r70: the franchise hub's picture (a drawing thread): the careers, a new career's club, or the hub's
 // pages (the club, the standings, last week's results). Logos: guests/portraits/club_<id>.png and
 // franchise_league.png (tools/outside/franchise_data.py).
 void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
+  if (s.mode != 2 && s.mode != 5) fr_figs_publish(s.serial, std::vector<FrFigAsk>(), 1.0f, 1.0f);  // r131: nobody in 3D
   const int nClubs = static_cast<int>(s.clubs.size());
   auto club_logo = [&](int club) -> const GuestPortrait& {
     static const GuestPortrait none;
@@ -1080,6 +4241,7 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
   auto record = [](int wins, int losses) { return std::to_string(wins) + "-" + std::to_string(losses); };
   const GuestPortrait& league = guest_portrait("franchise_league");
   const uint8_t* leagueRgba = league.rgba.empty() ? nullptr : league.rgba.data();
+  if (draw_fr_screens(px, w, h, s)) return;  // r116: the careers, club, trades and league screens' new look
   if (s.mode == 1) {
     // A new career's club: all 32 by conference (two rows each) and division (four across).
     std::vector<xrtext::GuestTile> tiles;
@@ -1431,7 +4593,8 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
                             "STICK: CHOOSE A CAREER   -   A: PLAY IT   -   X: DELETE / LEAVE   -   B: CLOSE");
     return;
   }
-  // The hub.
+  // The hub. r113: its new look (draw_hub: pills, pictures, a few words)
+  if (draw_hub(px, w, h, s)) return;
   const PortFranchiseView& v = s.view;
   const int me = v.myClub;
   const FrClubInfo none;
@@ -1535,6 +4698,13 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
         next.lines.push_back(line("THEIR RECORD", record(v.oppWins, v.oppLosses)));
       }
       next.lines.push_back(line("THEIR CAPTAIN: " + std::string(v.oppCaptain)));
+      // r131: the rest of their players by name (their co-captain; their sidekicks, members by their own)
+      if (v.oppCoCaptain[0] != '\0') next.lines.push_back(line("THEIR CO-CAPTAIN: " + std::string(v.oppCoCaptain)));
+      if (v.oppSidekicks[0][0] != '\0') {
+        xrtext::FrLine osk = line("   " + std::string(v.oppSidekicks[0]) + ", " + v.oppSidekicks[1] + ", " + v.oppSidekicks[2]);
+        osk.dim = true;
+        next.lines.push_back(osk);
+      }
       if (v.nextNemesis >= 0) {  // r72
         const PortFranchiseView::Nem& n = v.nems[v.nextNemesis];
         xrtext::FrLine nl = line("NEMESIS: " + std::string(n.name) + " " + n.title,
@@ -1913,10 +5083,11 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
       for (size_t i = at; i < s.evoWatch.size() && i < at + perCard; ++i) {
         const PortFranchiseEvoRow& r = s.evoWatch[i];
         std::string left = std::string(r.name) + (r.shiny ? " (SHINY)" : "");
-        if (r.ready)  // r95
-          left += "  READY TO EVOLVE!";
+        if (r.ready)  // r95 (r111: a Marvel hero's next costume in costume words)
+          left += r.costume ? "  NEW COSTUME READY!" : "  READY TO EVOLVE!";
         else
-          left += r.evoLevel > 0 ? "  > " + std::string(r.evoName) + " AT " + std::to_string(r.evoLevel) : "  FINAL FORM";
+          left += r.evoLevel > 0 ? "  > " + std::string(r.evoName) + " AT " + std::to_string(r.evoLevel)
+                                 : (r.costume ? "  ALL COSTUMES" : "  FINAL FORM");
         std::string right = "LV " + std::to_string(r.level);
         if (r.seasonGain > 0) right += " (+" + std::to_string(r.seasonGain) + ")";
         xrtext::FrLine l = line(left, right);
@@ -1930,10 +5101,11 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
     if (s.evoWatch.empty()) {
       xrtext::FrCard c;
       c.title = "EVO WATCH";
-      c.lines.push_back(line("NO POKEMON IN THIS LEAGUE"));
+      c.lines.push_back(line("NO POKEMON OR HEROES IN THIS LEAGUE"));
       cards.push_back(c);
     }
-    if (!s.evoReadyName.empty()) hint += "   -   A: EVOLVE " + fr_upper(s.evoReadyName);  // r95
+    if (!s.evoReadyName.empty())  // r95 (r111: a hero suits up)
+      hint += (s.evoReadyCostume ? "   -   A: SUIT UP " : "   -   A: EVOLVE ") + fr_upper(s.evoReadyName);
     hint += "   -   GOLD: YOURS   -   (+N): LEVELS THIS SEASON   -   B: CAREERS";
   } else if (s.page == 7) {
     // r72: the nemesis wall: who has beef with your captain, their titles, what they've become
@@ -2046,19 +5218,22 @@ constexpr uint32_t kFrLiveW = 1000, kFrLiveH = 170;
 // One captain's meter: its name and level bar, its goals / assists and next form; side = the right-hand note.
 void draw_live_row(uint8_t* px, int w, int h, const char* name, int level, int xp, int newLevel, int newXp, int gain,
                    int goals, int assists, bool won, bool evolves, int evoLevel, const char* evoName, bool pokemon,
-                   const std::string& side, float glow, int glowFrom, float sideGlow) {
+                   bool costume, const std::string& side, float glow, int glowFrom, float sideGlow) {
   auto plural = [](int n, const char* word) { return std::to_string(n) + " " + word + (n == 1 ? "" : "S"); };
   std::string line = plural(goals, "GOAL") + ", " + plural(assists, "ASSIST") + (won ? "  -  WINNING" : "") + "  -  ";
   // r87: "LEVEL UP!" while it glows, not for the rest of the match
   const bool levelUp = glow >= 0.0f;
   bool gold = false;
+  // r110: a Marvel hero's next costume in costume words (r111: told by franchise.cpp, not guessed from the names)
   if (evolves) {
-    line += std::string("EVOLUTION EARNED: ") + evoName + " (AFTER THE MATCH)";
+    line += std::string(costume ? "NEW COSTUME EARNED: " : "EVOLUTION EARNED: ") + evoName + " (AFTER THE MATCH)";
     gold = true;
   } else if (evoLevel > 0) {
-    line += std::string(levelUp ? "LEVEL UP!  " : "") + "EVOLVES INTO " + evoName + " AT LV " + std::to_string(evoLevel);
+    line += std::string(levelUp ? "LEVEL UP!  " : "") + (costume ? "NEW COSTUME (" + std::string(evoName) + ")"
+                                                                 : "EVOLVES INTO " + std::string(evoName)) +
+            " AT LV " + std::to_string(evoLevel);
   } else {
-    line += levelUp ? "LEVEL UP!" : (pokemon ? "FINAL FORM" : "LEVELING UP");
+    line += levelUp ? "LEVEL UP!" : (costume ? "ALL COSTUMES" : pokemon ? "FINAL FORM" : "LEVELING UP");
   }
   xrtext::xp_meter(px, w, h, name, level, xp, newLevel, newXp, gain, line.c_str(), gold, side.c_str(), glow, glowFrom,
                    sideGlow);
@@ -2070,11 +5245,11 @@ void draw_franchise_live(uint8_t* px, int w, int h, const PortFranchiseLive& l, 
   const int skShown = glow.t[2] >= 0.0f && glow.t[2] < 0.3f && glow.from[2] >= 0 ? glow.from[2] : l.skNewLevel;
   const std::string side = std::string(l.kind) + " LV " + std::to_string(skShown) + "  +" + std::to_string(l.skGain);
   draw_live_row(px, w, rowH, l.name, l.level, l.xp, l.newLevel, l.newXp, l.gain, l.goals, l.assists, l.won, l.evolves,
-                l.evoLevel, l.evoName, l.pokemon, side, glow.t[0], glow.from[0], glow.t[2]);
+                l.evoLevel, l.evoName, l.pokemon, l.costume, side, glow.t[0], glow.from[0], glow.t[2]);
   if (l.co)
     draw_live_row(px + static_cast<size_t>(w) * rowH * 4, w, h - rowH, l.coName, l.coLevel, l.coXp, l.coNewLevel,
                   l.coNewXp, l.coGain, l.coGoals, l.coAssists, l.won, l.coEvolves, l.coEvoLevel, l.coEvoName,
-                  l.coPokemon, "CO-CAPTAIN", glow.t[1], glow.from[1], -1.0f);
+                  l.coPokemon, l.coCostume, "CO-CAPTAIN", glow.t[1], glow.from[1], -1.0f);
 }
 std::string fr_upper(std::string s) {
   for (char& ch : s) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
@@ -2093,87 +5268,59 @@ std::string franchise_series_text(const PortFranchiseCard& c) {
   return fr_upper(c.roundName) + "   -   GAME " + std::to_string(c.gameNo) + "   -   " + state;
 }
 void draw_franchise_intro(uint8_t* px, int w, int h, const PortFranchiseCard& c) {
-  std::vector<xrtext::FrCard> cards;
+  // r116 (Lance: "for the franchise screens do that all over"): the match's intro card, the hub's look: both
+  // clubs' logos big, VS, the week (or the playoff game and the series), your nemesis if it starts
   const bool playoff = c.round > 0;
+  const float W = static_cast<float>(w), H = static_cast<float>(h);
+  Pieces P;
+  P.box(6, 6, W - 6, H - 6, 28, 0xFFD23F);
+  P.box(14, 14, W - 14, H - 14, 22, playoff ? 0x2A1E52 : 0x1E2A4E, 0.97f, 0x070A14);
   for (int side = 0; side < 2; ++side) {
     const int club = c.club[side];
-    xrtext::FrCard k;
-    k.title = side == 0 ? "HOME" : "AWAY";
-    k.weight = 1.3f;
-    xrtext::FrLine name;
-    name.text = PortFranchiseClubName(club);
-    name.gold = true;
-    const GuestPortrait& p = guest_portrait(std::string("club_") + PortFranchiseClubId(club));
-    if (!p.rgba.empty()) {
-      name.logo = p.rgba.data();
-      name.logoW = p.w;
-      name.logoH = p.h;
-    }
-    k.lines.push_back(name);
-    xrtext::FrLine rec;
-    rec.text = playoff ? "#" + std::to_string(c.seed[side]) + " SEED, " + PortFranchiseConferenceName(club) + " CONFERENCE"
-                       : std::string(PortFranchiseDivisionName(club)) + " DIVISION";
-    rec.right = std::to_string(c.wins[side]) + "-" + std::to_string(c.losses[side]);
-    k.lines.push_back(rec);
-    if (playoff) {
-      xrtext::FrLine sw;
-      sw.text = "SERIES WINS";
-      sw.right = std::to_string(c.seriesWins[side]);
-      sw.gold = c.seriesWins[side] == 2;
-      k.lines.push_back(sw);
-    }
-    if (c.nemesis && c.nemesisSide == side) {
-      // r72: the face-off: your nemesis, its title, its record against you
-      xrtext::FrLine nl;
-      nl.text = "NEMESIS: " + std::string(c.nemesisName);
-      const GuestPortrait& np = guest_portrait(c.nemesisKey);
-      if (!np.rgba.empty()) {
-        nl.logo = np.rgba.data();
-        nl.logoW = np.w;
-        nl.logoH = np.h;
-      }
-      nl.gold = true;
-      k.lines.push_back(nl);
-      xrtext::FrLine tl;
-      tl.text = c.nemesisTitle;
-      tl.right = "BEAT YOU " + std::to_string(c.nemesisBeatYou) + "X";
-      k.lines.push_back(tl);
-    }
-    cards.push_back(k);
-    if (side == 0) {
-      xrtext::FrCard vs;
-      vs.title = "VS";
-      vs.weight = 0.55f;
-      xrtext::FrLine l1;
-      l1.text = playoff ? "GAME " + std::to_string(c.gameNo) : "WEEK " + std::to_string(c.week);
-      vs.lines.push_back(l1);
-      if (playoff) {
-        xrtext::FrLine l2;
-        l2.text = "BEST OF 5";
-        l2.dim = true;
-        vs.lines.push_back(l2);
-        if (c.seriesWins[0] == 2 || c.seriesWins[1] == 2) {
-          xrtext::FrLine l3;
-          l3.text = c.seriesWins[0] == 2 && c.seriesWins[1] == 2 ? "WINNER TAKES ALL" : "CLOSE-OUT GAME";
-          l3.gold = true;
-          vs.lines.push_back(l3);
-        }
-      }
-      if (c.spectating) {
-        xrtext::FrLine l4;
-        l4.text = "WATCHING";
-        l4.dim = true;
-        vs.lines.push_back(l4);
-      }
-      cards.push_back(vs);
+    const float cx = side == 0 ? 300.0f : W - 300.0f;
+    P.glow(cx - 280, 20, cx + 280, 560, PortFranchiseClubColor(club, 0), 0.6f);
+    P.image(guest_portrait(std::string("club_") + PortFranchiseClubId(club)), cx - 200, 40, cx + 200, 430, false);
+    P.text(fr_upper(PortFranchiseClubPlace(club)), cx, 480, 54, 520, 0xFFFFFF, 4.0f);
+    std::string rec = std::to_string(c.wins[side]) + "-" + std::to_string(c.losses[side]);
+    if (playoff) rec = "#" + std::to_string(c.seed[side]) + " SEED  -  " + std::to_string(c.seriesWins[side]) + " WINS";
+    P.text(rec, cx, 548, 40, 520, 0xFFD23F, 3.0f);
+  }
+  P.text("VS", W / 2, 200, 170, 300, 0xFFF7B0, 7.0f);
+  P.text(playoff ? fr_upper(c.roundName) : "WEEK " + std::to_string(c.week), W / 2, 330, 40, 420, 0xFFFFFF, 3.0f);
+  if (playoff) {
+    P.text("GAME " + std::to_string(c.gameNo) + " OF 5", W / 2, 385, 36, 420, 0xC8D2E6, 2.0f);
+    if (c.seriesWins[0] == 2 || c.seriesWins[1] == 2) {
+      P.box(W / 2 - 200, 420, W / 2 + 200, 480, 30, 0xFFD23F);
+      P.text(c.seriesWins[0] == 2 && c.seriesWins[1] == 2 ? "WINNER TAKES ALL" : "CLOSE-OUT GAME", W / 2, 450, 34, 380, 0x14141E);
     }
   }
-  const GuestPortrait& logo = guest_portrait(c.roundLogo[0] != '\0' ? std::string(c.roundLogo) : "franchise_league");
-  const std::string title = playoff ? fr_upper(c.roundName) : "STRIKERS SUPER LEAGUE";
-  const std::string sub = playoff ? franchise_series_text(c).substr(franchise_series_text(c).rfind("   -   ") + 7)
-                                  : "WEEK " + std::to_string(c.week) + " OF 20";
-  xrtext::franchise_board(px, w, h, title, sub, playoff ? 0x1A1A4A : 0x16306E, 0xFFD23F,
-                          logo.rgba.empty() ? nullptr : logo.rgba.data(), logo.w, logo.h, cards, "");
+  if (c.spectating) P.text("WATCHING", W / 2, 400, 34, 300, 0x9AA6BE, 2.0f);
+  if (c.nemesis) {
+    // the face-off: your nemesis between the two, in red
+    const float nx = c.nemesisSide == 0 ? 560.0f : W - 560.0f;
+    P.glow(nx - 140, 300, nx + 140, 600, 0xFF3A2A, 0.55f);
+    P.image(guest_portrait(c.nemesisKey), nx - 110, 350, nx + 110, 600, true);
+    P.box(W / 2 - 230, 500, W / 2 + 230, 610, 30, 0x6E1414);
+    P.ring(W / 2 - 230, 500, W / 2 + 230, 610, 30, 4, 0xFF5A4A);
+    P.text("NEMESIS: " + fr_upper(c.nemesisName), W / 2, 535, 34, 440, 0xFFFFFF, 2.0f);
+    P.text(fr_upper(c.nemesisTitle) + "  -  BEAT YOU " + std::to_string(c.nemesisBeatYou) + "X", W / 2, 580, 26, 440,
+           0xFFB0A8, 1.5f);
+  }
+  xrtext::board(px, w, h, P.v);
+}
+// r116: the playoff series under the big screen: both logos, the game, the series score (was a line of words)
+void draw_franchise_series(uint8_t* px, int w, int h, const PortFranchiseCard& c) {
+  const float W = static_cast<float>(w), H = static_cast<float>(h);
+  Pieces P;
+  P.box(3, 3, W - 3, H - 3, H / 2 - 3, 0xFFD23F);
+  P.box(8, 8, W - 8, H - 8, H / 2 - 8, 0x1E2A4E, 0.97f, 0x070A14);
+  for (int side = 0; side < 2; ++side) {
+    const float x0 = side == 0 ? 20.0f : W - 20.0f - (H - 16);
+    P.image(guest_portrait(std::string("club_") + PortFranchiseClubId(c.club[side])), x0, 8, x0 + H - 16, H - 8, false);
+    P.text(std::to_string(c.seriesWins[side]), side == 0 ? 20 + H + 30 : W - 20 - H - 30, H / 2, 0.7f * H, 80, 0xFFD23F, 3.0f);
+  }
+  P.text(fr_upper(c.roundName) + "  -  GAME " + std::to_string(c.gameNo), W / 2, H / 2, 0.42f * H, W - 2 * H - 200, 0xFFFFFF, 2.0f);
+  xrtext::board(px, w, h, P.v);
 }
 // r73: the TV in your room (franchise): "SSL TONIGHT", in turn the last scores, the top of both
 // conferences, the Golden Boot race and who's on fire.
@@ -2276,7 +5423,7 @@ void draw_franchise_evolution(uint8_t* px, int w, int h, const FrSnapshot& s, fl
     }
     return im;
   };
-  const int choice = e.options == 2 ? std::max(0, std::min(1, s.evoChoice)) : 0;
+  const int choice = e.options >= 2 ? std::max(0, std::min(e.options - 1, s.evoChoice)) : 0;  // r130: up to 5
   // shiny ones in their shiny colours (portraits/<pack>_shiny.png, when there)
   auto img_shiny = [&](const char* key, bool shiny) {
     if (shiny) {
@@ -2288,13 +5435,46 @@ void draw_franchise_evolution(uint8_t* px, int w, int h, const FrSnapshot& s, fl
   const xrtext::EvoImage from = img_shiny(e.fromKey, e.shiny);
   const xrtext::EvoImage to = s.evoStage == 2 ? img_shiny(e.toKey[choice], e.shiny || s.evoNewShiny)
                                               : img(s.evoStage == 0 ? e.toKey[0] : e.toKey[choice]);
-  const xrtext::EvoImage alt = img(e.options == 2 ? e.toKey[1] : e.toKey[0]);
+  const xrtext::EvoImage alt = img(e.options >= 2 ? e.toKey[1] : e.toKey[0]);
+  xrtext::EvoImage all[5];  // r130: every option (Eevee's five)
+  for (int k = 0; k < std::min(e.options, 5); ++k) all[k] = img(e.toKey[k]);
   const std::string fromName = fr_upper(e.fromName), toName = fr_upper(e.toName[choice]);
   std::string title, line, hint;
+  // r110 (Lance: Marvel heroes' "alternate costumes being rewarded as xp is gained"): a hero's next costume rides the
+  // evolution (roster "franchise" forms, evolutions.txt levels), in costume words
+  if (std::strncmp(e.fromKey, "mua_", 4) == 0) {
+    switch (s.evoStage) {
+    case 0:
+      title = "NEW COSTUME! " + fromName + " EARNED A NEW LOOK!";
+      line = "LV " + std::to_string(e.level) + ": " + fromName + " > " + toName;
+      hint = "A: SUIT UP (WATCH IT)   -   B: NOT NOW (SUIT UP LATER: EVO WATCH PAGE, A)";
+      break;
+    case 1:
+      title = fromName + " IS SUITING UP!";
+      break;
+    case 2:
+      title = "NEW COSTUME!";
+      line = "YOUR " + fromName + " IS NOW " + toName + "! (ON THE CHARACTER SELECT MENU IN EVERY MODE)";
+      hint = "A: CONTINUE";
+      break;
+    default:
+      title = "OKAY! " + fromName + " WILL WAIT";
+      line = "SUIT UP ANY TIME: EVO WATCH PAGE, A";
+      hint = "A: CONTINUE";
+      break;
+    }
+    const float tpc = s.evoStage == 1 ? 0.8f * t : t;
+    xrtext::evolution_scene(px, w, h, from, to, alt, s.evoStage, tpc, choice, title.c_str(), line.c_str(), hint.c_str(),
+                            false, e.options);
+    return;
+  }
   switch (s.evoStage) {
   case 0:  // r95: the EVO page
     title = "EVO! " + fromName + " IS READY TO EVOLVE!";
-    if (e.options == 2) {
+    if (e.options > 2) {  // r130
+      line = "LV " + std::to_string(e.level) + ": " + std::to_string(e.options) + " WAYS TO EVOLVE - WHICH ONE?";
+      hint = "LEFT / RIGHT: CHOOSE   -   A: EVOLVE INTO " + toName + "   -   B: NOT NOW";
+    } else if (e.options == 2) {
       line = "LV " + std::to_string(e.level) + ": INTO " + fr_upper(e.toName[0]) + " OR " + fr_upper(e.toName[1]) + "?";
       hint = "LEFT / RIGHT: CHOOSE   -   A: EVOLVE INTO " + toName + "   -   B: NOT NOW";
     } else {
@@ -2319,7 +5499,7 @@ void draw_franchise_evolution(uint8_t* px, int w, int h, const FrSnapshot& s, fl
   // r96: its clock runs 0.8 x through the evolving, so its flash is the 3D one's (8.5 s; it evolves at 8.8)
   const float tp = s.evoStage == 1 ? 0.8f * t : t;
   xrtext::evolution_scene(px, w, h, from, to, alt, s.evoStage, tp, choice, title.c_str(), line.c_str(), hint.c_str(),
-                          s.evoNewShiny || e.shiny, e.options);
+                          s.evoNewShiny || e.shiny, e.options, all);
 }
 // r68e: one entry of the character select menu: what picking it sends (a guest's roster index, or
 // PORT_GUEST_ORIGINAL(_SIDEKICK) + the Strikers character's id), its portrait (guests/portraits/
@@ -2332,16 +5512,18 @@ struct MenuEntry {
   int row = 0, col = 0;
   uint32_t frame = 0;
 };
+// r130 (Lance: "you can have anybody play a sidekick now" ... "give "sidekicks" their own tab"): role 2 = a sidekick
+// slot: a Sidekicks tab (the Strikers sidekicks and the Charged sidekick guests), then every guest captain's tab.
 const std::vector<MenuEntry>& menu_entries(int role) {
-  static std::vector<MenuEntry> built[2];
-  static bool done[2] = {false, false};
+  static std::vector<MenuEntry> built[3];
+  static bool done[3] = {false, false, false};
   static std::mutex mutex;  // the game thread and the panel's drawing thread both ask
-  if (role < 0 || role > 1) role = 0;
+  if (role < 0 || role > 2) role = 0;
   std::lock_guard<std::mutex> lock(mutex);
   if (done[role]) return built[role];
   done[role] = true;
   std::vector<MenuEntry>& out = built[role];
-  const int cols = role == 0 ? kMenuCaptainCols : kMenuSidekickCols;
+  const int cols = role == 1 ? kMenuSidekickCols : kMenuCaptainCols;
   int row = 0, col = 0;
   auto add = [&](MenuEntry e) {
     if (col >= cols) {
@@ -2374,6 +5556,48 @@ const std::vector<MenuEntry>& menu_entries(int role) {
       e.frame = 0x7A2430;
       add(e);
     }
+  } else if (role == 2) {
+    // r130: the Sidekicks tab: the Strikers four, then the Charged sidekick guests (Boo, Dry Bones ...)
+    static const struct { int id; const char* file; const char* name; } kSk[4] = {
+        {0, "toad", "Toad"}, {1, "koopa", "Koopa"}, {2, "hammerbro", "Hammer Bro"}, {3, "birdo", "Birdo"}};
+    for (const auto& s : kSk) {
+      MenuEntry e;
+      e.pick = PORT_GUEST_ORIGINAL_SIDEKICK + s.id;
+      e.portrait = std::string("strikers_") + s.file;
+      e.name = s.name;
+      e.tag = "Sidekicks";
+      e.frame = 0x1E6A3A;
+      add(e);
+    }
+    // r130 (Lance: "you coulda just let ANY spot be ANY character"): the eight Strikers captains themselves, each its own
+    // class in the slot (include/port/lineup.h; once on the field: sk_taken)
+    static const struct { int team; const char* file; const char* name; } kCaps[8] = {
+        {3, "mario", "Mario"}, {2, "luigi", "Luigi"}, {4, "peach", "Peach"}, {0, "daisy", "Daisy"},
+        {7, "yoshi", "Yoshi"}, {1, "donkeykong", "Donkey Kong"}, {6, "wario", "Wario"}, {5, "waluigi", "Waluigi"}};
+    for (const auto& c : kCaps) {
+      MenuEntry e;
+      e.pick = PORT_GUEST_ORIGINAL + c.team;
+      e.team = c.team;
+      e.portrait = std::string("strikers_") + c.file;
+      e.name = c.name;
+      e.tag = "Sidekicks";
+      e.frame = 0x1E6A3A;
+      add(e);
+    }
+    for (int k = 0; k < PortGuestRosterCount(1); ++k) {
+      const int index = PortGuestRosterAt(1, k);
+      MenuEntry e;
+      e.pick = index;
+      const char* pack = PortGuestRosterPack(index);
+      if (pack != nullptr && std::strncmp(pack, "cap_", 4) == 0) continue;  // r130: the real captains are above
+      e.portrait = pack != nullptr ? pack : "";
+      const char* name = PortGuestRosterName(index);
+      e.name = name != nullptr ? name : e.portrait;
+      e.tag = "Sidekicks";
+      e.frame = 0x1E6A3A;
+      add(e);
+    }
+    new_section();
   } else {
     // eSidekickID: toad 0, koopa 1, hammer bro 2, birdo 3
     static const struct { int id; const char* file; const char* name; } kSidekicks[4] = {
@@ -2389,15 +5613,18 @@ const std::vector<MenuEntry>& menu_entries(int role) {
     }
     new_section();
   }
-  // The guests by game: Charged (beside the Strikers captains), Melee, Melee's Pokemon.
-  static const struct { const char* game; const char* tag; uint32_t frame; } kGames[3] = {
-      {"Charged", "Charged", 0x7A4A1E}, {"Melee", "Melee", 0x23407A}, {"Melee Pokemon", "Pokemon", 0x6E2440}};
-  const int n = PortGuestRosterCount(role);
+  // The guests by game: Charged (beside the Strikers captains), Melee, Melee's Pokemon; r107: Marvel: Ultimate
+  // Alliance's heroes (Lance's overnight ask, 2026-10-27), a row of their own in Marvel red.
+  static const struct { const char* game; const char* tag; uint32_t frame; } kGames[4] = {
+      {"Charged", "Charged", 0x7A4A1E}, {"Melee", "Melee", 0x23407A}, {"Melee Pokemon", "Pokemon", 0x6E2440},
+      {"Ultimate Alliance", "Marvel", 0x9A1414}};
+  const int rr = role == 2 ? 0 : role;  // r130: a sidekick slot lists the guest captains
+  const int n = PortGuestRosterCount(rr);
   // r70c: each evolved Pokemon right after the form it evolves from (Charmander, Charmeleon, Charizard)
   std::vector<int> order;
   std::function<void(const char*)> evolutions_of = [&](const char* from) {
     for (int k = 0; k < n; ++k) {
-      const int idx = PortGuestRosterAt(role, k);
+      const int idx = PortGuestRosterAt(rr, k);
       if (PortGuestRosterEvolved(idx) && std::strcmp(PortGuestRosterEvolvesFrom(idx), from) == 0) {
         order.push_back(idx);
         evolutions_of(PortGuestRosterPack(idx));
@@ -2405,18 +5632,20 @@ const std::vector<MenuEntry>& menu_entries(int role) {
     }
   };
   for (int i = 0; i < n; ++i) {
-    const int index = PortGuestRosterAt(role, i);
+    const int index = PortGuestRosterAt(rr, i);
     if (PortGuestRosterEvolved(index) && PortGuestRosterEvolvesFrom(index)[0] != '\0') continue;
     order.push_back(index);
     evolutions_of(PortGuestRosterPack(index));
   }
   for (int i = 0; i < n; ++i) {  // (any evolved one whose earlier form isn't on this headset: at the end)
-    const int index = PortGuestRosterAt(role, i);
+    const int index = PortGuestRosterAt(rr, i);
     if (std::find(order.begin(), order.end(), index) == order.end()) order.push_back(index);
   }
-  for (int gsec = 0; gsec < 3; ++gsec) {
+  for (int gsec = 0; gsec < 4; ++gsec) {
     if (gsec > 0) new_section();
     for (int index : order) {
+      const char* pk = PortGuestRosterPack(index);
+      if (pk != nullptr && std::strncmp(pk, "cap_", 4) == 0) continue;  // r130: never (the real captains play now)
       const char* game = PortGuestRosterGame(index);
       // r69: Lance's Colosseum Pokemon take the Pokemon row (Melee's are off the roster)
       const bool colo = gsec == 2 && game != nullptr && std::strcmp(game, "Colosseum") == 0;
@@ -2433,6 +5662,96 @@ const std::vector<MenuEntry>& menu_entries(int role) {
     }
   }
   return out;
+}
+// r130: a sidekick slot's menu entry it can't be: a second Strikers sidekick kind (a team has one), a named character
+// already in an earlier slot of this team, this side's own captain. r130 (any slot any character): a Strikers captain
+// plays its own class, once on the field: not one in `capTaken` (a bit per eTeamID: either team's captain, the
+// co-captains, the other side's slots - PortGuestSlotCaptainsTaken), nor one an earlier slot of this team has.
+bool sk_taken(const MenuEntry& e, const int* picks, int slot, int first, int captainGuest, unsigned capTaken) {
+  const bool native = e.pick >= PORT_GUEST_ORIGINAL_SIDEKICK && e.pick < PORT_GUEST_ORIGINAL_SIDEKICK + 4;
+  if (e.team >= 0 && e.team < 8 && (capTaken & (1u << e.team)) != 0) return true;
+  for (int k = std::max(0, first); k < slot && k < 3; ++k) {
+    const int p = picks[k];
+    const bool pNative = p >= PORT_GUEST_ORIGINAL_SIDEKICK && p < PORT_GUEST_ORIGINAL_SIDEKICK + 4;
+    if (native && pNative && p != e.pick) return true;
+    if (!native && (e.tag != "Sidekicks" || e.team >= 0) && p == e.pick) return true;
+  }
+  return !native && captainGuest >= 0 && e.pick == captainGuest;
+}
+// r130: the Strikers captains a franchise club's own picks hold (its captain, its backup: menu picks), a bit per eTeamID
+unsigned fr_cap_bits(int captainPick, int backupPick) {
+  unsigned bits = 0;
+  for (int p : {captainPick, backupPick})
+    if (p >= PORT_GUEST_ORIGINAL && p < PORT_GUEST_ORIGINAL + 8) bits |= 1u << (p - PORT_GUEST_ORIGINAL);
+  return bits;
+}
+// r130: a menu entry the X button may put in every slot left: a Strikers sidekick or a Charged sidekick guest (never a
+// named character: a Strikers captain, a guest captain)
+bool sk_repeatable(const MenuEntry& e) { return e.tag == "Sidekicks" && e.team < 0; }
+// r130: the three sidekick picks to the pick screen. All the same Strikers sidekick or the same Charged sidekick guest:
+// that one pick, as before. Otherwise one pick for the three (PORT_GUEST_TRIO + the class they play as): a Strikers
+// sidekick among them sets the class; else the class most of them suit (a Charged sidekick guest's own; a guest
+// captain's by build: Yoshi -> Toad, Mario / Luigi -> Koopa, Wario / DK -> Hammer Bro, Peach / Daisy / Waluigi -> Birdo),
+// a tie the first slot's.
+void sk_commit(int side, const int* menuPicks, int first) {
+  const int ref = menuPicks[first];
+  bool same = true;
+  for (int k = first; k < 3; ++k) same = same && menuPicks[k] == ref;
+  const bool refNative = ref >= PORT_GUEST_ORIGINAL_SIDEKICK && ref < PORT_GUEST_ORIGINAL_SIDEKICK + 4;
+  const bool refSidekickGuest = ref >= 0 && ref < PORT_GUEST_ORIGINAL && PortGuestRosterFind(PORT_GUEST_SIDEKICK, PortGuestRosterPack(ref)) == ref;
+  if (same && (refNative || refSidekickGuest) && first == 0) {
+    PortGuestPickerCommit(side, PORT_GUEST_SIDEKICK, ref);
+    XLOG("character select: side %d's three sidekicks: one pick (%d)", side, ref);
+    return;
+  }
+  // r130: online keeps the three too: the match setup carries each side's slots (xr_net.cpp 'L' tails, Game.cpp), the
+  // same on both headsets; with an older build on the other headset both play the class's Strikers sidekick
+  static const int kByCaptain[8] = {3, 2, 1, 1, 3, 3, 2, 0};  // eTeamID daisy dk luigi mario peach waluigi wario yoshi
+  // r130 (any slot any character): the vote is among the slots that play the sidekick class (Charged sidekick guests);
+  // the captains (Strikers ones and guest captains: their own classes now) vote by build only when none does - the
+  // class one of them falls back to if its own is taken at the match start
+  int votes[4] = {0, 0, 0, 0}, firstVote = -1, native = -1;
+  int capVotes[4] = {0, 0, 0, 0}, firstCapVote = -1;
+  int picks[3] = {-1, -1, -1};
+  for (int k = std::max(0, first); k < 3; ++k) {
+    const int p = menuPicks[k];
+    int v = -1, cv = -1;
+    if (p >= PORT_GUEST_ORIGINAL_SIDEKICK && p < PORT_GUEST_ORIGINAL_SIDEKICK + 4) {
+      if (native < 0) native = p - PORT_GUEST_ORIGINAL_SIDEKICK;
+      picks[k] = -1;  // the Strikers sidekick itself
+      continue;
+    }
+    picks[k] = p;
+    if (p >= PORT_GUEST_ORIGINAL && p < PORT_GUEST_ORIGINAL + 8) {
+      cv = kByCaptain[p - PORT_GUEST_ORIGINAL];  // a Strikers captain itself
+    } else if (p >= 0 && p < PORT_GUEST_ORIGINAL) {
+      const int base = PortGuestRosterBase(p);
+      if (PortGuestRosterFind(PORT_GUEST_SIDEKICK, PortGuestRosterPack(p)) == p) v = base >= 0 && base < 4 ? base : -1;
+      else cv = base >= 0 && base < 8 ? kByCaptain[base] : -1;
+    }
+    if (v >= 0) {
+      ++votes[v];
+      if (firstVote < 0) firstVote = v;
+    }
+    if (cv >= 0) {
+      ++capVotes[cv];
+      if (firstCapVote < 0) firstCapVote = cv;
+    }
+  }
+  int cls = native;
+  if (cls < 0 && firstVote >= 0) {
+    cls = firstVote;
+    for (int c = 0; c < 4; ++c)
+      if (votes[c] > votes[cls]) cls = c;
+  }
+  if (cls < 0) {
+    cls = firstCapVote >= 0 ? firstCapVote : 0;
+    for (int c = 0; c < 4; ++c)
+      if (capVotes[c] > capVotes[cls]) cls = c;
+  }
+  PortGuestPickerCommitTrio(side, picks, first, cls);
+  XLOG("character select: side %d's sidekicks %d / %d / %d (from slot %d) play as sidekick class %d", side, picks[0], picks[1],
+       picks[2], first + 1, cls);
 }
 // The entry the stick moves to from `from`: left / right along its row, up / down to the row above or
 // below (skipping none: every row has someone), the nearest column there.
@@ -2454,36 +5773,333 @@ int menu_step(const std::vector<MenuEntry>& m, int from, int dir) {
   }
   return best;
 }
+// r112 (Lance: "make that fuckin character selection screen way better. shit is waaay too puny"): the menu by
+// game, a tab each (in the menu's order: Strikers, Charged, Melee, Pokemon, Marvel), and in each tab its
+// characters as families: a character, then its evolutions / costumes (the forms the stick doesn't step
+// through: LT / RT do). The menu's entries stay as they were (picking is unchanged); this is how they're shown
+// and walked.
+constexpr int kSelectCols = 5, kSelectRows = 3;
+struct MenuLayout {
+  struct Tab {
+    std::string name;
+    uint32_t rgb = 0;
+    std::vector<std::vector<int>> fams;  // menu indexes, the first form first
+  };
+  std::vector<Tab> tabs;
+  std::vector<int> tabOf, famOf, formOf;  // by menu index
+};
+const MenuLayout& menu_layout(int role) {
+  static MenuLayout built[3];  // r130: role 2, a sidekick slot
+  static bool done[3] = {false, false, false};
+  static std::mutex mutex;
+  if (role < 0 || role > 2) role = 0;
+  const std::vector<MenuEntry>& menu = menu_entries(role);
+  std::lock_guard<std::mutex> lock(mutex);
+  if (done[role]) return built[role];
+  done[role] = true;
+  MenuLayout& L = built[role];
+  const int n = static_cast<int>(menu.size());
+  L.tabOf.assign(n, 0);
+  L.famOf.assign(n, 0);
+  L.formOf.assign(n, 0);
+  std::unordered_map<std::string, int> byPack;  // a guest's pack -> its menu index
+  for (int i = 0; i < n; ++i) {
+    const MenuEntry& e = menu[i];
+    int t = -1;
+    for (int k = 0; k < static_cast<int>(L.tabs.size()); ++k)
+      if (L.tabs[k].name == e.tag) t = k;
+    if (t < 0) {
+      MenuLayout::Tab tab;
+      tab.name = e.tag;
+      tab.rgb = e.frame;
+      L.tabs.push_back(tab);
+      t = static_cast<int>(L.tabs.size()) - 1;
+    }
+    // an evolved form / a costume goes with the first form of its line, when that's in this tab
+    int root = -1;
+    if (e.team < 0 && e.pick >= 0 && e.pick < PORT_GUEST_ORIGINAL && PortGuestRosterEvolved(e.pick)) {
+      std::string from = PortGuestRosterEvolvesFrom(e.pick);
+      for (int guard = 0; guard < 8 && !from.empty(); ++guard) {
+        auto it = byPack.find(from);
+        if (it == byPack.end()) break;
+        root = it->second;
+        const int rp = menu[root].pick;
+        from = rp >= 0 && rp < PORT_GUEST_ORIGINAL && PortGuestRosterEvolved(rp) ? PortGuestRosterEvolvesFrom(rp) : "";
+      }
+    }
+    if (root >= 0 && L.tabOf[root] == t) {
+      std::vector<int>& fam = L.tabs[t].fams[L.famOf[root]];
+      L.famOf[i] = L.famOf[root];
+      L.formOf[i] = static_cast<int>(fam.size());
+      fam.push_back(i);
+    } else {
+      L.famOf[i] = static_cast<int>(L.tabs[t].fams.size());
+      L.formOf[i] = 0;
+      L.tabs[t].fams.push_back({i});
+    }
+    L.tabOf[i] = t;
+    if (e.team < 0 && !e.portrait.empty()) byPack[e.portrait] = i;
+  }
+  return L;
+}
+// r112: the stick (dir 1 left, 2 right, 3 up, 4 down) or LT / RT (form -1 / +1) on the menu: among a tab's
+// characters, kSelectCols a row; up off the top row onto the tabs, where left / right changes the game and
+// down comes back; LT / RT through the one's forms (round and round). Returns the new menu index.
+int menu_nav(int role, int cursor, bool* onTabs, int dir, int form) {
+  const MenuLayout& L = menu_layout(role);
+  const int n = static_cast<int>(L.tabOf.size());
+  if (n == 0 || L.tabs.empty()) return 0;
+  cursor = std::max(0, std::min(n - 1, cursor));
+  int t = L.tabOf[cursor], f = L.famOf[cursor], k = L.formOf[cursor];
+  const std::vector<std::vector<int>>& fams = L.tabs[t].fams;
+  if (form != 0) {
+    const int size = static_cast<int>(fams[f].size());
+    k = ((k + form) % size + size) % size;
+    return fams[f][k];
+  }
+  if (*onTabs) {
+    if (dir == 1 && t > 0) return L.tabs[t - 1].fams[0][0];
+    if (dir == 2 && t + 1 < static_cast<int>(L.tabs.size())) return L.tabs[t + 1].fams[0][0];
+    if (dir == 4) *onTabs = false;
+    return cursor;
+  }
+  const int count = static_cast<int>(fams.size());
+  const int c = f % kSelectCols;
+  if (dir == 1 && c > 0) f -= 1;
+  else if (dir == 2 && c < kSelectCols - 1 && f + 1 < count) f += 1;
+  else if (dir == 3) {
+    if (f < kSelectCols) {
+      *onTabs = true;
+      return cursor;
+    }
+    f -= kSelectCols;
+  } else if (dir == 4) {
+    if (f + kSelectCols < count) f += kSelectCols;
+    else if (f / kSelectCols < (count - 1) / kSelectCols) f = count - 1;
+  } else {
+    return cursor;
+  }
+  return fams[f][0];
+}
+// r112: the menu's stat bars (franchise/cards.txt, tools/outside/menu_cards.py: speed shoot pass tackle) and
+// the level each evolved form / costume comes at (franchise/evolutions.txt), read once.
+const float* menu_card(const std::string& key) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, std::array<float, 4>> cards;
+  static bool read = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!read) {
+    read = true;
+    const char* home = std::getenv("STRIKERS_HOME");
+    FILE* f = home != nullptr ? std::fopen((std::string(home) + "/franchise/cards.txt").c_str(), "r") : nullptr;
+    if (f != nullptr) {
+      char k[96];
+      std::array<float, 4> v{};
+      char line[256];
+      while (std::fgets(line, sizeof(line), f) != nullptr) {
+        if (line[0] == '#') continue;
+        if (std::sscanf(line, "%95s %f %f %f %f", k, &v[0], &v[1], &v[2], &v[3]) == 5) cards[k] = v;
+      }
+      std::fclose(f);
+    }
+  }
+  std::string base = key;
+  if (base.size() > 6 && base.compare(base.size() - 6, 6, "_shiny") == 0) base.resize(base.size() - 6);
+  auto it = cards.find(base);
+  return it != cards.end() ? it->second.data() : nullptr;
+}
+int menu_form_level(const std::string& pack) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, int> levels;
+  static bool read = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!read) {
+    read = true;
+    const char* home = std::getenv("STRIKERS_HOME");
+    FILE* f = home != nullptr ? std::fopen((std::string(home) + "/franchise/evolutions.txt").c_str(), "r") : nullptr;
+    if (f != nullptr) {
+      char from[96], to[96];
+      int level = 0;
+      char line[256];
+      while (std::fgets(line, sizeof(line), f) != nullptr) {
+        if (line[0] == '#') continue;
+        if (std::sscanf(line, "%95s %95s %d", from, to, &level) == 3) levels[to] = level;
+      }
+      std::fclose(f);
+    }
+  }
+  auto it = levels.find(pack);
+  return it != levels.end() ? it->second : 0;
+}
+// r112: the menu drawn: `taken(i)` / `locked(i)` say which entries can't be picked (another side's captain; a
+// form not unlocked), `title` its small label, the hints its buttons.
+void draw_select(uint8_t* px, int w, int h, int role, int cursor, bool onTabs, const std::string& title,
+                 const std::function<bool(int)>& taken, const std::function<bool(int)>& locked,
+                 const std::vector<xrtext::SelectHint>& hints) {
+  const std::vector<MenuEntry>& menu = menu_entries(role);
+  const MenuLayout& L = menu_layout(role);
+  const int n = static_cast<int>(menu.size());
+  if (n == 0 || L.tabs.empty()) {
+    xrtext::character_select(px, w, h, title.c_str(), nullptr, 0, 0, false, nullptr, 0, 0, 0, xrtext::SelectSpot{},
+                             hints.data(), static_cast<int>(hints.size()));
+    return;
+  }
+  cursor = std::max(0, std::min(n - 1, cursor));
+  const int tab = L.tabOf[cursor], fam = L.famOf[cursor];
+  std::vector<xrtext::SelectTab> tabs;
+  for (const MenuLayout::Tab& t : L.tabs)
+    tabs.push_back(xrtext::SelectTab{t.name.c_str(), t.rgb, static_cast<int>(t.fams.size())});
+  std::vector<xrtext::SelectTile> tiles;
+  for (const std::vector<int>& f : L.tabs[tab].fams) {
+    const MenuEntry& e = menu[f[0]];
+    const GuestPortrait& p = guest_portrait(e.portrait);
+    xrtext::SelectTile t;
+    t.rgba = p.rgba.empty() ? nullptr : p.rgba.data();
+    t.w = p.w;
+    t.h = p.h;
+    t.name = e.name.c_str();
+    t.forms = static_cast<int>(f.size());
+    t.taken = taken(f[0]);
+    tiles.push_back(t);
+  }
+  const MenuEntry& e = menu[cursor];
+  const GuestPortrait& sp = guest_portrait(e.portrait);
+  xrtext::SelectSpot spot;
+  spot.rgba = sp.rgba.empty() ? nullptr : sp.rgba.data();
+  spot.w = sp.w;
+  spot.h = sp.h;
+  spot.name = e.name.c_str();
+  spot.locked = locked(cursor);
+  spot.taken = taken(cursor);
+  const bool hero = e.tag == "Marvel";
+  if (spot.locked) spot.note = hero ? "UNLOCK IN FRANCHISE" : "EVOLVE IN FRANCHISE";
+  if (const float* c = menu_card(e.portrait)) {
+    spot.hasCard = true;
+    for (int k = 0; k < 4; ++k) spot.card[k] = c[k];
+  }
+  for (int i : L.tabs[tab].fams[fam]) {
+    const GuestPortrait& fp = guest_portrait(menu[i].portrait);
+    xrtext::SelectForm f;
+    f.rgba = fp.rgba.empty() ? nullptr : fp.rgba.data();
+    f.w = fp.w;
+    f.h = fp.h;
+    f.locked = locked(i);
+    f.level = f.locked ? menu_form_level(menu[i].portrait) : 0;
+    spot.forms.push_back(f);
+  }
+  spot.formAt = L.formOf[cursor];
+  const int rowsAll = (static_cast<int>(tiles.size()) + kSelectCols - 1) / kSelectCols;
+  const int firstRow = std::max(0, std::min(fam / kSelectCols - 1, rowsAll - kSelectRows));
+  // the LT / RT hint only for one with forms; a hero's are costumes
+  std::vector<xrtext::SelectHint> shown;
+  for (const xrtext::SelectHint& k : hints) {
+    if (std::strcmp(k.glyph, "LT RT") == 0) {
+      if (spot.forms.size() < 2) continue;
+      shown.push_back({k.glyph, k.rgb, hero ? "COSTUMES" : k.words});
+    } else {
+      shown.push_back(k);
+    }
+  }
+  xrtext::character_select(px, w, h, title.c_str(), tabs.data(), static_cast<int>(tabs.size()), tab, onTabs, tiles.data(),
+                           static_cast<int>(tiles.size()), fam, firstRow, spot, shown.data(), static_cast<int>(shown.size()));
+}
+// r112: the hints, a button and a word or two each (the menu's own way to say it)
+constexpr uint32_t kHintStick = 0x3A4A70, kHintA = 0x2EA043, kHintB = 0xC0392B, kHintX = 0x2F6FD0;
 // r75: a new career's own players on the character select menu (the franchise hub's mode 4): your
 // captain, your backup captain, your sidekicks. Evolved forms can't start a career (their silhouette, as
 // on the menu); for the backup, the captain you just picked is darkened.
-void draw_franchise_pick(uint8_t* px, int w, int h, const FrSnapshot& s) {
-  const int stage = std::max(0, std::min(2, s.pickStage));
-  const int role = stage == 2 ? 1 : 0;
-  const std::vector<MenuEntry>& menu = menu_entries(role);
-  std::vector<xrtext::GuestTile> tiles;
-  tiles.reserve(menu.size());
-  for (const MenuEntry& e : menu) {
-    const GuestPortrait& p = guest_portrait(e.portrait);
-    xrtext::GuestTile t{p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, e.name.c_str(), e.tag.c_str()};
-    t.row = e.row;
-    t.col = e.col;
-    t.frame = e.frame;
-    t.locked = role == 0 && e.team < 0 && PortGuestRosterEvolved(e.pick);
-    t.taken = stage == 1 && e.pick == s.pickCap;
-    tiles.push_back(t);
+// r130: the franchise's three sidekick picks (stages 2-4 of the hub's mode 4): the club's kind for a new career (a
+// Strikers sidekick among them, else a Charged sidekick guest among them, else the class most of them suit) and the
+// members. Returns the kind pick for PortFranchiseNewPicked.
+int fr_kind_from(const int* picks) {
+  static const int kByCaptain[8] = {3, 2, 1, 1, 3, 3, 2, 0};  // eTeamID daisy dk luigi mario peach waluigi wario yoshi
+  int votes[4] = {0, 0, 0, 0}, firstVote = -1;
+  for (int k = 0; k < 3; ++k)
+    if (picks[k] >= PORT_GUEST_ORIGINAL_SIDEKICK && picks[k] < PORT_GUEST_ORIGINAL_SIDEKICK + 4) return picks[k];
+  // (r130: a Strikers captain as a sidekick, cap_<name>, is never a club's kind: it votes its class below)
+  auto capSk = [](int p) {
+    const char* pk = PortGuestRosterPack(p);
+    return pk != nullptr && std::strncmp(pk, "cap_", 4) == 0;
+  };
+  for (int k = 0; k < 3; ++k)
+    if (picks[k] >= 0 && picks[k] < PORT_GUEST_ORIGINAL && !capSk(picks[k]) &&
+        PortGuestRosterFind(PORT_GUEST_SIDEKICK, PortGuestRosterPack(picks[k])) == picks[k])
+      return picks[k];
+  for (int k = 0; k < 3; ++k) {
+    if (picks[k] >= PORT_GUEST_ORIGINAL && picks[k] < PORT_GUEST_ORIGINAL + 8) {  // r130: a Strikers captain, by build
+      const int v = kByCaptain[picks[k] - PORT_GUEST_ORIGINAL];
+      ++votes[v];
+      if (firstVote < 0) firstVote = v;
+      continue;
+    }
+    if (picks[k] < 0 || picks[k] >= PORT_GUEST_ORIGINAL) continue;
+    const int base = PortGuestRosterBase(picks[k]);
+    const bool sideRole = PortGuestRosterFind(PORT_GUEST_SIDEKICK, PortGuestRosterPack(picks[k])) == picks[k];
+    if (base < 0 || base >= (sideRole ? 4 : 8)) continue;
+    const int v = sideRole ? base : kByCaptain[base];
+    ++votes[v];
+    if (firstVote < 0) firstVote = v;
   }
-  std::string club = s.pickClub >= 0 && s.pickClub < static_cast<int>(s.clubs.size()) ? s.clubs[s.pickClub].name : "";
-  for (char& ch : club) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-  static const char* const kWhat[3] = {"CHOOSE YOUR CAPTAIN", "CHOOSE YOUR BACKUP CAPTAIN", "CHOOSE YOUR SIDEKICKS"};
-  static const char* const kHint[3] = {
-      "STICK: MOVE   -   A: YOUR CAPTAIN   -   B: BACK TO THE CLUBS",
-      "STICK: MOVE   -   A: YOUR BACKUP CAPTAIN   -   X: NO BACKUP   -   B: BACK",
-      "STICK: MOVE   -   A: YOUR SIDEKICKS (THE CAREER STARTS)   -   B: BACK"};
-  char title[192];
-  std::snprintf(title, sizeof(title), "NEW CAREER   -   %s   -   %s", club.c_str(), kWhat[stage]);
-  xrtext::guest_picker(px, w, h, title, tiles.data(), static_cast<int>(tiles.size()),
-                       role == 0 ? kMenuCaptainCols : kMenuSidekickCols, s.cursor, kHint[stage]);
+  int cls = firstVote >= 0 ? firstVote : 0;
+  for (int c = 0; c < 4; ++c)
+    if (votes[c] > votes[cls]) cls = c;
+  return PORT_GUEST_ORIGINAL_SIDEKICK + cls;
+}
+// r131 (Lance: "each character is only chosen once per franchise"): the franchise pick menu's characters already taken
+// (PortFranchisePicksTaken): one your club holds in this pick - your captain, backup, an earlier sidekick slot, its whole
+// evolution line - and in the member editor one another club has (greyed like the r130 ones; A / X won't take it)
+int fr_held(int* held) {
+  int n = 0;
+  if (g.frPickStage >= 1 && g.frPickCap >= 0) held[n++] = g.frPickCap;
+  if (g.frPickStage >= 2 && g.frPickBk >= 0) held[n++] = g.frPickBk;
+  for (int k = 0; k < g.frPickStage - 2 && k < 3; ++k)
+    if (g.frPickSk[k] >= 0) held[n++] = g.frPickSk[k];
+  return n;
+}
+bool fr_pick_taken(int pick) {
+  int held[5];
+  const int n = fr_held(held);
+  unsigned char t = 0;
+  PortFranchisePicksTaken(&pick, 1, held, n, g.frEditMembers, &t);
+  return t != 0;
+}
+void fr_pick_taken_fill(std::vector<unsigned char>& out) {
+  const int stage = std::max(0, std::min(4, g.frPickStage));
+  const std::vector<MenuEntry>& menu = menu_entries(stage >= 2 ? 2 : 0);
+  std::vector<int> picks(menu.size());
+  for (size_t i = 0; i < menu.size(); ++i) picks[i] = menu[i].pick;
+  int held[5];
+  const int n = fr_held(held);
+  out.assign(menu.size(), 0);
+  if (!picks.empty()) PortFranchisePicksTaken(picks.data(), static_cast<int>(picks.size()), held, n, g.frEditMembers, out.data());
+}
+void draw_franchise_pick(uint8_t* px, int w, int h, const FrSnapshot& s) {
+  const int stage = std::max(0, std::min(4, s.pickStage));
+  const int role = stage >= 2 ? 2 : 0;  // r130: the sidekicks one slot at a time on the sidekick-slot menu
+  const std::vector<MenuEntry>& menu = menu_entries(role);
+  const int n = static_cast<int>(menu.size());
+  // r112: the new menu (draw_select); an evolved form / a costume can't start a career, its silhouette
+  auto locked = [&](int i) {
+    return i >= 0 && i < n && menu[i].team < 0 && menu[i].pick >= 0 && menu[i].pick < PORT_GUEST_ORIGINAL &&
+           PortGuestRosterEvolved(menu[i].pick);
+  };
+  auto taken = [&](int i) {
+    if (i >= 0 && i < static_cast<int>(s.pickTaken.size()) && s.pickTaken[i] != 0) return true;  // r131
+    // (r130: nor your backup, nor a Strikers captain you have as one)
+    if (stage >= 2)
+      return i >= 0 && i < n &&
+             (sk_taken(menu[i], s.pickSk, stage - 2, 0, s.pickCap, fr_cap_bits(s.pickCap, s.pickBk)) ||
+              (s.pickBk >= 0 && menu[i].pick == s.pickBk));
+    return i >= 0 && i < n && stage == 1 && menu[i].pick == s.pickCap;
+  };
+  static const char* const kWhat[5] = {"YOUR CAPTAIN", "YOUR BACKUP CAPTAIN", "YOUR SIDEKICK 1 OF 3", "YOUR SIDEKICK 2 OF 3",
+                                       "YOUR SIDEKICK 3 OF 3"};
+  std::vector<xrtext::SelectHint> hints = {{"L", kHintStick, "MOVE"}, {"A", kHintA, "PICK"}};
+  hints.push_back({"LT RT", kHintStick, "FORMS"});
+  if (stage == 1) hints.push_back({"X", kHintX, "NO BACKUP"});
+  if (stage == 2 || stage == 3) hints.push_back({"X", kHintX, "ALL THE SAME"});
+  hints.push_back({"B", kHintB, "BACK"});
+  draw_select(px, w, h, role, s.cursor, s.onTabs, kWhat[stage], taken, locked, hints);
 }
 constexpr int kViewHeightMinCm = -60, kViewHeightMaxCm = 100;  // r44g
 
@@ -2527,6 +6143,37 @@ void on_aurora_frame(const uint8_t* pixels, uint32_t width, uint32_t height, uin
   g_frameWidth = width;
   g_frameHeight = height;
   ++g_frameSerial;
+  // r113: the newspaper's photo: this frame once one is asked for (a goal of yours in a franchise match),
+  // box-shrunk to 768 px wide at most; a black one (no game picture in this view) is no photo
+  const uint64_t want = g_photoWantNs.load();
+  if (want != 0 && now_ns() >= want && width > 0 && height > 0) {
+    g_photoWantNs = 0;
+    const uint32_t f = std::max(1u, (width + 767u) / 768u);
+    const int pw = static_cast<int>(width / f), ph = static_cast<int>(height / f);
+    std::vector<uint8_t> photo(static_cast<size_t>(pw) * ph * 4);
+    double luma = 0.0;
+    for (int y = 0; y < ph; ++y)
+      for (int x = 0; x < pw; ++x) {
+        uint32_t sum[3] = {0, 0, 0};
+        for (uint32_t sy = 0; sy < f; ++sy)
+          for (uint32_t sx = 0; sx < f; ++sx) {
+            const uint8_t* p = dst + (static_cast<size_t>(y * f + sy) * width + x * f + sx) * 4;
+            sum[0] += p[0];
+            sum[1] += p[1];
+            sum[2] += p[2];
+          }
+        uint8_t* o = &photo[(static_cast<size_t>(y) * pw + x) * 4];
+        for (int k = 0; k < 3; ++k) o[k] = static_cast<uint8_t>(sum[k] / (f * f));
+        o[3] = 255;
+        luma += 0.3 * o[0] + 0.59 * o[1] + 0.11 * o[2];
+      }
+    if (luma / (static_cast<double>(pw) * ph) > 14.0) {
+      std::lock_guard<std::mutex> plock(g_photoMutex);
+      g_photo = std::move(photo);
+      g_photoW = pw;
+      g_photoH = ph;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2936,8 +6583,21 @@ void init_refresh_rate() {
   XLOG("display refresh rates: %s", list.c_str());
   // r2 stays at 72 Hz: one game frame in six is shown twice, but every display frame that runs a
   // game frame also carries the CPU readback, and 72 Hz is the budget that fits it.
-  if (std::find(rates.begin(), rates.end(), 72.0f) != rates.end()) {
-    xr_ok(g.requestRefreshRate(g.session, 72.0f), "xrRequestDisplayRefreshRateFB(72)");
+  // r123 (Lance, on 72: "that shit felt CRYSTAL clear ... is there a way to reach even higher???"): strikers.ini
+  // refresh_rate = 80 / 90 / 120 asks for that instead (the game frames follow every display frame where a view keeps
+  // up, else 60 a second in that view: its log says which); anything the headset doesn't offer stays at 72.
+  float want = 72.0f;
+  if (const char* env = std::getenv("STRIKERS_REFRESH_RATE")) {
+    const float asked = static_cast<float>(std::atof(env));
+    for (float r : rates)
+      if (asked > 0.0f && std::fabs(r - asked) < 0.5f) want = r;
+    if (want != asked) XLOG("refresh_rate %s isn't offered here: 72 Hz", env);
+  }
+  get_proc(g.instance, "xrGetDisplayRefreshRateFB", &g.getRefreshRate);
+  if (std::find(rates.begin(), rates.end(), want) != rates.end()) {
+    g.wantRefresh = want;
+    xr_ok(g.requestRefreshRate(g.session, want), "xrRequestDisplayRefreshRateFB");
+    XLOG("display: %.0f Hz asked", want);
   }
 }
 
@@ -3467,7 +7127,7 @@ void update_shelf(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector
                   const XrPosef* poseL, const XrPosef* poseR) {
   auto& sh = g.shelf;
   // r62: the suite's trophies too; r104: none while the shelf is switched off (a held trophy goes back)
-  const bool here = g.showShelf && ((g.mrMode && sh.placed) || g.inSuite);
+  const bool here = g.showShelf && home_on() && ((g.mrMode && sh.placed) || g.inSuite);
   const bool grip[2] = {gripL, gripR}, have[2] = {haveL, haveR}, prev[2] = {sh.prevGripL, sh.prevGripR};
   const XrVector3f hand[2] = {handL, handR};
   const XrPosef* pose[2] = {poseL, poseR};
@@ -3593,6 +7253,89 @@ void update_shelf(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector
   }
 }
 
+// r120: the home figure's spot (x z yaw scale), like the shelf's; one over 5 m from where you start is placed again.
+std::string homespot_path() {
+  const char* home = std::getenv("STRIKERS_HOME");
+  return std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/xr_homespot.txt";
+}
+void save_homespot() {
+  if (FILE* f = std::fopen(homespot_path().c_str(), "w")) {
+    std::fprintf(f, "%.3f %.3f %.4f %.3f\n", g.homeSpot.x, g.homeSpot.z, g.homeSpot.yaw, g.homeSpot.scale);
+    std::fclose(f);
+  }
+}
+void load_homespot() {
+  if (FILE* f = std::fopen(homespot_path().c_str(), "r")) {
+    float x = 0, z = 0, yaw = 0, sc = 1;
+    if (std::fscanf(f, "%f %f %f %f", &x, &z, &yaw, &sc) == 4 && std::isfinite(x + z + yaw + sc) && x * x + z * z < 25.0f) {
+      g.homeSpot.placed = true;
+      g.homeSpot.x = x;
+      g.homeSpot.z = z;
+      g.homeSpot.yaw = yaw;
+      g.homeSpot.scale = std::max(0.4f, std::min(1.5f, sc));
+      XLOG("home: figure at (%.2f, %.2f), size %.2f", x, z, g.homeSpot.scale);
+    }
+    std::fclose(f);
+  }
+}
+
+// r120: one grip closing on the home figure (round it, floor to over its head) drags it along the floor; both
+// turn it (as the hands turn) and size it (as they part: 0.4 - 1.5 of life size). Let go: it stays there.
+void update_home_spot(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL, const XrVector3f& handR) {
+  auto& hs = g.homeSpot;
+  const bool grip[2] = {gripL, gripR}, have[2] = {haveL, haveR}, prev[2] = {hs.prevGripL, hs.prevGripR};
+  const bool shelfHas[2] = {g.shelf.handL, g.shelf.handR};
+  const XrVector3f hand[2] = {handL, handR};
+  bool* takes[2] = {&hs.handL, &hs.handR};
+  for (int h = 0; h < 2; ++h) {
+    if (hs.shown && grip[h] && !prev[h] && have[h] && !shelfHas[h]) {
+      const float dx = hand[h].x - hs.x, dz = hand[h].z - hs.z, dy = hand[h].y - hs.floorY;
+      if (dx * dx + dz * dz < std::pow(std::max(0.35f, hs.reach + 0.15f), 2.0f) && dy > -0.1f && dy < hs.height + 0.25f) {
+        *takes[h] = true;
+        XLOG("home: figure taken by the %s grip", h == 0 ? "left" : "right");
+      }
+    }
+    if (!grip[h] || !have[h] || !hs.shown) *takes[h] = false;
+  }
+  hs.prevGripL = gripL;
+  hs.prevGripR = gripR;
+  const int hands = (hs.handL ? 1 : 0) | (hs.handR ? 2 : 0);
+  if (hands != hs.grabHands) {
+    if (hands == 3) {
+      hs.twoAngle = std::atan2(handR.x - handL.x, handR.z - handL.z);
+      hs.twoYaw = hs.yaw;
+      hs.twoPos = {hs.x, 0.0f, hs.z};
+      hs.twoMid = {0.5f * (handL.x + handR.x), 0.0f, 0.5f * (handL.z + handR.z)};
+      hs.twoDist = std::max(0.05f, std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) +
+                                             (handR.z - handL.z) * (handR.z - handL.z)));
+      hs.twoScale = hs.scale;
+    } else if (hands != 0) {
+      const XrVector3f& p = hands == 1 ? handL : handR;
+      hs.grabOffset = {hs.x - p.x, 0.0f, hs.z - p.z};
+    } else {
+      hs.placed = true;
+      save_homespot();
+      XLOG("home: figure left at (%.2f, %.2f), %.0f deg, size %.2f", hs.x, hs.z, hs.yaw * 57.29578f, hs.scale);
+    }
+    hs.grabHands = hands;
+  }
+  if (hands == 3) {
+    float turn = std::atan2(handR.x - handL.x, handR.z - handL.z) - hs.twoAngle;
+    while (turn > 3.14159265f) turn -= 6.2831853f;
+    while (turn < -3.14159265f) turn += 6.2831853f;
+    hs.yaw = hs.twoYaw + turn;
+    hs.x = hs.twoPos.x + 0.5f * (handL.x + handR.x) - hs.twoMid.x;
+    hs.z = hs.twoPos.z + 0.5f * (handL.z + handR.z) - hs.twoMid.z;
+    const float d = std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) +
+                              (handR.z - handL.z) * (handR.z - handL.z));
+    hs.scale = std::max(0.4f, std::min(1.5f, hs.twoScale * d / hs.twoDist));
+  } else if (hands != 0) {
+    const XrVector3f& p = hands == 1 ? handL : handR;
+    hs.x = p.x + hs.grabOffset.x;
+    hs.z = p.z + hs.grabOffset.z;
+  }
+}
+
 void sync_input() {
   PADStatus status{};
   status.err = PAD_ERR_NONE;
@@ -3684,8 +7427,8 @@ void sync_input() {
           g.headValid = true;
         }
       }
-      const bool gripR = get_float(a.squeezeR) > 0.5f;
-      const bool gripL = get_float(a.squeezeL) > 0.6f;
+      const bool gripRawR = get_float(a.squeezeR) > 0.5f;  // r131: as held (gripL / gripR below: not the magazine's)
+      const bool gripRawL = get_float(a.squeezeL) > 0.6f;
       // r60: the pointers, and whether the left one (or the left hand itself) is on the big screen's
       // edge, where its grip takes the screen.
       {
@@ -3720,6 +7463,15 @@ void sync_input() {
           }
         }
       }
+      // r131: STRIKERS ILLUSTRATED before all: a grip that closes on the magazine is the magazine's until it opens
+      // (no shelf, home figure, screen, table or item swap with it); its triggers on a page, its swipes.
+      {
+        const bool rawGrip[2] = {gripRawL, gripRawR}, haveHand[2] = {haveL, haveR};
+        const XrVector3f handAt[2] = {handL, handR};
+        update_magazine(rawGrip, haveHand, handAt, now_ns());
+      }
+      const bool gripL = gripRawL && !g.magHand[0] && !g.magSpent[0];
+      const bool gripR = gripRawR && !g.magHand[1] && !g.magSpent[1];
       // r57: the trophy shelf first: a grip that closes on it takes it from the table and screen.
       if (g.mrMode && !g.shelf.placed && g.headValid) place_shelf(g.headPose);
       {
@@ -3736,29 +7488,30 @@ void sync_input() {
         };
         const bool fullL = full(a.gripSpaceL, &poseL), fullR = full(a.gripSpaceR, &poseR);
         update_shelf(gripL, gripR, haveL, haveR, handL, handR, fullL ? &poseL : nullptr, fullR ? &poseR : nullptr);
+        update_home_spot(gripL, gripR, haveL, haveR, handL, handR);  // r120
       }
       if (gripR && !g.prevGripR) {
-        g.table.rightGrab = g.tabletop && !g.stereoFailed && haveR && !g.shelf.handR && near_table(handR);
+        g.table.rightGrab = g.tabletop && !g.stereoFailed && haveR && !g.shelf.handR && !g.homeSpot.handR && near_table(handR);
       }
       if (!gripR) g.table.rightGrab = false;
       // r42: the Jumbotron screen (the big screen modes, and Tabletop when 3D failed).
       const bool screenMode = !g.tabletop || g.stereoFailed;
       if (screenMode) {
-        update_screen(gripL && !g.shelf.handL, gripR && !g.shelf.handR, haveL, haveR, handL, handR);
+        update_screen(gripL && !g.shelf.handL && !g.homeSpot.handL, gripR && !g.shelf.handR && !g.homeSpot.handR, haveL, haveR, handL, handR);
         // The left grip is busy with the screen: the right grip is not Z until it is let go.
         if (g.screens[screen_room()].grabHands != 0) g.holdRightGrip = true;
       } else {
         g.prevGripL = gripL;
         g.screens[screen_room()].grabHands = 0;
       }
-      if (g.shelf.handR) g.holdRightGrip = true;  // r57: carrying the shelf is no item swap
+      if (g.shelf.handR || g.homeSpot.handR) g.holdRightGrip = true;  // r57: carrying the shelf is no item swap (r120: nor the home figure)
       if (!gripR) g.holdRightGrip = false;
       // r46: Z from the right grip only while it is mapped there; it still grabs the table either way.
       if (g.controls[kActZ] == kSrcGripR && gripR && !g.table.rightGrab && !g.holdRightGrip) {
         status.button |= PAD_TRIGGER_Z;
       }
       g.prevGripR = gripR;
-      const bool holdL = g.tabletop && get_float(a.squeezeL) > 0.6f && !g.shelf.handL;  // r57: not while it carries the shelf
+      const bool holdL = g.tabletop && gripL && !g.shelf.handL && !g.homeSpot.handL;  // r57: not while it carries the shelf (r131: nor the magazine)
       const int hands = (holdL && haveL ? 1 : 0) | (g.table.rightGrab && haveR ? 2 : 0);
       if (hands != g.table.grabHands) {
         // r44: taken hold of while it is raised for the scorer: it stays up there, in your hand.
@@ -3905,7 +7658,11 @@ void sync_input() {
           g.gpOpenNs = now_ns();  // r68g: and nothing picks in its first 0.4 s (Lance's "auto" Mario)
           // r79: a Grudge Match's sidekick pick starts with the side's co-captain (on the one it has now)
           g.gpCo = offRole == 1 && PortGuestCoCaptainOffered(offSide);
+          g.gpSkSlot = -1;  // r130: the sidekick slots start once the co-captain (if any) is set
           g.gpPrevX = (status.button & PAD_BUTTON_X) != 0;
+          g.gpOnTabs = false;  // r112
+          g.gpPrevLT = (status.button & PAD_TRIGGER_L) != 0 || status.triggerLeft > 160;
+          g.gpPrevRT = (status.button & PAD_TRIGGER_R) != 0 || status.triggerRight > 160;
           if (g.gpCo) {
             const int now = PortGuestCoCaptainCurrent(offSide);
             const std::vector<MenuEntry>& captains = menu_entries(0);
@@ -3923,7 +7680,15 @@ void sync_input() {
         // "let go" at once and reached the game's own screen the next frame (a second, unasked press)
         const bool gpRawA = (status.button & PAD_BUTTON_A) != 0, gpRawB = (status.button & PAD_BUTTON_B) != 0;
         if (g.gpOpen) {
-          const std::vector<MenuEntry>& menu = menu_entries(g.gpCo ? 0 : g.gpRole);
+          // r130: the sidekicks one slot at a time on the sidekick-slot menu (role 2)
+          if (!g.gpCo && g.gpRole == 1 && g.gpSkSlot < 0) {
+            g.gpSkFirst = PortGuestCoCaptainOffered(g.gpSide) && PortGuestCoCaptainCurrent(g.gpSide) >= 0 ? 1 : 0;  // (review: a grudge co-captain stays picked)
+            g.gpSkSlot = g.gpSkFirst;
+            for (int k = 0; k < 3; ++k) g.gpSkPick[k] = -1;
+            g.gpCursor = 0;
+            ++g.gpGen;
+          }
+          const std::vector<MenuEntry>& menu = menu_entries(g.gpCo ? 0 : (g.gpRole == 1 ? 2 : g.gpRole));
           if (g.gpCo) {
             // r79: the Strikers captains it can't be (a team's captain, the other side's co-captain)
             unsigned coTaken = 0;
@@ -3931,6 +7696,13 @@ void sync_input() {
               if (!PortGuestCoCaptainFree(g.gpSide, t)) coTaken |= 1u << t;
             if (coTaken != g.gpCoTaken) {
               g.gpCoTaken = coTaken;
+              ++g.gpGen;
+            }
+          } else if (g.gpRole == 1) {
+            // r130: the Strikers captains its sidekick slots can't have (redrawn when they change)
+            const unsigned skCapTaken = PortGuestSlotCaptainsTaken(g.gpSide);
+            if (skCapTaken != g.gpSkCapTaken) {
+              g.gpSkCapTaken = skCapTaken;
               ++g.gpGen;
             }
           }
@@ -3950,16 +7722,32 @@ void sync_input() {
           }
           g.gpDir = dir;
           const int oldCursor = g.gpCursor;
-          if (step) g.gpCursor = menu_step(menu, g.gpCursor, dir);
-          if (g.gpCursor != oldCursor) ++g.gpGen;
+          const bool oldTabs = g.gpOnTabs;
+          // r112: the menu by game (menu_nav): the stick among a game's characters and onto its tabs, LT / RT
+          // through the one's forms
+          const int navRole = g.gpCo ? 0 : (g.gpRole == 1 ? 2 : g.gpRole);  // r130
+          const bool ltDown = (status.button & PAD_TRIGGER_L) != 0 || status.triggerLeft > 160;
+          const bool rtDown = (status.button & PAD_TRIGGER_R) != 0 || status.triggerRight > 160;
+          if (step) g.gpCursor = menu_nav(navRole, g.gpCursor, &g.gpOnTabs, dir, 0);
+          if (ltDown && !g.gpPrevLT) g.gpCursor = menu_nav(navRole, g.gpCursor, &g.gpOnTabs, 0, -1);
+          if (rtDown && !g.gpPrevRT) g.gpCursor = menu_nav(navRole, g.gpCursor, &g.gpOnTabs, 0, 1);
+          g.gpPrevLT = ltDown;
+          g.gpPrevRT = rtDown;
+          if (g.gpCursor != oldCursor || g.gpOnTabs != oldTabs) ++g.gpGen;
           const bool aDown = (status.button & PAD_BUTTON_A) != 0, bDown = (status.button & PAD_BUTTON_B) != 0;
           const bool xDown = (status.button & PAD_BUTTON_X) != 0;
-          if (g.gpCo && xDown && !g.gpPrevX) {
+          if (g.gpOnTabs && aDown && !g.gpHoldA) {
+            // r112: A on the tabs: down into that game's characters (not a pick)
+            g.gpOnTabs = false;
+            g.gpHoldA = true;
+            ++g.gpGen;
+          } else if (g.gpCo && xDown && !g.gpPrevX) {
             // r79: no co-captain; on to the sidekicks
             PortGuestCoCaptainPick(g.gpSide, -1);
             XLOG("character select: side %d has no co-captain", g.gpSide);
             g.gpCo = false;
             g.gpCursor = 0;
+            g.gpOnTabs = false;
             ++g.gpGen;
           } else if (aDown && !g.gpHoldA && now_ns() - g.gpOpenNs < 400000000ull) {
             g.gpHoldA = true;  // too soon after it opened: not a pick, and kept until let go
@@ -3972,10 +7760,38 @@ void sync_input() {
                 XLOG("character select: side %d's co-captain is %s", g.gpSide, e.name.c_str());
                 g.gpCo = false;
                 g.gpCursor = 0;
+                g.gpOnTabs = false;
                 ++g.gpGen;
               }
             }
             g.gpHoldA = true;
+          } else if (g.gpRole == 1 && g.gpSkSlot >= 0 && ((aDown && !g.gpHoldA) || (xDown && !g.gpPrevX))) {
+            // r130: a sidekick slot: A picks it, X picks it for every slot left; after the third the three go to the screen
+            // (r130, any slot any character: X only for a sidekick kind, never a named character - one of each a team)
+            if (g.gpCursor >= 0 && g.gpCursor < static_cast<int>(menu.size())) {
+              const MenuEntry& e = menu[g.gpCursor];
+              const bool rest = !(aDown && !g.gpHoldA);
+              if (!PortGuestRosterLocked(e.pick) && (!rest || sk_repeatable(e)) &&
+                  !sk_taken(e, g.gpSkPick, g.gpSkSlot, g.gpSkFirst, PortGuestMenuCaptainFor(g.gpSide),
+                            PortGuestSlotCaptainsTaken(g.gpSide))) {
+                do {
+                  g.gpSkPick[g.gpSkSlot++] = e.pick;
+                } while (rest && g.gpSkSlot < 3);
+                XLOG("character select: side %d's sidekick %d is %s%s", g.gpSide, g.gpSkSlot, e.name.c_str(), rest ? " (and the rest)" : "");
+                if (g.gpSkSlot >= 3) {
+                  sk_commit(g.gpSide, g.gpSkPick, g.gpSkFirst);
+                  g.gpOpen = false;
+                } else {
+                  g.gpOnTabs = false;
+                }
+                ++g.gpGen;
+              }
+            }
+            if (aDown) g.gpHoldA = true;
+          } else if (g.gpRole == 1 && g.gpSkSlot > g.gpSkFirst && bDown && !g.gpHoldB) {
+            --g.gpSkSlot;  // r130: back a slot
+            g.gpHoldB = true;
+            ++g.gpGen;
           } else if (aDown && !g.gpHoldA) {
             if (g.gpCursor >= 0 && g.gpCursor < static_cast<int>(menu.size())) {
               const MenuEntry& e = menu[g.gpCursor];
@@ -4014,6 +7830,18 @@ void sync_input() {
         if (g.frOpen && !onMenu) g.frOpen = false;
         if (PortFranchiseMatchActive()) g.frAfterMatch = true;
         {
+          // r113: a franchise match starting: its newspaper photo starts fresh; the paper waits for the hub
+          const bool matchOn = PortFranchiseMatchActive();
+          if (matchOn && !g.frWasMatch) {
+            std::lock_guard<std::mutex> plock(g_photoMutex);
+            g_photo.clear();
+            g_photoW = g_photoH = 0;
+            g_photoWantNs = 0;
+          }
+          g.frWasMatch = matchOn;
+          if (matchOn) g.paperOpen = false;
+        }
+        {
           // r70b: the match on now: its intro card for 10 s from its intro, then the series board
           PortFranchiseCard card;
           PortFranchiseMatchCard(&card);
@@ -4035,6 +7863,11 @@ void sync_input() {
           {
             PortFranchiseLive live;
             const bool liveOn = PortFranchiseLiveXp(&live);
+            if (liveOn && live.valid) {  // r131: STRIKERS ILLUSTRATED's own numbers of the match (a hat trick)
+              g.magNews.live = live;
+              g.magNews.liveSeason = g_frSnap.view.season;
+              g.magNews.liveWeek = g_frSnap.view.week;
+            }
             const long long liveKey =
                 liveOn ? (static_cast<long long>(live.gain) * 1000003LL + live.skGain * 7919LL + live.goals * 101LL +
                           live.assists * 11LL + (live.won ? 1 : 0) +
@@ -4135,6 +7968,8 @@ void sync_input() {
           g.frHoldB = (status.button & PAD_BUTTON_B) != 0;
           g.frHubPrevY = true;  // r77: the Y that opened it isn't a trades press
           g.frOpenNs = now_ns();
+          g.paperDue = backFromMatch;  // r113: back from a franchise match: today's paper (after any evolution)
+          g.paperOpen = false;
           fr_refresh();
           XLOG("franchise: the hub opens (%s)", g.frMode == 2 ? "a career loaded" : "the careers");
         }
@@ -4268,51 +8103,109 @@ void sync_input() {
               g.frMode = 4;
               g.frPickStage = 0;
               g.frPickCap = g.frPickBk = -1;
-              g.frPickCursor[0] = g.frPickCursor[1] = g.frPickCursor[2] = 0;
+              g.frPickCursor[0] = g.frPickCursor[1] = g.frPickCursor[2] = g.frPickCursor[3] = g.frPickCursor[4] = 0;
+              g.frEditMembers = false;  // r130
+              g.frPickSk[0] = g.frPickSk[1] = g.frPickSk[2] = -1;
               g.frCursor = 0;
+              g.frOnTabs = false;  // r112
               XLOG("franchise: career %d with %s: picking your players", g.frSlot + 1, PortFranchiseClubName(g.frPickClub));
             } else if (bPress) {
               g.frMode = 0;
               g.frCursor = g.frSlot;
             }
           } else if (g.frMode == 4) {  // r75: a new career's own players: captain, backup captain, sidekicks
-            const std::vector<MenuEntry>& menu = menu_entries(g.frPickStage == 2 ? 1 : 0);
-            if (step) g.frCursor = menu_step(menu, g.frCursor, dir);
+            const int navRole = g.frPickStage >= 2 ? 2 : 0;  // r130: the sidekicks on the sidekick-slot menu
+            const std::vector<MenuEntry>& menu = menu_entries(navRole);
+            // r112: the menu by game (menu_nav), LT / RT through a character's forms
+            const bool ltDown = (status.button & PAD_TRIGGER_L) != 0 || status.triggerLeft > 160;
+            const bool rtDown = (status.button & PAD_TRIGGER_R) != 0 || status.triggerRight > 160;
+            const bool wasTabs = g.frOnTabs;
+            if (step) g.frCursor = menu_nav(navRole, g.frCursor, &g.frOnTabs, dir, 0);
+            if (ltDown && !g.frPrevLT) {
+              g.frCursor = menu_nav(navRole, g.frCursor, &g.frOnTabs, 0, -1);
+              changed = true;
+            }
+            if (rtDown && !g.frPrevRT) {
+              g.frCursor = menu_nav(navRole, g.frCursor, &g.frOnTabs, 0, 1);
+              changed = true;
+            }
+            g.frPrevLT = ltDown;
+            g.frPrevRT = rtDown;
+            if (g.frOnTabs != wasTabs) changed = true;
             const int pick = g.frCursor >= 0 && g.frCursor < static_cast<int>(menu.size()) ? menu[g.frCursor].pick : -1;
             auto to_stage = [&](int stage) {
               g.frPickCursor[g.frPickStage] = g.frCursor;
               g.frPickStage = stage;
               g.frCursor = g.frPickCursor[stage];
+              g.frOnTabs = false;
             };
-            if (aPress && pick >= 0) {
+            if (aPress && g.frOnTabs) {
+              g.frOnTabs = false;  // r112: A on the tabs: down into that game's characters
+            } else if (aPress && pick >= 0) {
               if (g.frPickStage == 0 && PortFranchiseCaptainPickable(pick)) {
                 g.frPickCap = pick;
                 XLOG("franchise: your captain %s", menu[g.frCursor].name.c_str());
                 to_stage(1);
-              } else if (g.frPickStage == 1 && pick != g.frPickCap && PortFranchiseCaptainPickable(pick)) {
+              } else if (g.frPickStage == 1 && pick != g.frPickCap && PortFranchiseCaptainPickable(pick) &&
+                         !fr_pick_taken(pick)) {  // r131: one character, one spot
                 g.frPickBk = pick;
                 XLOG("franchise: your backup captain %s", menu[g.frCursor].name.c_str());
                 to_stage(2);
-              } else if (g.frPickStage == 2) {
-                // The career starts on its hub, nothing played: you start your matches yourself (Lance)
-                // r100: an online league's: made on the server too, its code to share
-                if (g.frSlot == PORT_FR_LEAGUE_SLOT
-                        ? PortFranchiseLeagueCreate(g.frPickClub, g.frPickCap, g.frPickBk, pick, g.frLgMax)
-                        : PortFranchiseNewPicked(g.frSlot, g.frPickClub, g.frPickCap, g.frPickBk, pick)) {
-                  XLOG("franchise: career %d with %s, sidekicks %s", g.frSlot + 1, PortFranchiseClubName(g.frPickClub),
-                       menu[g.frCursor].name.c_str());
+              } else if (g.frPickStage >= 2 && g.frPickStage <= 4 &&
+                         !(pick < PORT_GUEST_ORIGINAL && PortGuestRosterEvolved(pick) &&
+                           !(g.frEditMembers && (pick == g.frMemNow[0] || pick == g.frMemNow[1] || pick == g.frMemNow[2]))) &&
+                         !(pick == g.frPickBk) &&  // r130: a Strikers backup captain too
+                         !fr_pick_taken(pick) &&   // r131: one character, one club
+                         !sk_taken(menu[g.frCursor], g.frPickSk, g.frPickStage - 2, 0, g.frPickCap,
+                                   fr_cap_bits(g.frPickCap, g.frPickBk))) {
+                // r130 (Lance: "you can have anybody play a sidekick now"): your three sidekicks, one at a time
+                g.frPickSk[g.frPickStage - 2] = pick;
+                XLOG("franchise: your sidekick %d %s", g.frPickStage - 1, menu[g.frCursor].name.c_str());
+                if (g.frPickStage < 4) {
+                  to_stage(g.frPickStage + 1);
+                } else if (g.frEditMembers) {
+                  if (PortFranchiseSetMembers(g.frPickSk)) XLOG("franchise: your sidekick members set");
+                  g.frEditMembers = false;
                   g.frMode = 2;
-                  g.frPage = 0;
                   g.frCursor = 0;
-                  g.frOpenNs = nowFr;  // and a moment before A acts on the hub (a fresh press plays)
+                  g.frOpenNs = nowFr;
+                } else {
+                  // The career starts on its hub, nothing played: you start your matches yourself (Lance)
+                  // r100: an online league's: made on the server too, its code to share (its sidekicks one kind)
+                  // r131: your sidekick members go in with the deal (the league forms around all your picks)
+                  const int kindPick = fr_kind_from(g.frPickSk);
+                  if (g.frSlot == PORT_FR_LEAGUE_SLOT
+                          ? PortFranchiseLeagueCreate(g.frPickClub, g.frPickCap, g.frPickBk, kindPick, g.frLgMax, g.frPickSk)
+                          : PortFranchiseNewPicked(g.frSlot, g.frPickClub, g.frPickCap, g.frPickBk, kindPick, g.frPickSk)) {
+                    if (g.frSlot != PORT_FR_LEAGUE_SLOT) PortFranchiseSetMembers(g.frPickSk);  // r130: each its own level
+                    XLOG("franchise: career %d with %s, sidekick kind pick %d", g.frSlot + 1, PortFranchiseClubName(g.frPickClub), kindPick);
+                    g.frMode = 2;
+                    g.frPage = 0;
+                    g.frCursor = 0;
+                    g.frOpenNs = nowFr;  // and a moment before A acts on the hub (a fresh press plays)
+                  }
                 }
               }
+            } else if (xPress && (g.frPickStage == 2 || g.frPickStage == 3) && pick >= 0 && !g.frOnTabs &&
+                       sk_repeatable(menu[g.frCursor]) &&  // r130 (review): X = the same for the rest: sidekicks only
+                       !(pick < PORT_GUEST_ORIGINAL && PortGuestRosterEvolved(pick)) &&
+                       !fr_pick_taken(pick) &&  // r131: a Charged sidekick guest another club has
+                       !sk_taken(menu[g.frCursor], g.frPickSk, g.frPickStage - 2, 0, g.frPickCap,
+                                 fr_cap_bits(g.frPickCap, g.frPickBk))) {
+              // r130: X: this one for every slot left (then A on the last confirms it, as a pick)
+              for (int k = g.frPickStage - 2; k < 2; ++k) g.frPickSk[k] = pick;
+              g.frPickCursor[4] = g.frCursor;
+              to_stage(4);
             } else if (xPress && g.frPickStage == 1) {
               g.frPickBk = -1;  // no backup captain
               XLOG("franchise: no backup captain");
               to_stage(2);
             } else if (bPress) {
-              if (g.frPickStage == 0) {
+              if (g.frEditMembers && g.frPickStage <= 2) {  // r130: back to the hub, nothing changed
+                g.frEditMembers = false;
+                g.frMode = 2;
+                g.frCursor = 0;
+              } else if (g.frPickStage == 0) {
                 g.frMode = 1;
                 g.frCursor = g.frPickClub;
               } else {
@@ -4378,16 +8271,17 @@ void sync_input() {
             // no B: you said yes on the page (r70c's B-to-stop is what stopped his Pichu unseen).
             const float t = static_cast<float>(nowFr - g.frEvoStartNs) / 1e9f;
             if (g.frEvoStage == 0) {
-              if (step && (dir == 1 || dir == 2) && g.frEvo.options == 2) g.frEvoChoice = dir == 2 ? 1 : 0;
+              if (step && (dir == 1 || dir == 2) && g.frEvo.options >= 2)  // r130: round the 2-5 options
+                g.frEvoChoice = (g.frEvoChoice + (dir == 2 ? 1 : g.frEvo.options - 1)) % g.frEvo.options;
               if (aPress && t > 0.5f) {
                 g.frEvoStage = 1;
                 g.frEvoStartNs = nowFr;
                 g.frEvoFanfare = false;
-                PortEvoMusic(0);  // r99: Pokemon Stadium (Melee) while it evolves
+                PortEvoMusic(std::strncmp(g.frEvo.fromKey, "mua_", 4) == 0 ? 2 : 0);  // r99: Pokemon Stadium (Melee) while it evolves; r130: a hero's costume, its MUA music
                 XLOG("franchise: evolving %s into %s (A on the EVO page)", g.frEvo.fromKey, g.frEvo.toKey[g.frEvoChoice]);
               } else if (bPress && t > 0.5f) {
                 bool sh = false, ns = false;
-                PortFranchiseEvolveSlot(g.frEvo.backup, -1, &sh, &ns);
+                PortFranchiseEvolvePlayer(g.frEvo.slot, -1, &sh, &ns);  // r130: by slot (a sidekick member too)
                 g.frEvoStage = 3;
                 g.frEvoStartNs = nowFr;
                 XLOG("franchise: evolution of %s postponed (B on the EVO page)", g.frEvo.fromKey);
@@ -4395,11 +8289,21 @@ void sync_input() {
             } else if (g.frEvoStage == 1) {
               if (t >= 8.5f && !g.frEvoFanfare) {  // r99: the flash: the Pokemon victory fanfare
                 g.frEvoFanfare = true;
-                PortEvoMusic(1);
+                PortEvoMusic(std::strncmp(g.frEvo.fromKey, "mua_", 4) == 0 ? 3 : 1);  // r130: a hero's costume: its MUA win
               }
               if (t >= 8.8f) {  // r96: after the flash (8.5 s), in 3D or on the card
                 bool sh = false, ns = false;
-                PortFranchiseEvolveSlot(g.frEvo.backup, g.frEvoChoice, &sh, &ns);
+                const bool evolvedNow = PortFranchiseEvolvePlayer(g.frEvo.slot, g.frEvoChoice, &sh, &ns);  // r130
+                if (evolvedNow && g.frEvoChoice >= 0 && g.frEvoChoice < 5) {
+                  // r131: this week's STRIKERS ILLUSTRATED puts it on its cover (the SPECIAL one)
+                  g.magNews.evoFrom = g.frEvo.fromName;
+                  g.magNews.evoTo = g.frEvo.toName[g.frEvoChoice];
+                  g.magNews.evoToKey = g.frEvo.toKey[g.frEvoChoice];
+                  g.magNews.evoShiny = ns;
+                  g.magNews.evoCostume = std::strncmp(g.frEvo.fromKey, "mua_", 4) == 0;
+                  g.magNews.evoSeason = g_frSnap.view.season;
+                  g.magNews.evoWeek = g_frSnap.view.lastWeek;
+                }
                 g.frEvoNewShiny = ns;
                 g.frEvoStage = 2;
                 g.frEvoStartNs = nowFr;
@@ -4442,6 +8346,49 @@ void sync_input() {
                 g.frCursor = g.frTradeWhat;
               }
             }
+          } else if (g.paperOpen || (g.paperDue && !g_frSnap.view.evolutionPending)) {
+            // r113: THE DAILY STRIKE (Lance: "a newspaper ... that ppl can literally flip through after each
+            // game"): due after a match (or a worked-out one) once nothing else (an evolution) comes first, or
+            // the PAPER page's A. Left / right (or LT / RT, or a swipe of your right hand across it) turns the
+            // page, A the next one (on the last: puts it down), B / Y puts it down.
+            // r131: STRIKERS ILLUSTRATED: opens closed on its cover. Stick left / right, LT / RT turn a page (not a
+            // trigger that's holding a page: update_magazine), A the next (closed on the back cover: puts it down),
+            // B / Y put it down; the hands: update_magazine (grab, a trigger on a page, a swipe while held).
+            const bool ltDown = (status.button & PAD_TRIGGER_L) != 0 || status.triggerLeft > 160;
+            const bool rtDown = (status.button & PAD_TRIGGER_R) != 0 || status.triggerRight > 160;
+            if (!g.paperOpen) {
+              g.paperDue = false;
+              paper_open();
+            } else {
+              const bool trigHeld = g.magTrigBusy[0] || g.magTrigBusy[1] || g.magDrag >= 0;
+              // r131: the cover stays a moment first: the hub's A counts 0.3 s after it opens, and an A mashed
+              // through the match's end screens turned the front page then too (the paper opens with the hub)
+              const bool magReady = nowFr - g.magOpenNs > 900000000ull;
+              int turn = 0;
+              const char* by = "";
+              if (step && dir == 1) turn = -1, by = "stick";
+              if (step && dir == 2) turn = 1, by = "stick";
+              (void)trigHeld;  // r131: the triggers turn pages in update_magazine (right on, left back)
+              if (aPress && magReady) {
+                if (g.magLeaves >= kMagLeaves && g.magTurn < 0 && g.magDrag < 0) {
+                  g.paperOpen = false;
+                } else {
+                  turn = 1;
+                  by = "A";
+                }
+              }
+              if ((bPress || yPress) && magReady) g.paperOpen = false;
+              if (!magReady) turn = 0;
+              if (turn != 0 && g.paperOpen && mag_flip(turn))
+                XLOG("franchise: a magazine page turned %s (%s), leaf %d", turn > 0 ? "on" : "back", by, g.magTurn);
+              if (!g.paperOpen) {
+                g.magDrag = -1;
+                mag_settle();
+                XLOG("franchise: the magazine put down");
+              }
+            }
+            g.paperPrevLT = ltDown;
+            g.paperPrevRT = rtDown;
           } else {  // the hub: the club, the standings, the playoffs, last week's results
             if (yPress && !PortFranchiseCoopGuest()) {  // r77: Y = trades (the friend's career: theirs to trade)
               g.frMode = 5;
@@ -4486,6 +8433,7 @@ void sync_input() {
               if (aPress && v.nextOpponent >= 0 && g.frCursor > 0) {
                 PortFranchiseSimMine(g.frCursor == 2);
                 g.frCursor = 0;
+                g.paperDue = true;  // r113: the paper on what happened
               } else if (aPress && PortFranchisePlayNext()) {
                 XLOG("franchise: playing week %d", v.week);
                 g.frOpen = false;
@@ -4498,14 +8446,29 @@ void sync_input() {
                 // r70b: no match of yours today: A plays the day out, X every day until you play again
                 PortFranchiseSimDay(xPress);
                 g.frCursor = 0;
+                g.paperDue = true;  // r113
               } else if (aPress && v.phase == PORT_FR_PHASE_DONE) {
                 PortFranchiseNextSeason();
               } else if (xPress) {
                 PortFranchiseSwapStarter();
               }
+            } else if (aPress && g.frPage == 5) {
+              paper_open();  // r113: the PAPER page: read today's paper
             } else if (aPress && g.frPage == 9) {
               // r97: A on the difficulty page sets it
               if (PortFranchiseSetDifficulty(g.frCursor + 1)) XLOG("franchise: difficulty %d", g.frCursor + 1);
+            } else if (xPress && g.frPage == 8 && !PortFranchiseCoopGuest() && !lgv.active) {
+              // r130: X on the Evo Watch page: your three sidekick members (anybody: each its own level and rewards)
+              g.frMode = 4;
+              g.frEditMembers = true;
+              g.frPickStage = 2;
+              // r130 (review): start from your members now (kept ones keep their level), your captain / backup taken
+              PortFranchiseMemberPicks(g.frMemNow, &g.frPickCap, &g.frPickBk);
+              for (int k = 0; k < 3; ++k) g.frPickSk[k] = g.frMemNow[k];
+              g.frPickCursor[2] = g.frPickCursor[3] = g.frPickCursor[4] = 0;
+              g.frCursor = 0;
+              g.frOnTabs = false;
+              XLOG("franchise: picking your sidekick members");
             } else if (aPress && g.frPage == 8) {
               // r95: A on the Evo Watch page: the EVO page for one of yours that's ready (postponed ones too)
               PortFranchiseEvolution e;
@@ -4813,6 +8776,8 @@ bool ensure_swapchain(uint32_t width, uint32_t height) {
   if (g.swapchain != XR_NULL_HANDLE && g.swapchainWidth == width && g.swapchainHeight == height) {
     return true;
   }
+  // r131 (review): a blit / upload into the old screen images may still be on the GPU (the GPU-direct screen slots)
+  if (g.swapchain != XR_NULL_HANDLE && g.queue != VK_NULL_HANDLE) vkQueueWaitIdle(g.queue);
   destroy_swapchain();
 
   uint32_t count = 0;
@@ -5194,7 +9159,7 @@ int home_motif(int cls, const std::string& pack) {
   if (idx < 0) return cls + 1;
   for (int guard = 0; guard < 4 && idx >= 0 && PortGuestRosterEvolved(idx); ++guard)
     idx = PortGuestRosterFindAny(0, PortGuestRosterEvolvesFrom(idx));
-  return idx >= 0 && idx < 64 ? 100 + idx : 0;
+  return idx >= 0 && idx < 256 ? 100 + idx : 0;  // r121: 256 cells (the heroes 95-104)
 }
 
 // The home board's text, from the home ground's state.
@@ -5441,7 +9406,7 @@ void update_evo(xrfx::Scene& scene, uint64_t nowNs) {
     return;
   }
   const PortFranchiseEvolution& e = g.frEvo;
-  const int choice = e.options == 2 ? std::max(0, std::min(1, g.frEvoChoice)) : 0;
+  const int choice = e.options >= 2 ? std::max(0, std::min(e.options - 1, g.frEvoChoice)) : 0;  // r130
   const int stage = g.frEvoStage;
   const std::string from = e.fromKey, to = e.toKey[choice];
   const bool fromShiny = e.shiny, toShiny = e.shiny || (stage == 2 && g.frEvoNewShiny);
@@ -5493,9 +9458,11 @@ void update_evo(xrfx::Scene& scene, uint64_t nowNs) {
       reach = std::max(reach, xrevo::front(es.fig[i]) * (hh > 1.9f ? 1.9f / hh : 1.0f));
     }
     const float dist = std::max(es.baseDist, reach + 1.0f);
-    const XrVector3f feet{es.from.x + es.dirX * dist, scene.floorY, es.from.z + es.dirZ * dist};
+    // r132 (Lance: "they go low as fuck lower than my floor"): on YOUR floor (where the evolution room stands), not the
+    // view's - the Stadium view's pitch is 2.4 m below your head and stood it under the room's floor
+    const XrVector3f feet{es.from.x + es.dirX * dist, g.floorY, es.from.z + es.dirZ * dist};
     if (std::fabs(feet.x - es.feet.x) + std::fabs(feet.z - es.feet.z) > 0.01f) {
-      XLOG("evo: the 3D evolution stands %.2f m ahead (reach %.2f, floor %.2f)", dist, reach, scene.floorY);
+      XLOG("evo: the 3D evolution stands %.2f m ahead (reach %.2f, floor %.2f)", dist, reach, g.floorY);
     }
     es.feet = feet;
   }
@@ -5542,6 +9509,7 @@ void update_evo(xrfx::Scene& scene, uint64_t nowNs) {
   md.glowRgb = 0xBFE0FF;
   md.under = stage == 1 || (stage == 2 && t < 6.0f) ? 0.35f : 0.0f;
   md.flameFrame = static_cast<int>((nowNs / 83000000ull) % 3);
+  md.shine = ((show == 0 ? fromShiny : toShiny) && white < 0.5f) ? 1.0f : 0.0f;  // r127: a shiny one glints
   scene.models[1 - show].on = false;
   // its theme (no confetti): while it evolves and 6 s after
   const float H = h * s;
@@ -5566,8 +9534,843 @@ void update_evo(xrfx::Scene& scene, uint64_t nowNs) {
   if (shinyNow && white < 0.5f) xrfx::evo_sparkle(es.feet, 1.2f * xrevo::radius(f) * s, H, scene.dt);
 }
 
+// r112 (Lance: "we need more images or VR native experiences that can do the same thing we're trying to force
+// people to read"): the character under the character select menu's cursor stands in 3D beside the menu, on
+// your floor, life-size, turning a little side to side; its pack and standing pose as the 3D evolution's
+// (xr_evo: the Pokemon, the Melee guests, the Marvel heroes; the Strikers and Charged ones have no pose file:
+// the menu's portrait only). It pops up out of a little white light when the cursor rests on it. Model slot
+// 0 (the evolution's, never on at the same time).
+struct SelLoaded {
+  std::string pack;
+  xrevo::Figure* fig = nullptr;
+  xrfx::Model model;
+};
+std::mutex g_selLoadMutex;
+std::vector<SelLoaded> g_selLoaded;  // under g_selLoadMutex
+struct SelShow {
+  std::string want, asked, have;
+  xrevo::Figure* fig = nullptr;
+  std::vector<float> verts;
+  uint64_t wantSince = 0, since = 0;
+};
+SelShow g_selShow;
+
+void sel_clear() {
+  SelShow& ss = g_selShow;
+  if (ss.fig != nullptr) {
+    xrevo::release(ss.fig);
+    ss.fig = nullptr;
+    xrfx::set_model(0, xrfx::Model{});
+  }
+  ss.want.clear();
+  ss.asked.clear();
+  ss.have.clear();
+  ss.verts.clear();
+}
+
+// The menu's guest under the cursor with a figure to show ("" a Strikers character or a locked form).
+std::string select_pack(int role, int cursor, bool locked) {
+  const std::vector<MenuEntry>& menu = menu_entries(role);
+  if (locked || cursor < 0 || cursor >= static_cast<int>(menu.size())) return "";
+  const MenuEntry& e = menu[cursor];
+  if (e.team >= 0 || e.pick < 0 || e.pick >= PORT_GUEST_ORIGINAL) return "";
+  return e.portrait;
+}
+
+// r117 (Lance: "no more 2D placeholder image of your character in your homeground. get rid of the little
+// podium/pole thing, and just add the actual 3D character life size, doing certain things that character would
+// do"): your captain standing on its rug in your room, life size, in a loop of its own moves. Its home pack and
+// loop (guests/home/<pack>.gpk / .gev, tools/outside/mua/build_home.py: a hero's own Ultimate Alliance moves,
+// Wolverine's claws going in and out, Spider-Man's web), else its pack and its standing idle (guests/evo/).
+// Model slot 2. Loaded on a thread when the captain changes.
+struct HomeLoaded {
+  std::string pack;
+  xrevo::Figure* fig = nullptr;
+  xrfx::Model model;
+};
+std::mutex g_homeLoadMutex;
+std::vector<HomeLoaded> g_homeLoaded;  // under g_homeLoadMutex
+struct HomeShow {
+  std::string want, asked, have;
+  xrevo::Figure* fig = nullptr;
+  std::vector<float> verts, vertsB;
+  bool missing = false;  // no 3D figure for this one (the standee stays)
+  // r119: the move it's in and the one it's blending out of; you near; whose turn among its moves
+  int seg = -1, prevSeg = -1;
+  float segT = 0.0f, prevT = 0.0f, fade = 1.0f, idleFor = 0.0f, autoIn = 12.0f, touchCool = 0.0f, handUpFor = 0.0f;
+  float lookYaw = 0.0f, lookPitch = 0.0f;
+  bool near = false, greeted = false;
+  int greetTurn = 0, bigTurn = 0, reactTurn = 0, byeTurn = 0, autoTurn = 0;
+  uint64_t lastNs = 0;
+  // r129: the last goal it reacted to (g_homeReactNs), its cheer / upset turns, and the hop / slump of a figure
+  // with no such moves of its own (procKind 5 cheer, 6 upset, 0 none; procT its time in)
+  uint64_t reactSeen = 0;
+  int cheerTurn = 0, upsetTurn = 0, procKind = 0;
+  float procT = 0.0f;
+};
+void blast_buzz(float amplitude, float seconds);  // below
+HomeShow g_homeShow;
+// r129 (Lance: "make the home ground people cheer with you on goals you score and get upset at goals scored on
+// you"): PortXrGoal (the game thread) says whose goal it was: 5 = yours (cheer), 6 = against you (upset).
+std::atomic<int> g_homeReactKind{0};
+std::atomic<uint64_t> g_homeReactNs{0};
+
+// Asks for `pack`'s figure ("" none); true when one is standing (drawn this frame at `feet`, facing `yaw`).
+bool update_home_figure(xrfx::Scene& scene, const std::string& pack, const XrVector3f& feet, float yaw, uint64_t nowNs,
+                        float userScale) {
+  HomeShow& hs = g_homeShow;
+  {
+    std::vector<HomeLoaded> done;
+    {
+      std::lock_guard<std::mutex> lock(g_homeLoadMutex);
+      done.swap(g_homeLoaded);
+    }
+    for (HomeLoaded& l : done) {
+      if (l.pack != hs.want) {
+        if (l.fig != nullptr) xrevo::release(l.fig);
+        continue;
+      }
+      if (hs.fig != nullptr) xrevo::release(hs.fig);
+      hs.fig = l.fig;
+      hs.have = l.pack;
+      hs.missing = l.fig == nullptr;
+      if (l.fig != nullptr) xrfx::set_model(2, std::move(l.model));
+      hs.seg = hs.prevSeg = -1;
+      hs.greeted = hs.near = false;
+      hs.lookYaw = hs.lookPitch = 0.0f;
+      XLOG("home: %s %s", l.pack.c_str(), l.fig != nullptr ? "stands in your corner in 3D" : "has no 3D figure (its standee)");
+    }
+  }
+  if (pack != hs.want) {
+    hs.want = pack;
+    hs.missing = false;
+    if (pack.empty() && hs.fig != nullptr) {
+      xrevo::release(hs.fig);
+      hs.fig = nullptr;
+      hs.have.clear();
+      xrfx::set_model(2, xrfx::Model{});
+    }
+  }
+  if (!hs.want.empty() && hs.want != hs.asked) {
+    hs.asked = hs.want;
+    const std::string p = hs.want;
+    std::thread([p]() {
+      HomeLoaded l;
+      l.pack = p;
+      const char* env = std::getenv("STRIKERS_HOME");
+      const std::string home = env != nullptr ? env : "/storage/emulated/0/Strikers";
+      l.fig = xrevo::load_files(home + "/guests/home/" + p + ".gpk", home + "/guests/home/" + p + ".gev", &l.model);
+      if (l.fig == nullptr) l.fig = xrevo::load_files(home + "/guests/" + p + ".gpk", home + "/guests/home/" + p + ".gev", &l.model);
+      if (l.fig == nullptr) l.fig = xrevo::load(p, p, &l.model);
+      std::lock_guard<std::mutex> lock(g_homeLoadMutex);
+      g_homeLoaded.push_back(std::move(l));
+    }).detach();
+  }
+  if (hs.fig == nullptr || hs.have != hs.want) return false;
+  const float clock = static_cast<float>(static_cast<double>(nowNs % 3600000000000ull) / 1e9);
+  const float h = xrevo::height(hs.fig);
+  // r118: up to 2.3 m (Bowser and Petey life size, 2.25 m; was 1.95)
+  const float s = (h > 2.3f ? 2.3f / h : 1.0f) * userScale;  // r120: x the size you gave it
+  const float H = h * s;
+  g.homeSpot.reach = xrevo::radius(hs.fig) * s;  // r120: for grabbing it
+  g.homeSpot.height = H;
+  const float dt = hs.lastNs != 0 && nowNs > hs.lastNs ? std::min(0.1f, static_cast<float>(nowNs - hs.lastNs) / 1e9f) : 0.0f;
+  hs.lastNs = nowNs;
+  // r119 (Lance: "i want more interaction"): it looks at you, greets you when you come up, reacts when you touch
+  // it, celebrates when you put your hand up in front of it, waves when you walk off; on its own now and then
+  // does one of its moves. Its moves are the loop file's segments (charged_home.py / build_home.py).
+  const XrVector3f eye = g.headPose.position;
+  const float ex = eye.x - feet.x, ez = eye.z - feet.z;
+  const float dist = std::sqrt(ex * ex + ez * ez);
+  const float cs = std::cos(yaw), sn = std::sin(yaw);
+  const std::vector<xrevo::Segment>& segs = xrevo::segments(hs.fig);
+  const float fps = xrevo::fps(hs.fig);
+  auto seg_secs = [&](int i) { return static_cast<float>(segs[i].frames) / fps; };
+  auto pick = [&](uint32_t kind, int* turn) {
+    std::vector<int> of;
+    for (int i = 0; i < static_cast<int>(segs.size()); ++i)
+      if (segs[i].kind == kind) of.push_back(i);
+    if (of.empty()) return -1;
+    return of[(*turn)++ % of.size()];
+  };
+  auto play = [&](int i, const char* why) {
+    if (i < 0 || i == hs.seg) return;
+    hs.prevSeg = hs.seg;
+    hs.prevT = hs.segT;
+    hs.fade = hs.seg >= 0 ? 0.0f : 1.0f;
+    hs.seg = i;
+    hs.segT = 0.0f;
+    XLOG("home: %s %s (move %d, kind %u, %.1f s)", hs.have.c_str(), why, i, segs[i].kind, seg_secs(i));
+  };
+  // r129: a goal just went in: its own cheer / upset move (loop files' kind 5 / 6: charged_home.py, build_home.py),
+  // else a hop for joy / a slump (below, on the posed figure)
+  {
+    const uint64_t rNs = g_homeReactNs.load(std::memory_order_acquire);
+    if (rNs != 0 && rNs != hs.reactSeen) {
+      hs.reactSeen = rNs;
+      const int want = g_homeReactKind.load(std::memory_order_relaxed);
+      if ((want == 5 || want == 6) && nowNs >= rNs && nowNs - rNs < 4000000000ull) {
+        const int i = pick(static_cast<uint32_t>(want), want == 5 ? &hs.cheerTurn : &hs.upsetTurn);
+        if (i >= 0) {
+          play(i, want == 5 ? "cheers your goal" : "is gutted: a goal against you");
+          hs.procKind = 0;
+        } else {
+          hs.procKind = want;
+          hs.procT = 0.0f;
+          XLOG("home: %s %s", hs.have.c_str(), want == 5 ? "hops for joy: your goal" : "slumps: a goal against you");
+        }
+      }
+    }
+  }
+  float lookW = 0.0f;
+  if (!segs.empty()) {
+    if (hs.seg < 0 || hs.seg >= static_cast<int>(segs.size())) {
+      int t0 = 0;
+      hs.seg = std::max(0, pick(0, &t0));
+      hs.segT = 0.0f;
+      hs.fade = 1.0f;
+      hs.idleFor = 0.0f;
+    }
+    hs.segT += dt;
+    hs.prevT += dt;
+    hs.fade = std::min(1.0f, hs.fade + dt / 0.3f);
+    hs.touchCool = std::max(0.0f, hs.touchCool - dt);
+    const bool idle = segs[hs.seg].kind == 0;
+    if (hs.segT >= seg_secs(hs.seg)) {
+      if (idle) {
+        hs.segT = std::fmod(hs.segT, seg_secs(hs.seg));
+      } else {
+        int t0 = 0;
+        play(pick(0, &t0), "back to its idle");
+        hs.idleFor = 0.0f;
+      }
+    }
+    if (segs[hs.seg].kind == 0) hs.idleFor += dt;
+    // you: near, a hand on it, a hand up in front of it
+    const bool nearNow = dist < 1.4f;
+    XrVector3f hand[2];
+    bool touch = false, handUp = false;
+    for (int k = 0; k < 2; ++k) {
+      if (!locate_hand(k == 0 ? g.actions.gripSpaceL : g.actions.gripSpaceR, &hand[k])) continue;
+      // r120: not a hand grabbing it (or about to)
+      if (g.homeSpot.grabHands != 0 || get_float(k == 0 ? g.actions.squeezeL : g.actions.squeezeR) > 0.5f) continue;
+      const float hx = hand[k].x - feet.x, hz = hand[k].z - feet.z, hy = hand[k].y - feet.y;
+      const float hd = std::sqrt(hx * hx + hz * hz);
+      if (hd < std::max(0.22f, 0.45f * xrevo::radius(hs.fig) * s) && hy > 0.15f * H && hy < 1.05f * H) touch = true;
+      if (hand[k].y > eye.y + 0.05f && hd < 1.8f && dist < 2.4f) handUp = true;
+    }
+    hs.handUpFor = handUp ? hs.handUpFor + dt : 0.0f;
+    const uint32_t kind = segs[hs.seg].kind;
+    if (touch && hs.touchCool <= 0.0f && kind != 3 && kind != 5 && kind != 6) {  // r129: not over a goal reaction
+      hs.touchCool = 1.5f;
+      blast_buzz(0.45f, 0.1f);
+      const int r = pick(3, &hs.reactTurn);
+      play(r >= 0 ? r : pick(1, &hs.greetTurn), "touched");
+    } else if (hs.handUpFor > 0.4f && (kind == 0 || kind == 1)) {
+      hs.handUpFor = -3.0f;  // (once a hand-up)
+      play(pick(2, &hs.bigTurn), "hyped up by your hand");
+    } else if (nearNow && !hs.near && kind == 0 && hs.idleFor > 1.0f) {
+      play(pick(1, &hs.greetTurn), "greets you");
+      hs.greeted = true;
+    } else if (hs.greeted && dist > 2.4f && kind == 0) {
+      hs.greeted = false;
+      play(pick(4, &hs.byeTurn), "waves you off");
+    } else if (kind == 0 && hs.idleFor > hs.autoIn) {
+      hs.autoIn = 10.0f + 10.0f * static_cast<float>((nowNs / 7919ull) % 1000ull) / 1000.0f;
+      hs.idleFor = 0.0f;
+      play((hs.autoTurn++ % 3) == 2 ? pick(1, &hs.greetTurn) : pick(2, &hs.bigTurn), "does its thing");
+    }
+    hs.near = nearNow;
+    lookW = (segs[hs.seg].kind == 0 || segs[hs.seg].kind == 1 || segs[hs.seg].kind == 4) ? 1.0f : 0.0f;
+  } else {
+    lookW = 1.0f;
+  }
+  // where you are, as it sees it (its +X ahead, +Y its left, +Z up): its head turned to you, eased
+  {
+    const float a = ex * cs - ez * sn, c = ex * sn + ez * cs;
+    float wantYaw = std::atan2(-c, a), wantPitch = std::atan2(eye.y - (feet.y + 0.9f * H), std::max(0.3f, dist));
+    wantYaw = std::max(-1.0f, std::min(1.0f, wantYaw)) * lookW;
+    wantPitch = std::max(-0.4f, std::min(0.45f, wantPitch)) * lookW;
+    if (!xrevo::looks(hs.fig) || dist > 6.0f) wantYaw = wantPitch = 0.0f;
+    const float k = 1.0f - std::exp(-dt * 4.0f);
+    hs.lookYaw += (wantYaw - hs.lookYaw) * k;
+    hs.lookPitch += (wantPitch - hs.lookPitch) * k;
+  }
+  if (segs.empty()) {
+    xrevo::pose(hs.fig, clock, feet, yaw, s, 0.0f, &hs.verts, hs.lookYaw, hs.lookPitch);
+  } else {
+    auto at = [&](int i, float tt) {
+      const float fr = std::min(tt * fps, static_cast<float>(segs[i].frames) - 1.01f);
+      return (static_cast<float>(segs[i].start) + std::max(0.0f, fr)) / fps;
+    };
+    xrevo::pose(hs.fig, at(hs.seg, hs.segT), feet, yaw, s, 0.0f, &hs.verts, hs.lookYaw, hs.lookPitch);
+    if (hs.fade < 1.0f && hs.prevSeg >= 0 && hs.prevSeg < static_cast<int>(segs.size())) {
+      // the move it was in, carried on, blended out over 0.3 s
+      const float pt = segs[hs.prevSeg].kind == 0 ? std::fmod(hs.prevT, seg_secs(hs.prevSeg)) : hs.prevT;
+      xrevo::pose(hs.fig, at(hs.prevSeg, pt), feet, yaw, s, 0.0f, &hs.vertsB, hs.lookYaw, hs.lookPitch);
+      const float f = hs.fade * hs.fade * (3.0f - 2.0f * hs.fade);
+      if (hs.vertsB.size() == hs.verts.size())
+        for (size_t i = 0; i < hs.verts.size(); ++i) hs.verts[i] = hs.vertsB[i] + (hs.verts[i] - hs.vertsB[i]) * f;
+    }
+  }
+  // r129: a figure with no cheer / upset moves of its own (the Pokemon, the Melee fighters: one standing loop) -
+  // your goal: three hops with a wiggle (2.4 s); a goal against you: it slumps forward, sinks a little and shakes
+  // its head (3.2 s). Turned round its feet: its way ahead (cs, -sn), its left (sn, cs), up.
+  if (hs.procKind != 0) {
+    hs.procT += dt;
+    const float T = hs.procT;
+    const bool cheer = hs.procKind == 5;
+    const float dur = cheer ? 2.4f : 3.2f;
+    float turn = 0.0f, lean = 0.0f, squash = 1.0f, up = 0.0f;
+    if (T >= dur) {
+      hs.procKind = 0;
+    } else if (cheer) {
+      const float hop = 0.55f;
+      if (T < 3.0f * hop) up = 0.16f * H * std::sin(3.14159265f * std::fmod(T, hop) / hop);
+      const float w = std::min(1.0f, (dur - T) / 0.4f);
+      turn = 0.26f * w * std::sin(2.0f * 3.14159265f * T / (2.0f * hop));
+    } else {
+      const float w = std::min({1.0f, T / 0.45f, (dur - T) / 0.6f});
+      const float e = w * w * (3.0f - 2.0f * w);
+      lean = 0.38f * e;
+      squash = 1.0f - 0.08f * e;
+      turn = 0.14f * e * std::sin(2.0f * 3.14159265f * 1.3f * T);
+    }
+    if (hs.procKind != 0) {
+      const float ct = std::cos(turn), st = std::sin(turn), cl = std::cos(lean), sl = std::sin(lean);
+      const float fx = cs, fz = -sn, lx = sn, lz = cs;
+      for (size_t v = 0; v + 5 < hs.verts.size(); v += 6) {
+        for (int part = 0; part < 2; ++part) {
+          float* p = &hs.verts[v + part * 3];
+          const float rx = part == 0 ? p[0] - feet.x : p[0], ry = part == 0 ? p[1] - feet.y : p[1];
+          const float rz = part == 0 ? p[2] - feet.z : p[2];
+          const float a = rx * fx + rz * fz, b = rx * lx + rz * lz;
+          const float a1 = a * ct - b * st, b1 = a * st + b * ct;
+          const float a2 = a1 * cl + ry * sl;
+          float u2 = -a1 * sl + ry * cl;
+          if (part == 0) u2 = u2 * squash + up;
+          p[0] = a2 * fx + b1 * lx + (part == 0 ? feet.x : 0.0f);
+          p[1] = u2 + (part == 0 ? feet.y : 0.0f);
+          p[2] = a2 * fz + b1 * lz + (part == 0 ? feet.z : 0.0f);
+        }
+      }
+    }
+  }
+  xrfx::Scene::ModelDraw& md = scene.models[2];
+  md.on = true;
+  md.posNrm = hs.verts.data();
+  md.white = 0.0f;
+  md.alpha = 1.0f;
+  md.glow = 0.0f;
+  md.under = 0.15f;
+  md.flameFrame = static_cast<int>((nowNs / 83000000ull) % 3);
+  md.shine = 0.0f;
+  return true;
+}
+
+// `pack` the one to show ("" none); the menu panel's middle, its right (a unit vector) and half its width.
+void update_select(xrfx::Scene& scene, const std::string& pack, const XrVector3f& panelAt, const XrVector3f& right,
+                   float halfW, uint64_t nowNs) {
+  SelShow& ss = g_selShow;
+  const bool on = g.fxReady && g.headValid && !pack.empty() && !g_evoShow.live && !(g.frOpen && g.frMode == 3);
+  {
+    std::vector<SelLoaded> done;
+    {
+      std::lock_guard<std::mutex> lock(g_selLoadMutex);
+      done.swap(g_selLoaded);
+    }
+    for (SelLoaded& l : done) {
+      if (!on || l.fig == nullptr || l.pack != ss.want) {
+        if (l.fig != nullptr) xrevo::release(l.fig);
+        continue;
+      }
+      if (ss.fig != nullptr) xrevo::release(ss.fig);
+      ss.fig = l.fig;
+      ss.have = l.pack;
+      ss.since = nowNs;
+      xrfx::set_model(0, std::move(l.model));
+    }
+  }
+  if (!on) {
+    if (ss.fig != nullptr || !ss.want.empty()) sel_clear();
+    return;
+  }
+  if (pack != ss.want) {
+    ss.want = pack;
+    ss.wantSince = nowNs;
+  }
+  // asked for once the cursor rests on it a moment (a held stick runs past many)
+  if (ss.want != ss.asked && nowNs - ss.wantSince > 150000000ull) {
+    ss.asked = ss.want;
+    const std::string p = ss.want;
+    std::thread([p]() {
+      SelLoaded l;
+      l.pack = p;
+      l.fig = xrevo::load(p, p, &l.model);
+      std::lock_guard<std::mutex> lock(g_selLoadMutex);
+      g_selLoaded.push_back(std::move(l));
+    }).detach();
+  }
+  if (ss.fig == nullptr || ss.have != ss.want) return;
+  // its place: 2 m from you, just right of the menu's right edge (the menu is drawn over everything: never
+  // behind it), on your floor, facing you
+  const XrVector3f head = g.headPose.position;
+  float dx = panelAt.x + right.x * halfW - head.x, dz = panelAt.z + right.z * halfW - head.z;
+  const float dl = std::sqrt(dx * dx + dz * dz);
+  if (dl < 0.05f) {
+    floor_forward(g.headPose, &dx, &dz);
+  } else {
+    dx /= dl;
+    dz /= dl;
+  }
+  const float a = 0.26f;  // ~15 degrees further right
+  const float bx = dx * std::cos(a) - dz * std::sin(a), bz = dx * std::sin(a) + dz * std::cos(a);
+  const XrVector3f feet{head.x + bx * 2.0f, scene.floorY, head.z + bz * 2.0f};
+  const float clock = static_cast<float>(static_cast<double>(nowNs % 3600000000000ull) / 1e9);
+  const float yaw = std::atan2(bz, -bx) + 0.35f * std::sin(clock * 0.7f);
+  const float h = xrevo::height(ss.fig);
+  const float t = static_cast<float>(nowNs - ss.since) / 1e9f;
+  const float pop = std::min(1.0f, t / 0.25f);
+  const float s = (h > 1.9f ? 1.9f / h : 1.0f) * (0.6f + 0.4f * pop);
+  xrevo::pose(ss.fig, clock, feet, yaw, s, 0.0f, &ss.verts);
+  xrfx::Scene::ModelDraw& md = scene.models[0];
+  md.on = true;
+  md.posNrm = ss.verts.data();
+  md.white = std::max(0.0f, 1.0f - t / 0.35f);
+  md.alpha = 1.0f;
+  md.glow = 0.0f;
+  md.under = 0.2f;
+  md.flameFrame = static_cast<int>((nowNs / 83000000ull) % 3);
+  md.shine = pack.find("_shiny") != std::string::npos ? 1.0f : 0.0f;  // r127: a shiny one on the menu glints
+  scene.models[1].on = false;
+}
+
+// --- r131: the franchise's characters in 3D (FrFigAsk above): the hub's pages and the trades screen (each in front of
+// the panel where its portrait was, fitted to its box, feet on its bottom edge, facing you) and awards night's winners
+// in your room (life size, update_awards). Model slots 3-20 (kFrFigs). Each is read on a loader thread, one at a time:
+// its pack and pose as the character select's and the home corner's (a Strikers captain: its r130 captain pack
+// cap_<name>, else its Charged home figure), and its standing idle is baked there into at most 34 frames in its own
+// space (Model::frames: they go up to the GPU with it, a frame is picked per draw and the renderer places it), so
+// nothing is posed or copied per frame: a figure standing costs its draw calls. One goes up to the GPU a frame. They
+// stay while the hub is open (its pages share them; the one shown longest ago makes room) and go when it shuts (but
+// awards night's).
+struct FrFigWant {
+  std::string name;                   // its pack name: the portrait key, + "_shiny" for a shiny one
+  bool shiny = false;
+  bool draw = true;                   // shown this frame (else only loaded: its portrait / standee is on show still)
+  int bake = 34;                      // frames of its idle at most
+  XrVector3f base{0.0f, 0.0f, 0.0f};  // where its feet go (LOCAL) ...
+  XrVector3f out{0.0f, 0.0f, 0.0f};   // ... moved this way (a unit vector, or none) by its depth
+  float maxH = 1.0f, maxR = 0.5f;     // the height and half-width it fits in (metres)
+  bool grow = true;                   // bigger than life to fill them (else at most life size)
+};
+struct FrFigLoaded {
+  std::string name;
+  bool ok = false, skipped = false;
+  xrfx::Model model;
+  float height = 1.0f, radius = 0.3f, fps = 30.0f;
+};
+struct FrFigSlot {
+  std::string name;  // "" free
+  float height = 1.0f, radius = 0.3f, fps = 30.0f;
+  uint32_t frames = 0;
+  uint64_t usedNs = 0, shownNs = 0, popNs = 0;
+};
+struct FrFigState {
+  FrFigSlot slot[kFrFigs];
+  std::vector<FrFigWant> wants;     // this frame's (awards night's, then the hub's)
+  XrTime wantsFor = 0;              // the frame they're for (its display time)
+  std::vector<std::string> none;    // no 3D figure on this headset (not asked again until the hub opens again)
+  std::vector<std::string> queued;  // asked of the loader, not back yet
+  std::vector<FrFigLoaded> loaded;  // read, waiting to go up
+  std::string wantSig;              // the names wanted, as one string
+  uint64_t wantSince = 0;           // since when (a stick scrolling past waits)
+  int askGen = -1, fixedGen = -1;
+  std::vector<FrFigAsk> asks;       // the hub's picture's
+  bool hubWasOpen = false;
+  bool redraw = false;              // who stands changed: the hub's picture is drawn again (at most 5 times a second)
+  uint64_t redrawNs = 0;
+};
+FrFigState g_frFigs;
+std::mutex g_frFigLoadMutex;  // the loader's: its queue, what's still wanted, what it read
+std::vector<std::pair<std::string, int>> g_frFigQueue;
+std::vector<std::string> g_frFigWanted;
+std::vector<FrFigLoaded> g_frFigDone;
+bool g_frFigLoading = false;
+
+bool fr_fig_has(const std::vector<std::string>& v, const std::string& s) { return std::find(v.begin(), v.end(), s) != v.end(); }
+void fr_fig_drop(std::vector<std::string>& v, const std::string& s) { v.erase(std::remove(v.begin(), v.end(), s), v.end()); }
+bool fr_fig_file(const std::string& path) {
+  struct stat st {};
+  return ::stat(path.c_str(), &st) == 0 && st.st_size > 0;
+}
+// Its 3D figure off this headset's files (any thread), nullptr when it has none: a pack (its own shiny one first) and
+// its standing pose (guests/evo/), else its home figure (guests/home/); a Strikers captain's r130 captain pack, else
+// its Charged home figure.
+xrevo::Figure* fr_fig_read(const std::string& name, xrfx::Model* model) {
+  const char* env = std::getenv("STRIKERS_HOME");
+  const std::string g = std::string(env != nullptr && *env != '\0' ? env : "/storage/emulated/0/Strikers") + "/guests/";
+  const bool shiny = name.size() > 6 && name.compare(name.size() - 6, 6, "_shiny") == 0;
+  const std::string key = shiny ? name.substr(0, name.size() - 6) : name;
+  std::vector<std::pair<std::string, std::string>> tries;  // (pack, pose)
+  if (key.compare(0, 9, "strikers_") == 0) {
+    const std::string n = key.substr(9);
+    tries.push_back({g + "cap_" + n + ".gpk", g + "evo/cap_" + n + ".gev"});
+    tries.push_back({g + "home/" + key + ".gpk", g + "home/" + key + ".gev"});
+  } else {
+    if (shiny) tries.push_back({g + name + ".gpk", g + "evo/" + key + ".gev"});
+    tries.push_back({g + key + ".gpk", g + "evo/" + key + ".gev"});
+    tries.push_back({g + "home/" + key + ".gpk", g + "home/" + key + ".gev"});
+    tries.push_back({g + key + ".gpk", g + "home/" + key + ".gev"});
+  }
+  for (const auto& t : tries) {
+    if (!fr_fig_file(t.first) || !fr_fig_file(t.second)) continue;
+    if (xrevo::Figure* f = xrevo::load_files(t.first, t.second, model)) return f;
+  }
+  return nullptr;
+}
+// Its standing idle (a loop file's first idle move, else its first move, else the whole pose file), every stride-th
+// frame up to `most`, posed in its own space (feet at the origin, facing +X, Y up, its own size) into the model's
+// frames; the frames a second they play at (0: none).
+float fr_fig_bake(const xrevo::Figure* f, int most, xrfx::Model* m) {
+  const float fps = xrevo::fps(f);
+  const size_t per = size_t(m->vertexCount) * 6;
+  if (fps <= 0.0f || per == 0) return 0.0f;
+  const std::vector<xrevo::Segment>& segs = xrevo::segments(f);
+  const xrevo::Segment* idle = nullptr;
+  for (const xrevo::Segment& sg : segs)
+    if (idle == nullptr && sg.kind == 0) idle = &sg;
+  if (idle == nullptr && !segs.empty()) idle = &segs[0];
+  uint32_t start = 0, n = static_cast<uint32_t>(std::lround(xrevo::duration(f) * fps));
+  if (idle != nullptr) {
+    start = idle->start;
+    n = idle->frames;
+  }
+  n = std::max(1u, n);
+  const uint32_t want = static_cast<uint32_t>(std::max(1, most));
+  const uint32_t stride = std::max(1u, (n + want - 1) / want), count = std::max(1u, n / stride);
+  m->frames.assign(per * count, 0.0f);
+  std::vector<float> one;
+  for (uint32_t i = 0; i < count; ++i) {
+    xrevo::pose(f, (static_cast<float>(start + i * stride) + 0.001f) / fps, XrVector3f{0.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0.0f,
+                &one);
+    if (one.size() != per) {
+      m->frames.clear();
+      m->frameCount = 0;
+      return 0.0f;
+    }
+    std::memcpy(m->frames.data() + per * i, one.data(), per * sizeof(float));
+  }
+  m->frameCount = count;
+  return fps / static_cast<float>(stride);
+}
+void fr_figs_loader() {
+  for (;;) {
+    std::pair<std::string, int> job;
+    {
+      std::lock_guard<std::mutex> lock(g_frFigLoadMutex);
+      if (g_frFigQueue.empty()) {
+        g_frFigLoading = false;
+        return;
+      }
+      job = g_frFigQueue.front();
+      g_frFigQueue.erase(g_frFigQueue.begin());
+      if (!fr_fig_has(g_frFigWanted, job.first)) {  // (scrolled past)
+        FrFigLoaded l;
+        l.name = job.first;
+        l.skipped = true;
+        g_frFigDone.push_back(std::move(l));
+        continue;
+      }
+    }
+    FrFigLoaded l;
+    l.name = job.first;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (xrevo::Figure* f = fr_fig_read(job.first, &l.model)) {
+      l.height = xrevo::height(f);
+      l.radius = xrevo::radius(f);
+      l.fps = fr_fig_bake(f, job.second, &l.model);
+      l.ok = l.fps > 0.0f && l.model.frameCount > 0;
+      xrevo::release(f);
+    }
+    if (!l.ok) {
+      l.model = xrfx::Model{};
+    } else {
+      XLOG("franchise 3D: %s read and baked in %.0f ms (%u vertices x %u frames)", l.name.c_str(),
+           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), l.model.vertexCount,
+           l.model.frameCount);
+    }
+    std::lock_guard<std::mutex> lock(g_frFigLoadMutex);
+    g_frFigDone.push_back(std::move(l));
+  }
+}
+// Asks for a figure this frame (awards night's, before fr_figs_frame); false when it's asked for twice (a model stands
+// in one place: the second keeps its standee) or there's no slot for it.
+bool fr_figs_want(const FrFigWant& w) {
+  FrFigState& st = g_frFigs;
+  if (st.wantsFor != g.frameState.predictedDisplayTime) {
+    st.wants.clear();
+    st.wantsFor = g.frameState.predictedDisplayTime;
+  }
+  for (const FrFigWant& o : st.wants)
+    if (o.name == w.name) return false;
+  if (static_cast<int>(st.wants.size()) >= kFrFigs) return false;
+  st.wants.push_back(w);
+  return true;
+}
+// Its figure is up (in a slot, on the GPU).
+bool fr_fig_up(const std::string& name) {
+  for (int k = 0; k < kFrFigs; ++k)
+    if (g_frFigs.slot[k].name == name) return xrfx::model_up(3 + k);
+  return false;
+}
+// Its size fitted into maxH x maxR (bigger than life: grow) - fr_figs_frame's - and how tall it stands then (0: not up).
+float fr_fig_fit(float height, float radius, float maxH, float maxR, bool grow) {
+  float s = std::min(maxH / std::max(0.05f, height), maxR / std::max(0.05f, radius));
+  if (!grow) s = std::min(1.0f, s);
+  return std::max(0.01f, s);
+}
+float fr_fig_tall(const std::string& name, float maxH, float maxR, bool grow) {
+  for (int k = 0; k < kFrFigs; ++k) {
+    const FrFigSlot& sl = g_frFigs.slot[k];
+    if (sl.name == name) return fr_fig_fit(sl.height, sl.radius, maxH, maxR, grow) * sl.height;
+  }
+  return 0.0f;
+}
+// Its portrait left out of the hub's pictures (or back in): they're drawn again.
+void fr_fig_stand(const std::string& name, bool on) {
+  {
+    std::lock_guard<std::mutex> lock(g_frFig.mutex);
+    if (on == fr_fig_has(g_frFig.standing, name)) return;
+    if (on) g_frFig.standing.push_back(name);
+    else fr_fig_drop(g_frFig.standing, name);
+  }
+  g_frFigs.redraw = true;
+}
+// A slot let go (gpu: its model too; else the next set_model on it replaces it).
+void fr_fig_free(int k, bool gpu) {
+  FrFigSlot& sl = g_frFigs.slot[k];
+  if (sl.name.empty()) return;
+  fr_fig_stand(sl.name, false);
+  if (gpu) xrfx::set_model(3 + k, xrfx::Model{});
+  sl = FrFigSlot{};
+}
+
+// Every frame on the render thread, after update_awards: `hubQuad` the hub's / trades' picture on show (else null),
+// `canDraw` the effects layer drawn this frame. True when a figure stands in front of that picture (it goes under the
+// effects layer then, as the 3D evolution's card).
+bool fr_figs_frame(xrfx::Scene& scene, const XrCompositionLayerQuad* hubQuad, bool canDraw, uint64_t nowNs) {
+  FrFigState& st = g_frFigs;
+  if (st.wantsFor != g.frameState.predictedDisplayTime) {  // (none of awards night's this frame)
+    st.wants.clear();
+    st.wantsFor = g.frameState.predictedDisplayTime;
+  }
+  const bool hubOpen = g.frOpen;
+  if (hubOpen && !st.hubWasOpen) st.none.clear();  // (a pack the converter made since is tried again)
+  st.hubWasOpen = hubOpen;
+  if (st.redraw && nowNs - st.redrawNs > 200000000ull) {  // (figures arriving one after another: one picture a few)
+    st.redraw = false;
+    st.redrawNs = nowNs;
+    ++g_frFigGen;
+  }
+  bool busy = !st.wants.empty() || !st.loaded.empty() || !st.queued.empty() || hubQuad != nullptr || st.redraw;
+  for (int k = 0; k < kFrFigs && !busy; ++k) busy = !st.slot[k].name.empty();
+  if (!busy) return false;  // (a match: nothing to do)
+  {
+    std::lock_guard<std::mutex> lock(g_frFig.mutex);
+    if (g_frFig.askGen != st.askGen) {
+      st.askGen = g_frFig.askGen;
+      st.asks = g_frFig.asks;
+    }
+  }
+  // the hub's picture's characters: their boxes on the panel as it stands now (moved, resized: they follow it)
+  const size_t hubFirst = st.wants.size();
+  if (hubQuad != nullptr) {
+    const XrQuaternionf& q = hubQuad->pose.orientation;
+    const XrVector3f& c = hubQuad->pose.position;
+    const float qw = hubQuad->size.width, qh = hubQuad->size.height;
+    const XrVector3f out = q_rot(q, XrVector3f{0.0f, 0.0f, 1.0f});
+    bool fix = false;
+    for (const FrFigAsk& a : st.asks) {
+      if (static_cast<int>(st.wants.size()) >= kFrFigs) break;
+      FrFigWant w;
+      w.name = fr_fig_name(a.key, a.shiny);
+      bool twice = false;
+      for (const FrFigWant& o : st.wants) twice = twice || o.name == w.name;
+      if (twice) continue;
+      w.shiny = a.shiny;
+      w.draw = a.omitted;
+      w.bake = (a.y1 - a.y0) * static_cast<float>(kGuestH) >= 300.0f ? 34 : 17;  // (a small one: half its idle's frames)
+      const XrVector3f at = q_rot(q, XrVector3f{(0.5f * (a.x0 + a.x1) - 0.5f) * qw, (0.5f - a.y1) * qh, 0.0f});
+      w.base = XrVector3f{c.x + at.x, c.y + at.y, c.z + at.z};
+      w.out = out;
+      w.maxH = 0.98f * (a.y1 - a.y0) * qh;
+      w.maxR = 0.5f * (a.x1 - a.x0) * qw;
+      w.grow = true;
+      if (a.omitted && !fr_fig_up(w.name)) fix = true;  // its picture left it out, but it's gone
+      st.wants.push_back(w);
+    }
+    if (fix && st.fixedGen != st.askGen) {  // drawn again, with its portrait
+      st.fixedGen = st.askGen;
+      st.redraw = true;
+    }
+  }
+  auto wanted = [&](const std::string& n) {
+    for (const FrFigWant& w : st.wants)
+      if (w.name == n) return true;
+    return false;
+  };
+  std::string sig;
+  for (const FrFigWant& w : st.wants) sig += w.name + "|";
+  if (sig != st.wantSig) {
+    st.wantSig = sig;
+    st.wantSince = nowNs;
+    std::lock_guard<std::mutex> lock(g_frFigLoadMutex);
+    g_frFigWanted.clear();
+    for (const FrFigWant& w : st.wants) g_frFigWanted.push_back(w.name);
+  }
+  // what the loader read
+  {
+    std::vector<FrFigLoaded> done;
+    {
+      std::lock_guard<std::mutex> lock(g_frFigLoadMutex);
+      done.swap(g_frFigDone);
+    }
+    for (FrFigLoaded& l : done) {
+      fr_fig_drop(st.queued, l.name);
+      if (l.skipped) continue;
+      if (!l.ok) {
+        if (!fr_fig_has(st.none, l.name)) st.none.push_back(l.name);
+        XLOG("franchise 3D: no 3D figure for %s on this headset (its picture stays)", l.name.c_str());
+        continue;
+      }
+      if (wanted(l.name)) st.loaded.push_back(std::move(l));
+    }
+    st.loaded.erase(std::remove_if(st.loaded.begin(), st.loaded.end(), [&](const FrFigLoaded& l) { return !wanted(l.name); }),
+                    st.loaded.end());
+  }
+  // the slots: gone from the GPU (the renderer restarted), shown, or not wanted with the hub shut
+  for (int k = 0; k < kFrFigs; ++k) {
+    FrFigSlot& sl = st.slot[k];
+    if (sl.name.empty()) continue;
+    if (!xrfx::model_up(3 + k)) {
+      fr_fig_free(k, false);
+    } else if (wanted(sl.name)) {
+      sl.usedNs = nowNs;
+    } else if (!hubOpen) {
+      fr_fig_free(k, true);
+    }
+  }
+  // asked of the loader once the wants have settled a moment (a stick scrolling past asks for nothing)
+  if (!st.wants.empty() && nowNs - st.wantSince > 150000000ull) {
+    std::vector<std::pair<std::string, int>> jobs;
+    for (const FrFigWant& w : st.wants) {
+      if (fr_fig_has(st.none, w.name) || fr_fig_has(st.queued, w.name)) continue;
+      bool have = false;
+      for (int k = 0; k < kFrFigs && !have; ++k) have = st.slot[k].name == w.name;
+      for (const FrFigLoaded& l : st.loaded) have = have || l.name == w.name;
+      if (have) continue;
+      st.queued.push_back(w.name);
+      jobs.push_back({w.name, w.bake});
+    }
+    if (!jobs.empty()) {
+      std::lock_guard<std::mutex> lock(g_frFigLoadMutex);
+      for (const auto& j : jobs) g_frFigQueue.push_back(j);
+      if (!g_frFigLoading) {
+        g_frFigLoading = true;
+        std::thread(fr_figs_loader).detach();
+      }
+    }
+  }
+  // one up to the GPU a frame (its pictures' upload waits for the GPU): a free slot, else the one shown longest ago
+  if (canDraw && !st.loaded.empty()) {
+    int k = -1;
+    for (int i = 0; i < kFrFigs && k < 0; ++i)
+      if (st.slot[i].name.empty()) k = i;
+    if (k < 0) {
+      uint64_t oldest = UINT64_MAX;
+      for (int i = 0; i < kFrFigs; ++i) {
+        if (!wanted(st.slot[i].name) && st.slot[i].usedNs < oldest) {
+          oldest = st.slot[i].usedNs;
+          k = i;
+        }
+      }
+    }
+    if (k >= 0) {
+      FrFigLoaded l = std::move(st.loaded.front());
+      st.loaded.erase(st.loaded.begin());
+      fr_fig_free(k, false);
+      const uint32_t frames = l.model.frameCount;
+      xrfx::set_model(3 + k, std::move(l.model));
+      if (xrfx::model_up(3 + k)) {
+        FrFigSlot& sl = st.slot[k];
+        sl.name = l.name;
+        sl.height = l.height;
+        sl.radius = l.radius;
+        sl.fps = l.fps;
+        sl.frames = frames;
+        sl.usedNs = nowNs;
+        fr_fig_stand(l.name, true);
+        XLOG("franchise 3D: %s stands in 3D (model slot %d, %u frames at %.0f a second, %.2f m tall)", l.name.c_str(), 3 + k,
+             frames, l.fps, l.height);
+      } else {
+        if (!fr_fig_has(st.none, l.name)) st.none.push_back(l.name);
+        XLOG("franchise 3D: %s didn't go up to the GPU (its picture stays)", l.name.c_str());
+      }
+    }
+  }
+  // where they stand this frame
+  bool hubShown = false;
+  if (canDraw && g.headValid) {
+    const float clock = static_cast<float>(static_cast<double>(nowNs % 3600000000000ull) / 1e9);
+    const XrVector3f head = g.headPose.position;
+    for (size_t wi = 0; wi < st.wants.size(); ++wi) {
+      const FrFigWant& w = st.wants[wi];
+      if (!w.draw) continue;
+      int k = -1;
+      for (int i = 0; i < kFrFigs && k < 0; ++i)
+        if (st.slot[i].name == w.name) k = i;
+      if (k < 0 || st.slot[k].frames == 0) continue;
+      FrFigSlot& sl = st.slot[k];
+      const float s = fr_fig_fit(sl.height, sl.radius, w.maxH, w.maxR, w.grow);
+      // it pops up out of a little white light when it comes on (as the character select's)
+      if (nowNs - sl.shownNs > 300000000ull) sl.popNs = nowNs;
+      sl.shownNs = nowNs;
+      const float t = static_cast<float>(nowNs - sl.popNs) / 1e9f;
+      const float pop = std::min(1.0f, t / 0.25f);
+      // out of its panel (or back from its spot) by its depth, so none of it goes through
+      const float depth = sl.radius * s + 0.01f;
+      const XrVector3f feet{w.base.x + w.out.x * depth, w.base.y + w.out.y * depth, w.base.z + w.out.z * depth};
+      const float dx = head.x - feet.x, dz = head.z - feet.z;
+      float yaw = dx * dx + dz * dz > 1e-4f ? std::atan2(-dz, dx) : 0.0f;  // its front (+X) to you
+      yaw += 0.12f * std::sin(clock * 0.5f + 1.7f * static_cast<float>(k));  // a little turn of its own
+      xrfx::Scene::ModelDraw& md = scene.models[3 + k];
+      md.on = true;
+      md.posNrm = nullptr;
+      md.frame = std::min(static_cast<int>(sl.frames) - 1,
+                          static_cast<int>(std::fmod((clock + 0.31f * static_cast<float>(k)) * sl.fps, static_cast<float>(sl.frames))));
+      md.at = feet;
+      md.yaw = yaw;
+      md.scale = s * (0.6f + 0.4f * pop);
+      md.white = std::max(0.0f, 1.0f - t / 0.35f);
+      md.alpha = 1.0f;
+      md.glow = 0.0f;
+      md.under = 0.12f;
+      md.flameFrame = static_cast<int>((nowNs / 83000000ull) % 3);
+      md.shine = w.shiny ? 1.0f : 0.0f;  // (r127: a shiny one glints)
+      if (wi >= hubFirst) hubShown = true;
+    }
+  }
+  // the panel as a solid in the effects layer: what's behind it in there stays hidden once it's under it
+  if (hubShown && hubQuad != nullptr && scene.panelCount < 4) {
+    scene.panels[scene.panelCount++] = xrfx::Scene::Panel{hubQuad->pose, hubQuad->size.width, hubQuad->size.height};
+  }
+  return hubShown;
+}
+
 void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount,
                  XrCompositionLayerQuad* quads) {
+  g.homeSpot.shown = false;  // r120: set again below while the corner's up
   const xrhome::View v = xrhome::view();
   request_home_board(v);
   const bool board = show_panel(g_homeBoard, g.homePanel);
@@ -5637,15 +10440,68 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
       const char* pack = guestIdx >= 0 ? v.captainGuest.c_str() : "";
       // r91 (Lance: Cubone's "bone podium thing wasnt aligned with the center of the circle"): the display
       // stands in the rug's middle; the standee beside the rug, not on it
-      constexpr float kRugX = -0.2f, kRugZ = 0.35f;
-      add_piece(scene, 7, on_floor(kRugX, kRugZ, 0.0f), q, 1.1f, c1, c2, homeMotif, 0.0f);
+      // r120: the rug and the figure on their own spot (g.homeSpot): the first time beside the shelf along its wall
+      // (past its banner), at least 1.8 m from you, facing you; then where you leave it (grab it to move it)
+      auto& spot = g.homeSpot;
+      spot.floorY = floorY;
+      if (!spot.placed && g.headValid) {
+        XrVector3f p = at(-1.6f, 0.0f, 0.2f);
+        const float hx = g.headPose.position.x, hz = g.headPose.position.z;
+        float dx = p.x - hx, dz = p.z - hz;
+        float d = std::sqrt(dx * dx + dz * dz);
+        if (d < 0.05f) {
+          floor_forward(g.headPose, &dx, &dz);
+          d = 1.0f;
+        }
+        if (d < 1.8f) p = XrVector3f{hx + dx / d * 1.8f, p.y, hz + dz / d * 1.8f};
+        spot.x = p.x;
+        spot.z = p.z;
+        spot.yaw = std::atan2(hx - p.x, hz - p.z);
+        spot.scale = 1.0f;
+        spot.placed = true;
+        save_homespot();
+        XLOG("home: figure placed at (%.2f, %.2f), %.2f m from you; grab it with a grip to move it", p.x, p.z,
+             std::sqrt((p.x - hx) * (p.x - hx) + (p.z - hz) * (p.z - hz)));
+      }
+      const float spotCy = std::cos(spot.yaw), spotSy = std::sin(spot.yaw);
+      auto on_spot = [&](float x, float z, float y) {
+        return XrVector3f{spot.x + x * spotCy + z * spotSy, floorY + y, spot.z - x * spotSy + z * spotCy};
+      };
+      add_piece(scene, 7, on_spot(0.0f, 0.0f, 0.0f), yaw_quat(spot.yaw), 1.1f * spot.scale, c1, c2, homeMotif, 0.0f);
+      spot.shown = true;
+      spot.reach = 0.55f * spot.scale;
+      spot.height = 1.0f;
+      // r117 (Lance: "get rid of the little podium/pole thing, and just add the actual 3D character life size"):
+      // no pedestal; the captain itself stands in the rug's middle, turned to you (up to 60 degrees off the
+      // corner's own facing); the old display only for one with no 3D figure, floating where its top was
+      const XrVector3f feet = on_spot(0.0f, 0.0f, 0.0f);
+      float outYaw = std::atan2(-spotCy, spotSy);  // the figure's front (cos y, -sin y) = its spot's facing (sin, cos)
+      {
+        const float dx = g.headPose.position.x - feet.x, dz = g.headPose.position.z - feet.z;
+        if (dx * dx + dz * dz > 0.01f) {
+          float toYou = std::atan2(-dz, dx);
+          float d = std::remainder(toYou - outYaw, 6.2831853f);
+          d = std::max(-1.05f, std::min(1.05f, d));
+          outYaw += d;
+        }
+      }
+      // r118 (Lance: "make the fuckin 3d models for the strikers/charged ppl"): a Strikers captain's own figure too -
+      // Charged's model and moves (tools/outside/charged_home.py: guests/home/strikers_<name>.gpk / .gev); the
+      // Charged guests' (bowser, bowserjr, diddykong, petey) by their pack names
+      std::string homeFig = pack;
+      if (guestIdx < 0 && v.captain >= 0 && v.captain < 12) {
+        static const char* const kCaptainFig[12] = {"", "daisy", "donkeykong", "", "", "luigi",
+                                                    "mario", "peach", "", "waluigi", "wario", "yoshi"};
+        if (kCaptainFig[v.captain][0] != '\0') homeFig = std::string("strikers_") + kCaptainFig[v.captain];
+      }
+      const bool figure = !homeFig.empty() && update_home_figure(scene, homeFig, feet, outYaw, now_ns(), spot.scale);
+      if (homeFig.empty()) update_home_figure(scene, "", feet, outYaw, now_ns(), spot.scale);
+      const bool standee = !figure && (homeFig.empty() || g_homeShow.missing);
       const float pedH = 0.8f;
-      const XrVector3f pedAt = on_floor(kRugX, kRugZ, 0.5f * pedH);
-      add_piece(scene, 4, pedAt, q, pedH, 0, 0, 0, 0.0f);
-      const XrVector3f topAt{pedAt.x, floorY + pedH, pedAt.z};
+      const XrVector3f topAt = figure ? XrVector3f{feet.x, floorY + 0.05f, feet.z} : XrVector3f{feet.x, floorY + pedH, feet.z};
       int shapes[3];
       uint32_t pc1[3], pc2[3];
-      const int np = xrfx::corner_props(pack, v.captain, shapes, pc1, pc2);
+      const int np = figure ? 0 : xrfx::corner_props(pack, v.captain, shapes, pc1, pc2);
       for (int k = 0; k < np; ++k) {
         if (k == 0) {
           // the main one hovering over the middle, turning
@@ -5661,7 +10517,7 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
       }
       scene.cornerOn = true;
       scene.cornerTop = topAt;
-      scene.cornerRug = on_floor(kRugX, kRugZ, 0.0f);
+      scene.cornerRug = feet;
       scene.cornerRadius = 0.55f;
       scene.cornerClass = v.captain;
       std::snprintf(scene.cornerPack, sizeof(scene.cornerPack), "%s", pack);
@@ -5673,14 +10529,16 @@ void update_home(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers
                                                        (v.captain >= 0 && v.captain < 12 ? kPortraitName[v.captain] : "mario");
       const std::string name = home_name(v.captain, v.captainGuest);
       const int gen = static_cast<int>(std::hash<std::string>()(portrait + "|" + name) & 0x7FFFFFFF);
-      request_panel(g_cornerP, gen, kCornerW, kCornerH, [portrait, name](uint8_t* px, int w, int h) {
-        const GuestPortrait& p = guest_portrait(portrait);
-        xrtext::award_standee(px, w, h, p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, "HOME GROUND", name.c_str());
-      });
-      if (show_panel(g_cornerP, g_cornerPanel)) {
+      if (standee) {
+        request_panel(g_cornerP, gen, kCornerW, kCornerH, [portrait, name](uint8_t* px, int w, int h) {
+          const GuestPortrait& p = guest_portrait(portrait);
+          xrtext::award_standee(px, w, h, p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, "HOME GROUND", name.c_str());
+        });
+      }
+      if (standee && show_panel(g_cornerP, g_cornerPanel)) {
         const float height = 0.95f;
         const float width = height * static_cast<float>(kCornerW) / static_cast<float>(kCornerH);
-        place_panel(g_cornerQuad, g_cornerPanel, on_floor(kRugX + 0.8f, kRugZ - 0.05f, 0.5f * height), width);
+        place_panel(g_cornerQuad, g_cornerPanel, on_spot(0.8f, -0.05f, 0.5f * height), width);
         push_quad(g_cornerQuad);
         // r91 (Lance: Cubone's "flat ass picture not even being visible"): the effects layer goes over the
         // quad layers, so the rug, display and effects covered the standee wherever they crossed it: now a
@@ -5776,6 +10634,7 @@ void floor_forward(const XrPosef& pose, float* fx, float* fz);  // below
 void update_awards(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount) {
   if (!g.frRoomOn || !g.mrMode || g.tabletop || !g.shownScreenValid || g.frOpen || g.gpOpen || !g.headValid) return;
   std::vector<std::string> text, keys;
+  std::string champCaptain;  // r131: the champions' captain (it lifts their cup in 3D)
   {
     std::lock_guard<std::mutex> lock(g_frMutex);
     const PortFranchiseView& v = g_frRoom.view;
@@ -5784,6 +10643,7 @@ void update_awards(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** laye
       text.push_back(v.awards[i]);
       keys.push_back(v.awardKeys[i]);
     }
+    if (v.champion >= 0 && v.champion < PORT_FR_CLUBS) champCaptain = v.clubCaptainKey[v.champion];
   }
   const int n = static_cast<int>(text.size());
   if (n == 0) return;
@@ -5801,6 +10661,7 @@ void update_awards(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** laye
   const float rx = -uz, rz = ux;  // your right, facing the screen
   const float floorY = mode_floor_y();
   const float t = static_cast<float>(now_ns() % 1000000000000ull) / 1e9f;
+  std::vector<std::string> figUsed;  // r131
   for (int i = 0; i < n; ++i) {
     const float lateral = (static_cast<float>(i) - 0.5f * (n - 1)) * (n > 5 ? 0.85f : 0.95f);
     const XrVector3f at{head.x + ux * dist + rx * lateral, floorY, head.z + uz * dist + rz * lateral};
@@ -5810,20 +10671,57 @@ void update_awards(xrfx::Scene& scene, const XrCompositionLayerBaseHeader** laye
     const std::string award = colon == std::string::npos ? line : line.substr(0, colon);
     const std::string name = colon == std::string::npos ? std::string() : line.substr(colon + 2);
     const std::string key = keys[i];
-    request_panel(g_awardP[i], g.frRoomGen, kAwardW, kAwardH, [key, award, name](uint8_t* px, int w, int h) {
+    // r131 (Lance: "you have the awards, in 3D (trophies) but everything and everyone else is 2D"): the winner stands
+    // there in 3D, life size (fr_figs_frame; the champions: their captain), its standee only its name plate, lying on
+    // the floor in front of it; a club's award (the best keeper) and a winner with no 3D figure keep the standee
+    std::string figKey = i == 0 && key.compare(0, 5, "club_") == 0 ? champCaptain : key;
+    if (fr_fig_has(figUsed, figKey)) figKey.clear();  // (a model stands in one place: a second award keeps its standee)
+    figUsed.push_back(figKey);
+    const bool up = fr_fig_key(figKey) && fr_fig_up(figKey);
+    request_panel(g_awardP[i], g.frRoomGen * 2 + (up ? 1 : 0), kAwardW, kAwardH, [key, award, name, up](uint8_t* px, int w, int h) {
       const GuestPortrait& p = guest_portrait(key);
-      xrtext::award_standee(px, w, h, p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, award.c_str(), name.c_str());
+      xrtext::award_standee(px, w, h, up || p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, award.c_str(), name.c_str());
     });
-    if (show_panel(g_awardP[i], g_awardPanel[i]) && *layerCount < 32) {
+    const bool shown = show_panel(g_awardP[i], g_awardPanel[i]);
+    const bool plate = up && shown && g_awardP[i].shown >= g_awardP[i].requested;  // (the plate-only picture on show)
+    if (fr_fig_key(figKey)) {
+      FrFigWant fw;
+      fw.name = figKey;
+      fw.draw = plate;
+      fw.base = at;
+      fw.out = XrVector3f{ux, 0.0f, uz};  // back from its spot by its depth: its cup is held up in front of it
+      fw.maxH = 1.9f;
+      fw.maxR = n > 5 ? 0.4f : 0.45f;
+      fw.grow = false;
+      fr_figs_want(fw);
+    }
+    if (shown && *layerCount < 32) {
       const float height = 1.55f;  // life-size-ish, the plate included
       const float width = height * static_cast<float>(kAwardW) / static_cast<float>(kAwardH);
-      place_panel(g_awardQuad[i], g_awardPanel[i], XrVector3f{at.x, floorY + 0.5f * height, at.z}, width);
+      if (plate) {
+        // r131: the picture's bottom fifth (award_standee's plate), 0.62 m wide, its top tipped away from you
+        const Panel& pp = g_awardPanel[i];
+        const int32_t py0 = static_cast<int32_t>(0.79f * static_cast<float>(pp.height));
+        const float pw = 0.62f, ph = pw * static_cast<float>(static_cast<int32_t>(pp.height) - py0) / std::max(1.0f, static_cast<float>(pp.width));
+        const float tilt = -0.95f;
+        place_panel(g_awardQuad[i], pp, XrVector3f{at.x - ux * 0.42f, floorY + 0.5f * ph * std::cos(tilt) + 0.01f, at.z - uz * 0.42f}, pw);
+        g_awardQuad[i].subImage.imageRect.offset = {0, py0};
+        g_awardQuad[i].subImage.imageRect.extent = {static_cast<int32_t>(pp.width), static_cast<int32_t>(pp.height) - py0};
+        g_awardQuad[i].size.height = ph;
+        g_awardQuad[i].pose.orientation =
+            q_mul(g_awardQuad[i].pose.orientation, XrQuaternionf{std::sin(0.5f * tilt), 0.0f, 0.0f, std::cos(0.5f * tilt)});
+      } else {
+        place_panel(g_awardQuad[i], g_awardPanel[i], XrVector3f{at.x, floorY + 0.5f * height, at.z}, width);
+      }
       layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&g_awardQuad[i]);
     }
     // its gold trophy, held up in front of it (no pedestal: the room's pieces are 24 at most, and the
     // champion's bunting takes 9)
     const float yawToYou = std::atan2(head.x - at.x, head.z - at.z);
-    const XrVector3f cup{at.x - ux * 0.18f, floorY + 0.8f + 0.03f * std::sin(t * 1.3f + i), at.z - uz * 0.18f};
+    // r131: in front of its chest when it stands in 3D
+    const float tall = plate ? fr_fig_tall(figKey, 1.9f, n > 5 ? 0.4f : 0.45f, false) : 0.0f;
+    const float cupY = tall > 0.0f ? std::max(0.45f, std::min(0.95f, 0.62f * tall)) : 0.8f;
+    const XrVector3f cup{at.x - ux * 0.18f, floorY + cupY + 0.03f * std::sin(t * 1.3f + i), at.z - uz * 0.18f};
     add_piece(scene, 5, cup, yaw_quat(yawToYou + 0.4f * std::sin(t * 0.7f + i)), 0.3f, 0xFFD21F, 0xFFF2A0, 0, 0.25f);
   }
 }
@@ -6028,11 +10926,12 @@ std::string guest_suite(int captainClass, std::string* guestName) {
   return series;
 }
 
-void request_suite_room(const std::string& which) {
-  if (g.suiteLoaded == which) return;
-  g.suiteLoaded = which;
+// r119: any room (a cup suite, an evolution's backdrop: evo_<theme>) from its three files <base>.room / _room.jpg /
+// _outside.jpg; `key` what's loaded (one room at a time)
+void request_room_files(const std::string& key, const std::string& base) {
+  if (g.suiteLoaded == key) return;
+  g.suiteLoaded = key;
   const int gen = ++g_suiteLoadGen;
-  const std::string base = suites_dir() + "suite_" + which;
   std::thread([base, gen]() {
     const uint64_t t0 = now_ns();
     xrfx::Room room;
@@ -6065,7 +10964,7 @@ void request_suite_room(const std::string& which) {
       std::fclose(f);
     }
     if (room.indices.empty()) {
-      XWARN("cup suite: no room in %s.room", base.c_str());
+      XWARN("room: none in %s.room", base.c_str());
       return;
     }
     auto load = [](const std::string& path, std::vector<uint8_t>& out, uint32_t& w, uint32_t& h) {
@@ -6079,18 +10978,101 @@ void request_suite_room(const std::string& which) {
       return true;
     };
     if (!load(base + "_room.jpg", room.rgba, room.width, room.height)) {
-      XWARN("cup suite: could not read %s_room.jpg", base.c_str());
+      XWARN("room: could not read %s_room.jpg", base.c_str());
       return;
     }
     if (!load(base + "_outside.jpg", room.outside, room.outsideWidth, room.outsideHeight)) {
       XWARN("cup suite: could not read %s_outside.jpg (the window shows black)", base.c_str());
     }
     if (gen != g_suiteLoadGen.load()) return;  // another captain's asked for since
-    XLOG("cup suite: %s read in %.0f ms (%zu vertices, %zu LEDs, light %ux%u, outside %ux%u)", base.c_str(),
+    XLOG("room: %s read in %.0f ms (%zu vertices, %zu LEDs, light %ux%u, outside %ux%u)", base.c_str(),
          static_cast<double>(now_ns() - t0) / 1e6, room.verts.size() / xrfx::Room::kRoomFloats,
          room.leds.size() / xrfx::Room::kLedFloats, room.width, room.height, room.outsideWidth, room.outsideHeight);
     xrfx::set_room(std::move(room));
   }).detach();
+}
+
+void request_suite_room(const std::string& which) { request_room_files(which, suites_dir() + "suite_" + which); }
+
+// r119 (Lance: "the black screen that occurs when you're in VR, for an evolution ... a VR environment for evolutions
+// to take place"; "the themed backdrops, thats fire"): the evolving one's setting, by its kind (tools/suites/
+// evo_scene.py: suites/evo_<theme>.room / _room.jpg / _outside.jpg, you at the middle facing -Z, the evolution's
+// spot clear in front)
+const char* evo_backdrop(const std::string& key) {
+  std::string k = key;
+  const size_t shiny = k.find("_shiny");
+  if (shiny != std::string::npos) k.resize(shiny);
+  // r132 (Lance: "fire creatures/monsters/heroes have the fire background, water ... the water background"): the heroes
+  // by their powers too; the street-level ones a city rooftop at night
+  if (k.compare(0, 4, "mua_") == 0) {
+    std::string h = k.substr(4);
+    const size_t costume = h.find("_c");
+    if (costume != std::string::npos) h.resize(costume);
+    static const std::pair<const char*, const char*> kHero[] = {
+        {"ghostrider", "fire"},      {"humantorch", "fire"},  {"thor", "electric"},   {"storm", "electric"},
+        {"iceman", "water"},         {"drstrange", "psychic"}, {"invisiblewoman", "psychic"}, {"ironman", "sky"},
+        {"silversurfer", "sky"},     {"msmarvel", "sky"},     {"blade", "ghost"},     {"moonknight", "ghost"},
+        {"thing", "rock"},           {"colossus", "rock"}};
+    for (const auto& e : kHero)
+      if (h == e.first) return e.second;
+    return "city";
+  }
+  static const std::pair<const char*, const char*> kKind[] = {
+      // fire: a volcano's rim
+      {"pk_charmander", "fire"}, {"pk_charmeleon", "fire"}, {"pk_charizard", "fire"}, {"pk_torchic", "fire"},
+      {"pk_combusken", "fire"}, {"pk_blaziken", "fire"}, {"pk_magby", "fire"}, {"pk_magmar", "fire"},
+      {"pk_houndour", "fire"}, {"pk_houndoom", "fire"},
+      // water: a lagoon
+      {"pk_squirtle", "water"}, {"pk_wartortle", "water"}, {"pk_blastoise", "water"}, {"pk_poliwag", "water"},
+      {"pk_poliwhirl", "water"}, {"pk_poliwrath", "water"}, {"pk_politoed", "water"}, {"pk_mudkip", "water"},
+      {"pk_marshtomp", "water"}, {"pk_swampert", "water"},
+      // electric: a plateau in a storm
+      {"pk_pichu", "electric"}, {"pk_pikachu", "electric"}, {"pk_raichu", "electric"}, {"pk_voltorb", "electric"},
+      {"pk_electrode", "electric"},
+      // grass (and bugs): a forest clearing
+      {"pk_bulbasaur", "grass"}, {"pk_ivysaur", "grass"}, {"pk_venusaur", "grass"}, {"pk_treecko", "grass"},
+      {"pk_grovyle", "grass"}, {"pk_sceptile", "grass"}, {"pk_scyther", "grass"}, {"pk_scizor", "grass"},
+      // ghost (and poison): a graveyard
+      {"pk_gastly", "ghost"}, {"pk_haunter", "ghost"}, {"pk_gengar", "ghost"}, {"pk_shuppet", "ghost"},
+      {"pk_banette", "ghost"}, {"pk_duskull", "ghost"}, {"pk_dusclops", "ghost"}, {"pk_koffing", "ghost"},
+      {"pk_weezing", "ghost"},
+      // psychic (and the Jigglypuff line): a cosmic void
+      {"pk_drowzee", "psychic"}, {"pk_hypno", "psychic"}, {"pk_beldum", "psychic"}, {"pk_metang", "psychic"},
+      {"pk_metagross", "psychic"}, {"pk_igglybuff", "psychic"}, {"pk_jigglypuff", "psychic"},
+      {"pk_wigglytuff", "psychic"},
+      // dragons: above the clouds
+      {"pk_dratini", "sky"}, {"pk_dragonair", "sky"}, {"pk_dragonite", "sky"}, {"pk_bagon", "sky"},
+      {"pk_shelgon", "sky"}, {"pk_salamence", "sky"},
+      // rock, ground and fighting: a canyon arena
+      {"pk_geodude", "rock"}, {"pk_graveler", "rock"}, {"pk_golem", "rock"}, {"pk_onix", "rock"},
+      {"pk_steelix", "rock"}, {"pk_cubone", "rock"}, {"pk_marowak", "rock"}, {"pk_machop", "rock"},
+      {"pk_machoke", "rock"}, {"pk_machamp", "rock"}, {"pk_mankey", "rock"}, {"pk_primeape", "rock"},
+      // r127: the ten more and their evolutions
+      {"pk_cyndaquil", "fire"}, {"pk_quilava", "fire"}, {"pk_typhlosion", "fire"}, {"pk_psyduck", "water"},
+      {"pk_golduck", "water"}, {"pk_totodile", "water"}, {"pk_croconaw", "water"}, {"pk_feraligatr", "water"},
+      {"pk_chikorita", "grass"}, {"pk_bayleef", "grass"}, {"pk_meganium", "grass"}, {"pk_abra", "psychic"},
+      {"pk_kadabra", "psychic"}, {"pk_alakazam", "psychic"}, {"pk_ralts", "psychic"}, {"pk_kirlia", "psychic"},
+      {"pk_gardevoir", "psychic"}, {"pk_larvitar", "rock"}, {"pk_pupitar", "rock"}, {"pk_tyranitar", "rock"},
+      {"pk_aron", "rock"}, {"pk_lairon", "rock"}, {"pk_aggron", "rock"}, {"pk_trapinch", "rock"},
+      {"pk_vibrava", "sky"}, {"pk_flygon", "sky"}, {"pk_elekid", "electric"}, {"pk_electabuzz", "electric"},
+      // r130: the 20 lines after them
+      {"pk_eevee", "sky"}, {"pk_vaporeon", "water"}, {"pk_jolteon", "electric"}, {"pk_flareon", "fire"},
+      {"pk_espeon", "psychic"}, {"pk_umbreon", "ghost"}, {"pk_tyrogue", "rock"}, {"pk_hitmonlee", "rock"},
+      {"pk_hitmonchan", "rock"}, {"pk_hitmontop", "rock"}, {"pk_mareep", "electric"}, {"pk_flaaffy", "electric"},
+      {"pk_ampharos", "electric"}, {"pk_teddiursa", "grass"}, {"pk_ursaring", "grass"}, {"pk_lotad", "water"},
+      {"pk_lombre", "water"}, {"pk_ludicolo", "water"}, {"pk_seedot", "grass"}, {"pk_nuzleaf", "grass"},
+      {"pk_shiftry", "grass"}, {"pk_shroomish", "grass"}, {"pk_breloom", "grass"}, {"pk_slakoth", "grass"},
+      {"pk_vigoroth", "grass"}, {"pk_slaking", "grass"}, {"pk_makuhita", "rock"}, {"pk_hariyama", "rock"},
+      {"pk_whismur", "city"}, {"pk_loudred", "city"}, {"pk_exploud", "city"}, {"pk_meditite", "psychic"},
+      {"pk_medicham", "psychic"}, {"pk_cacnea", "rock"}, {"pk_cacturne", "ghost"}, {"pk_nidoranm", "ghost"},
+      {"pk_nidorino", "ghost"}, {"pk_nidoking", "rock"}, {"pk_nidoranf", "ghost"}, {"pk_nidorina", "ghost"},
+      {"pk_nidoqueen", "rock"}, {"pk_kabuto", "water"}, {"pk_kabutops", "water"}, {"pk_anorith", "rock"},
+      {"pk_armaldo", "rock"}, {"pk_wooper", "water"}, {"pk_quagsire", "water"}, {"pk_smoochum", "psychic"},
+      {"pk_jynx", "psychic"}, {"pk_sandshrew", "rock"}, {"pk_sandslash", "rock"}, {"pk_slowpoke", "water"},
+      {"pk_slowbro", "water"}, {"pk_slowking", "psychic"}};
+  for (const auto& e : kKind)
+    if (k == e.first) return e.second;
+  return "sky";  // anyone else: above the clouds
 }
 
 // r61: in a cup between its games the view goes to the suite (VR, big screen), the one change of view
@@ -6646,8 +11628,9 @@ uint32_t find_device_local(uint32_t typeBits) {
 // One exported eye image (TPVR's createExportedImage, trimmed). Same VkImageCreateInfo on both
 // sides; MUTABLE + a two-entry format list so Dawn can render through an RGBA8Unorm view of the
 // sRGB image while Adreno keeps its framebuffer compression. r43: `width` is two eyes wide for
-// single-pass stereo.
-bool create_eye_image(EyeImage& out, VkFormat srgb, VkFormat unorm, uint32_t width) {
+// single-pass stereo. r131: `height` 0 = an eye's (the big screen's images are the game picture's size).
+bool create_eye_image(EyeImage& out, VkFormat srgb, VkFormat unorm, uint32_t width, uint32_t height = 0) {
+  if (height == 0) height = g.eyeHeight;
   const VkFormat viewFormats[2] = {srgb, unorm};
   VkImageFormatListCreateInfo formatList{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
   formatList.viewFormatCount = 2;
@@ -6660,7 +11643,7 @@ bool create_eye_image(EyeImage& out, VkFormat srgb, VkFormat unorm, uint32_t wid
   ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
   ci.imageType = VK_IMAGE_TYPE_2D;
   ci.format = srgb;
-  ci.extent = {width, g.eyeHeight, 1};
+  ci.extent = {width, height, 1};
   ci.mipLevels = 1;
   ci.arrayLayers = 1;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -6724,7 +11707,7 @@ bool create_eye_image(EyeImage& out, VkFormat srgb, VkFormat unorm, uint32_t wid
     const wgpu::TextureFormat viewFormat = aurora::gfx::color_format();
     wgpu::TextureDescriptor tex{};
     tex.format = wgpu::TextureFormat::RGBA8UnormSrgb;
-    tex.size = {width, g.eyeHeight, 1};
+    tex.size = {width, height, 1};
     tex.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::RenderAttachment |
                 wgpu::TextureUsage::TextureBinding;
     tex.viewFormatCount = 1;
@@ -6955,6 +11938,7 @@ void finish_stereo_frame(uint32_t s) {
   VkSemaphore waits[3];
   uint32_t waitCount = 0;
   bool needCpuWait = false;
+  bool noFence[3] = {false, false, false};  // r124b: released without a fence to wait on
   bool mainReleased = false, stadiumReleased = false;
   EyeImage* images[3] = {&slot.eye[0], &slot.eye[1], &slot.stadium};
   for (int i = 0; i < 3; ++i) {
@@ -6967,7 +11951,7 @@ void finish_stereo_frame(uint32_t s) {
     if (import_release_fence(img, img.dawnDone, &knownComplete)) {
       waits[waitCount++] = img.dawnDone;
     } else if (!knownComplete) {
-      needCpuWait = true;
+      noFence[i] = true;
     }
   }
   // r43: what this frame drew. Single pass: the main (wide) image only if its pass ran (a split
@@ -6989,6 +11973,15 @@ void finish_stereo_frame(uint32_t s) {
   }
   if (stadiumReleased && slot.stadiumEye >= 0) {
     blits[blitCount++] = {&slot.stadium, 0, slot.stadiumEye, true, 0};
+  }
+  // r125 (Lance: "get the FPS up in stadium jumbotron mode"; his r123 log, Jumbotron · Stadium: 49-51 fps, PortXrEndFrame
+  // 7.0-7.5 ms a game frame against Tabletop · Stadium's ~2, all of it cpu-wait ~5 ms + sync ~1.6): there the main eye
+  // image is opened every game frame but not drawn (only the split stadium and the screen are), so Dawn ends its access
+  // with no fence, and that "no fence" made every frame wait on the CPU for ALL of Dawn's queue. Only an image that is
+  // going to be shown needs that fallback; one that is not is never read.
+  for (int i = 0; i < blitCount; ++i) {
+    const int which = blits[i].stadium ? 2 : (blits[i].img == &slot.eye[1] ? 1 : 0);
+    if (noFence[which]) needCpuWait = true;
   }
   if (blitCount == 0) {  // nothing new to show (the fences, if any, were imported and are dropped)
     if (waitCount > 0) {
@@ -7137,6 +12130,18 @@ void on_aurora_submit(uint32_t frame, void*) {
     }
     g_slotState[s].store(2, std::memory_order_release);
   }
+  // r131: the big screen's image this frame copied its picture into (GPU-direct): its access ends here too, its fence
+  // kept for finish_screen_slots' blit
+  for (uint32_t s = 0; s < kScreenSlots; ++s) {
+    if (g_screenState[s].load(std::memory_order_acquire) != 1 ||
+        g_screenFrame[s].load(std::memory_order_relaxed) != frame) {
+      continue;
+    }
+    ScreenSlot& slot = g.screenSlots[s];
+    g_screenCopied[s].store(aurora::gfx::xr_screen_copied(frame) ? 1u : 0u, std::memory_order_relaxed);
+    if (slot.img.accessOpen) release_eye_image(slot.img);
+    g_screenState[s].store(2, std::memory_order_release);
+  }
 }
 
 // r43, single pass: blits every slot whose frame has been submitted, oldest first, so the newest
@@ -7154,6 +12159,319 @@ void finish_released_slots() {
     if (oldest < 0) return;
     finish_stereo_frame(static_cast<uint32_t>(oldest));
   }
+}
+
+// r131: the GPU-direct big screen's images gone (a new picture size, unavailable, shutdown): Dawn done with them first
+// (the render worker idle: every frame ended has been submitted and its access ended in on_aurora_submit; one still
+// open, for a frame never ended, ends here and its copy is called off), their blits done on the XR queue.
+void destroy_screen_slots() {
+  bool any = false;
+  for (const ScreenSlot& slot : g.screenSlots) {
+    any = any || slot.img.image != VK_NULL_HANDLE || slot.cmd != VK_NULL_HANDLE || slot.fence != VK_NULL_HANDLE;
+  }
+  if (!any) return;
+  aurora::gfx::synchronize();
+  for (uint32_t s = 0; s < kScreenSlots; ++s) {
+    ScreenSlot& slot = g.screenSlots[s];
+    EyeImage& img = slot.img;
+    if (g_screenState[s].load(std::memory_order_acquire) == 1) {
+      aurora::gfx::set_xr_screen_copy(g_screenFrame[s].load(std::memory_order_relaxed), wgpu::Texture{}, true);
+    }
+    if (img.accessOpen) release_eye_image(img);
+    if (img.releaseFd >= 0) close(img.releaseFd);
+    img.releaseFd = -1;
+    if (slot.pending && slot.fence != VK_NULL_HANDLE) vkWaitForFences(g.device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+    img.renderView = nullptr;
+    img.texture = nullptr;
+    img.shared = nullptr;
+    if (img.dawnDone != VK_NULL_HANDLE) vkDestroySemaphore(g.device, img.dawnDone, nullptr);
+    if (img.image != VK_NULL_HANDLE) vkDestroyImage(g.device, img.image, nullptr);
+    if (img.memory != VK_NULL_HANDLE) vkFreeMemory(g.device, img.memory, nullptr);
+    if (slot.fence != VK_NULL_HANDLE) vkDestroyFence(g.device, slot.fence, nullptr);
+    if (slot.cmd != VK_NULL_HANDLE) vkFreeCommandBuffers(g.device, g.pool, 1, &slot.cmd);
+    slot = ScreenSlot{};
+    g_screenState[s].store(0, std::memory_order_release);
+    g_screenFrame[s].store(0, std::memory_order_relaxed);
+    g_screenCopied[s].store(0, std::memory_order_relaxed);
+  }
+  g.screenW = g.screenH = 0;
+  g.screenArmedValid = false;
+}
+
+// r131: the screen images at the game picture's size: made on first use, remade when the size changes (rare), with the
+// FIFO and render workers idle (Dawn's import runs in an error scope). False: none (the picture is read back as before).
+bool ensure_screen_slots(uint32_t width, uint32_t height) {
+  if (g.screenW == width && g.screenH == height) return true;
+  if (g.screenDirectFailed) return false;
+  auto fail = [](const char* why) {
+    XERR("big screen: GPU-direct unavailable (%s); its picture is read back and uploaded as before", why);
+    g.screenDirectFailed = true;
+    destroy_screen_slots();
+    return false;
+  };
+  if (!aurora::webgpu::g_vulkanSharedImageExportSupported) return fail("Dawn has no opaque-fd/sync-fd sharing");
+  if (!g.hasExtMemFd || !g.hasExtSemFd) return fail("XR device lacks external memory/semaphore fd");
+  if (aurora::webgpu::present_source().format != wgpu::TextureFormat::RGBA8Unorm) return fail("picture not RGBA8Unorm");
+  AuroraGXSync();
+  destroy_screen_slots();  // the old size's (its render worker wait)
+  aurora::gfx::synchronize();
+  for (uint32_t s = 0; s < kScreenSlots; ++s) {
+    ScreenSlot& slot = g.screenSlots[s];
+    if (!create_eye_image(slot.img, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, width, height)) {
+      return fail("shared image");
+    }
+    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocInfo.commandPool = g.pool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (!vk_ok(vkAllocateCommandBuffers(g.device, &allocInfo, &slot.cmd), "vkAllocateCommandBuffers(screen)") ||
+        !vk_ok(vkCreateFence(g.device, &fenceInfo, nullptr, &slot.fence), "vkCreateFence(screen)")) {
+      return fail("sync objects");
+    }
+  }
+  g.screenW = width;
+  g.screenH = height;
+  XLOG("big screen: GPU-direct picture %ux%u (%u shared images): no readback, no upload", width, height, kScreenSlots);
+  return true;
+}
+
+// r131: this game frame's big-screen picture, GPU-direct (Jumbotron · Living Room, the cup suite; not the 3D views): a
+// free screen image opened to Dawn and the open Aurora frame told to copy its picture into it. Game thread, once a game
+// frame (PortXrFrameLeaveOpen), the frame still open. g.screenDirectThisFrame: this frame's picture goes this way, with
+// no readback (unless the newspaper wants a photo); with no free image it has none (the screen keeps the last picture).
+void arm_screen_slot() {
+  g.screenDirectThisFrame = false;
+  if (!g.active || !g.screenDirectOn || g.screenDirectFailed || stereo_mode() || !aurora_frame_is_open()) return;
+  const uint32_t frame = aurora_xr_current_frame();
+  if (g.screenArmedValid && g.screenArmedFrame == frame) {
+    g.screenDirectThisFrame = true;  // armed already: the frame stayed open over a loop that sent nothing
+    return;
+  }
+  const auto& src = aurora::webgpu::present_source();
+  const uint32_t width = src.size.width, height = src.size.height;
+  if (width == 0 || height == 0 || !ensure_screen_slots(width, height)) return;
+  int pick = -1;
+  for (uint32_t s = 0; s < kScreenSlots && pick < 0; ++s) {
+    ScreenSlot& slot = g.screenSlots[s];
+    const uint32_t state = g_screenState[s].load(std::memory_order_acquire);
+    if (state == 1 && static_cast<int32_t>(frame - g_screenFrame[s].load(std::memory_order_relaxed)) > 4) {
+      // Its frame's submit was never seen (should not happen): its access ends here, with the render worker idle; no
+      // picture (finish_screen_slots frees it)
+      XWARN("screen image %u: frame %u never reported submitted", s, g_screenFrame[s].load());
+      aurora::gfx::synchronize();
+      if (g_screenState[s].load(std::memory_order_acquire) == 1) {
+        if (slot.img.accessOpen) release_eye_image(slot.img);
+        g_screenCopied[s].store(0, std::memory_order_relaxed);
+        g_screenState[s].store(2, std::memory_order_release);
+      }
+      continue;
+    }
+    if (state != 0) continue;
+    if (slot.pending) {
+      if (vkGetFenceStatus(g.device, slot.fence) != VK_SUCCESS) continue;  // its blit still on the GPU: no CPU wait
+      vkResetFences(g.device, 1, &slot.fence);
+      slot.pending = false;
+    }
+    pick = static_cast<int>(s);
+  }
+  g.screenDirectThisFrame = true;
+  g.screenArmedValid = true;
+  g.screenArmedFrame = frame;
+  const bool photo = g_photoWantNs.load() != 0;  // r113: the newspaper's photo is taken from the read-back picture
+  if (pick >= 0) {
+    ScreenSlot& slot = g.screenSlots[pick];
+    // Dawn's Vulkan backend requires the layout chain; UNDEFINED both ways: the copy rewrites every pixel
+    wgpu::SharedTextureMemoryVkImageLayoutBeginState layoutBegin{};
+    layoutBegin.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    layoutBegin.newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    wgpu::SharedTextureMemoryBeginAccessDescriptor desc{};
+    desc.nextInChain = &layoutBegin;
+    desc.initialized = true;
+    slot.img.accessOpen = static_cast<bool>(slot.img.shared.BeginAccess(slot.img.texture, &desc));
+    if (slot.img.accessOpen) {
+      aurora::gfx::set_xr_screen_copy(frame, slot.img.texture, photo);
+      g_screenCopied[pick].store(0, std::memory_order_relaxed);
+      g_screenFrame[pick].store(frame, std::memory_order_relaxed);
+      g_screenState[pick].store(1, std::memory_order_release);
+      ++g.screenCopiesSinceStats;
+      return;
+    }
+  }
+  ++g.screenNoSlotSinceStats;
+  aurora::gfx::set_xr_screen_copy(frame, wgpu::Texture{}, photo);  // no copy, and no readback, this frame
+}
+
+// r131: whether Dawn's copy into a released screen image is done on the GPU: its sync fd polled, never waited on. Not a
+// sync fd (Dawn's opaque-semaphore fallback) can't be asked: true, and its blit waits for it on the GPU instead.
+bool screen_picture_done(const EyeImage& img) {
+  if (img.releaseFd < 0 || img.releaseFdType != VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) return true;
+  pollfd p{};
+  p.fd = img.releaseFd;
+  p.events = POLLIN;
+  return poll(&p, 1, 0) != 0;  // signalled (or an error: the import then falls back as the eyes' does)
+}
+
+// r131: the newest GPU-direct picture whose copy the GPU has finished goes into the screen swapchain (a blit on the XR
+// queue; its wait on Dawn's fence is then already met, so nothing on the XR queue - the effects, the next frame's layers
+// - ever waits behind Dawn's frame: with passthrough the GPU runs slow, his r129 log: 11-16 ms submit to done); older
+// pictures are dropped, a newer one not done yet waits for the next display frame. Game thread, every display frame
+// (PortXrEndFrame).
+void finish_screen_slots() {
+  if (g.screenW == 0) return;
+  // (states as of now: a slot the render worker releases meanwhile, newer, waits for the next call)
+  uint32_t state[kScreenSlots];
+  int newest = -1;
+  bool waiting = false;
+  auto newer = [](uint32_t a, uint32_t b) {
+    return static_cast<int32_t>(g_screenFrame[a].load(std::memory_order_relaxed) -
+                                g_screenFrame[b].load(std::memory_order_relaxed)) > 0;
+  };
+  for (uint32_t s = 0; s < kScreenSlots; ++s) {
+    state[s] = g_screenState[s].load(std::memory_order_acquire);
+    if (state[s] != 2 || g_screenCopied[s].load(std::memory_order_relaxed) == 0) continue;
+    if (!screen_picture_done(g.screenSlots[s].img)) continue;
+    if (newest < 0 || newer(s, static_cast<uint32_t>(newest))) newest = static_cast<int>(s);
+  }
+  for (uint32_t s = 0; s < kScreenSlots; ++s) {
+    if (static_cast<int>(s) == newest || state[s] != 2) continue;
+    if (g_screenCopied[s].load(std::memory_order_relaxed) != 0 &&
+        (newest < 0 || newer(s, static_cast<uint32_t>(newest)))) {
+      waiting = true;  // newer than any done: its copy is still on the GPU
+      continue;
+    }
+    // An older picture, or none (its frame copied nothing): dropped, its fence not waited on (Dawn's next copy into the
+    // image comes after this one on Dawn's own queue)
+    EyeImage& img = g.screenSlots[s].img;
+    if (img.releaseFd >= 0) close(img.releaseFd);
+    img.releaseFd = -1;
+    img.released = false;
+    if (g_screenCopied[s].load(std::memory_order_relaxed) != 0) {
+      ++g.screenDroppedSinceStats;
+    } else {
+      ++g.screenBlankSinceStats;
+    }
+    g_screenState[s].store(0, std::memory_order_release);
+  }
+  if (waiting) ++g.screenNotDoneSinceStats;
+  if (newest < 0) return;
+
+  const uint64_t start = now_ns();
+  const uint32_t s = static_cast<uint32_t>(newest);
+  ScreenSlot& slot = g.screenSlots[s];
+  EyeImage& img = slot.img;
+  img.released = false;
+  const uint32_t pictureFrame = g_screenFrame[s].load(std::memory_order_relaxed);
+  if (!ensure_swapchain(g.screenW, g.screenH)) {
+    if (img.releaseFd >= 0) close(img.releaseFd);
+    img.releaseFd = -1;
+    g_screenState[s].store(0, std::memory_order_release);
+    return;
+  }
+  // (Dawn's fence, done already when it's a sync fd, still waited on by the blit: the formal hand-off, as the eyes')
+  bool knownComplete = false;
+  const VkSemaphore wait = import_release_fence(img, img.dawnDone, &knownComplete) ? img.dawnDone : VK_NULL_HANDLE;
+  if (wait == VK_NULL_HANDLE && !knownComplete) {
+    // No fence from Dawn for an image its submit wrote (should not happen): all of Dawn's work waited for on the CPU
+    const uint64_t cpuWaitStart = now_ns();
+    aurora::gfx::synchronize();
+    bool workDone = false;
+    const auto future = aurora::webgpu::g_queue.OnSubmittedWorkDone(
+        wgpu::CallbackMode::WaitAnyOnly, [&workDone](wgpu::QueueWorkDoneStatus, wgpu::StringView) { workDone = true; });
+    aurora::webgpu::g_instance.WaitAny(future, 5000000000ull);
+    g.cpuWaitNs += now_ns() - cpuWaitStart;
+    ++g.screenCpuWaitsSinceStats;
+  }
+  const VkPipelineStageFlags blitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  const VkPipelineStageFlags dropStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  // No picture after all (the swapchain refused): Dawn's fence, if imported, is still waited on once (a semaphore
+  // imported as temporary must be before it is imported again; the slot is reused once this submit's fence is done)
+  auto drop = [&]() {
+    VkSubmitInfo none{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    none.waitSemaphoreCount = wait != VK_NULL_HANDLE ? 1 : 0;
+    none.pWaitSemaphores = &wait;
+    none.pWaitDstStageMask = &dropStage;
+    if (vk_ok(vkQueueSubmit(g.queue, 1, &none, slot.fence), "vkQueueSubmit(screen drop)")) slot.pending = true;
+    g_screenState[s].store(0, std::memory_order_release);
+  };
+  uint32_t index = 0;
+  XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  if (!xr_ok(xrAcquireSwapchainImage(g.swapchain, &acquire, &index), "xrAcquireSwapchainImage(screen)")) {
+    drop();
+    return;
+  }
+  XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  waitInfo.timeout = XR_INFINITE_DURATION;
+  if (!xr_ok(xrWaitSwapchainImage(g.swapchain, &waitInfo), "xrWaitSwapchainImage(screen)")) {
+    XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(g.swapchain, &release);
+    drop();
+    return;
+  }
+  const VkImage dst = g.swapchainImages[index].image;
+  vkResetCommandBuffer(slot.cmd, 0);
+  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(slot.cmd, &begin);
+  VkImageMemoryBarrier barriers[2]{};
+  barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barriers[0].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+  barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barriers[0].oldLayout = img.dawnEndLayout;  // keeps Dawn's copy
+  barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barriers[0].image = img.image;
+  barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  barriers[1] = barriers[0];
+  barriers[1].srcAccessMask = 0;
+  barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barriers[1].image = dst;
+  vkCmdPipelineBarrier(slot.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 2, barriers);
+  // Same size, same sRGB encoding: a byte copy (the eyes' hand-off's blit: vkCmdCopyImage into the runtime's image costs
+  // milliseconds on Adreno)
+  VkImageBlit blit{};
+  blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  blit.srcOffsets[1] = {static_cast<int32_t>(g.screenW), static_cast<int32_t>(g.screenH), 1};
+  blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  blit.dstOffsets[1] = {static_cast<int32_t>(g.screenW), static_cast<int32_t>(g.screenH), 1};
+  vkCmdBlitImage(slot.cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                 &blit, VK_FILTER_NEAREST);
+  // OpenXR wants color swapchain images back in COLOR_ATTACHMENT_OPTIMAL on release.
+  VkImageMemoryBarrier toColor = barriers[1];
+  toColor.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  toColor.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  vkCmdPipelineBarrier(slot.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                       nullptr, 0, nullptr, 1, &toColor);
+  vkEndCommandBuffer(slot.cmd);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.waitSemaphoreCount = wait != VK_NULL_HANDLE ? 1 : 0;
+  submit.pWaitSemaphores = &wait;
+  submit.pWaitDstStageMask = &blitStage;
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &slot.cmd;
+  if (vk_ok(vkQueueSubmit(g.queue, 1, &submit, slot.fence), "vkQueueSubmit(screen)")) slot.pending = true;
+  XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  xr_ok(xrReleaseSwapchainImage(g.swapchain, &release), "xrReleaseSwapchainImage(screen)");
+  g.swapchainHasImage = true;
+  ++g.framesShown;
+  ++g.screenShownSinceStats;
+  // how far behind the newest game frame drawn (the open one when pipelined: 1 = the frame before it)
+  const uint32_t current = aurora_xr_current_frame();
+  const uint32_t newestDrawn = aurora_frame_is_open() ? current : current - 1;
+  g.screenBehindSinceStats += static_cast<uint64_t>(std::max<int32_t>(0, static_cast<int32_t>(newestDrawn - pictureFrame)));
+  {
+    // a read-back picture held meanwhile (the newspaper photo's) is no newer: never uploaded over this one later
+    std::lock_guard<std::mutex> lock(g_frameMutex);
+    g_frameUploaded = g_frameSerial;
+  }
+  g_screenState[s].store(0, std::memory_order_release);
+  g.uploadNsSinceStats += now_ns() - start;
 }
 
 void set_perf_levels(int cpu, int gpu);
@@ -7226,6 +12544,12 @@ void poll_triggers() {
       } else if (std::strncmp(line, "jumbosplit", 10) == 0) {
         // r87 "jumbosplit <0|1>": Jumbotron · Stadium's stadium as its own layer, one eye a frame
         g.jumboSplit = std::atoi(line + 10) != 0;
+      } else if (std::strncmp(line, "pipeline", 8) == 0) {
+        // r129 "pipeline <0|1>": the worker finishes a 3D frame while the next one simulates (xr_quest.h)
+        g.pipelineOn = std::atoi(line + 8) != 0;
+      } else if (std::strncmp(line, "screendirect", 12) == 0) {
+        // r131 "screendirect <0|1>": the big screen's picture GPU-direct (0: read back + uploaded, as before r131)
+        g.screenDirectOn = std::atoi(line + 12) != 0;
       } else if (std::strncmp(line, "handoffwait", 11) == 0) {
         // r44 "handoffwait <0|1>": wait briefly for this frame's eyes before ending the XR frame
         g.handoffWait = std::atoi(line + 11) != 0;
@@ -7405,6 +12729,12 @@ void poll_events() {
         break;
       case XR_SESSION_STATE_FOCUSED:
         g.focused = true;
+        // r124 (r123's refresh_rate = 80 stayed at 72: the runtime ignored the ask made before the session ran):
+        // asked again each time the app has focus, and what the display runs at checked a moment later
+        if (g.requestRefreshRate != nullptr && g.wantRefresh != 72.0f) {
+          xr_ok(g.requestRefreshRate(g.session, g.wantRefresh), "xrRequestDisplayRefreshRateFB(focused)");
+          g.refreshCheckNs = now_ns() + 3000000000ull;
+        }
         break;
       case XR_SESSION_STATE_VISIBLE:
       case XR_SESSION_STATE_SYNCHRONIZED:
@@ -7510,6 +12840,42 @@ void log_stats() {
     XLOG("eye hand-off: %u in their own display frame, %u a frame late (wait %s, cut short %u, game frame %.1f ms)",
          g.handoffSame, g.handoffLate, g.handoffWait ? "on" : "off", g.handoffCut, g.gameFrameEmaNs / 1e6);
   }
+  // r131: the pipeline line for the 2D big screen's frames too (Jumbotron · Living Room: no eye hand-off there)
+  const uint32_t screenFrames = g.screenCopiesSinceStats + g.screenNoSlotSinceStats;
+  if (g.handoffSame + g.handoffLate > 0 || screenFrames > 0) {
+    // r129: the pipelined frame: how many game frames went out pipelined, the simulation before each send (the
+    // FIFO worker's idle start), the boundary's drain + end + begin; the GPU's own frame time
+    const double sends = g.sendsSinceStats ? static_cast<double>(g.sendsSinceStats) : 1.0;
+    uint64_t gpuLast = 0, gpuMean = 0, gpuCount = 0;
+    aurora_gpu_frame_time(&gpuLast, &gpuMean, nullptr, &gpuCount);
+    // (Aurora keeps a running mean: this stretch's own from the totals' difference; submit to done, queue included)
+    static uint64_t s_gpuTotal = 0, s_gpuCount = 0;
+    const uint64_t total = gpuMean * gpuCount;
+    const double gpuHere = gpuCount > s_gpuCount && total > s_gpuTotal
+                               ? static_cast<double>(total - s_gpuTotal) / static_cast<double>(gpuCount - s_gpuCount) / 1e6
+                               : 0.0;
+    s_gpuTotal = total;
+    s_gpuCount = gpuCount;
+    XLOG("pipeline %s: %u of %u game frames pipelined (2D big screen: %u); per send (ms): simulation before it %.2f, boundary %.2f | GPU frame (submit to done) %.2f, last %.2f",
+         g.pipelineOn ? "on" : "off", g.pipelinedSinceStats, g.sendsSinceStats, g.pipelined2DSinceStats,
+         g.simNsSinceStats / 1e6 / sends, g.boundaryNsSinceStats / 1e6 / sends, gpuHere, gpuLast / 1e6);
+  }
+  if (screenFrames + g.screenShownSinceStats > 0) {
+    // r131: the GPU-direct big screen: game frames whose picture was copied GPU-side, pictures blitted to the screen and
+    // how far behind the newest game frame drawn (pipelined: 1 = the one before the open one), display frames whose
+    // newest picture was still on the GPU (shown a display frame later), older ones dropped for a newer, game frames
+    // with no free image, released with no picture, CPU fence waits (should stay 0)
+    XLOG("screen GPU-direct: %u game frames copied, %u shown (%.2f frames behind the newest drawn), %u display frames its copy still on the GPU, %u dropped for a newer, %u without a free image, %u no picture, %u CPU fence waits",
+         g.screenCopiesSinceStats, g.screenShownSinceStats,
+         g.screenShownSinceStats ? static_cast<double>(g.screenBehindSinceStats) / g.screenShownSinceStats : 0.0,
+         g.screenNotDoneSinceStats, g.screenDroppedSinceStats, g.screenNoSlotSinceStats, g.screenBlankSinceStats,
+         g.screenCpuWaitsSinceStats);
+  }
+  g.pipelinedSinceStats = g.sendsSinceStats = g.pipelined2DSinceStats = 0;
+  g.simNsSinceStats = g.boundaryNsSinceStats = 0;
+  g.screenCopiesSinceStats = g.screenShownSinceStats = g.screenDroppedSinceStats = g.screenNotDoneSinceStats = 0;
+  g.screenNoSlotSinceStats = g.screenBlankSinceStats = g.screenCpuWaitsSinceStats = 0;
+  g.screenBehindSinceStats = 0;
   g.handoffSame = g.handoffLate = g.handoffCut = 0;
   g.eyeFenceNs = g.swapNs = g.cpuWaitNs = g.fxNs = g.xrEndNs = 0;
   std::memset(g.loopNs, 0, sizeof(g.loopNs));
@@ -7561,6 +12927,7 @@ extern "C" int PortXrInit(void) {
   create_passthrough();
   load_screens();       // r42: where you left the big screens
   load_shelf();         // r57: where you left the trophy shelf
+  load_homespot();      // r120: where you left the home figure
   load_crowd_level();   // r42: your crowd volume
   load_view_height();   // r44g: your stadium height
   load_room_options();  // r104: shelf, badge board, achievement pop-ups on or off
@@ -7688,7 +13055,7 @@ void close_single_pass() {
 }  // namespace
 
 extern "C" int PortXrStereoFrameBegin(void) {
-  if (!g.active || !g.frameBegun || !g.viewsValid || !eye_mode() || g.stereoFailed) {
+  if (!g.active || !g.frameBegun || !g.viewsValid || !eye_mode() || g.stereoFailed || !aurora_frame_is_open()) {
     return 0;
   }
   // Online, a headset that cannot hold 60 game frames a second would slow the shared match down for
@@ -7821,6 +13188,10 @@ extern "C" int PortXrStereoFrameBegin(void) {
     g_slotState[g.slot].store(1, std::memory_order_release);
   }
   g.stereoLayers = count;
+  // r129: this frame's Aurora frame stays open past the loop (xr_quest.h): the 3D views, single pass. r130: and the
+  // life-size scorer's frames in Jumbotron · Living Room (his r129 log: those frames 15-17 ms, the eyes' drain 3 ms;
+  // the big screen shows the frame before for the show's length)
+  g.pipelineThisFrame = g.pipelineOn && g.singlePass;
   g.stereoThisFrame = true;
   g.eyeSendStartNs = now_ns();
   return g.stereoLayers;
@@ -7939,6 +13310,9 @@ extern "C" void PortXrStereoEyeEnd(int eye) {
     // what the frame's end would wait for anyway, and lets the pool guard read what the sends used.
     if (g.openTarget != 0) {
       close_single_pass();
+      // r129: pipelined, no wait here: the worker finishes these sends while the next frame simulates; the next
+      // send's PortXrFrameBoundary drains, then closes this last layer's pool measurement
+      if (g.pipelineThisFrame) return;
       AuroraGXSync();
     }
     close_pool_measurement();
@@ -7957,6 +13331,70 @@ extern "C" void PortXrStereoEyeEnd(int eye) {
   aurora_gx_set_xr_coverage(false);  // resolve_pass drained the FIFO
   aurora::gfx::set_offscreen_uses_native_logical_size(false);
   g.eyePassOpen[idx] = false;
+}
+
+// r129 (Lance: "get the FPS STEADY at 72+ FPS across the board"; his r123 / r125 logs: Jumbotron · Stadium and
+// Tabletop · Stadium 13.2-13.3 ms of tasks a game frame, 4.4-4.5 of it the game thread waiting on the FIFO worker
+// (fifo-drain) at the eyes' end, while that worker sat idle for the ~3.9 ms of simulation before the send): the
+// pipelined frame (xr_quest.h). A 3D frame's Aurora frame is left open at the loop's end; the worker finishes its
+// draws while the next game frame simulates, and that frame's send (glPlat.cpp, before glxSwapPre's own drain)
+// drains it, ends it and begins its own here. The GameCube did the same (hitz_Post only sets the draw-done token,
+// hitz_Pre waits for it); the frame memory the queued draws read is double-buffered (glxMemory p_frame[2]).
+extern "C" int PortXrFramePending(void) {
+  // (main.cpp, once a loop right after PortXrBeginFrame: the loop's start, for the simulation time)
+  g.loopStartNs = now_ns();
+  g.pipelineThisFrame = false;
+  g.sentThisFrame = false;  // r131
+  return (g.active && g.framePending) ? 1 : 0;
+}
+
+static void close_pending_frame();
+
+extern "C" int PortXrFrameLeaveOpen(void) {
+  // r131: the big screen's picture of this game frame, GPU-direct (Jumbotron · Living Room, the cup suite); such a 2D
+  // frame is left open like the 3D views' when it sent (the boundary ran: one that sent nothing ends its frame as
+  // before), and, with the scorer's eye pass, only single pass (as theirs)
+  arm_screen_slot();
+  if (g.screenDirectThisFrame && g.pipelineOn && g.sentThisFrame && (g.singlePass || !g.stereoThisFrame)) {
+    g.pipelineThisFrame = true;
+  }
+  const bool leave = g.active && g.pipelineThisFrame && aurora_frame_is_open();
+  // r130 (review): an old frame still pending (this game frame sent nothing to end it): closed here, measured
+  if (!leave && g.framePending) close_pending_frame();
+  g.pipelineThisFrame = leave;  // (PortXrEndFrame: no hand-off wait for a frame that isn't submitted yet)
+  g.framePending = leave;
+  if (leave) ++g.pipelinedSinceStats;
+  if (leave && g.screenDirectThisFrame && !g.stereoThisFrame) ++g.pipelined2DSinceStats;  // r131
+  return leave ? 1 : 0;
+}
+
+static void close_pending_frame() {
+  g.framePending = false;
+  AuroraGXSync();            // its last draws, done by the worker meanwhile (usually already)
+  close_pool_measurement();  // its last layer's pool use, now complete
+  aurora_end_frame();        // to the render worker: encoded, submitted, its eyes handed off
+}
+
+extern "C" void PortXrFrameClosePending(void) {
+  if (!g.framePending) return;
+  const uint64_t t0 = now_ns();
+  close_pending_frame();
+  g.boundaryNsSinceStats += now_ns() - t0;
+}
+
+extern "C" void PortXrFrameBoundary(void) {
+  if (!g.active) return;
+  const uint64_t t0 = now_ns();
+  if (g.loopStartNs != 0 && t0 > g.loopStartNs) g.simNsSinceStats += t0 - g.loopStartNs;
+  ++g.sendsSinceStats;
+  g.sentThisFrame = true;  // r131: a 2D frame that sent may be left open (PortXrFrameLeaveOpen)
+  if (!g.framePending) return;
+  // r130 (review): Aurora can't begin another (the surface went away mid-frame): this send goes into the open one,
+  // which the loop's end closes as usual, rather than the rest of the game frame drawing with no frame open
+  if (!aurora_frame_ready()) return;
+  close_pending_frame();
+  if (!aurora_begin_frame()) XERR("pipeline: the next frame could not begin (Aurora refused)");
+  g.boundaryNsSinceStats += now_ns() - t0;
 }
 
 extern "C" void PortXrStereoFrameEnd(void) {
@@ -7999,6 +13437,26 @@ extern "C" void PortXrGoal(int team, int character, int superStrike, int hyper, 
        superStrike ? " SUPER STRIKE" : "", hyper ? " perfect" : "", ownGoal ? " own goal" : "", humanPad);
 
   g.lastGoalOwn = ownGoal != 0;  // r85: the scorer card says so
+  g.celebStartNs = now_ns();  // r130: a goal's show: its slowness doesn't hold the view at 60
+  g.celebEndNs = 0;
+  // r129: your corner figure cheers your goals and is gutted at goals against you (update_home_figure)
+  {
+    const int human = xrhome::human_side();
+    if (human == 0 || human == 1) {
+      g_homeReactKind.store(team == human ? 5 : 6, std::memory_order_relaxed);
+      g_homeReactNs.store(now_ns(), std::memory_order_release);
+    }
+  }
+  // r113: the newspaper's photo, a moment after the ball goes in: every goal of yours in a franchise match
+  // (the newest wins); any other goal only while there's none yet
+  if (PortFranchiseMatchActive()) {
+    bool none = false;
+    {
+      std::lock_guard<std::mutex> plock(g_photoMutex);
+      none = g_photo.empty();
+    }
+    if ((humanPad == xrnet::local_pad() && !ownGoal) || none) g_photoWantNs = now_ns() + 300000000ull;
+  }
   ensure_fx();
   if (g.fxReady) {
     xrfx::goal(team, character, superStrike != 0, hyper != 0, ownGoal != 0);
@@ -8034,14 +13492,28 @@ static void ensure_fx() {
     if (viewCount > 0 &&
         XR_SUCCEEDED(xrEnumerateViewConfigurationViews(g.instance, g.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
                                                        viewCount, &viewCount, views.data()))) {
-      dev.width = (static_cast<uint32_t>(views[0].recommendedImageRectWidth * 0.6f) / 8) * 8;
-      dev.height = (static_cast<uint32_t>(views[0].recommendedImageRectHeight * 0.6f) / 8) * 8;
+      // r117 (Lance: the home ground's banners "blurry as fuck"): 0.8 of the runtime's size (was 0.6) and 4x
+      // multisampled below; strikers.ini xr_fx_scale (0.4 .. 1.0) / xr_fx_msaa (1 or 4) to take it back down.
+      // r124 (Lance: "those banners are still blurry as shit"; his r123 log: eyes 1680x1760, this layer 1344x1408, so
+      // the headset stretched everything in it 1.25x): the eyes' own size. xr_fx_scale now 0.4 .. 1.3.
+      float fxScale = 1.0f;
+      if (const char* e = std::getenv("STRIKERS_XR_FX_SCALE")) {
+        const float v = static_cast<float>(std::atof(e));
+        if (v >= 0.4f && v <= 1.3f) fxScale = v;
+      }
+      dev.width = (static_cast<uint32_t>(views[0].recommendedImageRectWidth * fxScale) / 8) * 8;
+      dev.height = (static_cast<uint32_t>(views[0].recommendedImageRectHeight * fxScale) / 8) * 8;
       // r61: the cup suite's room at the runtime's own size: you walk up to it and read it.
       dev.roomWidth = views[0].recommendedImageRectWidth;
       dev.roomHeight = views[0].recommendedImageRectHeight;
     }
     dev.maxAnisotropy = g.maxAnisotropy;
     dev.roomSamples = g.roomSamples;
+    dev.fxSamples = g.roomSamples >= 4 ? 4u : 1u;  // r117
+    if (const char* e = std::getenv("STRIKERS_XR_FX_MSAA")) {
+      if (std::atoi(e) <= 1) dev.fxSamples = 1;
+    }
+    XLOG("fx: effects layer %ux%u per eye, %ux multisampled", dev.width, dev.height, dev.fxSamples);
     g.fxReady = xrfx::init(dev);
   }
 }
@@ -8122,8 +13594,9 @@ extern "C" void PortXrScorerFrame(int phase, float phaseTime, float height, int 
       std::string header;
       {
         std::lock_guard<std::mutex> lock(g_frMutex);
-        // r81: a side's co-captain (include/port/lineup.h) is their nemesis only when it's the one by name
-        const bool coCaptain = PortSecondCaptain(side) == characterClass;
+        // r81: a side's co-captain (include/port/lineup.h) is their nemesis only when it's the one by name; r130: any
+        // sidekick slot playing a captain class
+        const bool coCaptain = PortSlotOfClass(side, characterClass) >= 0;
         if (g_frCard.valid && g_frCard.nemesis && side == g_frCard.nemesisSide && sidekickName == nullptr &&
             (!coCaptain || strcasecmp(name.c_str(), g_frCard.nemesisName) == 0)) {
           header = g.scorerFaceOff ? "YOUR NEMESIS:" : "YOUR NEMESIS SCORES:";
@@ -8276,18 +13749,19 @@ void load_room_options() {
     int value = 0;
     while (std::fscanf(f, "%31s %d", key, &value) == 2) {
       if (std::strcmp(key, "shelf") == 0) g.showShelf = value != 0;
+      else if (std::strcmp(key, "home") == 0) g.showHome = value != 0;
       else if (std::strcmp(key, "popups") == 0) g.raPopups = std::max(0, std::min(2, value));
     }
     std::fclose(f);
   }
   xrra::set_popups(g.raPopups);
-  XLOG("room options: trophy shelf + badge board %s, achievement pop-ups %s", g.showShelf ? "on" : "off",
+  XLOG("room options: home ground %s, trophy shelf + badge board %s, achievement pop-ups %s", g.showHome ? "on" : "off", g.showShelf ? "on" : "off",
        g.raPopups == 2 ? "all" : (g.raPopups == 1 ? "unlocks only" : "off"));
 }
 
 void save_room_options() {
   if (FILE* f = std::fopen(room_options_path().c_str(), "w")) {
-    std::fprintf(f, "shelf %d\npopups %d\n", g.showShelf ? 1 : 0, g.raPopups);
+    std::fprintf(f, "shelf %d\npopups %d\nhome %d\n", g.showShelf ? 1 : 0, g.raPopups, g.showHome ? 1 : 0);
     std::fclose(f);
   }
 }
@@ -8309,7 +13783,7 @@ void settings_input(XrVector2f stick) {
   const int dirY = stick.y > 0.7f ? 1 : (stick.y < -0.7f ? -1 : 0);
   if (dirY != g.settingsStickDirY) {
     g.settingsStickDirY = dirY;
-    const int row = std::max(0, std::min(4, g.settingsRow - dirY));  // up = the row above
+    const int row = std::max(0, std::min(5, g.settingsRow - dirY));  // up = the row above (r133: 6 rows)
     if (dirY != 0 && row != g.settingsRow) {
       g.settingsRow = row;
       changed();
@@ -8338,6 +13812,13 @@ void settings_input(XrVector2f stick) {
     g.showShelf = step > 0;
     save_room_options();
     XLOG("trophy shelf + badge board %s", g.showShelf ? "on" : "off");
+  } else if (g.settingsRow == 5) {
+    // r133: the whole home ground (its board, the banners by the screen, your corner and figure, the trophy shelf)
+    if (!first || (step > 0) == home_on()) return;
+    g.showHome = step > 0;
+    if (g.showHome) xrhome::clear_none();  // r134: on here undoes the Home ground panel's NONE
+    save_room_options();
+    XLOG("home ground %s", g.showHome ? "on" : "off");
   } else if (g.settingsRow == 4) {
     // r104: the achievement pop-ups, once per push: right = more (off, unlocks only, all), left = fewer
     const int mode = std::max(0, std::min(2, g.raPopups + step));
@@ -8472,6 +13953,9 @@ extern "C" int PortXrHudOnlyNormalView(void) {
              : 0;
 }
 
+// r128: World::Render (src/Game/world.cpp) calls this each time the game draws its stadium.
+extern "C" void PortXrWorldRendered(void) { g_worldDrawnNs.store(now_ns(), std::memory_order_relaxed); }
+
 // r53: glPlat.cpp asks once per normal send whether this frame's broadcast picture leaves the 3D world
 // out during a Tabletop replay (see replayRunning); such a frame gets no readback, so the screen keeps
 // the last real picture. Decided once per Aurora frame.
@@ -8509,6 +13993,7 @@ extern "C" void PortXrCelebrationPhase(int phase) {
   XLOG("celebration: %s", (phase >= 1 && phase <= 4) ? kPhases[phase] : "?");
   g.replayRunning = phase == 1;  // r53 (see replayRunning)
   if (phase == 1) g.replayStartNs = now_ns();
+  if (phase == 3 || phase == 4) g.celebEndNs = now_ns() + 3000000000ull;  // r130: the show's over in 3 s
   if (g.fxReady) {
     xrfx::phase(phase);
   }
@@ -8790,6 +14275,67 @@ extern "C" int PortXrBeginFrame(void) {
   if (g.tickAccumNs > 4 * kGameTickNs) {
     g.tickAccumNs = kGameTickNs;  // after a stall, catch up by one frame rather than a burst
   }
+  // r106: full rate offline, view by view. Online stays on the 60 cadence (both headsets step the same
+  // frames). Tried in every view; one whose loop runs over its display period by 6% for 2 s (after 5 s in
+  // it) goes back to 60 until the view changes.
+  {
+    const int64_t period = g.frameState.predictedDisplayPeriod > 0 ? g.frameState.predictedDisplayPeriod : 13888889;
+    if (g.refreshCheckNs != 0 && tickNow >= g.refreshCheckNs) {  // r124: what the display really runs at
+      g.refreshCheckNs = 0;
+      float now = 0.0f;
+      if (g.getRefreshRate != nullptr) g.getRefreshRate(g.session, &now);
+      XLOG("display: runs at %.0f Hz (asked %.0f), frame period %.2f ms", now, g.wantRefresh, static_cast<double>(period) / 1e6);
+    }    const int viewKey = (g.tabletop ? 1 : 0) | (g.mrMode ? 2 : 0);
+    static int s_lastViewKey = -1;
+    if (viewKey != s_lastViewKey) {
+      s_lastViewKey = viewKey;
+      if (g.fullRateBlockedKey >= 0 && g.fullRateBlockedKey != viewKey) g.fullRateBlockedKey = -1;
+      g.fullRateSlowSinceNs = 0;
+      g.fullRateRetryNs = 0;  // r129
+    }
+    // r129: held at 60, it tries full rate again after a while (one slow moment no longer holds it all session)
+    if (g.fullRateBlockedKey == viewKey && g.fullRateBlockedNs != 0 && tickNow - g.fullRateBlockedNs > g.fullRateRetryNs) {
+      g.fullRateBlockedKey = -1;
+      XLOG("game frames: trying every display frame again (after %.0f s at 60)", (tickNow - g.fullRateBlockedNs) / 1e9);
+    }
+    const bool locked = xrnet::lockstep() || PortNetOnline() != 0;
+    const bool want = !locked && viewKey != g.fullRateBlockedKey;
+    if (want != g.fullRate) {
+      g.fullRate = want;
+      g.fullRateSlowSinceNs = 0;
+      XLOG("game frames: %s (%s)", want ? "every display frame" : "60 a second",
+           locked ? "online" : (want ? "this view keeps up" : "this view couldn't keep up"));
+    }
+    // r130 (his r129 log: every goal's show dropped Jumbotron · Living Room to 60, the retries backing off to a minute,
+    // so back-to-back goals left it at 60): during a goal's show (the goal to 3 s after play is live again, at most
+    // 40 s) a slow loop doesn't count; the retry's backoff tops out at 30 s and starts over after a minute at full rate
+    const bool celebrating = g.celebStartNs != 0 && tickNow - g.celebStartNs < 40000000000ull &&
+                             (g.celebEndNs == 0 || tickNow < g.celebEndNs);
+    if (g.fullRate) {
+      if (g.fullRateOkSinceNs == 0) g.fullRateOkSinceNs = tickNow;
+      if (tickNow - g.fullRateOkSinceNs > 60000000000ull) g.fullRateRetryNs = 0;
+    } else {
+      g.fullRateOkSinceNs = 0;
+    }
+    if (g.fullRate) {
+      const bool slow = !celebrating && g.focused && tickNow >= g.focusBackNs && tickNow - g.modeChangedNs > 5000000000ull &&
+                        g.loopIntervalEma > 1.06 * static_cast<double>(period);
+      if (!slow) {
+        g.fullRateSlowSinceNs = 0;
+      } else if (g.fullRateSlowSinceNs == 0) {
+        g.fullRateSlowSinceNs = tickNow;
+      } else if (tickNow - g.fullRateSlowSinceNs > 2000000000ull) {
+        g.fullRate = false;
+        g.fullRateBlockedKey = viewKey;
+        g.fullRateBlockedNs = tickNow;  // r129: retried after 10 s, then 20, 40, 60 s
+        g.fullRateRetryNs = g.fullRateRetryNs == 0 ? 10000000000ull : std::min<uint64_t>(30000000000ull, g.fullRateRetryNs * 2);
+        XLOG("game frames: 60 a second (this view couldn't keep up: %.1f ms a loop, the display needs %.1f)",
+             g.loopIntervalEma / 1e6, static_cast<double>(period) / 1e6);
+      }
+    }
+    g.frameScale = g.fullRate ? static_cast<float>(60.0 * static_cast<double>(period) / 1e9) : 1.0f;
+    if (g.fullRate) g.tickAccumNs = kGameTickNs;  // due every display frame (the offline branch uses it up)
+  }
   const bool due = g.tickAccumNs >= kGameTickNs;
 
   // Online (include/port/xr_net.h): a game frame runs only once both players' input for it is
@@ -8847,9 +14393,20 @@ extern "C" int PortXrBeginFrame(void) {
   return 0;
 }
 
+extern "C" float PortXrFrameScale(void) { return g.frameScale; }
+
 extern "C" void PortXrEndFrame(int ranGameFrame) {
   // r46: RetroAchievements, after the game frame: this frame's memory against the set (xr_ra.h).
-  xrra::frame(ranGameFrame != 0);
+  // r106: still 60 times a second at full rate (the set's hit counts are 60 Hz frames).
+  bool raFrame = false;
+  if (ranGameFrame != 0) {
+    g.raAccum += g.frameScale;
+    if (g.raAccum >= 0.999f) {
+      g.raAccum -= 1.0f;
+      raFrame = true;
+    }
+  }
+  xrra::frame(raFrame);
   if (!g.active || !g.frameBegun) {
     return;
   }
@@ -8861,6 +14418,37 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   bool frameOk = xr_ok(xrWaitFrame(g.session, &waitInfo, &g.frameState), "xrWaitFrame");
   g.lastWaitReturnNs = now_ns();
   g.xrWaitNsSinceStats += g.lastWaitReturnNs - waitStart;
+  // r130: missed display frames (the predicted display time jumped more than a period and a half) scale the
+  // celebration pieces' budget down (xrfx::set_load_scale), 0.8x a half second with 2+ missed; back up 0.1 a half
+  // second once it holds every frame
+  if (frameOk && g.frameState.predictedDisplayPeriod > 0) {
+    const int64_t period = g.frameState.predictedDisplayPeriod;
+    if (g.lastPredictedDisplayTime != 0) {
+      const int64_t d = static_cast<int64_t>(g.frameState.predictedDisplayTime - g.lastPredictedDisplayTime);
+      if (d > period * 3 / 2) g.missedSinceScale += static_cast<uint32_t>(std::min<int64_t>(8, d / period - 1));
+    }
+    g.lastPredictedDisplayTime = g.frameState.predictedDisplayTime;
+    const uint64_t t = g.lastWaitReturnNs;
+    if (g.scaleCheckNs == 0) g.scaleCheckNs = t;
+    if (t - g.scaleCheckNs > 500000000ull) {
+      float k = g.fxReady ? xrfx::load_scale() : 1.0f;
+      const float was = k;
+      // (review: only while pieces are up - a view slow on its own doesn't keep the next goal's pieces cut)
+      const bool busy = g.fxReady && xrfx::pieces_alive();
+      if (g.missedSinceScale >= 2 && busy) {
+        k *= 0.8f;
+      } else if (g.missedSinceScale == 0 || !busy) {
+        k += 0.1f;
+      }
+      if (g.fxReady) {
+        xrfx::set_load_scale(k);
+        if (std::fabs(xrfx::load_scale() - was) > 0.001f && (xrfx::load_scale() < 0.99f || was < 0.99f))
+          XLOG("fx: load %.2f (%u display frames missed in 0.5 s)", xrfx::load_scale(), g.missedSinceScale);
+      }
+      g.missedSinceScale = 0;
+      g.scaleCheckNs = t;
+    }
+  }
   if (frameOk) {
     XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
     frameOk = xr_ok(xrBeginFrame(g.session, &beginInfo), "xrBeginFrame");
@@ -8879,16 +14467,23 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       // newest frame read back by then; the next game frame meanwhile runs alongside.
       // r44 (players: input lag): except with the big screen in your room, which has no eyes to
       // overlap: without the wait its picture was the frame before last (r42 waited here, at 60).
-      if (!stereo_mode()) aurora::gfx::synchronize();
-      upload_latest_frame();
+      // r131: a GPU-direct big-screen frame (arm_screen_slot) has no readback to upload and no wait: its picture is
+      // blitted once the GPU has done its copy (finish_screen_slots below, a following display frame: waiting here for
+      // its submit would not get it done on the GPU any sooner)
+      if (!g.screenDirectThisFrame) {
+        if (!stereo_mode() && !g.pipelineThisFrame) aurora::gfx::synchronize();  // r130: not when left open
+        upload_latest_frame();
+      }
       if (g.stereoThisFrame) {
         g.stereoThisFrame = false;
         justRecorded = static_cast<int>(g.slot);
         g.slot = (g.slot + 1) % kStereoSlots;
       }
     } else {
-      aurora::gfx::synchronize();
-      upload_latest_frame();
+      // r131: not for a GPU-direct big-screen frame without eyes (left open or not: finish_screen_slots below); the eyes'
+      // finish_stereo_frame still needs it
+      if (!g.screenDirectThisFrame || g.stereoThisFrame) aurora::gfx::synchronize();
+      if (!g.screenDirectThisFrame) upload_latest_frame();
       if (g.stereoThisFrame) {
         g.stereoThisFrame = false;
         finish_stereo_frame(g.slot);
@@ -8906,7 +14501,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // next game frame can spare. His Tabletop · Stadium log: tasks 12.4 ms + 2.3 ms of this wait per
     // game frame (37% of them a frame late anyway) = 16.5 ms, past the 13.9 ms display period, so
     // the headset showed 59-60 frames a second instead of 72 for whole matches.
-    if (justRecorded >= 0 && frameOk) {
+    // r129: not for a pipelined frame: it's submitted during the next one (PortXrFrameBoundary)
+    if (justRecorded >= 0 && frameOk && !g.pipelineThisFrame) {
       constexpr uint64_t kHandoffWaitNs = 2500000ull;
       const uint64_t waitFrom = now_ns();
       uint64_t budgetNs = kHandoffWaitNs;
@@ -8934,6 +14530,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     }
     finish_released_slots();
   }
+  // r131: the newest GPU-direct big-screen picture the render worker has submitted, every display frame
+  finish_screen_slots();
   if (!frameOk) {
     return;
   }
@@ -8957,6 +14555,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad frQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};       // r70: the franchise hub
   XrCompositionLayerQuad frTipQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r70: "Y: FRANCHISE"
   bool showFrQuad = false, showFrTip = false;
+  // r113: the newspaper (r115: open: the left page, the right page, and the one turning over the fold)
+  XrCompositionLayerQuad paperQuad[3] = {{XR_TYPE_COMPOSITION_LAYER_QUAD}, {XR_TYPE_COMPOSITION_LAYER_QUAD},
+                                         {XR_TYPE_COMPOSITION_LAYER_QUAD}};
+  bool showPaper[3] = {false, false, false};
   XrCompositionLayerQuad frIntroQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r70b: the match's intro card
   XrCompositionLayerQuad frSeriesQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r70b: the playoff series board
   XrCompositionLayerQuad frLiveQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};   // r77: the live XP meter
@@ -9020,6 +14622,36 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     scene.scorerValid = scorer_shown() && g.scorer.planned;
     scene.scorerStill = g.scorer.phase == 2;
     scene.scorerFeet = g.scorer.lastPos;
+    // r124: Spider-Man's web shots from his wrists (xr_guest: his web move's flicks), out into your room: 1.7 m, but
+    // never ending nearer than 0.8 m to your head
+    {
+      float shots[8 * 6];
+      const int ns = PortGuestTakeWebShots(shots, 8);
+      if (ns > 0 && scene.scorerValid && g.fxReady) {
+        const M4 m = scorer_model();
+        const XrVector3f& head = g.headPose.position;
+        for (int i = 0; i < ns; ++i) {
+          const float* s = shots + 6 * i;
+          XrVector3f from{}, dir{};
+          float* fp = &from.x;
+          float* dp = &dir.x;
+          for (int c = 0; c < 3; ++c) {
+            fp[c] = s[0] * m.m[0][c] + s[1] * m.m[1][c] + s[2] * m.m[2][c] + m.m[3][c];
+            dp[c] = s[3] * m.m[0][c] + s[4] * m.m[1][c] + s[5] * m.m[2][c];
+          }
+          const float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+          if (dl < 1e-6f) continue;
+          dir = XrVector3f{dir.x / dl, dir.y / dl, dir.z / dl};
+          float len = 1.7f;
+          for (int k = 0; k < 12 && len > 0.5f; ++k) {
+            const float ex = from.x + dir.x * len - head.x, ey = from.y + dir.y * len - head.y, ez = from.z + dir.z * len - head.z;
+            if (ex * ex + ey * ey + ez * ez >= 0.8f * 0.8f) break;
+            len -= 0.1f;
+          }
+          xrfx::web_shot(from, dir, len);
+        }
+      }
+    }
     scene.scorerRadius = 0.25f;  // r44e: nearer the body (it also hides what falls behind it, xr_fx)
     scene.scorerHeight = scorer_height_m();
     // r53: the controllers in your hands, where they are at this display time and what is pressed
@@ -9031,17 +14663,17 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       int idx = g.skinCaptain - 100;
       for (int guard = 0; guard < 4 && PortGuestRosterEvolved(idx); ++guard)
         idx = PortGuestRosterFindAny(0, PortGuestRosterEvolvesFrom(idx));
-      scene.skinEtch = idx >= 0 && idx < 64 ? 100 + idx : 0;
+      scene.skinEtch = idx >= 0 && idx < 256 ? 100 + idx : 0;  // r121
     }
     // r57: the trophy shelf (your room only).
-    scene.shelfValid = g.showShelf && g.mrMode && g.shelf.placed;  // r104: unless switched off
+    scene.shelfValid = g.showShelf && home_on() && g.mrMode && g.shelf.placed;  // r104 / r133: unless switched off
     scene.shelfPos = g.shelf.position;
     scene.shelfYaw = g.shelf.yaw;
     if (g.inSuite) {
       // r61: in the cup suite your trophies stand on a shelf to your right; r62: picked up and resized
       // there too (update_shelf, shelf_at).
       scene.suite = true;
-      scene.shelfValid = g.showShelf;
+      scene.shelfValid = g.showShelf && home_on();
       scene.shelfPos = shelf_at();
       scene.shelfYaw = shelf_turn();
       // r61: the room you walk about in, and its live things (the home captain's).
@@ -9059,6 +14691,114 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       scene.roomYaw = g.suiteYaw;
       scene.suiteCaptain = series.empty() ? captain : -1;
       ensure_fx();
+    }
+    // r119: in VR an evolution happens in its own setting (evo_backdrop), you at its middle, facing the way the
+    // evolution stands; MR keeps your room. Its pictures go when the evolution screen closes.
+    // r132 (Lance: "whats up with the evolution vr screens??? i aint seen one yet"): in every view now, the Living Room
+    // too (the room covers your own while it evolves), and picked again for each evolution (a second one in a row kept
+    // the first one's: Scyther evolved in Charmeleon's fire)
+    if (!g.inSuite && g.fxReady && g.headValid && g.frOpen && g.frMode == 3) {
+      if (g.evoRoomOn && g.evoRoomKey != g.frEvo.fromKey) {
+        ++g_suiteLoadGen;
+        g.suiteLoaded.clear();
+        xrfx::set_room(xrfx::Room{});
+        g.evoRoomOn = false;
+      }
+      if (!g.evoRoomOn) {
+        g.evoRoomKey = g.frEvo.fromKey;
+        // its own kind's setting, else the first one this headset has (never the black)
+        static const char* const kAny[] = {"sky", "fire", "water", "grass", "electric", "rock", "psychic", "ghost", "city"};
+        const std::string want = evo_backdrop(g.frEvo.fromKey);
+        g.evoRoomTheme.clear();
+        for (int i = -1; i < 9 && g.evoRoomTheme.empty(); ++i) {
+          const std::string th = i < 0 ? want : std::string(kAny[i]);
+          if (FILE* f = std::fopen((suites_dir() + "evo_" + th + ".room").c_str(), "rb")) {
+            std::fclose(f);
+            g.evoRoomTheme = th;
+          }
+        }
+        XLOG("evo: backdrop %s for %s (its own: %s)", g.evoRoomTheme.empty() ? "none on this headset" : g.evoRoomTheme.c_str(),
+             g.frEvo.fromKey, want.c_str());
+      }
+      if (!g.evoRoomTheme.empty()) request_room_files("evo:" + g.evoRoomTheme, suites_dir() + "evo_" + g.evoRoomTheme);
+      g.evoRoomOn = true;
+      const EvoShow& es = g_evoShow;
+      float fx = es.dirX, fz = es.dirZ;
+      XrVector3f at = es.from;
+      if (!es.placed) {
+        floor_forward(g.headPose, &fx, &fz);
+        at = g.headPose.position;
+      }
+      scene.roomShown = !g.evoRoomTheme.empty();
+      scene.roomEvo = scene.roomShown;
+      scene.roomOrigin = XrVector3f{at.x, g.floorY, at.z};
+      scene.roomYaw = std::atan2(-fx, -fz);
+      scene.suiteCaptain = -1;
+      ensure_fx();
+    } else if (g.evoRoomOn) {
+      g.evoRoomOn = false;
+      if (!g.inSuite) {
+        ++g_suiteLoadGen;
+        g.suiteLoaded.clear();
+        if (g.fxReady) xrfx::set_room(xrfx::Room{});
+      }
+      XLOG("evo: backdrop off");
+    }
+    // r124 (Lance: "we need a home screen VR environment. that shit is just a black screen man"): in VR, out of a
+    // match, your captain's suite round you (its window on the stadium, the flashes and rockets out there), placed
+    // where you are when it comes up, its window the way the big screen is. (Not waiting on the effects renderer: it
+    // only starts at the first goal otherwise; ensure_fx below starts it.)
+    // r126 (Lance's r125 clip: "fix the damn celebration at the end, that shit is not supposed to be there"): "match
+    // over" comes while the game still plays the match's highlights in the stadium, and the suite came up then: its
+    // live things (the flashes in its stands, its rockets, its LED strings, drawn in the effects layer over
+    // everything) went off over the stadium. Now only once the game has drawn no 3D world for 1.5 s (menus), and gone
+    // the moment it draws one again.
+    // r128: "drawn no 3D world" = the game's stadium (World::Render) not drawn for 1.5 s, not any picture sent.
+    const bool worldQuiet = now_ns() - g_worldDrawnNs.load(std::memory_order_relaxed) > 1500000000ull;
+    if (worldQuiet != g.worldQuietLogged) {
+      g.worldQuietLogged = worldQuiet;
+      XLOG("world: %s", worldQuiet ? "no stadium drawn for 1.5 s (menus)" : "the game draws its stadium");
+    }
+    if (!g.inSuite && !g.mrMode && !g.evoRoomOn && g.device != VK_NULL_HANDLE && g.headValid && !g.stereoFailed &&
+        !xrhome::in_match() && worldQuiet) {
+      if (!g.homeEnvOn) {
+        float fx = 0.0f, fz = -1.0f;
+        if (g.shownScreenValid) {
+          fx = g.shownScreenPose.position.x - g.headPose.position.x;
+          fz = g.shownScreenPose.position.z - g.headPose.position.z;
+          const float d = std::sqrt(fx * fx + fz * fz);
+          if (d > 0.2f) {
+            fx /= d;
+            fz /= d;
+          } else {
+            floor_forward(g.headPose, &fx, &fz);
+          }
+        } else {
+          floor_forward(g.headPose, &fx, &fz);
+        }
+        g.homeEnvYaw = std::atan2(-fx, -fz);
+        g.homeEnvOrigin = XrVector3f{g.headPose.position.x, g.floorY, g.headPose.position.z};
+        g.homeEnvOn = true;
+        XLOG("home screen: your suite round you (VR), facing %.0f deg", g.homeEnvYaw * 57.29578f);
+      }
+      const int captain = xrhome::view().captain;
+      std::string guestName;
+      const std::string series = guest_suite(captain, &guestName);
+      request_suite_room(series.empty() ? std::string(suite_name(captain)) : series);
+      scene.roomShown = true;
+      scene.roomOrigin = g.homeEnvOrigin;
+      scene.roomOrigin.y = g.floorY;
+      scene.roomYaw = g.homeEnvYaw;
+      scene.suiteCaptain = series.empty() ? captain : -1;
+      ensure_fx();
+    } else if (g.homeEnvOn) {
+      g.homeEnvOn = false;
+      if (!g.inSuite && !g.evoRoomOn) {
+        ++g_suiteLoadGen;
+        g.suiteLoaded.clear();
+        if (g.fxReady) xrfx::set_room(xrfx::Room{});
+      }
+      XLOG("home screen: suite off");
     }
     scene.shelfCups = g.trophyBits;
     std::memcpy(scene.shelfWins, g.trophyWins, sizeof(scene.shelfWins));
@@ -9100,7 +14840,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     if (g.fxReady && sceneViews && xrfx::render_room(scene, &roomLayer)) {
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&roomLayer);
     }
-    if (g.mrMode && g.pt.available && g.pt.layerRunning) {
+    // r134: an evolution's room covers everything while it's up: your room's camera picture (MR) and the game's own
+    // picture (below) aren't laid over it
+    const bool evoRoomUp = g.evoRoomOn && !g.evoRoomTheme.empty();
+    if (g.mrMode && g.pt.available && g.pt.layerRunning && !evoRoomUp) {
       ptLayer.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
       ptLayer.space = XR_NULL_HANDLE;
       ptLayer.layerHandle = g.pt.layer;
@@ -9115,14 +14858,19 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       // r87: two modes split now: back in one, its stadium starts again from fresh pictures
       g.stadiumValid[0] = g.stadiumValid[1] = false;
     }
-    if (splitMode && g.stadiumValid[0] && g.stadiumValid[1]) {
+    // r126: not while the home screen's suite is up (the game has drawn no world for a while: the last stadium
+    // picture would stand frozen over the suite)
+    // r134 (Lance's clip: "the VR shit for evolution is STILL black and you can only see the environment for .4 of a
+    // second before it goes black"): nor while an evolution's room is up - the game's menu picture (black) was laid
+    // over the room every frame; it only showed before the first one came
+    if (splitMode && g.stadiumValid[0] && g.stadiumValid[1] && !g.homeEnvOn && !evoRoomUp) {
       stadiumLayer.layerFlags = 0;
       stadiumLayer.space = g.local;
       stadiumLayer.viewCount = 2;
       stadiumLayer.views = g.stadiumViews;
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&stadiumLayer);
     }
-    if (stereo_mode() && g.hasProjection) {  // (r42: the scorer alone goes after the screen, below)
+    if (stereo_mode() && g.hasProjection && !g.homeEnvOn && !evoRoomUp) {  // (r42: the scorer alone goes after the screen, below)
       // Over passthrough only what was drawn is solid: the eye passes clear to alpha 0 and force
       // alpha 255 on everything they draw (glPlat.cpp). r43: the same over the split stadium.
       projLayer.layerFlags =
@@ -9326,7 +15074,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // pictures saved by the panel): looked at every 3 s, redrawn on a thread when anything changed,
     // hung above the shelf a little behind its trophies (the effects layer, over it, draws those).
     // r104: unless switched off in the pause settings (one switch with the shelf).
-    if (g.showShelf && g.mrMode && g.shelf.placed) {
+    if (g.showShelf && home_on() && g.mrMode && g.shelf.placed) {
       const uint64_t tb = now_ns();
       if (tb - g.boardCheckNs > 3000000000ull && g_boardReadyGen.load() == g.boardGen) {
         g.boardCheckNs = tb;
@@ -9400,7 +15148,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     if (g.inSuite) {
       update_suite(scene, layers, &layerCount, homeQuads);
     } else {
-      update_home(scene, layers, &layerCount, homeQuads);
+      if (home_on()) update_home(scene, layers, &layerCount, homeQuads);  // r133 / r134: unless switched off
       update_awards(scene, layers, &layerCount);  // r73
     }
     // r42: in the big screen room mode the eye picture holds only the life-size scorer, who stands
@@ -9500,33 +15248,36 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       // r68e: the character select menu, big: everyone, a section per game.
       // r79: the co-captain step shows the captains (and which it can't be)
       const bool co = g.gpCo;
-      const int role = co ? 0 : g.gpRole, side = g.gpSide, cursor = g.gpCursor;
+      // r130: the sidekicks on the sidekick-slot menu (role 2), one slot at a time
+      const int role = co ? 0 : (g.gpRole == 1 ? 2 : g.gpRole), side = g.gpSide, cursor = g.gpCursor;
+      const int skSlot = g.gpSkSlot, skFirst = g.gpSkFirst, skCaptain = PortGuestMenuCaptainFor(g.gpSide);
+      const unsigned skCapTaken = PortGuestSlotCaptainsTaken(g.gpSide);  // r130: the Strikers captains its slots can't have
+      const std::array<int, 3> skPicks = {g.gpSkPick[0], g.gpSkPick[1], g.gpSkPick[2]};
       unsigned taken = co ? g.gpCoTaken : 0u;  // the Strikers captains the other side has (as the screen offers it now)
       if (!co)
         for (int t = 0; t < 8; ++t)
           if (!PortGuestPickerCaptainFree(t)) taken |= 1u << t;
-      request_panel(g_guestPicker, g.gpGen, kGuestW, kGuestH, [co, role, side, cursor, taken](uint8_t* px, int w, int h) {
+      const bool onTabs = g.gpOnTabs;
+      request_panel(g_guestPicker, g.gpGen, kGuestW, kGuestH, [co, role, side, cursor, taken, onTabs, skSlot, skFirst, skCaptain, skCapTaken, skPicks](uint8_t* px, int w, int h) {
+        // r112: the menu by game (draw_select): big tiles, a spotlight, a few words
         const std::vector<MenuEntry>& menu = menu_entries(role);
-        std::vector<xrtext::GuestTile> tiles;
-        tiles.reserve(menu.size());
-        for (const MenuEntry& e : menu) {
-          const GuestPortrait& p = guest_portrait(e.portrait);
-          xrtext::GuestTile t{p.rgba.empty() ? nullptr : p.rgba.data(), p.w, p.h, e.name.c_str(), e.tag.c_str()};
-          t.row = e.row;
-          t.col = e.col;
-          t.frame = e.frame;
-          t.taken = role == 0 && e.team >= 0 && (taken & (1u << e.team)) != 0;
-          t.locked = PortGuestRosterLocked(e.pick);  // r70c: a silhouette until evolved in franchise
-          tiles.push_back(t);
-        }
-        char title[128];
-        std::snprintf(title, sizeof(title), "CHARACTER SELECT   -   TEAM %d: %s", side + 1,
-                      co ? "CHOOSE A CO-CAPTAIN (2 CAPTAINS + 2 SIDEKICKS)"
-                         : (role == 0 ? "CHOOSE YOUR CAPTAIN" : "CHOOSE YOUR SIDEKICKS"));
-        xrtext::guest_picker(px, w, h, title, tiles.data(), static_cast<int>(tiles.size()),
-                             role == 0 ? kMenuCaptainCols : kMenuSidekickCols, cursor,
-                             co ? "STICK: MOVE   -   A: CO-CAPTAIN   -   X: NO CO-CAPTAIN   -   B: THE GAME'S OWN SCREEN"
-                                : "STICK: MOVE   -   A: PICK   -   B: THE GAME'S OWN SCREEN   -   Y: THIS MENU");
+        const int n = static_cast<int>(menu.size());
+        auto takenAt = [&](int i) {
+          if (role == 2) return i >= 0 && i < n && sk_taken(menu[i], skPicks.data(), std::max(0, skSlot), skFirst, skCaptain, skCapTaken);
+          return i >= 0 && i < n && role == 0 && menu[i].team >= 0 && (taken & (1u << menu[i].team)) != 0;
+        };
+        auto lockedAt = [&](int i) { return i >= 0 && i < n && PortGuestRosterLocked(menu[i].pick); };  // r70c
+        char title[96];
+        if (role == 2)
+          std::snprintf(title, sizeof(title), "TEAM %d - SIDEKICK %d OF 3", side + 1, std::max(1, std::min(3, skSlot + 1)));
+        else
+          std::snprintf(title, sizeof(title), "TEAM %d - %s", side + 1, co ? "CO-CAPTAIN" : (role == 0 ? "CAPTAIN" : "SIDEKICKS"));
+        std::vector<xrtext::SelectHint> hints = {{"L", kHintStick, "MOVE"}, {"A", kHintA, "PICK"}};
+        if (role == 0 || role == 2) hints.push_back({"LT RT", kHintStick, "FORMS"});
+        if (co) hints.push_back({"X", kHintX, "NONE"});
+        if (role == 2 && skSlot < 2) hints.push_back({"X", kHintX, "ALL THE SAME"});  // r130
+        hints.push_back({"B", kHintB, role == 2 && skSlot > skFirst ? "BACK A SLOT" : "GAME'S SCREEN"});
+        draw_select(px, w, h, role, cursor, onTabs, title, takenAt, lockedAt, hints);
       });
       if (show_panel(g_guestPicker, g.gpPanel)) {
         // r68g (Lance on r68f: "that shit was moving when i moved and it was disappearing behind the
@@ -9644,7 +15395,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         showFrQuad = true;
       }
     } else if (g.frOpen && g.headValid) {
-      request_panel(g_franchise, g.frGen, kGuestW, kGuestH, [](uint8_t* px, int w, int h) {
+      // r131: drawn again too when a character's 3D figure comes to stand in front of it (its portrait left out)
+      request_panel(g_franchise, g.frGen * 64 + (g_frFigGen.load() & 63), kGuestW, kGuestH, [](uint8_t* px, int w, int h) {
         FrSnapshot s;
         {
           std::lock_guard<std::mutex> lock(g_frMutex);
@@ -9657,8 +15409,87 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
                  static_cast<float>(kGuestH) / static_cast<float>(kGuestW), false);
         showFrQuad = true;
       }
+      // r113: THE DAILY STRIKE in front of you, 40 cm wide at arm's length, tilted to your eyes.
+      // r131: STRIKERS ILLUSTRATED, placed 55 cm in front of you and 12 cm below your eyes, closed on its cover (31 cm
+      // a page; where it is, its size and turn: grab it, update_magazine). Open, the pages either side of the spine; a
+      // page turning over the spine with its face to you all the way (its front up to standing on the right, then its
+      // back down onto the left; back the other way), the spine sliding as it opens / closes so what shows stays
+      // in the middle (mag_frame). Every page goes up as soon as it's drawn, so a turn never waits for one.
+      if (g.paperOpen) {
+        for (int pg = 0; pg < kMagPages; ++pg) {
+          request_panel(g_paperP[pg], g.paperGen, kMagW, kMagH, [pg](uint8_t* px, int w, int h) {
+            FrSnapshot s;
+            {
+              std::lock_guard<std::mutex> lock(g_frMutex);
+              s = g_frSnap;
+            }
+            std::vector<uint8_t> photo;
+            int pw = 0, ph = 0;
+            {
+              std::lock_guard<std::mutex> plock(g_photoMutex);
+              photo = g_photo;
+              pw = g_photoW;
+              ph = g_photoH;
+            }
+            Pieces P;
+            mag_page(P, s, pg, photo, pw, ph);
+            xrtext::board(px, w, h, P.v);
+          });
+          show_panel(g_paperP[pg], g.paperPanel[pg]);
+        }
+        if (!g.paperPlaced) {
+          float fx = 0.0f, fz = -1.0f;
+          floor_forward(g.headPose, &fx, &fz);
+          const XrVector3f head = g.headPose.position;
+          g.magPos = {head.x + fx * 0.55f, head.y - 0.12f, head.z + fz * 0.55f};
+          g.magRelYaw = 0.0f;
+          g.paperPlaced = true;
+        }
+        const MagFrame f = mag_frame();
+        // r131: as bending paper in the effects layer once its pages are up (mag_paper_frame); the flat quads till then
+        g.magMeshShown = mag_paper_frame(scene, f, nowNs);
+        // the pages showing: settled, the back of the last leaf turned (left) and the front of the next (right);
+        // turning leaf T, the pages under it and its front (still on the right half) or back (on the left half)
+        const int T = g.magMeshShown ? -2 : g.magTurn, L = g.magMeshShown ? -1 : g.magLeaves;
+        int left = -1, right = -1, turning = -1;
+        if (T >= 0) {
+          left = 2 * T - 1;
+          right = 2 * T + 2 < kMagPages ? 2 * T + 2 : -1;
+          turning = g.magSide <= 0.5f ? 2 * T : 2 * T + 1;
+        } else {
+          left = 2 * L - 1;
+          right = L < kMagLeaves ? 2 * L : -1;
+        }
+        auto lay = [&](XrCompositionLayerQuad& quad, int page, const XrQuaternionf& o, float along) {
+          // a page flat or turning: `o` its turn, its middle `along` (+ right, - left) half a page from the spine
+          place_panel(quad, g.paperPanel[page], f.fold, f.pageW);
+          const XrVector3f off = q_rot(o, XrVector3f{along * 0.5f * f.pageW, 0.0f, 0.0f});
+          quad.pose.orientation = o;
+          quad.pose.position = {f.fold.x + off.x, f.fold.y + off.y, f.fold.z + off.z};
+        };
+        if (left >= 0 && left < kMagPages && g.paperPanel[left].hasImage) {
+          lay(paperQuad[0], left, f.q, -1.0f);
+          showPaper[0] = true;
+        }
+        if (right >= 0 && right < kMagPages && g.paperPanel[right].hasImage) {
+          lay(paperQuad[1], right, f.q, 1.0f);
+          showPaper[1] = true;
+        }
+        if (turning >= 0 && turning < kMagPages && g.paperPanel[turning].hasImage) {
+          const float a = 3.14159265f * g.magSide;
+          if (g.magSide <= 0.5f) lay(paperQuad[2], turning, q_mul(f.q, yaw_quat(-a)), 1.0f);
+          else lay(paperQuad[2], turning, q_mul(f.q, yaw_quat(3.14159265f - a)), -1.0f);
+          showPaper[2] = true;
+        }
+      } else {
+        g.paperPlaced = false;
+        g.magMeshShown = false;  // r131: its paper put away
+        if (g.fxReady) mag_paper_drop();
+      }
     } else {
       g.frPlaced = false;
+      g.paperPlaced = false;
+      g.magMeshShown = false;  // r131
     }
     if (g.frOnMenu && !g.frOpen && g.headValid) {
       request_panel(g_frTip, 1, kGuestTipW, kGuestTipH, [](uint8_t* px, int w, int h) {
@@ -9778,7 +15609,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
           std::lock_guard<std::mutex> lock(g_frMutex);
           c = g_frCard;
         }
-        xrtext::guest_tip(px, w, h, franchise_series_text(c).c_str());
+        draw_franchise_series(px, w, h, c);  // r116
       });
       if (show_panel(g_frSeries, g.frSeries)) {
         place_panel(frSeriesQuad, g.frSeries, scene.screenPose.position, 0.6f);
@@ -9841,7 +15672,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         std::vector<uint8_t> pixels(static_cast<size_t>(kSliderW) * kSliderH * 4);
         const int voice = !xrvoice::enabled() ? 0 : (xrvoice::mic_allowed() ? 1 : 2);  // r44
         xrtext::settings_panel(pixels.data(), kSliderW, kSliderH, g.crowdLevel, 10, voice, g.viewHeightCm,
-                               g.settingsRow, g.showShelf, g.raPopups);
+                               g.settingsRow, g.showShelf, g.raPopups, home_on());
         panel_upload(g.slider, pixels.data(), kSliderW, kSliderH);
       }
       if (!g.sliderPlaced && g.headValid) {
@@ -9859,12 +15690,49 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // The celebration over everything else.
     const uint64_t fxStart = now_ns();
     if (g.fxReady && sceneViews) update_evo(scene, nowNs);  // r96: the 3D evolution
+    if (g.fxReady && sceneViews) {
+      // r112: the character select menu's one under the cursor, in 3D beside it (the match's menu, or a new
+      // franchise career's picks)
+      std::string selPack;
+      const XrCompositionLayerQuad* selQuad = nullptr;
+      if (showGuestQuad && g.gpOpen) {
+        const int role = g.gpCo ? 0 : (g.gpRole == 1 ? 2 : g.gpRole);  // r130: the sidekick-slot menu
+        const std::vector<MenuEntry>& menu = menu_entries(role);
+        const bool locked = g.gpCursor >= 0 && g.gpCursor < static_cast<int>(menu.size()) &&
+                            PortGuestRosterLocked(menu[g.gpCursor].pick);
+        if (!g.gpOnTabs) selPack = select_pack(role, g.gpCursor, locked);
+        selQuad = &guestQuad;
+      } else if (showFrQuad && g.frOpen && g.frMode == 4) {
+        const int role = g.frPickStage >= 2 ? 2 : 0;  // r130
+        const std::vector<MenuEntry>& menu = menu_entries(role);
+        const bool locked = role == 0 && g.frCursor >= 0 && g.frCursor < static_cast<int>(menu.size()) &&
+                            menu[g.frCursor].team < 0 && PortGuestRosterEvolved(menu[g.frCursor].pick);
+        if (!g.frOnTabs) selPack = select_pack(role, g.frCursor, locked);
+        selQuad = &frQuad;
+      }
+      if (selQuad != nullptr) {
+        update_select(scene, selPack, selQuad->pose.position, q_rot(selQuad->pose.orientation, XrVector3f{1.0f, 0.0f, 0.0f}),
+                      0.5f * selQuad->size.width, nowNs);
+      } else {
+        update_select(scene, "", XrVector3f{0.0f, 0.0f, 0.0f}, XrVector3f{1.0f, 0.0f, 0.0f}, 0.0f, nowNs);
+      }
+    }
+    // r131: the franchise's characters in 3D: the hub's / trades' in front of its panel, awards night's in your room
+    const bool frFigPanel = showFrQuad && g.frOpen && (g.frMode == 2 || g.frMode == 5) && !g.gpOpen;
+    const bool frFigsUp = fr_figs_frame(scene, frFigPanel ? &frQuad : nullptr, g.fxReady && sceneViews, nowNs);
     // r96: while a Pokemon evolves in 3D in front of the big screen, the evolution card is under the
-    // effects layer (its backdrop), not over it (it would hide the Pokemon standing before it)
-    const bool frUnder = showFrQuad && g.frMode == 3 && g_evoShow.live;
+    // effects layer (its backdrop), not over it (it would hide the Pokemon standing before it); r131: so is the hub's
+    // picture while its characters stand in front of it
+    const bool frUnder = showFrQuad && ((g.frMode == 3 && g_evoShow.live) || frFigsUp ||
+                                        (g.magMeshShown && g.paperOpen));  // r131: the magazine's paper in front of it
     if (frUnder) {
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
       showFrQuad = false;
+      // r134 (Lance's clip: "i kept seeing the lights behind the magazine, through the magazine"): under the effects
+      // layer the hub's panel must be a solid there too, or the suite's LED lights behind it shine through it - the
+      // figures' case added it (fr_figs_frame), the magazine's and the evolution card's didn't
+      if (!frFigsUp && scene.panelCount < 4)
+        scene.panels[scene.panelCount++] = xrfx::Scene::Panel{frQuad.pose, frQuad.size.width, frQuad.size.height};
     }
     if (g.fxReady && sceneViews && xrfx::update(scene) && xrfx::render(scene, &fxLayer)) {
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fxLayer);
@@ -9876,6 +15744,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     if (showGuestTip) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&guestTipQuad);
     if (showFrQuad) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
     if (showFrTip) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frTipQuad);
+    for (int k = 0; k < 3; ++k)  // r113: the paper over the hub (the page turning last)
+      if (showPaper[k] && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&paperQuad[k]);
     if (showFrIntro && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frIntroQuad);
     if (showFrSeries && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frSeriesQuad);
     if (showFrLive && layerCount < 32) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frLiveQuad);
@@ -10018,6 +15888,9 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
 }
 
 extern "C" void PortXrShutdown(void) {
+  // r131: the big screen's shared images, while the submit callback still ends their access (main.cpp has closed a
+  // pipelined frame already: PortXrFrameClosePending)
+  destroy_screen_slots();
   aurora_xr_set_frame_callback(nullptr, nullptr);
   aurora_xr_set_submit_callback(nullptr, nullptr);
   aurora_xr_set_surface_suppressed(false);
@@ -10077,8 +15950,13 @@ extern "C" int PortXrWanted(void) { return 0; }
 extern "C" int PortXrInit(void) { return 0; }
 extern "C" int PortXrActive(void) { return 0; }
 extern "C" int PortXrStereoWorld(void) { return 0; }
+extern "C" void PortXrWorldRendered(void) {}
 extern "C" int PortXrStereoFullStands(void) { return 0; }
 extern "C" int PortXrStereoFrameBegin(void) { return 0; }
+extern "C" int PortXrFramePending(void) { return 0; }
+extern "C" int PortXrFrameLeaveOpen(void) { return 0; }
+extern "C" void PortXrFrameClosePending(void) {}
+extern "C" void PortXrFrameBoundary(void) {}
 extern "C" int PortXrStereoSinglePass(void) { return 0; }
 extern "C" int PortXrStereoEyeLayer(int, int, float*, float*, int*) { return 0; }
 extern "C" void PortXrStereoEyeEnd(int) {}
@@ -10101,6 +15979,7 @@ extern "C" int PortXrTakeTestItem(void) { return 0; }
 extern "C" void PortXrSetStsMeter(int, float, float, float, float, float) {}
 extern "C" void PortXrSetSuperStrike(int) {}
 extern "C" int PortXrTakeTestSts(void) { return 0; }
+extern "C" float PortXrFrameScale(void) { return 1.0f; }
 extern "C" void PortXrScorerFrame(int, float, float, int, int, int) {}
 extern "C" void PortXrScorerPlayer(int) {}
 extern "C" void PortXrScorerFaceOff(int) {}

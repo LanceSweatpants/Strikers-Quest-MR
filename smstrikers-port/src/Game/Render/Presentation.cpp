@@ -671,7 +671,15 @@ void Presentation::Update(float deltaT)
         }
         else
         {
-            ++mGoalShowFrames;
+            // strikers-quest r106: 60 Hz frames, whatever the game frame rate (PortXrFrameScale: 1 on the
+            // 60 cadence, as online always is, so the count stays the same on both headsets)
+            static float s_goalShowFrac = 0.0f;
+            s_goalShowFrac += PortXrFrameScale();
+            while (s_goalShowFrac >= 0.999f)
+            {
+                s_goalShowFrac -= 1.0f;
+                ++mGoalShowFrames;
+            }
         }
 
         Run();

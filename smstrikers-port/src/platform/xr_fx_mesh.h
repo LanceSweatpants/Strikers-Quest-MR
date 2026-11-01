@@ -43,6 +43,18 @@ enum Id : uint8_t {
   kSword, kShield, kRod, kPokeBall, kDumbbell, kRock, kBone, kApple, kMissile, kPill,
   kRupee, kTriforce, kIceBlock, kIcicle, kGlove, kNote, kBat, kShard, kNeedle, kYoyo,
   kRug,  // r89: the home corner's round rug, a unit across, a little thick, face up (+y)
+  // r124: the Marvel heroes' own pieces (web, spider, claws, star shield, skull, vampire bat, sai, snowflake,
+  // chain link, mystic rune)
+  kWeb, kSpider, kClaws, kStarShield, kSkull, kVampBat, kSai, kSnowflake, kChainLink, kRune,
+  // r127: Thor's hammer, Hawkeye's arrow
+  kMjolnir, kArrow,
+  kSpoon,  // r127: Abra / Kadabra / Alakazam's spoon
+  // r130: the new roster's pieces (20 Pokemon lines, 6 heroes), each LIGHT (under ~60 triangles: the celebrations
+  // were too heavy on the GPU): a crescent moon, a "4" badge, a stretching arm, a surfboard, an acorn, a horn, a crown,
+  // a spiral fossil, a talon, a spike, a toadstool, a lily pad, a wool puff, a leaf, sound waves, a boxing glove, an
+  // impact burst, a spinning top, a palm, a twig, a cut gem, a lotus, lips, a heart, a star, a dog tag.
+  kCrescent, kBadge4, kStretchArm, kSurfboard, kAcorn, kHorn, kCrown, kFossil, kTalon, kSpike, kToadstool, kLilyPad,
+  kWool, kLeaf, kSoundWave, kGloveLite, kImpact, kTop, kPalm, kTwig, kGem, kLotus, kLips, kHeartLite, kStarLite, kDogTag,
   kCount
 };
 
@@ -781,6 +793,585 @@ inline Set build(float detail) {
   start(kRug);
   b.lathe_poly(1, n(48, 24), 0.0f, {{0.0f, 0.0f}, {0.5f, 0.0f}, {0.5f, 0.008f}, {0.485f, 0.016f}, {0.0f, 0.016f}});
   finish(kRug);
+
+  // ---- r124 (Lance: "the celebration confetti and shit you have falling with those characters just needs a rehaul.
+  // you have just random white balls falling with spider man"): the Marvel heroes' own pieces ----
+  // A thin bar from a to b (w wide, t thick), its faces lit by their own normals.
+  auto bar = [&](float mat, V3 a, V3 c, float w, float t) {
+    const V3 d = c - a;
+    const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (len < 1e-5f) return;
+    const V3 x = d * (1.0f / len);
+    const V3 up = std::fabs(x.z) < 0.9f ? V3{0.0f, 0.0f, 1.0f} : V3{0.0f, 1.0f, 0.0f};
+    const V3 y = normalize(cross(up, x));
+    const V3 z = cross(x, y);
+    const M3 r{{x.x, y.x, z.x, x.y, y.y, z.y, x.z, y.z, z.z}};
+    const size_t from = set.verts.size();
+    b.box({0.0f, 0.0f, 0.0f}, {0.5f * len, 0.5f * w, 0.5f * t}, mat);
+    b.xform(from, r, (a + c) * 0.5f);
+  };
+  // A flat outline (x-y, counter-clockwise, every point seen from (cx, cy)) given depth z0..z1.
+  auto prism = [&](float mat, const std::vector<RH>& pts, float z0, float z1, float cx, float cy) {
+    const uint32_t cnt = static_cast<uint32_t>(pts.size());
+    for (float z : {z0, z1}) {
+      const float nz = z == z1 ? 1.0f : -1.0f;
+      const uint32_t base = static_cast<uint32_t>(set.verts.size());
+      set.verts.push_back(Vertex{{cx, cy, z}, {0, 0, 0}, {0, 0, nz}, mat, 0.0f});
+      for (const RH& p : pts) set.verts.push_back(Vertex{{p.first, p.second, z}, {0, 0, 0}, {0, 0, nz}, mat, 0.0f});
+      for (uint32_t i = 0; i < cnt; ++i) {
+        set.indices.push_back(base);
+        set.indices.push_back(base + 1 + i);
+        set.indices.push_back(base + 1 + (i + 1) % cnt);
+      }
+    }
+    for (uint32_t i = 0; i < cnt; ++i) {
+      const RH a = pts[i], c = pts[(i + 1) % cnt];
+      const V3 nn = normalize(V3{c.second - a.second, -(c.first - a.first), 0.0f});
+      const uint32_t base = static_cast<uint32_t>(set.verts.size());
+      for (const RH& q : {a, c})
+        for (float z : {z0, z1}) set.verts.push_back(Vertex{{q.first, q.second, z}, {0, 0, 0}, {nn.x, nn.y, nn.z}, mat, 0.0f});
+      for (uint32_t k : {0u, 2u, 1u, 1u, 2u, 3u}) set.indices.push_back(base + k);
+    }
+  };
+
+  // A spider web facing +z, a unit across: eight spokes, four rings sagging between them (main colour).
+  start(kWeb);
+  tagged(0.0f, [&] {
+    float ang[8];
+    for (int k = 0; k < 8; ++k) ang[k] = 2.0f * kPi * k / 8.0f + 0.12f * std::sin(5.0f * k);
+    for (int k = 0; k < 8; ++k)
+      bar(0.0f, V3{0.0f, 0.0f, 0.0f}, V3{0.5f * std::cos(ang[k]), 0.5f * std::sin(ang[k]), 0.0f}, 0.024f, 0.012f);
+    for (float r : {0.11f, 0.21f, 0.31f, 0.41f}) {
+      for (int k = 0; k < 8; ++k) {
+        const float a0 = ang[k], a1 = ang[(k + 1) % 8] + (k == 7 ? 2.0f * kPi : 0.0f);
+        const V3 p0{r * std::cos(a0), r * std::sin(a0), 0.0f}, p1{r * std::cos(a1), r * std::sin(a1), 0.0f};
+        const float am = 0.5f * (a0 + a1), rm = 0.9f * r * std::cos(0.5f * (a1 - a0));
+        const V3 pm{rm * std::cos(am), rm * std::sin(am), 0.0f};
+        bar(0.0f, p0, pm, 0.017f, 0.01f);
+        bar(0.0f, pm, p1, 0.017f, 0.01f);
+      }
+    }
+  });
+  finish(kWeb);
+
+  // A spider, back up (+z), head along +y: body and head (main colour), a mark on its back (detail), eight legs.
+  start(kSpider);
+  placed(0.0f, rot_y(0.0f), V3{0.0f, -0.12f, 0.0f}, [&] { b.ellipsoid(n(16, 8), n(8, 4), 0.0f, 0.15f, 0.19f, 0.12f); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.1f, 0.0f}, [&] { b.ellipsoid(n(12, 6), n(6, 3), 0.0f, 0.09f, 0.09f, 0.07f); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, -0.12f, 0.1f}, [&] { b.ellipsoid(n(10, 5), n(5, 3), 1.0f, 0.05f, 0.08f, 0.03f); });
+  tagged(0.0f, [&] {
+    for (float sx : {-1.0f, 1.0f}) {
+      for (int k = 0; k < 4; ++k) {
+        const float y = 0.13f - 0.08f * k, dy = 0.12f - 0.08f * k;
+        const V3 hip{0.06f * sx, y, 0.0f}, knee{0.26f * sx, y + dy, 0.13f}, foot{0.42f * sx, y + 1.6f * dy, -0.12f};
+        bar(0.0f, hip, knee, 0.025f, 0.025f);
+        bar(0.0f, knee, foot, 0.02f, 0.02f);
+      }
+    }
+  });
+  finish(kSpider);
+
+  // Wolverine's claws along +y: three blades (detail colour, metal) out of a knuckle bar (main colour).
+  start(kClaws);
+  for (float x : {-0.11f, 0.0f, 0.11f}) {
+    placed(1.0f, rot_y(0.0f), V3{x, 0.0f, 0.0f}, [&] {
+      prism(1.0f, {{-0.03f, -0.15f}, {0.03f, -0.15f}, {0.026f, 0.38f}, {0.0f, 0.52f}, {-0.016f, 0.42f}}, -0.012f, 0.012f, 0.0f,
+            0.1f);
+    });
+  }
+  tagged(0.0f, [&] { rbox(0.0f, 0.19f, 0.05f, 0.06f, 0.3f, V3{0.0f, -0.2f, 0.0f}); });
+  finish(kClaws);
+
+  // Captain America's shield facing +z: red (main), white (cream), red rings, a blue (detail) middle, a white star.
+  start(kStarShield);
+  tagged(1.0f, [&] { b.lathe_poly(2, n(48, 24), 0.0f, {{0.0f, -0.03f}, {0.5f, -0.03f}, {0.5f, 0.0f}}); });
+  tagged(0.0f, [&] {
+    b.lathe_poly(2, n(48, 24), 0.0f, {{0.5f, 0.0f}, {0.4f, 0.0f}, {0.4f, 0.012f}});
+    b.lathe_poly(2, n(48, 24), 2.0f, {{0.4f, 0.012f}, {0.3f, 0.012f}, {0.3f, 0.024f}});
+    b.lathe_poly(2, n(48, 24), 0.0f, {{0.3f, 0.024f}, {0.2f, 0.024f}, {0.2f, 0.036f}});
+    b.lathe_poly(2, n(32, 16), 1.0f, {{0.2f, 0.036f}, {0.0f, 0.036f}});
+  });
+  tagged(0.0f, [&] {
+    std::vector<RH> st;
+    for (int k = 0; k < 10; ++k) {
+      const float a = 0.5f * kPi + kPi * k / 5.0f, r = k % 2 == 0 ? 0.18f : 0.072f;
+      st.push_back({r * std::cos(a), r * std::sin(a)});
+    }
+    prism(2.0f, st, 0.036f, 0.05f, 0.0f, 0.0f);
+  });
+  finish(kStarShield);
+
+  // A skull facing +z (cream), dark eye sockets and nose, a row of teeth.
+  start(kSkull);
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.08f, 0.0f}, [&] { b.ellipsoid(n(18, 8), n(10, 5), 2.0f, 0.26f, 0.29f, 0.27f); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, -0.14f, 0.07f}, [&] { b.ellipsoid(n(14, 6), n(8, 4), 2.0f, 0.17f, 0.12f, 0.16f); });
+  for (float sx : {-1.0f, 1.0f})
+    placed(0.0f, rot_y(0.0f), V3{0.1f * sx, 0.03f, 0.215f}, [&] { b.ellipsoid(n(10, 5), n(6, 3), 3.0f, 0.075f, 0.07f, 0.04f); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, -0.07f, 0.225f}, [&] { b.ellipsoid(n(8, 4), n(5, 3), 3.0f, 0.03f, 0.045f, 0.02f); });
+  tagged(0.0f, [&] {
+    for (int k = 0; k < 6; ++k) b.box({-0.075f + 0.03f * k, -0.2f, 0.2f}, {0.011f, 0.028f, 0.02f}, 2.0f);
+  });
+  finish(kSkull);
+
+  // A bat, wings spread in x-y (main colour), red eyes (detail).
+  start(kVampBat);
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.0f, 0.0f}, [&] { b.ellipsoid(n(12, 6), n(6, 3), 0.0f, 0.07f, 0.14f, 0.07f); });
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.16f, 0.0f}, [&] { b.ellipsoid(n(10, 5), n(5, 3), 0.0f, 0.06f, 0.06f, 0.06f); });
+  for (float sx : {-1.0f, 1.0f}) {
+    placed(0.0f, rot_y(0.0f), V3{0.0f, 0.0f, 0.0f}, [&] {
+      std::vector<RH> w = {{0.05f, -0.06f}, {0.1f, -0.11f}, {0.19f, -0.01f}, {0.26f, -0.09f}, {0.32f, 0.02f},
+                           {0.42f, -0.03f}, {0.48f, 0.1f},  {0.3f, 0.17f},  {0.05f, 0.09f}};
+      if (sx < 0) {
+        for (RH& p : w) p.first = -p.first;
+        std::reverse(w.begin(), w.end());
+      }
+      prism(0.0f, w, -0.008f, 0.008f, 0.29f * sx, 0.16f);  // fanned from near the wrist: every edge point seen
+    });
+    placed(0.0f, rot_y(0.0f), V3{0.025f * sx, 0.18f, 0.05f}, [&] { b.ellipsoid(n(6, 4), n(4, 2), 1.0f, 0.014f, 0.014f, 0.01f); });
+    placed(0.0f, rot_y(0.0f), V3{0.0f, 0.0f, 0.0f}, [&] {
+      prism(0.0f, sx > 0 ? std::vector<RH>{{0.02f, 0.2f}, {0.06f, 0.2f}, {0.05f, 0.27f}}
+                         : std::vector<RH>{{-0.06f, 0.2f}, {-0.02f, 0.2f}, {-0.05f, 0.27f}},
+            -0.01f, 0.01f, 0.04f * sx, 0.22f);
+    });
+  }
+  finish(kVampBat);
+
+  // A sai along +y: the middle prong and the two side prongs (detail colour, metal), a wrapped grip (main colour).
+  start(kSai);
+  tagged(1.0f, [&] {
+    b.lathe_poly(1, 4, 1.0f, {{0.0f, -0.06f}, {0.026f, 0.0f}, {0.02f, 0.46f}, {0.0f, 0.55f}});
+    b.box({0.0f, -0.07f, 0.0f}, {0.14f, 0.02f, 0.022f}, 1.0f);
+    for (float sx : {-1.0f, 1.0f}) {
+      bar(1.0f, V3{0.13f * sx, -0.07f, 0.0f}, V3{0.17f * sx, 0.05f, 0.0f}, 0.03f, 0.03f);
+      bar(1.0f, V3{0.17f * sx, 0.05f, 0.0f}, V3{0.15f * sx, 0.19f, 0.0f}, 0.026f, 0.026f);
+    }
+  });
+  tagged(0.0f, [&] { b.lathe(1, n(10, 6), 1, 0.0f, [](float, float v) { return RH{0.034f, -0.45f + 0.37f * v}; }, none); });
+  placed(1.0f, rot_y(0.0f), V3{0.0f, -0.48f, 0.0f}, [&] { b.ellipsoid(n(8, 4), n(5, 3), 1.0f, 0.045f, 0.035f, 0.045f); });
+  finish(kSai);
+
+  // A snowflake facing +z: six arms with two pairs of branches (main colour, ice).
+  start(kSnowflake);
+  tagged(3.0f, [&] {
+    for (int k = 0; k < 6; ++k) {
+      const float a = 2.0f * kPi * k / 6.0f;
+      const V3 d{std::cos(a), std::sin(a), 0.0f};
+      bar(0.0f, V3{0.0f, 0.0f, 0.0f}, d * 0.48f, 0.04f, 0.022f);
+      for (float at : {0.2f, 0.33f}) {
+        const float bl = at < 0.25f ? 0.14f : 0.1f;
+        for (float sgn : {-1.0f, 1.0f}) {
+          const float ba = a + sgn * kPi / 3.0f;
+          bar(0.0f, d * at, d * at + V3{std::cos(ba), std::sin(ba), 0.0f} * bl, 0.032f, 0.02f);
+        }
+      }
+    }
+  });
+  finish(kSnowflake);
+
+  // Two chain links through each other along x (detail colour, metal): one flat, one stood on its edge.
+  start(kChainLink);
+  for (int l = 0; l < 2; ++l) {
+    placed(1.0f, l == 0 ? rot_y(0.0f) : rot_x(0.5f * kPi), V3{l == 0 ? -0.18f : 0.18f, 0.0f, 0.0f}, [&] {
+      b.patch(n(10, 6), n(28, 14), 1.0f,
+              [](float u, float v) {
+                const float t = 2.0f * kPi * v, a = 2.0f * kPi * u;
+                const V3 c{0.22f * std::cos(t), 0.13f * std::sin(t), 0.0f};
+                const V3 out = normalize(V3{std::cos(t) / 0.22f, std::sin(t) / 0.13f, 0.0f});
+                return c + out * (0.045f * std::cos(a)) + V3{0.0f, 0.0f, 0.045f * std::sin(a)};
+              },
+              none);
+    });
+  }
+  finish(kChainLink);
+
+  // A mystic rune facing +z: a ring and two crossed squares inside it (main colour, glowing).
+  start(kRune);
+  tagged(3.0f, [&] {
+    const int seg = 24;
+    for (int k = 0; k < seg; ++k) {
+      const float a0 = 2.0f * kPi * k / seg, a1 = 2.0f * kPi * (k + 1) / seg;
+      bar(0.0f, V3{0.48f * std::cos(a0), 0.48f * std::sin(a0), 0.0f}, V3{0.48f * std::cos(a1), 0.48f * std::sin(a1), 0.0f}, 0.03f, 0.015f);
+    }
+    for (float off : {0.0f, 0.25f * kPi}) {
+      for (int k = 0; k < 4; ++k) {
+        const float a0 = off + 0.5f * kPi * k + 0.25f * kPi, a1 = a0 + 0.5f * kPi;
+        bar(0.0f, V3{0.4f * std::cos(a0), 0.4f * std::sin(a0), 0.0f}, V3{0.4f * std::cos(a1), 0.4f * std::sin(a1), 0.0f}, 0.022f, 0.012f);
+      }
+    }
+  });
+  finish(kRune);
+
+  // r127: Mjolnir along +y: its square head (main colour, metal), a leather-wrapped handle (detail colour), a pommel.
+  start(kMjolnir);
+  tagged(1.0f, [&] { rbox(0.0f, 0.25f, 0.15f, 0.14f, 0.3f, V3{0.0f, 0.3f, 0.0f}); });
+  tagged(4.0f, [&] { b.lathe(1, n(10, 6), 1, 1.0f, [](float, float v) { return RH{0.036f, -0.44f + 0.6f * v}; }, none); });
+  placed(1.0f, rot_y(0.0f), V3{0.0f, -0.47f, 0.0f}, [&] { b.ellipsoid(n(10, 6), n(6, 3), 0.0f, 0.05f, 0.04f, 0.05f); });
+  finish(kMjolnir);
+
+  // r127: an arrow along +y: a shaft (detail colour), its head and three fletching fins (main colour).
+  start(kArrow);
+  tagged(4.0f, [&] { b.lathe(1, n(8, 5), 1, 1.0f, [](float, float v) { return RH{0.013f, -0.47f + 0.82f * v}; }, none); });
+  tagged(1.0f, [&] { b.lathe_poly(1, 4, 0.0f, {{0.0f, 0.33f}, {0.05f, 0.37f}, {0.0f, 0.52f}}); });
+  for (int k = 0; k < 3; ++k) {
+    placed(0.0f, rot_y(2.0944f * k), V3{0.0f, 0.0f, 0.0f}, [&] {
+      prism(0.0f, {{0.012f, -0.45f}, {0.065f, -0.48f}, {0.065f, -0.33f}, {0.012f, -0.29f}}, -0.004f, 0.004f, 0.038f, -0.39f);
+    });
+  }
+  finish(kArrow);
+
+  // r127: a spoon along +y (metal, main colour): a shallow bowl and a flat handle.
+  start(kSpoon);
+  placed(1.0f, rot_y(0.0f), V3{0.0f, 0.3f, 0.0f}, [&] { b.ellipsoid(n(14, 7), n(7, 4), 0.0f, 0.11f, 0.16f, 0.035f); });
+  tagged(1.0f, [&] { bar(0.0f, V3{0.0f, 0.16f, 0.0f}, V3{0.0f, -0.46f, 0.0f}, 0.045f, 0.018f); });
+  placed(1.0f, rot_y(0.0f), V3{0.0f, -0.46f, 0.0f}, [&] { b.ellipsoid(n(8, 4), n(5, 3), 0.0f, 0.04f, 0.04f, 0.012f); });
+  finish(kSpoon);
+
+  // ---- r130: the new roster's pieces. LIGHT: each under ~60 triangles near (the counts in the comments are at detail
+  // 1; the far set has fewer where a count scales), flat outlines as prisms / bands, details painted by
+  // xr_fx_mesh.frag (93-118) instead of modelled. PC preview: tools\outside\drops130_preview.py. ----
+  // A band between two polylines in x-y (outer / inner, as many points each) given depth z0..z1: its two faces, its two
+  // long sides (unless `sides` is false: a thin one) and its ends (left out where it comes to a point). 8 (points - 1)
+  // + 4 triangles (4 (points - 1) + 4 without the sides).
+  auto band = [&](float mat, const std::vector<RH>& outer, const std::vector<RH>& inner, float z0, float z1,
+                  bool sides = true) {
+    const size_t cnt = std::min(outer.size(), inner.size());
+    if (cnt < 2) return;
+    auto quad = [&](V3 q0, V3 q1, V3 q2, V3 q3, V3 nn) {
+      const uint32_t base = static_cast<uint32_t>(set.verts.size());
+      for (const V3& p : {q0, q1, q2, q3}) set.verts.push_back(Vertex{{p.x, p.y, p.z}, {0, 0, 0}, {nn.x, nn.y, nn.z}, mat, 0.0f});
+      for (uint32_t k : {0u, 1u, 2u, 0u, 2u, 3u}) set.indices.push_back(base + k);
+    };
+    auto at = [](const RH& p, float z) { return V3{p.first, p.second, z}; };
+    for (size_t i = 0; i + 1 < cnt; ++i) {
+      const RH o0 = outer[i], o1 = outer[i + 1], i0 = inner[i], i1 = inner[i + 1];
+      quad(at(o0, z1), at(o1, z1), at(i1, z1), at(i0, z1), V3{0.0f, 0.0f, 1.0f});
+      quad(at(o0, z0), at(o1, z0), at(i1, z0), at(i0, z0), V3{0.0f, 0.0f, -1.0f});
+      if (!sides) continue;
+      // the long sides, each facing away from the other
+      const V3 away{o0.first - i0.first + o1.first - i1.first, o0.second - i0.second + o1.second - i1.second, 0.0f};
+      V3 no = normalize(V3{o1.second - o0.second, -(o1.first - o0.first), 0.0f});
+      if (no.x * away.x + no.y * away.y < 0.0f) no = no * -1.0f;
+      quad(at(o0, z0), at(o1, z0), at(o1, z1), at(o0, z1), no);
+      V3 ni = normalize(V3{i1.second - i0.second, -(i1.first - i0.first), 0.0f});
+      if (ni.x * away.x + ni.y * away.y > 0.0f) ni = ni * -1.0f;
+      quad(at(i0, z0), at(i1, z0), at(i1, z1), at(i0, z1), ni);
+    }
+    for (int e = 0; e < 2; ++e) {
+      const size_t i = e == 0 ? 0 : cnt - 1, j = e == 0 ? 1 : cnt - 2;
+      const RH o = outer[i], in = inner[i];
+      if (std::fabs(o.first - in.first) + std::fabs(o.second - in.second) < 1e-4f) continue;  // a point
+      V3 ne = normalize(V3{o.second - in.second, -(o.first - in.first), 0.0f});
+      const V3 next{outer[j].first - o.first, outer[j].second - o.second, 0.0f};
+      if (ne.x * next.x + ne.y * next.y > 0.0f) ne = ne * -1.0f;
+      quad(at(o, z0), at(in, z0), at(in, z1), at(o, z1), ne);
+    }
+  };
+  // A tube round a centre line in x-y (centre(v), its radius r(v)), nu round it, nv along it; normals out.
+  auto tube = [&](int nu, int nv, float mat, auto centre, auto radius) {
+    b.patch(nu, nv, mat,
+            [=](float u, float v) {
+              const float e = 1e-3f;
+              const V3 c = centre(v);
+              const V3 tg = normalize(centre(std::min(v + e, 1.0f)) - centre(std::max(v - e, 0.0f)));
+              const V3 nm{tg.y, -tg.x, 0.0f}, bn{0.0f, 0.0f, 1.0f};  // nm x bn = -tg: the normals then point out
+              const float r = radius(v), t = 2.0f * kPi * u;
+              return c + nm * (r * std::cos(t)) + bn * (r * std::sin(t));
+            },
+            none);
+  };
+
+  // A crescent moon facing +z, its horns to the right (main colour; metal, glowing when the piece glows). 48 tris.
+  start(kCrescent);
+  tagged(1.0f, [&] {
+    const int cnt = n(7, 5);
+    std::vector<RH> out, in;
+    for (int k = 0; k < cnt; ++k) {
+      const float t = static_cast<float>(k) / static_cast<float>(cnt - 1);
+      const float a = 1.22f + 3.84f * t;  // 70 .. 290 degrees, round the left
+      const float r = 0.48f - 0.24f * std::sin(kPi * t);
+      out.push_back({0.16f + 0.48f * std::cos(a), 0.48f * std::sin(a)});
+      in.push_back({0.16f + r * std::cos(a), r * std::sin(a)});
+    }
+    band(0.0f, out, in, -0.05f, 0.05f);
+  });
+  finish(kCrescent);
+
+  // A round badge facing +z (main colour; the shader paints a ring and a "4" on both faces in the detail colour). 48 tris.
+  start(kBadge4);
+  tagged(0.0f, [&] {
+    std::vector<RH> pts;
+    const int cnt = n(12, 8);
+    for (int k = 0; k < cnt; ++k) {
+      const float a = 2.0f * kPi * k / cnt;
+      pts.push_back({0.45f * std::cos(a), 0.45f * std::sin(a)});
+    }
+    prism(0.0f, pts, -0.04f, 0.04f, 0.0f, 0.0f);
+  });
+  finish(kBadge4);
+
+  // Mr. Fantastic's arm stretching in an S up +y (main colour), his fist at its end (detail colour). 60 tris.
+  start(kStretchArm);
+  tagged(0.0f, [&] {
+    tube(4, n(6, 4), 0.0f, [](float v) { return V3{0.16f * std::sin(1.7f * kPi * v), -0.5f + 0.78f * v, 0.0f}; },
+         [](float v) { return 0.06f * std::sqrt(std::min(1.0f, v * 6.0f)); });
+  });
+  placed(0.0f, rot_z(-0.57f), V3{-0.086f, 0.35f, 0.0f}, [&] { b.box({0.0f, 0.0f, 0.0f}, {0.085f, 0.09f, 0.075f}, 1.0f); });
+  finish(kStretchArm);
+
+  // The Silver Surfer's board along +y, flat, facing +z (main colour, metal). 40 tris.
+  start(kSurfboard);
+  tagged(1.0f, [&] {
+    prism(0.0f, {{0.0f, 0.5f}, {-0.11f, 0.34f}, {-0.155f, 0.1f}, {-0.145f, -0.18f}, {-0.09f, -0.4f}, {0.0f, -0.49f},
+                 {0.09f, -0.4f}, {0.145f, -0.18f}, {0.155f, 0.1f}, {0.11f, 0.34f}},
+          -0.025f, 0.025f, 0.0f, 0.0f);
+  });
+  finish(kSurfboard);
+
+  // An acorn along +y: the nut (main colour, glossy) under its cap (detail colour, rough). 56 tris.
+  start(kAcorn);
+  tagged(0.0f, [&] {
+    b.lathe(1, n(7, 5), 2, 0.0f,
+            [](float, float v) { return RH{0.27f * std::pow(std::sin(0.5f * kPi * v), 0.6f), -0.5f + 0.54f * v}; }, none);
+  });
+  tagged(2.0f, [&] { b.lathe_poly(1, n(7, 5), 1.0f, {{0.3f, 0.01f}, {0.29f, 0.14f}, {0.0f, 0.27f}}); });
+  finish(kAcorn);
+
+  // A horn along +y curving to +x (the shader shades it from the main colour at its base to the detail colour at its
+  // tip). 60 tris.
+  start(kHorn);
+  tagged(0.0f, [&] {
+    tube(n(6, 5), n(4, 3), 0.0f, [](float v) { return V3{0.2f * v * v, -0.5f + 0.95f * v, 0.0f}; },
+         [](float v) { return 0.16f * (1.0f - v); });
+    b.lathe_poly(1, n(6, 5), 0.0f, {{0.0f, -0.5f}, {0.16f, -0.5f}});
+  });
+  finish(kHorn);
+
+  // A crown, upright: a five-pointed band (main colour, metal) and a band of jewels round it (detail colour, gem). 40 tris.
+  start(kCrown);
+  tagged(1.0f, [&] {
+    b.patch(10, 1, 0.0f,
+            [](float u, float v) {
+              const float top = 0.08f + 0.27f * (0.5f + 0.5f * std::cos(10.0f * kPi * u));  // points at every 5th
+              return revolve(1, 0.42f, -0.25f + (top + 0.25f) * v, 2.0f * kPi * u);
+            },
+            none);
+  });
+  tagged(3.0f, [&] { b.lathe(1, 10, 1, 1.0f, [](float, float v) { return RH{0.435f, -0.17f + 0.1f * v}; }, none); });
+  finish(kCrown);
+
+  // A fossil / spiral shell: a lens facing +z (main colour, rough stone; the shader carves the spiral and its ribs on
+  // both faces). 40 tris.
+  start(kFossil);
+  tagged(2.0f, [&] {
+    b.lathe(2, n(10, 7), 2, 0.0f, [](float, float v) { return RH{0.48f * std::sin(kPi * v), -0.09f * std::cos(kPi * v)}; },
+            none);
+  });
+  finish(kFossil);
+
+  // A talon / scythe along +y, curving to the right, facing +z (main colour at its base to the detail colour at its
+  // point: the shader). 50 tris.
+  start(kTalon);
+  tagged(0.0f, [&] {
+    const int cnt = n(7, 5);
+    std::vector<RH> out, in;
+    for (int k = 0; k < cnt; ++k) {
+      const float t = static_cast<float>(k) / static_cast<float>(cnt - 1);
+      const float a = kPi - 0.80f * t;  // on a circle about (1.15, -0.45), radius 1.3
+      const float w = 0.12f * std::pow(1.0f - t, 0.9f);
+      const float c = std::cos(a), s = std::sin(a);
+      out.push_back({1.15f + (1.3f + w) * c, -0.45f + (1.3f + w) * s});
+      in.push_back({1.15f + (1.3f - w) * c, -0.45f + (1.3f - w) * s});
+    }
+    band(0.0f, out, in, -0.035f, 0.035f);
+  });
+  finish(kTalon);
+
+  // A spike / needle along +y (main colour at its base to the detail colour at its point). 24 tris.
+  start(kSpike);
+  tagged(0.0f, [&] { b.lathe_poly(1, n(6, 5), 0.0f, {{0.0f, -0.5f}, {0.11f, -0.5f}, {0.0f, 0.5f}}); });
+  finish(kSpike);
+
+  // A toadstool, upright: its cap (main colour, the shader's spots in the detail colour), cream gills and stem. 56 tris.
+  start(kToadstool);
+  tagged(0.0f, [&] {
+    b.lathe(1, n(7, 6), 2, 0.0f,
+            [](float, float v) { const float phi = 0.5f * kPi * v; return RH{0.46f * std::cos(phi), -0.04f + 0.34f * std::sin(phi)}; },
+            none);
+    b.lathe_poly(1, n(7, 6), 2.0f, {{0.13f, -0.1f}, {0.46f, -0.04f}});
+    b.lathe_poly(1, n(7, 6), 2.0f, {{0.16f, -0.5f}, {0.13f, -0.1f}});
+  });
+  finish(kToadstool);
+
+  // A lily pad facing +z, its notch to +x (main colour; the shader's veins in the detail colour). 44 tris.
+  start(kLilyPad);
+  tagged(0.0f, [&] {
+    std::vector<RH> pts;
+    const int cnt = n(10, 7);
+    for (int k = 0; k < cnt; ++k) {
+      const float a = 0.44f + (2.0f * kPi - 0.88f) * k / (cnt - 1);
+      pts.push_back({0.48f * std::cos(a), 0.48f * std::sin(a)});
+    }
+    pts.push_back({0.04f, 0.0f});
+    prism(0.0f, pts, -0.015f, 0.015f, -0.12f, 0.0f);
+  });
+  finish(kLilyPad);
+
+  // A wool puff: three soft lumps (main colour; matte, fuzzy: the shader). 62 tris.
+  start(kWool);
+  tagged(0.0f, [&] { b.ellipsoid(n(5, 4), 3, 0.0f, 0.27f, 0.25f, 0.24f); });
+  for (float sx : {-1.0f, 1.0f}) {
+    placed(0.0f, rot_y(0.0f), V3{0.25f * sx, -0.06f, 0.02f}, [&] { b.ellipsoid(4, 2, 0.0f, 0.2f, 0.19f, 0.19f); });
+  }
+  finish(kWool);
+
+  // A leaf along +y, cupped and bent (main colour; the shader's midrib in the detail colour). 48 tris.
+  start(kLeaf);
+  tagged(0.0f, [&] {
+    b.puffy(n(8, 6), 3, 0.0f, 0.0f, 0.0f, 0.03f, 0.5f,
+            [](float t) {
+              const float c = std::cos(t);
+              return RH{0.21f * std::sin(t) * (1.0f - 0.35f * c * c), 0.48f * c};
+            },
+            [](float x, float y) { return 0.3f * x * x + 0.12f * y * y; });
+  });
+  finish(kLeaf);
+
+  // Sound waves facing +z: three thin arcs ")))" (main colour, shining). 48 tris.
+  start(kSoundWave);
+  tagged(3.0f, [&] {
+    for (float r : {0.16f, 0.32f, 0.48f}) {
+      std::vector<RH> out, in;
+      for (int k = 0; k < 4; ++k) {
+        const float a = -0.85f + 0.5667f * k;
+        out.push_back({-0.3f + (r + 0.035f) * std::cos(a), (r + 0.035f) * std::sin(a)});
+        in.push_back({-0.3f + (r - 0.035f) * std::cos(a), (r - 0.035f) * std::sin(a)});
+      }
+      band(0.0f, out, in, -0.012f, 0.012f, false);
+    }
+  });
+  finish(kSoundWave);
+
+  // A boxing glove, light (main colour; cream cuff). 60 tris.
+  start(kGloveLite);
+  placed(0.0f, rot_y(0.0f), V3{0.0f, 0.08f, 0.0f}, [&] { b.ellipsoid(n(6, 5), 3, 0.0f, 0.3f, 0.36f, 0.27f); });
+  placed(0.0f, rot_z(0.5f), V3{0.24f, -0.02f, 0.1f}, [&] { b.ellipsoid(3, 2, 0.0f, 0.1f, 0.18f, 0.1f); });
+  tagged(0.0f, [&] { b.box({0.0f, -0.36f, 0.0f}, {0.2f, 0.11f, 0.17f}, 2.0f); });
+  finish(kGloveLite);
+
+  // An impact burst facing +z: seven uneven spikes (the main colour in the middle, the detail colour out at the spikes:
+  // the shader). 56 tris.
+  start(kImpact);
+  tagged(0.0f, [&] {
+    const float tip[7] = {0.5f, 0.42f, 0.48f, 0.4f, 0.5f, 0.44f, 0.46f};
+    std::vector<RH> pts;
+    for (int k = 0; k < 14; ++k) {
+      const float a = 0.5f * kPi + 2.0f * kPi * k / 14.0f + (k % 2 == 0 ? 0.05f * std::sin(3.0f * k) : 0.0f);
+      const float r = k % 2 == 0 ? tip[k / 2] : 0.22f;
+      pts.push_back({r * std::cos(a), r * std::sin(a)});
+    }
+    prism(0.0f, pts, -0.03f, 0.03f, 0.0f, 0.0f);
+  });
+  finish(kImpact);
+
+  // A spinning top along +y (its body striped in the main and detail colours by the shader; a dark handle). 58 tris.
+  start(kTop);
+  tagged(0.0f, [&] { b.lathe_poly(1, n(7, 5), 0.0f, {{0.0f, -0.5f}, {0.36f, -0.04f}, {0.32f, 0.1f}, {0.08f, 0.2f}}); });
+  tagged(4.0f, [&] { b.lathe_poly(1, 4, 3.0f, {{0.08f, 0.2f}, {0.06f, 0.44f}, {0.0f, 0.46f}}); });
+  finish(kTop);
+
+  // An open palm facing +z, fingers up +y, thumb to the left (main colour). 60 tris.
+  start(kPalm);
+  tagged(0.0f, [&] {
+    // round the palm's middle (0, -0.12): fingers (centre angle, length) with valleys between, the thumb, the wrist
+    auto pol = [](float deg, float r) {
+      const float a = deg * kPi / 180.0f;
+      return RH{r * std::cos(a), -0.12f + r * std::sin(a)};
+    };
+    std::vector<RH> pts;
+    const float fing[4][2] = {{50.0f, 0.44f}, {70.0f, 0.53f}, {90.0f, 0.57f}, {110.0f, 0.52f}};
+    for (int f = 0; f < 4; ++f) {
+      pts.push_back(pol(fing[f][0] - 6.0f, fing[f][1]));
+      pts.push_back(pol(fing[f][0] + 6.0f, fing[f][1]));
+      pts.push_back(pol(fing[f][0] + (f < 3 ? 10.0f : 15.0f), f < 3 ? 0.3f : 0.27f));
+    }
+    pts.push_back(pol(150.0f, 0.42f));  // the thumb
+    pts.push_back(pol(235.0f, 0.42f));  // the wrist
+    pts.push_back(pol(305.0f, 0.42f));
+    prism(0.0f, pts, -0.03f, 0.03f, 0.0f, -0.12f);
+  });
+  finish(kPalm);
+
+  // A twig along +y with a forked branch (main colour, wood) and a leaf on it (detail colour). 40 tris.
+  start(kTwig);
+  tagged(4.0f, [&] {
+    bar(0.0f, V3{0.0f, -0.48f, 0.0f}, V3{0.03f, 0.46f, 0.0f}, 0.06f, 0.06f);
+    bar(0.0f, V3{0.015f, -0.02f, 0.0f}, V3{0.2f, 0.25f, 0.0f}, 0.045f, 0.045f);
+  });
+  tagged(0.0f, [&] { prism(1.0f, {{0.2f, 0.25f}, {0.33f, 0.3f}, {0.38f, 0.44f}, {0.24f, 0.36f}}, -0.01f, 0.01f, 0.2875f, 0.3375f); });
+  finish(kTwig);
+
+  // A cut gem along +y: a point below, a crown of facets above (main colour, gem). 36 tris.
+  start(kGem);
+  tagged(3.0f, [&] { b.lathe_poly(1, 6, 0.0f, {{0.0f, -0.42f}, {0.34f, 0.12f}, {0.26f, 0.3f}, {0.0f, 0.34f}}); });
+  finish(kGem);
+
+  // A lotus, upright: a bowl of six pointed petals (the detail colour at its heart to the main colour at the tips: the
+  // shader; lit on the side you see). 48 tris.
+  start(kLotus);
+  tagged(0.0f, [&] {
+    b.lathe(1, 12, 2, 0.0f,
+            [](float u, float v) {
+              const float lobe = std::fabs(std::cos(6.0f * kPi * u));
+              return RH{v * (0.3f + 0.18f * lobe), -0.16f + 0.08f * v + (0.08f + 0.26f * lobe) * v * v};
+            },
+            none);
+  });
+  finish(kLotus);
+
+  // A pair of lips facing +z (main colour, glossy; the shader draws the line between them in the detail colour). 56 tris.
+  start(kLips);
+  tagged(0.0f, [&] {
+    prism(0.0f, {{0.48f, 0.0f}, {0.36f, 0.1f}, {0.2f, 0.2f}, {0.08f, 0.19f}, {0.0f, 0.13f}, {-0.08f, 0.19f}, {-0.2f, 0.2f},
+                 {-0.36f, 0.1f}, {-0.48f, 0.0f}, {-0.34f, -0.14f}, {-0.16f, -0.22f}, {0.0f, -0.24f}, {0.16f, -0.22f},
+                 {0.34f, -0.14f}},
+          -0.07f, 0.07f, 0.0f, 0.0f);
+  });
+  finish(kLips);
+
+  // A plump heart, light (main colour, glossy). 60 tris.
+  start(kHeartLite);
+  tagged(0.0f, [&] {
+    b.puffy(10, 3, 0.0f, 0.0f, 0.02f, 0.17f, 0.6f,
+            [](float t) {
+              const float s = std::sin(t);
+              return RH{16.0f * s * s * s / 34.0f,
+                        (13.0f * std::cos(t) - 5.0f * std::cos(2.0f * t) - 2.0f * std::cos(3.0f * t) - std::cos(4.0f * t)) /
+                                34.0f + 0.07f};
+            },
+            flat);
+  });
+  finish(kHeartLite);
+
+  // A plump five-pointed star, light (main colour, glossy). 60 tris.
+  start(kStarLite);
+  tagged(0.0f, [&] {
+    b.puffy(10, 3, 0.0f, 0.0f, 0.0f, 0.15f, 0.55f,
+            [](float t) {
+              const float r = 0.21f + 0.29f * (0.5f + 0.5f * std::cos(5.0f * t));
+              return RH{r * std::sin(t), r * std::cos(t)};
+            },
+            flat);
+  });
+  finish(kStarLite);
+
+  // A dog tag facing +z (main colour, metal; the shader punches its hole and stamps its lines). 32 tris.
+  start(kDogTag);
+  tagged(1.0f, [&] {
+    prism(0.0f, {{0.19f, -0.24f}, {0.19f, 0.24f}, {0.13f, 0.3f}, {-0.13f, 0.3f}, {-0.19f, 0.24f}, {-0.19f, -0.24f},
+                 {-0.13f, -0.3f}, {0.13f, -0.3f}},
+          -0.012f, 0.012f, 0.0f, 0.0f);
+  });
+  finish(kDogTag);
 
   return set;
 }

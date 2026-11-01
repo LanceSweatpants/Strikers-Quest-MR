@@ -1,0 +1,645 @@
+# Marvel: Ultimate Alliance heroes - our own tuning (tools/outside/mua: heroes.json, build_costumes.KEEP,
+# mua2gpk.SHARED_RUN, mua_cels.PLANS, build_home.plan): names and numbers only, nothing of the game.
+# A block per hero; see guests/mua/Hero.java for the keys.
+
+hero ghostrider
+pack mua_ghostrider
+name Ghost Rider
+costumes 0601 0602 0603 0604
+slot luigi
+colors 1C1C1C FF6A10 FFB040
+height 1.62
+keep -
+run own
+cel power_9
+cel power_4 power_4_loop*2 power_4_end
+cel power_8
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra fire
+lift all
+card Speed=0.62 Acceleration=0.6 Turning_Radius=0.55 Slide_Tackle=0.75 Size=0.7 Hitting_Distance=0.7 Shooting=0.82 Passing=0.45 Aggression=0.85 Dekeing=0.45
+
+hero drstrange
+pack mua_drstrange
+name Dr. Strange
+costumes 1601 1602 1603 1604
+slot luigi
+colors 1E3A8A C0141E F2C230
+height 1.6
+keep cape_segment
+run own
+cel power_10
+cel power_2
+cel power_6
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.55 Acceleration=0.6 Turning_Radius=0.7 Slide_Tackle=0.35 Size=0.45 Hitting_Distance=0.4 Shooting=0.7 Passing=0.85 Aggression=0.35 Dekeing=0.8
+
+hero spiderman
+pack mua_spiderman
+name Spider-Man
+costumes 0901 0902 0903 0904
+slot yoshi
+colors D81E28 1E40B4 EDEDED
+height 1.5
+keep -
+run own
+cel power_2 power_2_loop
+cel power_8_start power_8_loop*2 power_8
+cel power_1_start power_1_loop*3 power_1_end
+cel power_6
+home 0 menu_idle::
+home 1 menu_goodbye::
+home 2 power_1_start:: power_1_loop:: power_1_loop:: power_1_loop:: power_1_loop:: power_1_loop:: power_1_loop:: power_1_end::
+home 2 menu_idle::0.6 menu_action::hang
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra webs
+lift all
+figure 160
+card Speed=0.88 Acceleration=0.9 Turning_Radius=0.88 Slide_Tackle=0.4 Size=0.35 Hitting_Distance=0.4 Shooting=0.5 Passing=0.72 Aggression=0.4 Dekeing=0.95
+
+hero blade
+pack mua_blade
+name Blade
+costumes 0101 0102 0103 0104
+slot wario
+colors 161616 8A1010 B8B8B8
+height 1.6
+keep sword_back_segment
+run own
+cel power_11
+cel power_2 power_2_loop*2 power_2_end
+cel power_1 power_1_loop*2 power_1_end
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.75 Acceleration=0.72 Turning_Radius=0.68 Slide_Tackle=0.72 Size=0.6 Hitting_Distance=0.68 Shooting=0.62 Passing=0.5 Aggression=0.78 Dekeing=0.7
+
+hero spiderwoman
+pack mua_spiderwoman
+name Spider-Woman
+costumes 3801 3802 3803 3804
+slot yoshi
+colors C8141E F2C230 1C1C1C
+height 1.52
+keep -
+run own
+cel power_8
+cel power_1 power_1_loop*2 power_1_end
+cel power_10
+cel power_6
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.8 Acceleration=0.78 Turning_Radius=0.8 Slide_Tackle=0.45 Size=0.35 Hitting_Distance=0.45 Shooting=0.58 Passing=0.66 Aggression=0.5 Dekeing=0.82
+
+hero iceman
+pack mua_iceman
+name Iceman
+costumes 0801 0802 0803 0804
+slot luigi
+colors 7FC8F0 EAF6FC 2A5FA8
+height 1.52
+keep -
+run own
+runs idle
+cel power_1
+cel power_9
+cel power_4 power_4_loop*2 power_4_end
+cel power_10
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.78 Acceleration=0.7 Turning_Radius=0.62 Slide_Tackle=0.55 Size=0.45 Hitting_Distance=0.5 Shooting=0.6 Passing=0.72 Aggression=0.45 Dekeing=0.66
+
+hero wolverine
+pack mua_wolverine
+name Wolverine
+costumes 0303 0302 0304 0301
+slot wario
+colors F2C230 1E3A8A 1C1C1C
+height 1.4
+keep -
+run own
+cel power_12
+cel power_2 power_2_loop*2 power_2_end
+cel power_6
+cel power_11
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra claws
+lift all
+card Speed=0.72 Acceleration=0.85 Turning_Radius=0.72 Slide_Tackle=0.85 Size=0.62 Hitting_Distance=0.8 Shooting=0.62 Passing=0.4 Aggression=0.97 Dekeing=0.6
+
+hero colossus
+pack mua_colossus
+name Colossus
+costumes 7801 7802 7803 7804
+slot mario
+colors 9AA4AE C0141E F2C230
+height 1.95
+keep -
+run own
+cel power_4 power_4_loop*2 power_4_end
+cel power_9
+cel power_1_start power_1_loop*2 power_1_end
+cel power_6
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.35 Acceleration=0.32 Turning_Radius=0.3 Slide_Tackle=0.92 Size=0.97 Hitting_Distance=0.92 Shooting=0.88 Passing=0.35 Aggression=0.85 Dekeing=0.22
+
+hero captainamerica
+pack mua_captainamerica
+name Captain America
+costumes 0701 0702 0703 0704
+slot mario
+colors 1E40B4 D81E28 EDEDED
+height 1.6
+keep shield_segment
+run own
+cel power_9
+cel power_10
+cel power_2 power_2_loop*2 power_2_end
+cel power_11
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.72 Acceleration=0.72 Turning_Radius=0.72 Slide_Tackle=0.62 Size=0.6 Hitting_Distance=0.62 Shooting=0.7 Passing=0.85 Aggression=0.6 Dekeing=0.66
+
+hero elektra
+pack mua_elektra
+name Elektra
+costumes 1201 1202 1203 1204
+slot yoshi
+colors B4141E 1C1C1C D8B060
+height 1.5
+keep -
+run own
+cel power_2 power_2_loop*2 power_2_end
+cel power_9
+cel power_5 power_5_end
+cel power_10
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+card Speed=0.86 Acceleration=0.86 Turning_Radius=0.86 Slide_Tackle=0.5 Size=0.28 Hitting_Distance=0.5 Shooting=0.5 Passing=0.62 Aggression=0.72 Dekeing=0.92
+
+hero ironman
+pack mua_ironman
+name Iron Man
+costumes 1505 1502 1504 1503
+slot luigi
+colors B81C1C F2C230 6A6A70
+height 1.68
+keep -
+run own
+cel power_8
+cel power_4
+cel power_7
+cel power_5
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.7 Acceleration=0.66 Turning_Radius=0.6 Slide_Tackle=0.6 Size=0.75 Hitting_Distance=0.75 Shooting=0.88 Passing=0.62 Aggression=0.7 Dekeing=0.5
+
+hero thor
+pack mua_thor
+name Thor
+costumes 1002 1004 1001 1003
+slot luigi
+colors C8141E 2A3A7A C8CCD4
+height 1.78
+keep hammer_segment,cape_segment
+run own
+cel power_3
+cel power_7
+cel power_2
+cel power_12
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.6 Acceleration=0.58 Turning_Radius=0.5 Slide_Tackle=0.7 Size=0.85 Hitting_Distance=0.85 Shooting=0.9 Passing=0.5 Aggression=0.8 Dekeing=0.4
+
+hero deadpool
+pack mua_deadpool
+name Deadpool
+costumes 1701 1704 1702 1703
+slot luigi
+colors B01020 1A1A1A 6A6A6A
+height 1.62
+keep sword_l_back_segment,sword_r_back_segment
+run own
+cel power_8
+cel power_1
+cel power_6
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.75 Acceleration=0.74 Turning_Radius=0.72 Slide_Tackle=0.75 Size=0.6 Hitting_Distance=0.66 Shooting=0.7 Passing=0.55 Aggression=0.9 Dekeing=0.78
+
+hero blackpanther
+pack mua_blackpanther
+name Black Panther
+costumes 1101 1104 1102 1103
+slot luigi
+colors 1A1A22 6A3AA8 C8CCD4
+height 1.62
+keep cape_segment
+run own
+cel power_13
+cel power_7
+cel power_6
+cel power_5 power_5_end
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.84 Acceleration=0.82 Turning_Radius=0.8 Slide_Tackle=0.75 Size=0.6 Hitting_Distance=0.6 Shooting=0.62 Passing=0.66 Aggression=0.7 Dekeing=0.82
+
+hero daredevil
+pack mua_daredevil
+name Daredevil
+costumes 0201 0202 0204 0203
+slot luigi
+colors A01418 3A0A0C F2C230
+height 1.6
+keep batons_segment
+run own
+cel power_9
+cel power_4
+cel power_5
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.76 Acceleration=0.74 Turning_Radius=0.78 Slide_Tackle=0.7 Size=0.55 Hitting_Distance=0.62 Shooting=0.6 Passing=0.72 Aggression=0.66 Dekeing=0.84
+
+hero storm
+pack mua_storm
+name Storm
+costumes 0401 0403 0404 0402
+slot peach
+colors 1C1C24 E8ECF4 F2C230
+height 1.6
+keep -
+run own
+cel power_9
+cel power_10
+cel power_1
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.68 Acceleration=0.66 Turning_Radius=0.7 Slide_Tackle=0.5 Size=0.55 Hitting_Distance=0.74 Shooting=0.84 Passing=0.8 Aggression=0.55 Dekeing=0.66
+
+hero thing
+pack mua_thing
+name Thing
+costumes 0501 0504 0503 0502
+slot donkeykong
+colors E07A2A 1E40B4 1A1A1A
+height 1.85
+keep -
+run own
+cel power_6
+cel power_5
+cel power_2
+cel power_1 power_1_end
+home 0 menu_idle::
+home 1 power_4::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 power_6::
+home 2 power_5::
+home 4 power_2::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.5 Acceleration=0.48 Turning_Radius=0.42 Slide_Tackle=0.85 Size=0.95 Hitting_Distance=0.9 Shooting=0.8 Passing=0.45 Aggression=0.88 Dekeing=0.3
+
+hero humantorch
+pack mua_humantorch
+name Human Torch
+costumes 1301 1302 1304 1303
+slot luigi
+colors FF6A10 FFD040 1E40B4
+height 1.58
+keep -
+run own
+cel power_1 power_1_loop power_1_end
+cel power_6
+cel power_5
+cel power_11
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra torch
+lift all
+portrait_stand own_idle
+figure own_idle
+card Speed=0.86 Acceleration=0.84 Turning_Radius=0.74 Slide_Tackle=0.6 Size=0.55 Hitting_Distance=0.62 Shooting=0.82 Passing=0.6 Aggression=0.7 Dekeing=0.66
+
+hero hawkeye
+pack mua_hawkeye
+name Hawkeye
+costumes 20301 20304 20302 20303
+slot luigi
+colors 6A2A8A 3A1A5A E8ECF4
+height 1.62
+keep bow_back_segment
+run own
+cel power_10
+cel power_6
+cel power_7
+cel power_9
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.7 Acceleration=0.68 Turning_Radius=0.7 Slide_Tackle=0.6 Size=0.6 Hitting_Distance=0.65 Shooting=0.8 Passing=0.88 Aggression=0.6 Dekeing=0.7
+
+hero blackwidowvv
+pack mua_blackwidow
+name Black Widow
+costumes 20101 20104 20103 20102
+slot daisy
+colors 1A1A1A C8141E C8CCD4
+height 1.52
+keep holster_segment,pistolleg_segment,knife_leg_segment
+run own
+cel power_9
+cel power_10
+cel power_7
+cel power_8
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift all
+portrait_stand own_idle
+card Speed=0.8 Acceleration=0.8 Turning_Radius=0.84 Slide_Tackle=0.78 Size=0.5 Hitting_Distance=0.55 Shooting=0.62 Passing=0.74 Aggression=0.7 Dekeing=0.86
+
+hero invisiblewoman
+pack mua_invisiblewoman
+name Invisible Woman
+costumes 2201 2202 2204 2203
+slot peach
+colors 2448B8 141418 9FD8F0
+height 1.52
+keep -
+run own
+cel power_8
+cel power_1 power_1_loop*2 power_1_end
+cel power_6
+cel power_7
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift skipfx
+card Speed=0.69 Acceleration=0.69 Turning_Radius=0.75 Slide_Tackle=0.54 Size=0.41 Hitting_Distance=0.71 Shooting=0.69 Passing=0.85 Aggression=0.45 Dekeing=0.82
+
+hero moonknight
+pack mua_moonknight
+name Moon Knight
+costumes 4101 4102 4103
+slot luigi
+colors DADEE6 2A2E38 8C94A4
+height 1.65
+keep cape_segment
+run own
+cel power_2 power_2_loop*2 power_2_end
+cel power_6
+cel power_7
+cel power_12
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift skipfx
+card Speed=0.74 Acceleration=0.76 Turning_Radius=0.74 Slide_Tackle=0.74 Size=0.58 Hitting_Distance=0.62 Shooting=0.62 Passing=0.56 Aggression=0.84 Dekeing=0.76
+
+hero mrfantastic
+pack mua_mrfantastic
+name Mr. Fantastic
+costumes 2001 2002 2004 2003
+slot luigi
+colors 1E3A8A 1A1A1A C8CCD4
+height 1.68
+keep arm_left_segment,arm_right_segment
+run own
+cel power_8
+cel power_10
+cel power_6
+cel power_1_start power_1_loop*2 power_1_end
+home 0 menu_idle::
+home 1 menu_goodbye::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 power_10::
+home 2 power_8::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift skipfx
+card Speed=0.59 Acceleration=0.57 Turning_Radius=0.79 Slide_Tackle=0.77 Size=0.57 Hitting_Distance=0.89 Shooting=0.63 Passing=0.87 Aggression=0.4 Dekeing=0.72
+
+hero nickfury
+pack mua_nickfury
+name Nick Fury
+costumes 2101 2102 2104 2103
+slot luigi
+colors 1E2C50 E8ECF4 B8141E
+height 1.64
+keep -
+run own
+cel power_8
+cel power_1
+cel power_10
+cel power_4
+home 0 menu_idle::
+home 1 menu_action::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 menu_action::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift skipfx
+card Speed=0.56 Acceleration=0.56 Turning_Radius=0.56 Slide_Tackle=0.64 Size=0.56 Hitting_Distance=0.64 Shooting=0.8 Passing=0.78 Aggression=0.72 Dekeing=0.5
+
+hero silversurfer
+pack mua_silversurfer
+name Silver Surfer
+costumes 8001
+slot luigi
+colors B8C0CC 3A4A66 F2F4F8
+height 1.66
+keep -
+run own
+cel power_1 power_1_loop power_1_end
+cel power_3
+cel power_6
+cel power_5
+home 0 menu_idle::
+home 1 menu_goodbye::1.4
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 power_6::
+home 2 power_1:: power_1_loop:: power_1_end::
+home 4 menu_goodbye::
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra board
+lift skipfx
+card Speed=0.86 Acceleration=0.8 Turning_Radius=0.66 Slide_Tackle=0.56 Size=0.62 Hitting_Distance=0.66 Shooting=0.88 Passing=0.56 Aggression=0.55 Dekeing=0.72
+
+hero warbird
+pack mua_msmarvel
+name Ms. Marvel
+costumes 1401 1402 1403 1404
+slot daisy
+colors 1A1A1A F2C230 C8141E
+height 1.6
+keep -
+run shared
+cel power_4 power_4_loop*2 power_4_end
+cel power_1
+cel power_2
+cel power_7
+home 0 menu_idle::
+home 1 power_2::
+home 2 attack_light1:: attack_light2:: attack_light3:: attack_heavy1::
+home 2 power_4:: power_4_loop:: power_4_loop:: power_4_end::
+home 4 menu_goodbye::0.9
+home 5 levelup::
+home 6 menu_idle::0.4 menu_kowned::
+extra -
+lift skipfx
+card Speed=0.77 Acceleration=0.75 Turning_Radius=0.67 Slide_Tackle=0.65 Size=0.57 Hitting_Distance=0.67 Shooting=0.81 Passing=0.57 Aggression=0.75 Dekeing=0.7

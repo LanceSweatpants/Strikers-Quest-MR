@@ -549,7 +549,7 @@ static int port_celebration_character(const cPlayer* p)
     const int c = (int)p->m_eCharacterClass;
     if (p->GetTeam() != NULL)
     {
-        const int guest = PortGuestIndexFor(p->GetTeam()->m_nSide, c);
+        const int guest = PortGuestIndexForPlayer(p->GetTeam()->m_nSide, c, (int)p->m_ID);  // r130: per sidekick
         if (guest >= 0)
             return kPortGuestThemeBase + guest;
     }
@@ -833,7 +833,7 @@ extern "C" void PortCelebrationPoll(void)
     static float s_stsSeconds = 0.0f;
     if (taskState == 2 && g_pGame != NULL)
     {
-        const float kFrame = 1.0f / 60.0f;
+        const float kFrame = PortXrFrameScale() / 60.0f;  // r106: one game frame's seconds (72 a second at full rate)
         bool stsRunning = false;
         for (int side = 0; side < 2; side++)
         {
@@ -1139,6 +1139,35 @@ extern "C" int PortNetGameHoldMatchStart(void)
             PortGuestStatsFor(coGuest, m.coStats[s], &m.coStatMask[s]);
         }
     }
+    // r130: each side's three sidekick slots' own picks (include/port/xr_guest.h): none, the Strikers sidekick, or a
+    // guest of any role by pack with its own stats as this headset has them (the friend's headset plays it the same).
+    // r130 (Lance: "let ANY spot be ANY character"): and 3, a Strikers captain itself; with each the captain it wants
+    // (slotWant, its eTeamID: worked out here, where its roster is): the host resolves the classes for both headsets.
+    for (int s = 0; s < 2; s++)
+    {
+        for (int k = 0; k < 3; k++)
+        {
+            const int sp = PortGuestGetSlotPick(m.teams[s], k + 1);
+            int move = 0;
+            const int want = sp == PORT_GUEST_INHERIT ? -1 : PortGuestPickWant(sp, &move);
+            const char* pack = sp >= 0 && sp < PORT_GUEST_ORIGINAL ? PortGuestRosterPack(sp) : NULL;
+            m.slotWant[s][k] = want;
+            m.slotClass[s][k] = -1;  // (the host's to say)
+            if (sp == PORT_GUEST_INHERIT)
+                m.slotKinds[s][k] = 0;
+            else if (want >= 0 && move == 0)
+                m.slotKinds[s][k] = 3;  // a Strikers captain (r130's cap_<name> packs too)
+            else if (pack != NULL && pack[0] != '\0')
+                m.slotKinds[s][k] = 2;
+            else
+                m.slotKinds[s][k] = 1;
+            if (m.slotKinds[s][k] == 2)
+            {
+                strncpy(m.slotGuests[s][k], pack, sizeof(m.slotGuests[s][k]) - 1);
+                PortGuestStatsFor(sp, m.slotStats[s][k], &m.slotStatMask[s][k]);
+            }
+        }
+    }
     if (cup)
     {
         m.coopSide = side == 1 ? 1 : 0;
@@ -1215,6 +1244,9 @@ extern "C" void PortNetGameFrameBegin(void)
             PortSetSecondCaptain(side, m.coCaptains[side]);
             PortGuestSetOnlineStats(side, 2, m.coStats[side], m.coStatMask[side]);
         }
+        // r130: a club's sidekick members stay offline only (their picks above are cleared, PortGuestSetPick): online
+        // every sidekick slot plays its club's sidekick class on both headsets (the co-captain stays slot 1's)
+        PortClearSlotCaptains();
         const short coop = (short)(m.coopSide == 0 || m.coopSide == 1 ? m.coopSide : -1);
         for (int pad = 0; pad < 4; pad++)
             pInfo->SetPlayingSide((unsigned short)pad, (short)(pad < 2 ? coop : -1));
@@ -1244,6 +1276,19 @@ extern "C" void PortNetGameFrameBegin(void)
             PortGuestSetPick((int)pInfo->GetTeam(side), role, PortGuestRosterFind(role, m.guests[0][role]));
             PortGuestSetOnlineStats(side, role, m.guestStats[0][role], m.guestStatMask[0][role]);
         }
+        // r130: the cup team's three sidekick slots as the host has them (when both builds carry them, xr_net.h), and the
+        // classes the host gave them (the other team's slots: its sidekick class)
+        {
+            int classes[6] = {-1, -1, -1, -1, -1, -1};
+            if ((m.slotsAgreed & 1) != 0)
+            {
+                PortGuestSetOnlineSlots(side, (int)pInfo->GetTeam(side), m.slotKinds[0], m.slotWant[0], m.slotGuests[0],
+                                        m.slotStats[0], m.slotStatMask[0]);
+                for (int k = 0; k < 3; k++)
+                    classes[side * 3 + k] = m.slotClass[0][k];
+            }
+            PortSetSlotCaptains(classes);
+        }
         for (int pad = 0; pad < 4; pad++)
             pInfo->SetPlayingSide((unsigned short)pad, (short)(pad < 2 ? side : -1));
         pInfo->mMainUserPadNumber = (eFEINPUT_PAD)0;
@@ -1270,6 +1315,14 @@ extern "C" void PortNetGameFrameBegin(void)
             PortGuestSetOnlineStats(side, role, m.guestStats[side][role], m.guestStatMask[side][role]);
         }
     }
+    // r130: each side's three sidekick slots as its own headset picked them (both builds carry them, xr_net.h; else
+    // both headsets play each side's one sidekick pick). After the picks above (a sidekick pick clears a team's slots).
+    for (int side = 0; side < 2; side++)
+    {
+        if ((m.slotsAgreed & (1 << side)) != 0)
+            PortGuestSetOnlineSlots(side, m.teams[side], m.slotKinds[side], m.slotWant[side], m.slotGuests[side],
+                                    m.slotStats[side], m.slotStatMask[side]);
+    }
     // r79: each side's co-captain as its own headset picked it (both headsets drop the same clashes)
     for (int side = 0; side < 2; side++)
     {
@@ -1278,6 +1331,14 @@ extern "C" void PortNetGameFrameBegin(void)
     }
     PortSetCoCaptainsForMatch(m.coCaptains[0], PortGuestRosterFind(0, m.coGuests[0]), m.coCaptains[1],
                               PortGuestRosterFind(0, m.coGuests[1]));
+    // r130: each sidekick slot's class as the host resolved it (xr_net.cpp host_start; the same on both headsets); a side
+    // the start carried no slots for plays its sidekick class in all three
+    {
+        int classes[6];
+        for (int i = 0; i < 6; i++)
+            classes[i] = (m.slotsAgreed & (1 << (i / 3))) != 0 ? m.slotClass[i / 3][i % 3] : -1;
+        PortSetSlotCaptains(classes);
+    }
     // strikers-quest r44c: the test friend (tools/fakefriend) can ask for its side to be played by the
     // computer: its pad then has no side, which is how a Friendly against the CPU is set up.
     for (int pad = 0; pad < 4; pad++)

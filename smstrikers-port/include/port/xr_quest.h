@@ -27,6 +27,23 @@ int  PortXrShouldQuit(void);
 int  PortXrBeginFrame(void);
 void PortXrEndFrame(int ranGameFrame);
 void PortXrShutdown(void);
+/* r129, the pipelined frame (Lance: "get the FPS STEADY at 72+"): in the 3D views a game frame's Aurora frame is
+ * left open at the loop's end (PortXrFrameLeaveOpen() = 1: main.cpp skips aurora_end_frame), so the FIFO worker
+ * finishes its draws while the next game frame works out its simulation, as the GameCube's GP did; the next send
+ * (glPlat.cpp, before anything else) calls PortXrFrameBoundary(): drain, end that frame, begin the next.
+ * PortXrFramePending(): one is open from the last loop; PortXrFrameClosePending(): drain and end it now (a loop
+ * that runs no game frame). Not a Quest build: 0 / nothing. xr_tune "pipeline 0" turns it off.
+ * r131: the 2D big screen's frames too (Jumbotron in the Living Room, the cup suite) once that view sent: its picture goes
+ * GPU-direct (Dawn copies it into a shared image, the XR queue blits that into the screen swapchain: no readback, no
+ * upload, no synchronize; xr_tune "screendirect 0" = the r130 readback path, never left open). */
+int  PortXrFrameLeaveOpen(void);
+int  PortXrFramePending(void);
+void PortXrFrameClosePending(void);
+void PortXrFrameBoundary(void);
+/* r106: 60 / game frames a second: 1 on the 60 cadence (always online), 0.833 at a game frame every 72 Hz
+ * display frame. For whatever counts game frames as time (the goal show, camera blends, the stuck-X timers).
+ * Not a Quest build: always 1. */
+float PortXrFrameScale(void);
 
 /* main.cpp: how long each step of one headset loop iteration took (ns), for the stats line:
  * PortXrBeginFrame (incl. xrWaitFrame), aurora_begin_frame, the game's tasks (incl. every send),

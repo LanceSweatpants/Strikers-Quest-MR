@@ -25,6 +25,11 @@ public final class DiscSource implements Source, Closeable {
 
     private static native byte[] nRead(long h, int index);
 
+    /** 1.16 (MUA's 600 MB wad): a file's size, and len bytes of it from off (null when it can't be read). */
+    private static native long nLength(long h, int index);
+
+    private static native byte[] nReadAt(long h, int index, long off, int len);
+
     private static native void nClose(long h);
 
     private long h;
@@ -64,6 +69,24 @@ public final class DiscSource implements Source, Closeable {
         byte[] b = nRead(h, i);
         if (b == null) throw new IOException(id + ": couldn't read " + path);
         return b;
+    }
+
+    @Override
+    public synchronized byte[] read(String path, long off, int len) throws IOException {
+        Integer i = index.get(path.toLowerCase(Locale.ROOT));
+        if (i == null) throw new FileNotFoundException(id + ": " + path);
+        if (h == 0) throw new IOException("closed");
+        byte[] b = nReadAt(h, i, off, len);
+        if (b == null) throw new IOException(id + ": couldn't read " + path + " at " + off);
+        return b;
+    }
+
+    @Override
+    public synchronized long size(String path) throws IOException {
+        Integer i = index.get(path.toLowerCase(Locale.ROOT));
+        if (i == null) throw new FileNotFoundException(id + ": " + path);
+        if (h == 0) throw new IOException("closed");
+        return nLength(h, i);
     }
 
     @Override

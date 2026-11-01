@@ -41,7 +41,8 @@ unsigned long GetLOCTeamName(eTeamID teamID);
 unsigned long GetLOCSidekickName(eSidekickID sidekickid);
 unsigned long GetLOCSidekickNameForTeam(eSidekickID sidekickid, int captainTeam);
 // strikers-quest r79: the name of a side's co-captain (its guest's, else its captain class's); 0 = none.
-unsigned long GetLOCCoCaptainName(int side);
+// r130: any sidekick slot (0-2) of the side playing a captain class (slot 0: the co-captain's when it has one).
+unsigned long GetLOCSlotCaptainName(int side, int slot);
 unsigned long GetLOCCharacterName(eTeamID teamid, bool useShortSuperTeam, bool useLockedSuperTeam);
 unsigned long GetLOCDifficultyName(GameplaySettings::eSkillLevel difficulty);
 unsigned long GetStadiumStringID(eStadiumID stadiumID);

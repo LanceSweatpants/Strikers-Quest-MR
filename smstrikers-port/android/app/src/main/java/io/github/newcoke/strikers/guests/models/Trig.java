@@ -64,8 +64,26 @@ final class Trig {
         return fix(StrictMath.sin(x), FIX_SIN, x);
     }
 
+    /** math.atan2 as the PC's C library gave it (r130 Vaporeon's re-pose): fdlibm's, nudged by libm.txt's "a" lines. */
+    static double atan2(double y, double x) {
+        if (record2 != null) record2.add(Double.toHexString(y) + " " + Double.toHexString(x));
+        final double v = StrictMath.atan2(y, x);
+        final Map<Integer, Integer> m = FIX_ATAN2;
+        if (m.isEmpty()) return v;
+        final Integer d = m.get(hash2(y, x));
+        if (d == null) return v;
+        double r = v;
+        for (int i = 0; i < Math.abs(d); i++) r = d > 0 ? Math.nextUp(r) : Math.nextDown(r);
+        return r;
+    }
+
+    static int hash2(double y, double x) {
+        return hash(y) * 31 + hash(x);
+    }
+
     /** (the PC data tool: every argument that reaches fdlibm) */
     static volatile java.util.Set<Long> record;
+    static volatile java.util.Set<String> record2;
 
     // ------------------------------------------------------------------------------------------------ libm.txt
     /*
@@ -73,7 +91,7 @@ final class Trig {
      * 70. libm.txt lists, for the joint angles in the roster's files where they differ, the hash of the argument and
      * which way the PC rounded (a number of ulps): no angles, just which last bits to nudge.
      */
-    private static volatile Map<Integer, Integer> FIX_COS = new HashMap<>(), FIX_SIN = new HashMap<>();
+    private static volatile Map<Integer, Integer> FIX_COS = new HashMap<>(), FIX_SIN = new HashMap<>(), FIX_ATAN2 = new HashMap<>();
 
     static int hash(double x) {
         final long b = Double.doubleToLongBits(x);
@@ -91,17 +109,18 @@ final class Trig {
     /** libm.txt: "c|s <hash hex> <ulps>" lines. */
     static synchronized void load(String text) {
         if (text.equals(loaded)) return;
-        final Map<Integer, Integer> c = new HashMap<>(), s = new HashMap<>();
+        final Map<Integer, Integer> c = new HashMap<>(), s = new HashMap<>(), a = new HashMap<>();
         for (String line : text.split("\n")) {
             final String l = line.trim();
             if (l.isEmpty() || l.startsWith("#")) continue;
             final String[] f = l.split("\\s+");
             final int h = (int) Long.parseLong(f[1], 16);
             final int d = Integer.parseInt(f[2]);
-            (f[0].equals("c") ? c : s).put(h, d);
+            (f[0].equals("c") ? c : f[0].equals("a") ? a : s).put(h, d);
         }
         FIX_COS = c;  // (whole maps swapped in: a conversion running on another thread never sees half a table)
         FIX_SIN = s;
+        FIX_ATAN2 = a;
         loaded = text;
     }
 

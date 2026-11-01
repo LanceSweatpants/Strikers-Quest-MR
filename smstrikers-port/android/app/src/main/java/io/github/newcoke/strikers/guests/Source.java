@@ -20,4 +20,19 @@ public interface Source {
 
     /** The whole file. */
     byte[] read(String path) throws IOException;
+
+    /**
+     * len bytes of a file from off (MUA's 600 MB z/assetsfb.wad is read a piece at a time). This default reads the
+     * whole file; DiscSource and DirSource read just the piece.
+     */
+    default byte[] read(String path, long off, int len) throws IOException {
+        final byte[] all = read(path);
+        if (off < 0 || off + len > all.length) throw new IOException(id() + ": " + path + ": read past its end");
+        return java.util.Arrays.copyOfRange(all, (int) off, (int) off + len);
+    }
+
+    /** The file's size in bytes. */
+    default long size(String path) throws IOException {
+        return read(path).length;
+    }
 }

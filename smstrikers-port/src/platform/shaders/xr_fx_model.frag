@@ -20,7 +20,8 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 t = texture(uTex, vUv);
-    bool soft = pc.look.w > 0.5;
+    bool soft = mod(pc.look.w, 2.0) > 0.5;
+    float shine = floor(pc.look.w * 0.5) / 100.0;  // r127: a shiny one's glint (0..1)
     if (!soft && t.a < 0.3) discard;
     vec3 v = normalize(pc.camPos.xyz - vPos);
     vec3 n = vNrm;
@@ -29,6 +30,13 @@ void main() {
     if (dot(n, v) < 0.0) n = -n;  // both sides of a sheet (wings, ears) lit as the side you see
     vec3 key = normalize(vec3(0.35, 0.85, 0.4));
     float diff = max(dot(n, key), 0.0);
+    // r131: STRIKERS ILLUSTRATED's paper (glowRgb.w < 0): the page's own colours, flat to you = as drawn, shaded only
+    // as it bends away from you (and a touch by the light)
+    if (pc.glowRgb.w < -0.5) {
+        float shade = clamp(0.72 + 0.28 * max(dot(n, v), 0.0) + 0.06 * (diff - 0.5), 0.55, 1.0);
+        outColor = vec4(t.rgb * shade * pc.look.y, pc.look.y);
+        return;
+    }
     float wrap = max(dot(n, -key) * 0.5 + 0.5, 0.0);
     float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
     vec3 lit = t.rgb * (0.48 + 0.62 * diff + 0.12 * wrap);
@@ -38,6 +46,16 @@ void main() {
     vec3 white = vec3(1.0) * (0.9 + 0.1 * diff) + rim * vec3(0.55, 0.75, 1.0);
     vec3 col = mix(lit, white, clamp(pc.look.x, 0.0, 1.0));
     col += pc.glowRgb.rgb * pc.look.z * (0.25 + 0.75 * rim);
+    // r127 (Lance: "make them jawns glisten and shimmer"): a bright glint sweeping up across it on the slant every
+    // 1.4 s (a band 1.6 m apart in the room, so one at a time on it), a soft rainbow sheen drifting with it
+    if (shine > 0.0) {
+        float h = vPos.y * 0.9 + 0.32 * (vPos.x + vPos.z);
+        float f = fract(h / 1.6 - pc.camPos.w / 1.4) - 0.5;
+        float band = exp(-f * f / (2.0 * 0.018 * 0.018)) + 0.4 * exp(-f * f / (2.0 * 0.07 * 0.07));
+        float hue = fract(h / 1.6 - pc.camPos.w / 1.4 + 0.5) * 6.0;
+        vec3 rainbow = clamp(vec3(abs(hue - 3.0) - 1.0, 2.0 - abs(hue - 2.0), 2.0 - abs(hue - 4.0)), 0.0, 1.0);
+        col += shine * (band * vec3(1.0, 0.98, 0.92) * 1.3 + (0.12 + 0.25 * rim) * rainbow);
+    }
     float a = (soft ? t.a : 1.0) * pc.look.y;
     outColor = vec4(col * a, a);
 }

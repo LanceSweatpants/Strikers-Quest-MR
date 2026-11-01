@@ -65,7 +65,18 @@ enum Shape : uint8_t {
   // r82: themed 3D pieces (xr_fx_mesh.h, xr_fx_mesh.frag 40-60).
   kSword = 40, kShield, kRod, kPokeBall, kDumbbell, kRock, kBone, kApple, kMissile, kPill,
   kRupee, kTriforce, kIceBlock, kIcicle, kGlove, kNote, kBat, kShard, kNeedle, kYoyo,
-  kPearl = 60  // the ball mesh, plain and glossy
+  kPearl = 60,  // the ball mesh, plain and glossy
+  // r124 (Lance: "you have just random white balls falling with spider man"): the Marvel heroes' own 3D pieces
+  // (xr_fx_mesh.h; xr_fx_mesh.frag's themed pieces 80-89)
+  kWebPiece = 80, kSpiderPiece, kClawsPiece, kStarShieldPiece, kSkullPiece, kVampBatPiece, kSaiPiece,
+  kSnowflakePiece, kChainPiece, kRunePiece,
+  kMjolnirPiece = 90, kArrowPiece = 91,  // r127: Thor's hammer, Hawkeye's arrows
+  kSpoonPiece = 92,                       // r127: the Abra line's spoons
+  // r130: the new roster's light pieces (xr_fx_mesh.h r130, each under ~60 triangles; xr_fx_mesh.frag 93-118)
+  kCrescentPiece = 93, kBadge4Piece, kStretchArmPiece, kSurfboardPiece, kAcornPiece, kHornPiece, kCrownPiece,
+  kFossilPiece = 100, kTalonPiece, kSpikePiece, kToadstoolPiece, kLilyPadPiece, kWoolPiece, kLeafPiece, kSoundWavePiece,
+  kGloveLitePiece, kImpactPiece, kTopPiece = 110, kPalmPiece, kTwigPiece, kGemPiece, kLotusPiece, kLipsPiece,
+  kHeartLitePiece, kStarLitePiece, kDogTagPiece = 118
 };
 
 // The 3D mesh each piece is drawn with (xr_fx_mesh.h); sparks, flashes and the marker stay quads.
@@ -107,6 +118,47 @@ uint8_t mesh_for(Shape shape) {
   case kNeedle: return mesh::kNeedle;
   case kYoyo: return mesh::kYoyo;
   case kPearl: return mesh::kBall;
+  // r124
+  case kWebPiece: return mesh::kWeb;
+  case kSpiderPiece: return mesh::kSpider;
+  case kClawsPiece: return mesh::kClaws;
+  case kStarShieldPiece: return mesh::kStarShield;
+  case kSkullPiece: return mesh::kSkull;
+  case kVampBatPiece: return mesh::kVampBat;
+  case kSaiPiece: return mesh::kSai;
+  case kSnowflakePiece: return mesh::kSnowflake;
+  case kChainPiece: return mesh::kChainLink;
+  case kRunePiece: return mesh::kRune;
+  case kMjolnirPiece: return mesh::kMjolnir;  // r127
+  case kArrowPiece: return mesh::kArrow;
+  case kSpoonPiece: return mesh::kSpoon;
+  // r130
+  case kCrescentPiece: return mesh::kCrescent;
+  case kBadge4Piece: return mesh::kBadge4;
+  case kStretchArmPiece: return mesh::kStretchArm;
+  case kSurfboardPiece: return mesh::kSurfboard;
+  case kAcornPiece: return mesh::kAcorn;
+  case kHornPiece: return mesh::kHorn;
+  case kCrownPiece: return mesh::kCrown;
+  case kFossilPiece: return mesh::kFossil;
+  case kTalonPiece: return mesh::kTalon;
+  case kSpikePiece: return mesh::kSpike;
+  case kToadstoolPiece: return mesh::kToadstool;
+  case kLilyPadPiece: return mesh::kLilyPad;
+  case kWoolPiece: return mesh::kWool;
+  case kLeafPiece: return mesh::kLeaf;
+  case kSoundWavePiece: return mesh::kSoundWave;
+  case kGloveLitePiece: return mesh::kGloveLite;
+  case kImpactPiece: return mesh::kImpact;
+  case kTopPiece: return mesh::kTop;
+  case kPalmPiece: return mesh::kPalm;
+  case kTwigPiece: return mesh::kTwig;
+  case kGemPiece: return mesh::kGem;
+  case kLotusPiece: return mesh::kLotus;
+  case kLipsPiece: return mesh::kLips;
+  case kHeartLitePiece: return mesh::kHeartLite;
+  case kStarLitePiece: return mesh::kStarLite;
+  case kDogTagPiece: return mesh::kDogTag;
   default: return kNoMesh;
   }
 }
@@ -154,6 +206,47 @@ Rest rest_for(uint8_t shape) {
   case kNeedle: return {0, 0.07f};
   case kYoyo: return {2, 0.2f};
   case kPearl: return {1, 0.5f};
+  // r124: flat ones face up, the spider on its legs, the skull on its jaw
+  case kWebPiece: return {2, 0.012f};
+  case kSpiderPiece: return {2, 0.12f};
+  case kClawsPiece: return {2, 0.05f};
+  case kStarShieldPiece: return {2, 0.03f};
+  case kSkullPiece: return {1, 0.26f};
+  case kVampBatPiece: return {2, 0.07f};
+  case kSaiPiece: return {2, 0.045f};
+  case kSnowflakePiece: return {2, 0.012f};
+  case kChainPiece: return {2, 0.055f};
+  case kRunePiece: return {2, 0.008f};
+  case kMjolnirPiece: return {2, 0.15f};  // r127: on its side
+  case kArrowPiece: return {2, 0.03f};
+  case kSpoonPiece: return {2, 0.035f};
+  // r130: flat ones face up; the acorn, spike, top and gem on their sides; the crown, toadstool, wool, lotus upright
+  case kCrescentPiece: return {2, 0.05f};
+  case kBadge4Piece: return {2, 0.04f};
+  case kStretchArmPiece: return {2, 0.075f};
+  case kSurfboardPiece: return {2, 0.025f};
+  case kAcornPiece: return {0, 0.29f};
+  case kHornPiece: return {2, 0.16f};
+  case kCrownPiece: return {1, 0.25f};
+  case kFossilPiece: return {2, 0.09f};
+  case kTalonPiece: return {2, 0.035f};
+  case kSpikePiece: return {0, 0.1f};
+  case kToadstoolPiece: return {1, 0.5f};
+  case kLilyPadPiece: return {2, 0.015f};
+  case kWoolPiece: return {1, 0.25f};
+  case kLeafPiece: return {2, 0.05f};
+  case kSoundWavePiece: return {2, 0.012f};
+  case kGloveLitePiece: return {2, 0.27f};
+  case kImpactPiece: return {2, 0.03f};
+  case kTopPiece: return {0, 0.34f};
+  case kPalmPiece: return {2, 0.03f};
+  case kTwigPiece: return {2, 0.03f};
+  case kGemPiece: return {0, 0.3f};
+  case kLotusPiece: return {1, 0.16f};
+  case kLipsPiece: return {2, 0.07f};
+  case kHeartLitePiece: return {2, 0.17f};
+  case kStarLitePiece: return {2, 0.15f};
+  case kDogTagPiece: return {2, 0.012f};
   default: return {2, 0.02f};         // paper, foil, flat quads
   }
 }
@@ -540,6 +633,360 @@ Special special_for_pack(const char* pack) {
   } else if ((st = stage_in(pack, {"shyguy"})) != 0) {
     sp.stage = 2.0f;
     sp.f(kEgg, 0xFFFFFF, 0x3CC23C, 1.0f);  // Yoshi's Island eggs
+  // --- r127: Lance's ten more Pokemon (all evolve) and their evolutions ---
+  } else if ((st = stage_in(pack, {"pk_cyndaquil", "pk_quilava", "pk_typhlosion"})) != 0) {
+    stage(st, 3);
+    sp.f(kFlame, 0xFFC830, 0xE8300A, 1.1f, 0.9f);
+    sp.r(kRoomEmbers, 0xFFE070, 0xFF5A10);
+    if (st == 3) sp.r(kRoomFloorRings, 0xFFE070, 0xFF5A10);
+    sp.py(st == 3 ? kPyroBreath : kPyroFlame, 0xFFE9A0, 0xFF5A10);
+  } else if ((st = stage_in(pack, {"pk_totodile", "pk_croconaw", "pk_feraligatr"})) != 0) {
+    stage(st, 3);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kPearl, 0xDFF4FF, 0x7FC0FF, 0.45f, 0.3f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    if (st >= 2) sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_chikorita", "pk_bayleef", "pk_meganium"})) != 0) {
+    stage(st, 3);
+    sp.f(kPetal, 0x7ACB4A, 0xC8F090, 1.0f);
+    if (st == 3) sp.f(kPetal, 0xFF8FB8, 0xFFD0E0, 1.0f);
+    sp.r(kRoomLeaves, 0x7ACB4A, 0xC8F090).r(kRoomMotes, 0xF0FF90, 0xA0D040);
+    sp.py(kPyroSlash, 0xD0FF90, 0x3A8A3A);
+  } else if ((st = stage_in(pack, {"pk_abra", "pk_kadabra", "pk_alakazam"})) != 0) {
+    stage(st, 3);
+    sp.f(kSpoonPiece, 0xC8CCD4, 0xE8ECF0, 1.0f).f(kStar, 0xE8C040, 0xFFF0A0, 0.8f, 0.6f);
+    sp.r(kRoomPsyRings, 0xFF7AD8, 0xA040FF);
+    if (st >= 2) sp.r(kRoomLevitate, 0xFF9AE0, 0xA040FF);
+    sp.py(kPyroRings, 0xFF7AD8, 0xA040FF);
+  } else if ((st = stage_in(pack, {"pk_ralts", "pk_kirlia", "pk_gardevoir"})) != 0) {
+    stage(st, 3);
+    sp.f(kHeart, 0xFF8FB8, 0xFFD0E0, 0.8f).f(kStar, 0xC8FFD8, 0x5AC86A, 0.7f, 0.5f);
+    sp.r(kRoomMotes, 0xC8FFD8, 0x5AC86A).r(kRoomPsyRings, 0xFF9ACF, 0x5AC86A);
+    sp.py(kPyroHearts, 0xFF8FB8, 0x5AC86A);
+  } else if ((st = stage_in(pack, {"pk_larvitar", "pk_pupitar", "pk_tyranitar"})) != 0) {
+    stage(st, 3);
+    sp.f(kRock, 0x7A8A5A, 0x4A5A3A, 1.0f + 0.3f * (st - 1));
+    if (st == 3) sp.f(kShard, 0x3A4A6A, 0x5A6A8A, 1.0f);
+    sp.r(kRoomDust, 0xC8B898, 0x6A5A48);
+    sp.py(st == 3 ? kPyroBlast : kPyroThrow, 0xFFE0A0, 0xFF7A1A);
+  } else if ((st = stage_in(pack, {"pk_aron", "pk_lairon", "pk_aggron"})) != 0) {
+    stage(st, 3);
+    sp.f(kShard, 0xB8BCC8, 0x8A8E96, 1.0f).f(kRock, 0x8A8A90, 0x5A5A60, 0.9f);
+    sp.r(kRoomSparks, 0xFFFFFF, 0xC8D8FF).r(kRoomDust, 0xB8A890, 0x6A5A48);
+    sp.py(kPyroBlast, 0xFFFFFF, 0xC8D8FF);
+  } else if ((st = stage_in(pack, {"pk_trapinch", "pk_vibrava", "pk_flygon"})) != 0) {
+    stage(st, 3);
+    sp.f(kRock, 0xE0C080, 0xA08050, 0.9f);
+    if (st >= 2) sp.f(kPetal, 0x9AD86A, 0xD8F0B0, 1.0f);
+    sp.r(kRoomDust, 0xE8D0A0, 0xA08050);
+    if (st == 3) sp.r(kRoomMotes, 0xD8F0B0, 0x5AB84A);
+    sp.py(st == 3 ? kPyroBreath : kPyroThrow, 0xD8FFB0, 0x3A8A3A);
+  } else if ((st = stage_in(pack, {"pk_elekid", "pk_electabuzz"})) != 0) {
+    stage(st, 2);
+    sp.f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.4f, 0.9f);
+    sp.r(kRoomLightning, 0xFFFFFF, 0xFFE040).r(kRoomSparks, 0xFFFFE0, 0xFFD020);
+    sp.py(kPyroNone);
+  } else if ((st = stage_in(pack, {"pk_psyduck", "pk_golduck"})) != 0) {  // water, and Psyduck's headache
+    stage(st, 2);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kPearl, 0xDFF4FF, 0x7FC0FF, 0.45f, 0.3f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomPsyRings, st == 1 ? 0xFFE060 : 0xFF6A5A, 0x58A8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  // --- r130: the new roster's twenty Pokemon lines, on the light pieces (xr_fx_mesh.h r130) and the quads that face
+  // you (faces_you). No kPyroHearts here: its hearts are the heavy kHeart mesh. ---
+  } else if ((st = stage_in(pack, {"pk_eevee"})) != 0) {  // Eevee: stars in its own brown and cream, hearts
+    sp.stage = 1.0f;
+    sp.f(kStarLitePiece, 0xC8884A, 0xF2E2C0, 1.0f, 0.3f).f(kStarLitePiece, 0xF2E2C0, 0xC8884A, 0.8f, 0.3f);
+    sp.f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f);
+    sp.r(kRoomMotes, 0xFFE8C0, 0xC8884A);
+    sp.py(kPyroFireworks, 0xC8884A, 0xF2E2C0);
+  } else if ((st = stage_in(pack, {"pk_vaporeon"})) != 0) {  // water: drops and bubbles, rain, a spout
+    sp.stage = 3.0f;
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.7f, 0.4f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(kPyroSpout, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_jolteon"})) != 0) {  // lightning and its needle fur (Pin Missile)
+    sp.stage = 3.0f;
+    sp.f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.4f, 0.9f).f(kSpikePiece, 0xF2C830, 0xFFF6C0, 1.0f, 0.3f);
+    sp.r(kRoomLightning, 0xFFFFFF, 0xFFE040).r(kRoomSparks, 0xFFFFE0, 0xFFD020);
+    sp.py(kPyroNone);
+  } else if ((st = stage_in(pack, {"pk_flareon"})) != 0) {  // flames and tufts of its cream mane, fire breath
+    sp.stage = 3.0f;
+    sp.f(kFlame, 0xFFC830, 0xE8300A, 1.1f, 0.9f).f(kWoolPiece, 0xF8E2A0, 0xFFF4D0, 0.8f);
+    sp.r(kRoomEmbers, 0xFFE070, 0xFF5A10).r(kRoomSmoke, 0x707070, 0x303030);
+    sp.py(kPyroBreath, 0xFFE9A0, 0xFF5A10);
+  } else if ((st = stage_in(pack, {"pk_espeon"})) != 0) {  // psychic: its red forehead gem, lilac twinkles, rising
+    sp.stage = 3.0f;
+    sp.f(kGemPiece, 0xE0203A, 0xFF8090, 0.9f, 0.5f).f(kTwinkle, 0xF0D8FF, 0xB070E0, 0.9f, 0.8f);
+    sp.r(kRoomPsyRings, 0xE8B0FF, 0xA040C0).r(kRoomLevitate, 0xF0C8FF, 0xA040C0);
+    sp.py(kPyroRings, 0xE8B0FF, 0xA040C0);
+  } else if ((st = stage_in(pack, {"pk_umbreon"})) != 0) {  // dark: its glowing gold moons and rings, red eyes in the dark
+    sp.stage = 3.0f;
+    sp.f(kCrescentPiece, 0xFFD84A, 0xFFF0A0, 1.0f, 0.7f).f(kRingFx, 0xFFE070, 0xFFB020, 0.9f, 0.8f);
+    sp.r(kRoomFog, 0x303048, 0x0A0A14).r(kRoomEyes, 0xFF3040, 0xFFD84A);
+    sp.py(kPyroRings, 0xFFD84A, 0x2A2A40);
+  } else if ((st = stage_in(pack, {"pk_tyrogue", "pk_hitmonlee", "pk_hitmonchan", "pk_hitmontop"})) != 0) {
+    // fighting: impacts; Hitmonlee's kicks, Hitmonchan's gloves, Hitmontop's spinning tops (each its own; Tyrogue the
+    // first form of all three)
+    sp.stage = st == 1 ? 1.0f : 3.0f;
+    if (st == 1) sp.f(kImpactPiece, 0xFFE040, 0xFF7A1A, 1.0f, 0.3f).f(kImpactPiece, 0xFFFFFF, 0xE8342A, 0.8f, 0.3f);
+    else if (st == 2) sp.f(kImpactPiece, 0xFFE040, 0xFF7A1A, 1.0f, 0.3f).f(kSlash, 0xFFFFFF, 0xC8A070, 1.2f, 0.8f);
+    else if (st == 3) sp.f(kGloveLitePiece, 0xE0242A, 0xFFFFFF, 1.1f).f(kImpactPiece, 0xFFE040, 0xFF7A1A, 0.9f, 0.3f);
+    else sp.f(kTopPiece, 0x8A5A30, 0x3A6AC8, 1.1f).f(kImpactPiece, 0xFFE040, 0xFF7A1A, 0.9f, 0.3f);
+    sp.r(kRoomFloorRings, 0xFFFFFF, 0xFFC040);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xC8A070);
+    if (st == 3) sp.r(kRoomSparks, 0xFFF0B0, 0xFF5A10);
+    if (st == 4) sp.r(kRoomDust, 0xC8B898, 0x6A5A48);
+    sp.py(st == 2 ? kPyroBlast : (st == 4 ? kPyroRings : kPyroFireworks), 0xFFFFFF, 0xFFC040);
+  } else if ((st = stage_in(pack, {"pk_mareep", "pk_flaaffy", "pk_ampharos"})) != 0) {  // wool and static; Ampharos' orbs
+    stage(st, 3);
+    if (st < 3) sp.f(kWoolPiece, 0xFFF8E8, 0xFFFFFF, 1.0f);
+    sp.f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.2f + 0.1f * st, 0.9f);
+    if (st == 3) sp.f(kGemPiece, 0xE8342A, 0xFF9A80, 0.8f, 0.7f);
+    sp.r(kRoomSparks, 0xFFFFE0, 0xFFD020);
+    if (st >= 2) sp.r(kRoomLightning, 0xFFFFFF, 0xFFE040);
+    sp.py(st == 3 ? kPyroBlast : kPyroNone, 0xFFFFFF, 0xFFE040);
+  } else if ((st = stage_in(pack, {"pk_teddiursa", "pk_ursaring"})) != 0) {  // honey and its crescent; Ursaring's woods
+    stage(st, 2);
+    sp.f(kDrop, 0xFFC040, 0xC86A10, 0.8f, 0.3f).f(kCrescentPiece, 0xF2D070, 0xFFF0B0, 0.9f, 0.4f);
+    if (st == 2) sp.f(kLeafPiece, 0x4A9A3A, 0xA8D880, 1.0f);
+    sp.r(kRoomMotes, 0xFFE070, 0xFFB020);
+    if (st == 2) sp.r(kRoomLeaves, 0x4A9A3A, 0xA8D880);
+    sp.py(st == 1 ? kPyroFireworks : kPyroSlash, 0xFFE0A0, 0xC86A10);
+  } else if ((st = stage_in(pack, {"pk_lotad", "pk_lombre", "pk_ludicolo"})) != 0) {  // lily pads and rain; then music
+    stage(st, 3);
+    sp.f(kLilyPadPiece, 0x4AAE4A, 0x8AD86A, 1.2f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st >= 2) sp.f(kNoteQuad, 0xFFE040, 0xFFFFFF, 0.8f, 0.3f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    if (st >= 2) sp.r(kRoomNotes, 0xFFE040, 0xFFF4B0);
+    sp.py(st == 3 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_seedot", "pk_nuzleaf", "pk_shiftry"})) != 0) {  // acorns, leaves; Shiftry's leaf storm
+    stage(st, 3);
+    sp.f(kAcornPiece, 0xA0703A, 0x5A3A1A, 1.0f).f(kLeafPiece, 0x4A9A3A, 0xA8D880, 1.0f + 0.15f * (st - 1));
+    sp.r(kRoomLeaves, 0x4A9A3A, 0xA8D880);
+    if (st == 3) sp.r(kRoomSlashes, 0xFFFFFF, 0x8AD06A);
+    sp.py(st == 3 ? kPyroSlash : kPyroThrow, 0xFFFFFF, 0x4A9A3A);
+  } else if ((st = stage_in(pack, {"pk_shroomish", "pk_breloom"})) != 0) {  // toadstools and spores; Breloom's Mach Punch
+    stage(st, 2);
+    if (st == 1) sp.f(kToadstoolPiece, 0x7AB85A, 0xE8E0B0, 1.0f);
+    else sp.f(kToadstoolPiece, 0x3E8A3A, 0xD83A2A, 1.0f);
+    sp.f(kSpark, 0xE8FFB0, 0x9AD050, 0.6f, 0.8f);
+    if (st == 2) sp.f(kImpactPiece, 0xFFE040, 0xFF7A1A, 0.9f, 0.3f);
+    sp.r(kRoomMotes, 0xE8FFB0, 0x9AD050);
+    sp.r(st == 1 ? kRoomFog : kRoomFloorRings, st == 1 ? 0xD8E8A0 : 0xFFFFFF, st == 1 ? 0x5A7A3A : 0x9AD050);
+    sp.py(kPyroPuffs, 0xD8F0A0, 0x9AC060);
+  } else if ((st = stage_in(pack, {"pk_slakoth", "pk_vigoroth", "pk_slaking"})) != 0) {
+    // twigs and sleepy Zzz (Slaking lazes, no show); Vigoroth can't sit still: impacts and slashes
+    stage(st, 3);
+    sp.f(kTwigPiece, 0x8A6A40, 0x5AA040, 1.2f);
+    if (st == 2) sp.f(kImpactPiece, 0xFFFFFF, 0xE8342A, 0.9f, 0.3f).f(kSlash, 0xFFFFFF, 0xE8342A, 1.1f, 0.8f);
+    else sp.f(kZzz, 0xFFFFFF, 0xBFD8FF, 0.8f, 0.4f);
+    if (st == 3) sp.f(kLeafPiece, 0x6AB04A, 0xB0E080, 0.9f);
+    sp.r(st == 2 ? kRoomSlashes : kRoomZzz, 0xFFFFFF, st == 2 ? 0xE8342A : 0xBFD8FF);
+    sp.py(st == 2 ? kPyroSlash : kPyroNone, 0xFFFFFF, 0xE8342A);
+  } else if ((st = stage_in(pack, {"pk_makuhita", "pk_hariyama"})) != 0) {  // sumo: palm thrusts, impacts, salt, stomps
+    stage(st, 2);
+    sp.f(kPalmPiece, 0xF2C870, 0xC8963A, 1.2f).f(kImpactPiece, 0xFFE040, 0xFF7A1A, 0.9f, 0.3f);
+    sp.f(kSpark, 0xFFFFFF, 0xE8E8F0, 0.5f, 0.0f);  // thrown salt
+    sp.r(kRoomFloorRings, 0xFFFFFF, 0xFFC040).r(kRoomDust, 0xF8F8F8, 0xC8C8C8);
+    sp.py(kPyroBlast, 0xFFE0A0, 0xFF7A1A);
+  } else if ((st = stage_in(pack, {"pk_whismur", "pk_loudred", "pk_exploud"})) != 0) {  // sound waves and notes, louder each stage
+    stage(st, 3);
+    const uint32_t wave = st == 1 ? 0xF0A8D0 : (st == 2 ? 0x6A7AD8 : 0x9A6AD0);
+    sp.f(kSoundWavePiece, wave, 0xFFFFFF, 1.0f + 0.15f * (st - 1), 0.5f).f(kNoteQuad, 0xFFE070, 0xFFFFFF, 0.8f, 0.3f);
+    sp.r(kRoomPsyRings, 0xFFFFFF, wave).r(kRoomNotes, 0xFFE070, 0xFFF4B0);
+    if (st == 3) sp.r(kRoomFlashes, 0xFFFFFF, wave);
+    sp.py(kPyroRings, 0xFFFFFF, wave);
+  } else if ((st = stage_in(pack, {"pk_meditite", "pk_medicham"})) != 0) {  // meditation: lotus, psychic gems, rising off the floor
+    stage(st, 2);
+    sp.f(kLotusPiece, 0xFF8AB8, 0xFFF0C0, 1.1f);
+    sp.f(kGemPiece, st == 1 ? 0x4A8AE8 : 0xE84A6A, st == 1 ? 0xA8D0FF : 0xFFA0B0, 0.8f, 0.6f);
+    sp.r(kRoomPsyRings, 0xFF9AD8, 0xA040FF).r(kRoomLevitate, 0xFFB0E0, 0xA040FF);
+    sp.py(kPyroRings, 0xFF9AD8, 0xA040FF);
+  } else if ((st = stage_in(pack, {"pk_cacnea", "pk_cacturne"})) != 0) {  // cactus needles in a sandstorm; Cacturne by night
+    stage(st, 2);
+    sp.f(kSpikePiece, 0x3A8A3A, 0xE8F0A0, 1.0f);
+    if (st == 1) sp.f(kStarLitePiece, 0xFFD040, 0xFFF0A0, 0.7f, 0.2f);  // its flower
+    else sp.f(kCrescentPiece, 0xFFE070, 0xFFF4C0, 0.9f, 0.6f);
+    sp.r(kRoomDust, 0xE8D0A0, 0xA08050);
+    if (st == 2) sp.r(kRoomEyes, 0xFFD040, 0xFF8A20);
+    sp.py(st == 1 ? kPyroThrow : kPyroSlash, 0xFFFFFF, 0x3A8A3A);
+  } else if ((st = stage_in(pack, {"pk_nidoranm", "pk_nidorino", "pk_nidoking"})) != 0) {  // poison horns, poison; the king's crown
+    stage(st, 3);
+    sp.f(kHornPiece, 0xA050C0, 0xF0E0FF, 1.0f + 0.15f * (st - 1)).f(kDrop, 0xC070E0, 0x6A1A8A, 0.7f, 0.4f);
+    if (st == 3) sp.f(kCrownPiece, 0xFFC830, 0xE8242A, 1.0f);
+    sp.r(kRoomBubbles, 0xD090F0, 0xFFFFFF);
+    if (st == 3) sp.r(kRoomDust, 0xB8A890, 0x6A5A48);
+    sp.py(st == 3 ? kPyroBlast : kPyroPuffs, 0xC070E0, 0x7A2A9A);
+  } else if ((st = stage_in(pack, {"pk_nidoranf", "pk_nidorina", "pk_nidoqueen"})) != 0) {  // the same in blue; the queen's crown
+    stage(st, 3);
+    sp.f(kHornPiece, 0x6A9AD8, 0xE8F0FF, 1.0f + 0.1f * (st - 1)).f(kDrop, 0x9A8AE8, 0x3A3AA8, 0.7f, 0.4f);
+    if (st == 3) sp.f(kCrownPiece, 0xFFC830, 0x3A6AE8, 1.0f);
+    sp.r(kRoomBubbles, 0xA8C0F8, 0xFFFFFF);
+    if (st == 3) sp.r(kRoomDust, 0xB8A890, 0x6A5A48);
+    sp.py(st == 3 ? kPyroBlast : kPyroPuffs, 0x9AB0F0, 0x4A4AB8);
+  } else if ((st = stage_in(pack, {"pk_kabuto", "pk_kabutops"})) != 0) {  // fossil shells from the old sea; Kabutops' scythes
+    stage(st, 2);
+    sp.f(kFossilPiece, 0x9A6A3A, 0xD8C8A0, 1.0f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 2) sp.f(kTalonPiece, 0x7A6A58, 0xD8D0C0, 1.2f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF).r(kRoomDust, 0xC8B898, 0x6A5A48);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0x9AB8D8);
+    sp.py(st == 2 ? kPyroSlash : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_anorith", "pk_armaldo"})) != 0) {  // claws and fossils
+    stage(st, 2);
+    sp.f(kTalonPiece, 0xB8BCC4, 0xF4F4F8, 1.1f).f(kFossilPiece, 0x8A9A7A, 0xD8D8C0, 0.9f);
+    sp.r(kRoomDust, 0xC8B898, 0x6A5A48);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xC8D0E0);
+    sp.py(kPyroSlash, 0xFFFFFF, 0xC8D0E0);
+  } else if ((st = stage_in(pack, {"pk_wooper", "pk_quagsire"})) != 0) {  // water and mud, bubbles
+    stage(st, 2);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kDrop, 0x8B5A2B, 0x4A2E14, 0.8f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(st == 2 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_smoochum", "pk_jynx"})) != 0) {  // kisses, hearts and snow
+    stage(st, 2);
+    sp.f(kLipsPiece, 0xE8305A, 0x5A0A1A, 1.0f).f(kHeartLitePiece, 0xFF7FB0, 0xFFD0E4, 0.8f).f(kFlake, 0xE8FAFF, 0xFFFFFF, 0.8f, 0.3f);
+    sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF).r(kRoomMotes, 0xFFC0E0, 0xFF6FB5);
+    if (st == 2) sp.r(kRoomPsyRings, 0xFF9AD8, 0xC040A0);
+    sp.py(kPyroFireworks, 0xFF6FB5, 0xBFE8FF);
+  } else if ((st = stage_in(pack, {"pk_sandshrew", "pk_sandslash"})) != 0) {  // sand and claws; Sandslash's spikes
+    stage(st, 2);
+    if (st == 1) sp.f(kSpark, 0xE8D090, 0xC8A060, 0.5f, 0.0f).f(kTalonPiece, 0xF0E8D8, 0xFFFFFF, 0.9f);  // Sand Attack
+    else sp.f(kSpikePiece, 0xA0682A, 0xE8D0A0, 1.0f).f(kTalonPiece, 0xF0E8D8, 0xFFFFFF, 0.9f).f(kSpark, 0xE8D090, 0xC8A060, 0.5f, 0.0f);
+    sp.r(kRoomDust, 0xE8D0A0, 0xA08050);
+    sp.py(st == 2 ? kPyroSlash : kPyroThrow, 0xFFF0C0, 0xC8A060);
+  } else if ((st = stage_in(pack, {"pk_slowpoke", "pk_slowbro", "pk_slowking"})) != 0) {
+    // water; Slowpoke's yawns (and no show: it's slow), Slowbro's shell, Slowking's crown and psychic gems
+    sp.stage = st == 1 ? 1.0f : 3.0f;
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 1) sp.f(kZzz, 0xFFFFFF, 0xFFC0D8, 0.8f, 0.4f);
+    else if (st == 2) sp.f(kFossilPiece, 0xC8C0D0, 0x8A8098, 1.0f);
+    else sp.f(kCrownPiece, 0xD8D0E0, 0xE0303A, 1.0f).f(kGemPiece, 0xFF7AC8, 0xFFC0E8, 0.7f, 0.6f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    if (st == 1) sp.r(kRoomZzz, 0xFFFFFF, 0xFFC0D8);
+    else if (st == 2) sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    else sp.r(kRoomPsyRings, 0xFF9AD8, 0xA040FF);
+    if (st == 1) sp.py(kPyroNone);
+    else if (st == 2) sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+    else sp.py(kPyroRings, 0xFF9AD8, 0xA040FF);
+  // --- r123 (Lance: "creating things for each super hero to drop from the air during their celebration"): the Marvel
+  // heroes (any costume: mua_<hero> / mua_<hero>_cN) ---
+  } else if (std::strncmp(pack, "mua_", 4) == 0) {
+    sp.stage = 2.5f;
+    auto is = [&](const char* h) {
+      const size_t n = std::strlen(h);
+      return std::strncmp(pack, h, n) == 0 && (pack[n] == '\0' || (pack[n] == '_' && pack[n + 1] == 'c'));
+    };
+    // r124 (Lance: "the celebration confetti and shit you have falling with those characters just needs a rehaul"):
+    // each hero's own things, real shapes (xr_fx_mesh.h): webs and spiders, Cap's round star shield, Wolverine's
+    // three-blade claws, vampire bats, sais, a flaming skull and chains, snowflakes, mystic runes.
+    if (is("mua_ghostrider")) {  // hellfire, skulls and chains
+      sp.f(kSkullPiece, 0xEDE6D2, 0xEDE6D2, 1.0f).f(kFlame, 0xFFC830, 0xE8300A, 1.2f, 0.9f).f(kChainPiece, 0x6A6A70, 0xA8A8B0, 1.0f);
+      sp.r(kRoomEmbers, 0xFFD060, 0xFF4010);
+      sp.py(kPyroFlame, 0xFF8A20, 0xFFD040);
+    } else if (is("mua_drstrange")) {  // glowing mystic runes and the Eye of Agamotto's green gem
+      sp.f(kRunePiece, 0xFFB030, 0xFFE8A0, 1.3f, 0.9f).f(kRupee, 0x3AD86A, 0xB8FFD0, 0.9f, 0.6f);
+      sp.r(kRoomPsyRings, 0xFFB030, 0xFF7A10);
+      sp.py(kPyroRings, 0xFFB030, 0x3AD86A);
+    } else if (is("mua_spiderman")) {  // spider webs and little black spiders with a red mark
+      sp.f(kWebPiece, 0xF2F4F8, 0xFFFFFF, 1.5f).f(kWebPiece, 0xF2F4F8, 0xFFFFFF, 1.1f).f(kSpiderPiece, 0x1A1A1E, 0xD81E28, 0.75f);
+      sp.py(kPyroFireworks, 0xD81E28, 0x1E40B4);
+    } else if (is("mua_blade")) {  // vampire bats, silver swords
+      sp.f(kVampBatPiece, 0x1A1A1E, 0xE01818, 1.2f).f(kSword, 0xC8CCD4, 0x2A2A2A, 1.2f);
+      sp.r(kRoomSlashes, 0xFF3030, 0x8A1010);
+      sp.py(kPyroSlash, 0xFF3030, 0xE8E8E8);
+    } else if (is("mua_spiderwoman")) {  // venom blasts, red spiders with her gold mark
+      sp.f(kBoltPiece, 0xD8FF40, 0xFFFFC0, 1.3f, 0.9f).f(kSpiderPiece, 0xC8141E, 0xF2C230, 0.8f);
+      sp.r(kRoomSparks, 0xF0FF80, 0xC8E020);
+      sp.py(kPyroFireworks, 0xC8141E, 0xF2C230);
+    } else if (is("mua_iceman")) {  // snowflakes, icicles, ice blocks, snow
+      sp.f(kSnowflakePiece, 0xE8FAFF, 0xFFFFFF, 1.2f, 0.3f).f(kIcicle, 0xE8FAFF, 0x7FC8F0, 1.1f).f(kIceBlock, 0xCFF4FF, 0xFFFFFF, 0.8f);
+      sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+      sp.py(kPyroFireworks, 0x7FC8F0, 0xFFFFFF);
+    } else if (is("mua_wolverine")) {  // adamantium claws out of a blue fist and a yellow one
+      sp.f(kClawsPiece, 0x1E3A8A, 0xD8DEE8, 1.3f).f(kClawsPiece, 0xF2C230, 0xD8DEE8, 1.3f);
+      sp.r(kRoomSlashes, 0xFFFFFF, 0xF2C230);
+      sp.py(kPyroSlash, 0xFFFFFF, 0xF2C230);
+    } else if (is("mua_colossus")) {  // steel shards, rock
+      sp.f(kShard, 0xB8C0CC, 0xE8ECF0, 1.1f).f(kRock, 0x8A8070, 0x5A5048, 0.9f);
+      sp.r(kRoomDust, 0xC8C0B0, 0x6A6458);
+      sp.py(kPyroBlast, 0xFFFFFF, 0xC8141E);
+    } else if (is("mua_captainamerica")) {  // his round shield (red and white rings, the blue middle, the white star), stars
+      sp.f(kStarShieldPiece, 0xD81E28, 0x1E40B4, 1.3f).f(kStar, 0xFFFFFF, 0xD8DEE8, 0.9f);
+      sp.py(kPyroFireworks, 0xD81E28, 0x1E40B4);
+    // r127: the new ten
+    } else if (is("mua_ironman")) {  // missiles and repulsor blasts, repulsor beams across the room
+      sp.f(kMissile, 0xB81C1C, 0xF2C230, 1.0f).f(kBoltPiece, 0xE0FAFF, 0x5AC8FF, 1.1f, 0.9f);
+      sp.r(kRoomLasers, 0x9FE8FF, 0x3AA8FF);
+      sp.py(kPyroBlast, 0xFFD040, 0xFF6A10);
+    } else if (is("mua_thor")) {  // Mjolnir and lightning, the room lit by lightning
+      sp.f(kMjolnirPiece, 0x8A8E96, 0x6A4A2A, 1.2f).f(kBoltPiece, 0xE8F4FF, 0x7FB0FF, 1.3f, 0.9f);
+      sp.r(kRoomLightning, 0xFFFFFF, 0x9FC8FF).r(kRoomSparks, 0xE8F4FF, 0x7FB0FF);
+      sp.py(kPyroFireworks, 0xC8141E, 0x9FC8FF);
+    } else if (is("mua_deadpool")) {  // katanas, chimichangas and hearts
+      sp.f(kSword, 0xC8CCD4, 0x1A1A1A, 1.2f).f(kPill, 0xD8A860, 0xC89048, 0.8f).f(kHeart, 0xB01020, 0xFF6070, 0.8f);
+      sp.r(kRoomSlashes, 0xFF3030, 0xB01020);
+      sp.py(kPyroSlash, 0xFFFFFF, 0xB01020);
+    } else if (is("mua_blackpanther")) {  // vibranium claws, purple kinetic energy
+      sp.f(kClawsPiece, 0x1A1A22, 0xB8A0E8, 1.2f).f(kStar, 0x6A3AA8, 0xC8A8FF, 0.9f, 0.5f);
+      sp.r(kRoomSparks, 0xC8A8FF, 0x6A3AA8);
+      sp.py(kPyroSlash, 0xC8A8FF, 0x6A3AA8);
+    } else if (is("mua_daredevil")) {  // billy clubs, his radar sense in red rings
+      sp.f(kBat, 0xA01418, 0x3A0A0C, 0.9f);
+      sp.r(kRoomPsyRings, 0xFF3030, 0xA01418);
+      sp.py(kPyroRings, 0xFF3030, 0xA01418);
+    } else if (is("mua_storm")) {  // lightning and rain, a storm in the room
+      sp.f(kBoltPiece, 0xF0F8FF, 0xA0C8FF, 1.3f, 0.9f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+      sp.r(kRoomLightning, 0xFFFFFF, 0xA0C8FF).r(kRoomRain, 0x9FD8FF, 0x2A7FE0);
+      sp.py(kPyroFireworks, 0xE8ECF4, 0xA0C8FF);
+    } else if (is("mua_thing")) {  // orange rocks (it's clobberin' time), dust
+      sp.f(kRock, 0xE07A2A, 0x8A4A1A, 1.0f).f(kRock, 0x8A8070, 0x5A5048, 0.9f);
+      sp.r(kRoomDust, 0xC8A070, 0x6A4A2A);
+      sp.py(kPyroBlast, 0xFFD040, 0xE07A2A);
+    } else if (is("mua_humantorch")) {  // flames and fireballs, embers
+      sp.f(kFlame, 0xFFC830, 0xE8300A, 1.3f, 0.9f).f(kPearl, 0xFF8A20, 0xFFD040, 0.6f, 0.8f);
+      sp.r(kRoomEmbers, 0xFFD060, 0xFF4010);
+      sp.py(kPyroFlame, 0xFF8A20, 0xFFD040);
+    } else if (is("mua_hawkeye")) {  // arrows (purple tips, black tips), arrows streaking across the room
+      sp.f(kArrowPiece, 0x6A2A8A, 0xC8B890, 1.3f).f(kArrowPiece, 0x1A1A1A, 0xC8B890, 1.1f);
+      sp.r(kRoomLasers, 0xE8D8FF, 0x6A2A8A);
+      sp.py(kPyroFireworks, 0x6A2A8A, 0xE8ECF4);
+    } else if (is("mua_blackwidow")) {  // black widow spiders (the red mark), her widow's bite
+      sp.f(kSpiderPiece, 0x1A1A1E, 0xC8141E, 0.8f).f(kBoltPiece, 0xBFF4FF, 0x4AA8FF, 1.1f, 0.9f);
+      sp.r(kRoomSparks, 0xBFF4FF, 0x4AA8FF);
+      sp.py(kPyroFireworks, 0xC8141E, 0x1A1A1A);
+    } else if (is("mua_elektra")) {  // sais, red petals
+      sp.f(kSaiPiece, 0xC8141E, 0xC8CCD4, 1.3f).f(kPetal, 0xC8141E, 0xFF6070, 1.0f);
+      sp.r(kRoomSlashes, 0xFF3040, 0xC8141E);
+      sp.py(kPyroSlash, 0xFF3040, 0xFFFFFF);
+    // r130: the last six (light pieces, xr_fx_mesh.h r130)
+    } else if (is("mua_invisiblewoman")) {  // force-field bubbles, the team's "4", hexes; a force field round the room
+      sp.f(kBubble, 0xBFF0FF, 0x7FD0FF, 1.0f, 0.6f).f(kBadge4Piece, 0x2448B8, 0xFFFFFF, 1.1f).f(kHexFx, 0xBFF8FF, 0x5AB8F0, 0.9f, 0.8f);
+      sp.r(kRoomBarrier, 0xBFF0FF, 0x7FD0FF).r(kRoomHex, 0xBFF8FF, 0x5AB8F0);
+      sp.py(kPyroRings, 0x9FD8F0, 0x2448B8);
+    } else if (is("mua_moonknight")) {  // silver crescent moons and glowing crescent darts, moonlit mist
+      sp.f(kCrescentPiece, 0xE8ECF4, 0xFFFFFF, 1.3f).f(kCrescentPiece, 0xF4F8FF, 0xFFFFFF, 0.7f, 0.7f);
+      sp.r(kRoomFog, 0xD8DEE8, 0x2A2E38).r(kRoomMotes, 0xF2F4F8, 0x8C94A4);
+      sp.py(kPyroSlash, 0xFFFFFF, 0xC8D0E0);
+    } else if (is("mua_mrfantastic")) {  // the team's "4", his arm stretching, science orbs zipping round
+      sp.f(kBadge4Piece, 0x1E3A8A, 0xFFFFFF, 1.1f).f(kStretchArmPiece, 0x2A4AA8, 0x1A1A1A, 1.4f);
+      sp.r(kRoomOrbs, 0xFFFFFF, 0x5A8AFF).r(kRoomMotes, 0x9FC8FF, 0x1E3A8A);
+      sp.py(kPyroFireworks, 0x1E3A8A, 0xFFFFFF);
+    } else if (is("mua_nickfury")) {  // dog tags and stars, laser sights through the smoke
+      sp.f(kDogTagPiece, 0xC8CCD4, 0x8A8E96, 1.0f).f(kStarLitePiece, 0xE8ECF4, 0xFFFFFF, 0.8f, 0.2f);
+      sp.r(kRoomLasers, 0xFF6060, 0xB8141E).r(kRoomSmoke, 0x808080, 0x303030);
+      sp.py(kPyroBlast, 0xFFE0A0, 0xFF6A10);
+    } else if (is("mua_silversurfer")) {  // silver boards, the Power Cosmic: twinkles, stars, meteors
+      sp.f(kSurfboardPiece, 0xD8DEE8, 0xA8B0C0, 1.4f).f(kTwinkle, 0xFFFFFF, 0x7A9AFF, 0.9f, 0.9f);
+      sp.f(kStarLitePiece, 0xE8F0FF, 0xFFFFFF, 0.7f, 0.6f);
+      sp.r(kRoomMeteors, 0xB8C0CC, 0x3A4A66).r(kRoomMotes, 0xE8F0FF, 0x7A9AFF);
+      sp.py(kPyroMeteor, 0xE8F0FF, 0x6A8AFF);
+    } else if (is("mua_msmarvel") || is("mua_warbird")) {  // photon blasts and her gold star, flashes of light
+      sp.f(kBoltPiece, 0xFFE070, 0xFFF6C0, 1.3f, 0.9f).f(kStarLitePiece, 0xF2C230, 0xFFE890, 1.0f, 0.5f);
+      sp.r(kRoomSparks, 0xFFF0A0, 0xF2C230).r(kRoomFlashes, 0xFFFFFF, 0xFFE070);
+      sp.py(kPyroBlast, 0xFFE070, 0xC8141E);
+    } else {
+      sp.name = "";
+    }
   } else {
     sp.name = "";
   }
@@ -742,6 +1189,11 @@ struct State {
     int kind;
   };
   std::vector<Blast> pendingBlasts;
+  struct WebShot {  // r124: Spider-Man's web shots (web_shot)
+    XrVector3f from, dir;
+    float length;
+  };
+  std::vector<WebShot> pendingWebs;
   float shelfSparkAccum = 0.0f;  // r57
 
   VkFormat colorFormat = VK_FORMAT_UNDEFINED;
@@ -756,6 +1208,8 @@ struct State {
   // [0] full detail (pieces near you), [1] reduced (far away or lying on the floor).
   mesh::Range meshRanges[2][mesh::kCount];
   uint32_t statPeakParts = 0, statPeakIndices = 0;  // for the stats line (largest frame since)
+  // r130: the last frame's particles and mesh indices per eye (the celebration's budget, piece_budget_full)
+  uint32_t lastParts = 0, lastMeshIndices = 0;
   VkCommandPool pool = VK_NULL_HANDLE;
   Eye eyes[2];
   Slot slots[kSlots];
@@ -821,8 +1275,12 @@ struct State {
     void* vertMapped[kSlots] = {};
     std::vector<ModelPart> parts;
     uint32_t vertexCount = 0;
+    // r131: a baked one's frames, all on the GPU (Model::frames; no per-frame vertex buffers then)
+    VkBuffer baked = VK_NULL_HANDLE;
+    VkDeviceMemory bakedMemory = VK_NULL_HANDLE;
+    uint32_t bakedFrames = 0;
   };
-  CharModel charModels[2];
+  CharModel charModels[kModelSlots];  // r117: 3 (the home corner's figure); r131: 21 (the franchise's)
   bool charTried = false, charReady = false;
   VkDescriptorSetLayout charSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool charPool = VK_NULL_HANDLE;
@@ -915,8 +1373,22 @@ Scale scale_for(const Scene& sc) {
 
 bool room_full() { return s.parts.size() >= kMaxParticles; }
 
+// r130 (Lance's r129 log: every goal 2,000-3,800 pieces, 200k-400k mesh indices an eye in the full-size, 4x
+// multisampled effects layer; the GPU's frame (submit to done) 16-33 ms and the view dropping to 60 after each goal,
+// "after like 4 goals back to back performance dipped crazily"): a budget for the falling pieces - at most so many in
+// the air and so many mesh indices an eye (the last frame's), times the load scale xr_quest sets from missed
+// display frames (set_load_scale: down while the headset misses frames, back up while it holds them). Over it, no
+// new piece this time (the ones in the air keep falling; the show keeps going, a little less dense).
+float g_loadScale = 1.0f;
+constexpr uint32_t kPieceBudget = 1800;
+constexpr uint32_t kMeshIndexBudget = 110000;
+bool piece_budget_full(bool mesh) {
+  if (static_cast<float>(s.parts.size()) >= kPieceBudget * g_loadScale) return true;
+  return mesh && static_cast<float>(s.lastMeshIndices) >= kMeshIndexBudget * g_loadScale;
+}
+
 void add_paper(const Scene& sc, const Scale& k, const XrVector3f& p, const float v[3], bool streamer = false) {
-  if (room_full()) return;
+  if (room_full() || piece_budget_full(false)) return;  // r130: the budget too
   Particle q{};
   q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
   std::memcpy(q.v, v, sizeof(q.v));
@@ -956,10 +1428,24 @@ void add_paper(const Scene& sc, const Scale& k, const XrVector3f& p, const float
   s.parts.push_back(q);
 }
 
+// The falling pieces that face you (glowing quads: a zero turn, xr_fx.vert's camera-facing quad), drifting down and
+// going out where they touch down (nothing to lie there): r89's flames, bolts and wisps; r130's bubbles, Zzz, notes,
+// rings, specks (spores, sand, salt), twinkles and kick arcs.
+bool faces_you(uint8_t shape) {
+  switch (shape) {
+  case kFlame: case kBoltPiece: case kWisp:
+  case kBubble: case kZzz: case kNoteQuad: case kRingFx: case kSpark: case kTwinkle: case kSlash:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // r82: one of the scorer's themed pieces (Special::fall), falling with the confetti; `which` -1 = any.
 void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, const float v[3], int which = -1) {
   if (room_full() || s.sp.nFall == 0) return;
   const FallFx& f = s.sp.fall[which >= 0 && which < s.sp.nFall ? which : irand(s.sp.nFall)];
+  if (piece_budget_full(mesh_for(static_cast<Shape>(f.shape)) != kNoMesh)) return;  // r130
   Particle q{};
   q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
   std::memcpy(q.v, v, sizeof(q.v));
@@ -993,6 +1479,20 @@ void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, cons
     q.flutterAmp = k.flutter * 0.25f;
     q.fallSpeed *= f.shape == kFlame ? 0.6f : 0.9f;
     q.maxAge = frand(1.4f, 2.8f);
+  } else if (faces_you(f.shape)) {
+    // r130: bubbles, Zzz, notes, rings, specks, twinkles, kick arcs: facing you too, floating down slowly, gone a
+    // little later
+    std::memset(q.q, 0, sizeof(q.q));
+    q.spin = 0.0f;
+    q.aspect = f.shape == kNoteQuad ? 0.8f : 1.0f;
+    q.flutterAmp = k.flutter * 0.3f;
+    q.fallSpeed *= 0.7f;
+    q.maxAge = frand(1.8f, 3.2f);
+  }
+  if (f.shape == kWebPiece || f.shape == kSnowflakePiece || f.shape == kRunePiece) {
+    // r124: light, wide ones float down slowly, turning lazily
+    q.fallSpeed *= 0.55f;
+    q.spin = frand(0.5f, 1.3f);
   }
   s.parts.push_back(q);
 }
@@ -1017,6 +1517,7 @@ void add_piece(const Scene& sc, const Scale& k, const XrVector3f& p, const float
   const bool star = s.superStrike && irand(3) == 0;
   q.shape = star ? kStar : s.theme.piece;
   q.mesh = mesh_for(static_cast<Shape>(q.shape));
+  if (piece_budget_full(q.mesh != kNoMesh)) return;  // r130
   q.c1 = pack(star ? 0xFFD21F : s.theme.pieceMain);
   q.c2 = pack(star ? 0xFFF2A0 : s.theme.pieceDetail);
   q.kind = kKindPiece;
@@ -2550,8 +3051,9 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
           }
         }
       }
-      if ((q.p[1] <= landY || onHead || onBanner) && (q.shape == kBoltPiece || q.shape == kFlame || q.shape == kWisp)) {
-        // r89: a falling flame or bolt goes out where it touches down (nothing to lie there)
+      if ((q.p[1] <= landY || onHead || onBanner) && faces_you(q.shape)) {
+        // r89: a falling flame or bolt goes out where it touches down (nothing to lie there); r130: every piece that
+        // faces you (faces_you)
         keep = false;
       } else if (q.p[1] <= landY || onHead || onBanner) {
         q.p[1] = landY;
@@ -2664,7 +3166,12 @@ bool choose_format() {
   return false;
 }
 
+bool make_multisampled_pass(VkSampleCountFlagBits samples, VkRenderPass* out);  // below (r117)
+VkSampleCountFlagBits fx_samples() { return s.dev.fxSamples >= 4 ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT; }
+
 bool make_render_pass() {
+  // r117: multisampled (the room layer's pass: resolved into the eye image) when fxSamples asks
+  if (fx_samples() != VK_SAMPLE_COUNT_1_BIT) return make_multisampled_pass(fx_samples(), &s.renderPass);
   VkAttachmentDescription att[2]{};
   att[0].format = s.colorFormat;
   att[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2762,7 +3269,7 @@ bool make_pipelines() {
   raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   raster.lineWidth = 1.0f;
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-  ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  ms.rasterizationSamples = fx_samples();  // r117: the effects layer's (1, or 4)
 
   // Effects: instanced quads, premultiplied alpha, tested against the stand-ins' depth.
   VkVertexInputBindingDescription fxBinding{0, sizeof(Instance), VK_VERTEX_INPUT_RATE_INSTANCE};
@@ -3038,8 +3545,8 @@ bool make_eye(Eye& eye, uint32_t width, uint32_t height, VkSampleCountFlagBits s
 }
 
 // r62: the room layer's render pass when multisampled: colour and depth multisampled (cleared, never
-// stored: they stay in the tiles), the colour resolved into the swapchain image.
-bool make_room_render_pass(VkSampleCountFlagBits samples) {
+// stored: they stay in the tiles), the colour resolved into the swapchain image. r117: the effects layer's too.
+bool make_multisampled_pass(VkSampleCountFlagBits samples, VkRenderPass* out) {
   VkAttachmentDescription att[3]{};
   att[0].format = s.colorFormat;
   att[0].samples = samples;
@@ -3080,8 +3587,9 @@ bool make_room_render_pass(VkSampleCountFlagBits samples) {
   info.pSubpasses = &sub;
   info.dependencyCount = 1;
   info.pDependencies = &dep;
-  return vk_ok(vkCreateRenderPass(s.dev.device, &info, nullptr, &s.roomRenderPass), "vkCreateRenderPass(room)");
+  return vk_ok(vkCreateRenderPass(s.dev.device, &info, nullptr, out), "vkCreateRenderPass(multisampled)");
 }
+bool make_room_render_pass(VkSampleCountFlagBits samples) { return make_multisampled_pass(samples, &s.roomRenderPass); }
 
 bool make_slots() {
   VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -3443,21 +3951,40 @@ bool make_etch() {
   si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
   si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   if (!vk_ok(vkCreateSampler(s.dev.device, &si, nullptr, &s.etchSampler), "vkCreateSampler(etch)")) return false;
-  constexpr uint32_t kSide = 512;
+  // r121: 16 x 16 cells (1024 x 1024: room for the Marvel heroes, guests 95-104); an older 8 x 8 file (512 x 512)
+  // laid out the new way (its cell i to i % 16, i / 16)
+  // r124 (Lance on the home ground's banners: "still blurry as shit"): or 128 x 128 a cell (2048 x 2048, etchres.py
+  // --cell 128): a banner's emblem is one cell over a quarter of a metre
+  constexpr uint32_t kCell = 64, kGrid = 16;
   std::vector<uint8_t> rgba(4, 255);
   uint32_t side = 1;
   const char* home = std::getenv("STRIKERS_HOME");
   const std::string path = std::string(home != nullptr && *home ? home : "/storage/emulated/0/Strikers") + "/guests/etch.r8";
   if (FILE* f = std::fopen(path.c_str(), "rb")) {
-    std::vector<uint8_t> r(kSide * kSide);
-    if (std::fread(r.data(), 1, r.size(), f) == r.size()) {
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    const uint32_t kSide = size == 2048L * 2048L ? 2048u : kCell * kGrid;
+    std::vector<uint8_t> r(size_t(kSide) * kSide, 255);
+    bool ok = false;
+    if (size == static_cast<long>(kSide) * static_cast<long>(kSide)) {
+      ok = std::fread(r.data(), 1, r.size(), f) == r.size();
+    } else if (size == 512L * 512L) {
+      std::vector<uint8_t> o(512 * 512);
+      ok = std::fread(o.data(), 1, o.size(), f) == o.size();
+      for (uint32_t cell = 0; ok && cell < 64; ++cell)
+        for (uint32_t y = 0; y < kCell; ++y)
+          std::memcpy(&r[(size_t(cell / kGrid) * kCell + y) * kSide + (cell % kGrid) * kCell],
+                      &o[(size_t(cell / 8) * kCell + y) * 512 + (cell % 8) * kCell], kCell);
+    }
+    if (ok) {
       rgba.resize(r.size() * 4);
       for (size_t i = 0; i < r.size(); ++i) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = r[i];
       side = kSide;
     }
     std::fclose(f);
   }
-  FXLOG("fx: guest etch outlines %s", side > 1 ? "loaded" : "not there (no guest etching)");
+  FXLOG("fx: guest etch outlines %s (%ux%u)", side > 1 ? "loaded" : "not there (no guest etching)", side, side);
   return make_tex(s.etchTex, s.etchSet, rgba.data(), side, side, VK_FORMAT_R8G8B8A8_UNORM, s.etchSampler, false);
 }
 
@@ -3699,7 +4226,7 @@ bool make_char_pipelines() {
   VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   li.bindingCount = 1;
   li.pBindings = &binding;
-  constexpr uint32_t kSets = 192;  // two characters' pictures
+  constexpr uint32_t kSets = 96 * kModelSlots;  // 96 pictures a character (r117: the home corner's; r131: the franchise's)
   VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSets};
   VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
@@ -3764,7 +4291,7 @@ bool make_char_pipelines() {
   raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   raster.lineWidth = 1.0f;
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-  ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  ms.rasterizationSamples = fx_samples();  // r117: the effects layer's (1, or 4)
   VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
   depth.depthTestEnable = VK_TRUE;
   depth.depthWriteEnable = VK_TRUE;
@@ -3824,12 +4351,19 @@ void drop_char(int slot) {
     if (c.vertMapped[k] != nullptr) vkUnmapMemory(s.dev.device, c.vertMemory[k]);
     destroy_buffer(c.verts[k], c.vertMemory[k]);
   }
+  destroy_buffer(c.baked, c.bakedMemory);  // r131
   c = State::CharModel{};
 }
 
+// r131: a slot's model is drawn this frame (a baked one by its frame, the others from posNrm)
+bool char_drawn(const Scene::ModelDraw& md, const State::CharModel& c) {
+  if (!md.on || c.vertexCount == 0) return false;
+  return c.bakedFrames > 0 ? md.frame >= 0 && c.baked != VK_NULL_HANDLE : md.posNrm != nullptr;
+}
+
 bool chars_shown(const Scene& sc) {
-  for (int i = 0; i < 2; ++i) {
-    if (sc.models[i].on && sc.models[i].posNrm != nullptr && s.charModels[i].vertexCount > 0) return true;
+  for (int i = 0; i < kModelSlots; ++i) {
+    if (char_drawn(sc.models[i], s.charModels[i])) return true;
   }
   return false;
 }
@@ -3839,26 +4373,50 @@ bool chars_shown(const Scene& sc) {
 void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const float viewProj[16], const XrVector3f& eye) {
   for (int pass = 0; pass < 2; ++pass) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass == 0 ? s.charPipeline : s.charSoftPipeline);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < kModelSlots; ++i) {
       const Scene::ModelDraw& md = sc.models[i];
       const State::CharModel& c = s.charModels[i];
-      if (!md.on || md.posNrm == nullptr || c.vertexCount == 0 || md.alpha <= 0.0f) continue;
+      if (!char_drawn(md, c) || md.alpha <= 0.0f) continue;
       CharPush pc{};
       std::memcpy(pc.viewProj, viewProj, sizeof(pc.viewProj));
       pc.camPos[0] = eye.x;
       pc.camPos[1] = eye.y;
       pc.camPos[2] = eye.z;
+      VkDeviceSize vertOffset = 0;
+      if (c.bakedFrames > 0) {
+        // r131: a baked one: its own space placed in the room (as room_model: turned about +Y, here scaled too), the
+        // eye taken into that space for its light; the frame's vertices from the GPU buffer
+        const float cs = std::cos(md.yaw), sn = std::sin(md.yaw), k = std::max(1e-4f, md.scale);
+        float model[16] = {};
+        model[0] = cs * k;
+        model[2] = -sn * k;
+        model[5] = k;
+        model[8] = sn * k;
+        model[10] = cs * k;
+        model[12] = md.at.x;
+        model[13] = md.at.y;
+        model[14] = md.at.z;
+        model[15] = 1.0f;
+        mat_mul(viewProj, model, pc.viewProj);
+        const float dx = eye.x - md.at.x, dy = eye.y - md.at.y, dz = eye.z - md.at.z;
+        pc.camPos[0] = (cs * dx - sn * dz) / k;
+        pc.camPos[1] = dy / k;
+        pc.camPos[2] = (sn * dx + cs * dz) / k;
+        vertOffset = VkDeviceSize(static_cast<uint32_t>(md.frame) % c.bakedFrames) * c.vertexCount * 6 * sizeof(float);
+      }
       pc.look[0] = md.white;
       pc.look[1] = md.alpha;
       pc.look[2] = md.glow;
-      pc.look[3] = static_cast<float>(pass);
+      // r127: w = the pass (0 solid, 1 soft) + 2 x the shine in hundredths; camPos w = seconds (the glint's sweep)
+      pc.look[3] = static_cast<float>(pass) + 2.0f * std::floor(std::min(1.0f, std::max(0.0f, md.shine)) * 100.0f + 0.5f);
+      pc.camPos[3] = static_cast<float>(std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), 3600.0));
       pc.glowRgb[0] = ((md.glowRgb >> 16) & 0xFF) / 255.0f;
       pc.glowRgb[1] = ((md.glowRgb >> 8) & 0xFF) / 255.0f;
       pc.glowRgb[2] = (md.glowRgb & 0xFF) / 255.0f;
       pc.glowRgb[3] = md.under;
       vkCmdPushConstants(cmd, s.charLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-      const VkBuffer buffers[2] = {c.verts[slotIndex], c.uv};
-      const VkDeviceSize offsets[2] = {0, 0};
+      const VkBuffer buffers[2] = {c.bakedFrames > 0 ? c.baked : c.verts[slotIndex], c.uv};  // r131
+      const VkDeviceSize offsets[2] = {vertOffset, 0};
       vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
       vkCmdBindIndexBuffer(cmd, c.indices, 0, VK_INDEX_TYPE_UINT32);
       int bound = -2;
@@ -3888,8 +4446,8 @@ bool init(const DeviceInfo& device) {
   s.initTried = true;
   s.dev = device;
   s.ready = s.dev.device != VK_NULL_HANDLE && s.dev.width > 0 && choose_format() && make_render_pass() &&
-            make_pipelines() && make_meshes() && make_eye(s.eyes[0], s.dev.width, s.dev.height) &&
-            make_eye(s.eyes[1], s.dev.width, s.dev.height) && make_slots() && make_etch();
+            make_pipelines() && make_meshes() && make_eye(s.eyes[0], s.dev.width, s.dev.height, fx_samples(), s.renderPass) &&
+            make_eye(s.eyes[1], s.dev.width, s.dev.height, fx_samples(), s.renderPass) && make_slots() && make_etch();
   if (s.ready) {
     FXLOG("fx: celebration renderer ready (%ux%u per eye, format %d)", s.dev.width, s.dev.height,
           static_cast<int>(s.colorFormat));
@@ -3906,8 +4464,7 @@ void shutdown() {
   if (s.dev.device == VK_NULL_HANDLE) return;
   vkDeviceWaitIdle(s.dev.device);
   destroy_models();  // r54
-  drop_char(0);      // r96: the characters in your room
-  drop_char(1);
+  for (int i = 0; i < kModelSlots; ++i) drop_char(i);  // r96: the characters in your room (r131: every slot)
   if (s.charPipeline) vkDestroyPipeline(s.dev.device, s.charPipeline, nullptr);
   if (s.charSoftPipeline) vkDestroyPipeline(s.dev.device, s.charSoftPipeline, nullptr);
   if (s.charLayout) vkDestroyPipelineLayout(s.dev.device, s.charLayout, nullptr);
@@ -4025,7 +4582,7 @@ void goal(int team, int character, bool superStrike, bool hyper, bool ownGoal) {
 
 // r96: the 3D evolution's models and its theme (xr_fx.h).
 void set_model(int slot, Model&& m) {
-  if (!s.ready || slot < 0 || slot > 1) return;
+  if (!s.ready || slot < 0 || slot >= kModelSlots) return;
   drop_char(slot);
   if (m.vertexCount == 0 || m.indices.empty() || m.uv.size() < size_t(m.vertexCount) * 2) return;
   if (!make_char_pipelines()) return;
@@ -4053,7 +4610,14 @@ void set_model(int slot, Model&& m) {
                           &c.uvMemory) &&
        make_filled_buffer(m.indices.data(), sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                           &c.indices, &c.indexMemory);
-  for (uint32_t k = 0; k < kSlots && ok; ++k) {
+  // r131: a baked one's frames all go up once (no per-frame buffers); else a buffer per frame slot, posed into each frame
+  const bool baked = m.frameCount > 0 && m.frames.size() == size_t(m.frameCount) * m.vertexCount * 6;
+  if (baked && ok) {
+    ok = make_filled_buffer(m.frames.data(), VkDeviceSize(sizeof(float)) * m.frames.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            &c.baked, &c.bakedMemory);
+    if (ok) c.bakedFrames = m.frameCount;
+  }
+  for (uint32_t k = 0; k < kSlots && ok && !baked; ++k) {
     ok = make_host_buffer(VkDeviceSize(sizeof(float)) * 6 * m.vertexCount, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &c.verts[k],
                           &c.vertMemory[k], &c.vertMapped[k]);
   }
@@ -4066,9 +4630,11 @@ void set_model(int slot, Model&& m) {
   c.parts = std::move(m.parts);
   c.vertexCount = m.vertexCount;
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-  FXLOG("fx: character model %d up in %.0f ms: %u vertices, %zu triangles, %zu pictures, %zu parts", slot, ms, c.vertexCount,
-        m.indices.size() / 3, n, c.parts.size());
+  FXLOG("fx: character model %d up in %.0f ms: %u vertices, %zu triangles, %zu pictures, %zu parts, %u baked frames", slot, ms,
+        c.vertexCount, m.indices.size() / 3, n, c.parts.size(), c.bakedFrames);
 }
+
+bool model_up(int slot) { return s.ready && slot >= 0 && slot < kModelSlots && s.charModels[slot].vertexCount > 0; }  // r131
 
 void evo_theme(const char* pack, const XrVector3f& at, float radius, float height, float intensity) {
   if (pack == nullptr || pack[0] == '\0' || !s.ready) return;
@@ -4680,7 +5246,7 @@ static void suite_motes(const Scene& sc, float& acc, float rate, float dt, float
 // out of the window, dust glinting in the light, and each captain's own.
 static float s_live[4];  // the captains' own spawn accumulators
 static void suite_live(const Scene& sc, float dt) {
-  if (!sc.roomShown) return;
+  if (!sc.roomShown || sc.roomEvo) return;
   s.suiteTime += dt;
   // About twenty flashes a second in the stands round the pitch (suite_scene.py's tiers: the far one
   // and the two sides, 9 m below the box, eight tiers up).
@@ -4812,7 +5378,7 @@ static void suite_live(const Scene& sc, float dt) {
 // The suite's things that stay (spinning, bobbing, hopping, drifting): instances like the shelf's.
 constexpr uint32_t kSuiteParts = 16;
 static uint32_t write_suite(const Scene& sc, Instance* inst, uint8_t* meshOf) {
-  if (!sc.roomShown) return 0;
+  if (!sc.roomShown || sc.roomEvo) return 0;
   uint32_t n = 0;
   const float t = s.suiteTime;
   const XrVector3f head = head_of(sc);
@@ -5129,12 +5695,64 @@ void blast(const XrVector3f& at, const XrVector3f& dir, float unit, float streng
   s.pendingBlasts.push_back(State::Blast{at, dir, unit, strength, kind});
 }
 
+void web_shot(const XrVector3f& from, const XrVector3f& dir, float length) {
+  if (s.pendingWebs.size() >= 8) return;
+  s.pendingWebs.push_back(State::WebShot{from, dir, length});
+}
+
+// r124 (Lance: "you didnt even include webs when he did his signature wrist flick trying to shoot webs"): one web
+// line out of Spider-Man's wrist: a white glob flying out, the strand behind it (in overlapping streaks, so it is
+// as bright all along; each one showing up as the glob gets there), a puff at the wrist, and a little web opening
+// where it ends, facing back at him, hanging a moment and sinking away.
+static void spawn_web(const Scene& sc, const State::WebShot& w) {
+  const XrVector3f head = head_of(sc);
+  float d[3] = {w.dir.x, w.dir.y, w.dir.z};
+  normalize3(d);
+  const float len = std::max(0.2f, w.length);
+  const float speed = 9.0f;
+  const float travel = len / speed;
+  auto at = [&](float t) { return XrVector3f{w.from.x + d[0] * t, w.from.y + d[1] * t, w.from.z + d[2] * t}; };
+  const float v[3] = {d[0] * speed, d[1] * speed, d[2] * speed};
+  Particle* glob = add_fx(kKindDrop, kStreak, w.from, v, 0.22f, 0.12f, 0xFFFFFF, 0xDDE4F0, 1.0f, 0.25f, travel, 0.0f);
+  if (glob != nullptr) orient_along(glob->q, w.from, d, head);
+  const int n = std::max(2, static_cast<int>(len / 0.3f + 0.5f));
+  const float seg = len / n;
+  for (int i = 0; i < n; ++i) {
+    const XrVector3f c = at(seg * (i + 0.5f));
+    Particle* q = add_fx(kKindFloat, kStreak, c, nullptr, seg * 1.9f, 0.014f / (seg * 1.9f), 0xFFFFFF, 0xE8ECF4, 0.95f,
+                         0.15f, 0.9f, travel * (i + 1) / n);
+    if (q != nullptr) orient_along(q->q, c, d, head);
+  }
+  for (int j = 0; j < 5; ++j) {
+    const float sv[3] = {d[0] * 0.6f + frand(-0.25f, 0.25f), d[1] * 0.6f + frand(-0.25f, 0.25f), d[2] * 0.6f + frand(-0.25f, 0.25f)};
+    add_spark(w.from, sv, frand(0.008f, 0.014f), 0xFFFFFF, 0xD8E0F0, frand(0.2f, 0.35f), 2.0f, 0.0f);
+  }
+  const XrVector3f end = at(len);
+  const float still[3] = {0.0f, 0.0f, 0.0f};
+  Particle* web = add_drift_piece(end, still, kWebPiece, frand(0.32f, 0.42f), 0xF2F4F8, 0xFFFFFF, 0.12f, 1.6f, 0.0f);
+  if (web != nullptr) {
+    // its face (the mesh's +z) back along the line, at a random turn in its own plane
+    const float z[3] = {-d[0], -d[1], -d[2]};
+    const float up[3] = {std::fabs(z[1]) < 0.9f ? 0.0f : 1.0f, std::fabs(z[1]) < 0.9f ? 1.0f : 0.0f, 0.0f};
+    float x[3] = {up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]};
+    normalize3(x);
+    float y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+    const float a = frand(0.0f, 6.28f), c = std::cos(a), sn = std::sin(a);
+    const float xr[3] = {x[0] * c + y[0] * sn, x[1] * c + y[1] * sn, x[2] * c + y[2] * sn};
+    const float yr[3] = {y[0] * c - x[0] * sn, y[1] * c - x[1] * sn, y[2] * c - x[2] * sn};
+    quat_from_basis(xr, yr, z, web->q);
+    web->spin = 0.0f;
+  }
+}
+
 bool update(const Scene& sc) {
   // r54: the controllers' models, once loaded (here: render only runs while something shows).
   if (s.ready) take_models();
   // r55: item blasts since the last update.
   for (const State::Blast& b : s.pendingBlasts) spawn_blast(sc, b);
   s.pendingBlasts.clear();
+  for (const State::WebShot& w : s.pendingWebs) spawn_web(sc, w);  // r124
+  s.pendingWebs.clear();
   const float dt = std::min(std::max(sc.dt, 0.0f), 0.1f);
   // r57: a cup just won sparkles on the shelf for a few seconds.
   if (shelf_shown(sc) && sc.shelfNewCup >= 0 && sc.shelfNewCup < 8 && sc.shelfNewAge < 6.0f) {
@@ -5304,7 +5922,7 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   }
   // r96: the characters' posed vertices into this frame slot's buffers
   if (chars) {
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < kModelSlots; ++i) {
       const State::CharModel& c = s.charModels[i];
       if (sc.models[i].on && sc.models[i].posNrm != nullptr && c.vertexCount > 0 && c.vertMapped[slotIndex] != nullptr) {
         std::memcpy(c.vertMapped[slotIndex], sc.models[i].posNrm, sizeof(float) * 6 * c.vertexCount);
@@ -5486,6 +6104,8 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   for (uint32_t b = 0; b < kQuadBucket; ++b) indices += filled[b] * s.meshRanges[b / mesh::kCount][b % mesh::kCount].indexCount;
   s.statPeakParts = std::max(s.statPeakParts, count);
   s.statPeakIndices = std::max(s.statPeakIndices, indices);
+  s.lastParts = count;  // r130: the budget's
+  s.lastMeshIndices = indices;
   const uint32_t occluderVerts = write_occluders(sc, static_cast<float*>(slot.occluderMapped));
 
   uint32_t index[2] = {0, 0};
@@ -5728,6 +6348,10 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
 }
 
 float jumbotron_drop() { return s.drop; }
+
+void set_load_scale(float scale) { g_loadScale = std::max(0.25f, std::min(1.0f, scale)); }
+float load_scale() { return g_loadScale; }
+bool pieces_alive() { return !s.parts.empty(); }
 
 bool take_stats(uint32_t* peakParts, uint32_t* peakIndices) {
   *peakParts = s.statPeakParts;

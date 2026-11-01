@@ -212,14 +212,15 @@ unsigned long GetLOCSidekickNameForTeam(eSidekickID sidekickid, int captainTeam)
     return guest != 0 ? guest : GetLOCSidekickName(sidekickid);
 }
 
-unsigned long GetLOCCoCaptainName(int side)
+// strikers-quest r79: the co-captain's name; r130: any sidekick slot (0-2) playing a captain class (include/port/lineup.h)
+unsigned long GetLOCSlotCaptainName(int side, int slot)
 {
-    const int cls = PortSecondCaptain(side);
+    const int cls = PortSlotCaptain(side, slot);
     if (cls < 0 || cls >= 13)
     {
         return 0;
     }
-    const unsigned long guest = PortGuestLocCoCaptainName(side);
+    const unsigned long guest = PortGuestLocSlotCaptainName(side, slot);
     return guest != 0 ? guest : CCToStringName[cls];
 }
 

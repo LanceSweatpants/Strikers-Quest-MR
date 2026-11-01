@@ -149,6 +149,44 @@ JNIEXPORT jbyteArray JNICALL Java_io_github_newcoke_strikers_guests_DiscSource_n
     return out;
 }
 
+// 1.16 (MUA's z/assetsfb.wad is 600 MB: read a piece at a time): file `index`'s size in bytes (-1 for none).
+JNIEXPORT jlong JNICALL Java_io_github_newcoke_strikers_guests_DiscSource_nLength(JNIEnv* env, jclass cls, jlong jh,
+                                                                                  jint index)
+{
+    Handle* h = (Handle*)(intptr_t)jh;
+    (void)env;
+    (void)cls;
+    if (h == NULL || index < 0 || (size_t)index >= h->n)
+        return -1;
+    return (jlong)h->e[index].length;
+}
+
+// len bytes of file `index` from off, or null when that's past its end or can't be read.
+JNIEXPORT jbyteArray JNICALL Java_io_github_newcoke_strikers_guests_DiscSource_nReadAt(JNIEnv* env, jclass cls, jlong jh,
+                                                                                       jint index, jlong off, jint len)
+{
+    Handle* h = (Handle*)(intptr_t)jh;
+    jbyteArray out;
+    unsigned char* buf;
+    (void)cls;
+    if (h == NULL || index < 0 || (size_t)index >= h->n || off < 0 || len < 0
+        || (unsigned long long)off + (unsigned long long)len > (unsigned long long)h->e[index].length)
+        return NULL;
+    buf = (unsigned char*)malloc(len ? (size_t)len : 1);
+    if (buf == NULL)
+        return NULL;
+    if (len > 0 && port_disc_read(h->disc, buf, (size_t)len, h->e[index].offset + (unsigned long long)off) != (long)len)
+    {
+        free(buf);
+        return NULL;
+    }
+    out = (*env)->NewByteArray(env, (jsize)len);
+    if (out != NULL)
+        (*env)->SetByteArrayRegion(env, out, 0, (jsize)len, (const jbyte*)buf);
+    free(buf);
+    return out;
+}
+
 JNIEXPORT void JNICALL Java_io_github_newcoke_strikers_guests_DiscSource_nClose(JNIEnv* env, jclass cls, jlong jh)
 {
     (void)env;

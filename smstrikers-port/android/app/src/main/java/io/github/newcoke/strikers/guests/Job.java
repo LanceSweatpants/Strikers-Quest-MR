@@ -16,6 +16,8 @@ public final class Job {
     }
 
     public final Source strikers, melee, colo, charged;
+    /** 1.16: Marvel: Ultimate Alliance (Wii, RMUE52; the guests/mua part), null when the player doesn't have it. */
+    public Source mua;
     public final Data data;
     public final File guests;
     public final Progress progress;

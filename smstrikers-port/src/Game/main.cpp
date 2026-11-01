@@ -892,7 +892,13 @@ int main(int argc, char* argv[])
             const unsigned long long xt1 = port_monotonic_ns();
             unsigned long long xt2 = xt1, xt3 = xt1, xt4 = xt1;
             int ranGameFrame = 0;
-            if (tick && aurora_begin_frame())
+            // r129: the last game frame's Aurora frame may still be open (pipelined, xr_quest.h): then this game
+            // frame's send ends it and begins its own (PortXrFrameBoundary); a loop without a game frame ends it now.
+            const int pending = PortXrFramePending();
+            const bool frameOk = tick && (pending ? aurora_frame_ready() : aurora_begin_frame());
+            if (pending && !frameOk)
+                PortXrFrameClosePending();
+            if (frameOk)
             {
                 xt2 = port_monotonic_ns();
                 PortPromptsFrame();
@@ -908,7 +914,13 @@ int main(int argc, char* argv[])
                 PortCelebrationPoll();                // strikers-quest: goal / replay / skip edges
                 PortOverlayDraw();
                 xt3 = port_monotonic_ns();
-                aurora_end_frame();
+                if (!PortXrFrameLeaveOpen())  // r129: left open = the worker finishes it during the next frame
+                {
+                    if (PortXrFramePending())
+                        PortXrFrameClosePending();  // (no send this frame: the last one's never closed)
+                    if (aurora_frame_is_open())
+                        aurora_end_frame();
+                }
                 xt4 = port_monotonic_ns();
                 PortBenchFrameEnd();
                 s_portFrame++;
@@ -1002,6 +1014,7 @@ int main(int argc, char* argv[])
                 s_portRunning = false;
         }
     }
+    PortXrFrameClosePending();  // r130 (review): a pipelined frame left open by the last loop, before the shutdown
     PortBenchReport();
     PortXrShutdown();
     aurora_shutdown();

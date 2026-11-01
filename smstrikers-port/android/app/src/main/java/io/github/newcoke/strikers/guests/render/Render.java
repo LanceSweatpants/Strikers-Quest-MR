@@ -22,7 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * strikers-quest 1.14: everything made by posing or drawing the guests' own models, from the packs already in
  * job.guests (the player's own game files, made by the models step):
  *  - guests/evo/pk_<name>.gev: each Colosseum Pokemon's standing idle for the 3D evolution (Evo; bit-identical to
- *    the PC's evo_pose.py),
+ *    the PC's evo_pose.py), and guests/evo/<name>.gev for the Melee guests (r113: evo_pose.py --melee; the
+ *    character select's and the home corner's 3D figure),
  *  - guests/portraits/pk_<name>.png + pk_<name>_shiny.png (256 x 256, the whole figure) and sheik.png (136 x 188,
  *    head and shoulders: Melee has no picture of her): Portrait, the CPU stand-in for portrait_render.py's Cycles,
  *  - guests/etch.r8: the controller etchings atlas (Etch; a cell per roster place, empty for a guest not made),
@@ -51,7 +52,8 @@ public final class Render {
         final Map<String, Double> limbs = Cfg.limbs(
                 job.data.has("limbs.txt") ? job.data.text("limbs.txt") : job.data.has("render/limbs.txt") ? job.data.text("render/limbs.txt") : null);
         final Portrait.Look look = Portrait.Look.from(Cfg.numbers(job.data.text("render/portrait.txt")));
-        // the etch cells: the roster the game reads (its non-franchise places, as etchres.py), else ours
+        // the etch cells: the roster the game reads (its places, the franchise-only forms none: etchres.py --grid 16),
+        // else ours
         final Map<String, Work> work = new java.util.LinkedHashMap<>();
         for (Cfg.Guest g : list) {
             final Work w = new Work();
@@ -67,11 +69,12 @@ public final class Render {
                 : job.data.has("roster.txt") ? job.data.text("roster.txt") : null;
         if (roster != null) {
             for (Work w : work.values()) w.cell = -1;
-            int cell = 0;
+            int place = 0;  // r121 (16 x 16 atlas): a guest's cell = its place in roster.txt, as the game looks it up
             for (String line : roster.split("\n")) {
                 final String[] p = line.replace("\r", "").split("\t");
                 if (line.startsWith("#") || p.length < 5) continue;
-                if (p.length > 5 && p[5].equals("franchise")) continue;
+                final int cell = place++;
+                if (p.length > 5 && p[5].equals("franchise")) continue;  // (shows its first form's: no cell)
                 if (cell >= Etch.GRID * Etch.GRID) break;
                 Work w = work.get(p[0]);
                 if (w == null) {  // a guest we don't list: posed on its slot (retarget) or by its own clip
@@ -82,7 +85,7 @@ public final class Render {
                     w.portrait = "-";
                     work.put(p[0], w);
                 }
-                w.cell = cell++;
+                w.cell = cell;
             }
         }
         // the Strikers characters the retarget packs stand on, and their standing poses
@@ -164,7 +167,9 @@ public final class Render {
         final HostRef.Ref ref = hostref != null && host != null ? HostRef.read(hostref, host.cls) : null;
         double[][][] idle = null;
         if (!own) idle = new Retarget(host, "idle", pack, ref, arms).pose(0.0);
-        if (w.game.equals("colo") && !own) {
+        // r112 / r113: the Melee guests' standing idle too (the character select's 3D figure, the home corner's;
+        // evo_pose.py --melee: the same retarget on their roster slot)
+        if ((w.game.equals("colo") || w.game.equals("melee")) && !own) {
             Out.save(job.out("evo/" + w.pack + ".gev"), Evo.gev(host, pack, ref, arms));
         }
         if (w.portrait.equals("full") && idle != null) {

@@ -199,7 +199,7 @@ int guest_of(const void* sfx, int* sideOut)
                 continue;
             if (sideOut != NULL)
                 *sideOut = side;
-            return PortGuestIndexFor(side, (int)p->m_eCharacterClass);
+            return PortGuestIndexForPlayer(side, (int)p->m_eCharacterClass, (int)p->m_ID);  // r130: per sidekick
         }
     }
     return -1;
@@ -402,7 +402,10 @@ struct EvoMusic
     bool tried = false;
     std::vector<short> pcm;  // stereo
 };
-EvoMusic s_evoMusic[2];
+// r130 (Lance: "there was no special music when the heroes unlocked their costume ... if theres a victorious sounding
+// song from that game, we can use it"): 2 / 3 = a hero's costume unlock, from his Marvel: Ultimate Alliance disc
+// (tools/outside/mua: music_hero_build.evm, music_hero_win.evm); without them the Pokemon pair plays
+EvoMusic s_evoMusic[4];
 int s_evoPlaying = -1;
 size_t s_evoPos = 0;
 float s_evoDuck = 1.0f;
@@ -413,7 +416,8 @@ const EvoMusic& evo_music(int which)
     if (m.tried)
         return m;
     m.tried = true;
-    const std::string path = voice_dir() + "../evo/" + (which == 0 ? "music_build.evm" : "music_fanfare.evm");
+    static const char* const kFiles[4] = {"music_build.evm", "music_fanfare.evm", "music_hero_build.evm", "music_hero_win.evm"};
+    const std::string path = voice_dir() + "../evo/" + kFiles[which];
     if (FILE* f = fopen(path.c_str(), "rb"))
     {
         char magic[4];
@@ -427,7 +431,8 @@ const EvoMusic& evo_music(int which)
         }
         fclose(f);
     }
-    fprintf(stderr, "[guest] evolution music %s: %s\n", which == 0 ? "build" : "fanfare",
+    static const char* const kNames[4] = {"build", "fanfare", "hero build", "hero win"};
+    fprintf(stderr, "[guest] evolution music %s: %s\n", kNames[which],
             m.pcm.empty() ? "not there" : "ready");
     fflush(stderr);
     return m;
@@ -436,11 +441,13 @@ const EvoMusic& evo_music(int which)
 
 void PortEvoMusic(int which)
 {
-    if (which < 0 || which > 1)
+    if (which < 0 || which > 3)
     {
         s_evoPlaying = -1;  // (the duck comes back up in the mixer)
         return;
     }
+    if (which >= 2 && evo_music(which).pcm.empty())
+        which -= 2;  // r130: no hero music on this headset: the Pokemon pair
     if (evo_music(which).pcm.empty())
         return;
     s_evoPlaying = which;

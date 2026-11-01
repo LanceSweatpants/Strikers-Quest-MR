@@ -82,9 +82,10 @@ Nis::Nis(NisHeader& header, char* data, int size)
             NisPlayer* player = NisPlayer::Instance();
             player->mGoalScorerCharIndex = -1;
             // strikers-quest r78: TargetToIndex can say 10 (a co-captain side's third sidekick: none), and the
-            // fall-backs below never hand a co-captain someone else's animation (include/port/lineup.h)
+            // fall-backs below never hand a co-captain someone else's animation (include/port/lineup.h). r130: nor
+            // any sidekick slot playing a captain class.
             const bool wanted = i >= 0 && i < 10;
-            auto taken = [&](int k) { return k < 0 || k >= 10 || mCharacterControllers[k] != NULL || PortIsCoCaptainSlot(k); };
+            auto taken = [&](int k) { return k < 0 || k >= 10 || mCharacterControllers[k] != NULL || PortIsCaptainSlot(k); };
             if (wanted && mCharacterControllers[i] != NULL)
             {
                 i = NisPlayer::Instance()->TargetToIndex(NIS_TARGET_HOME_CAPTAIN, numAnimations, mWinnerType);
@@ -92,9 +93,11 @@ Nis::Nis(NisHeader& header, char* data, int size)
                     i = NisPlayer::Instance()->TargetToIndex(NIS_TARGET_AWAY_CAPTAIN, numAnimations, mWinnerType);
                 if (wanted && taken(i))
                 {
+                    // r130 (review): the last resort only among the sidekick spots (1-3, 5-7): never a sidekick clip on
+                    // a captain (0 / 4) or a goalie (8 / 9); none free -> the clip is dropped (10)
                     for (i = 0; i < 10; i++)
                     {
-                        if (!taken(i))
+                        if (i != 0 && i != 4 && i < 8 && !taken(i))
                             break;
                     }
                 }
@@ -386,7 +389,9 @@ void Nis::Trigger::FireEffect(const Nis& nis) const
         {
             charIdx = NisPlayer::Instance()->TargetToIndex(nis.mTarget, idx, nis.mWinnerType);
         }
-        if (charIdx >= 10)
+        // strikers-quest r130: a sidekick animation that went nowhere (every slot of that side a captain class,
+        // include/port/lineup.h) has no controller: no effect on it
+        if (charIdx < 0 || charIdx >= 10 || nis.mCharacterControllers[charIdx] == NULL)
             return;
 
         EffectsGroup* group = fxGetGroup(name);
@@ -468,7 +473,10 @@ void Nis::Trigger::Fire(Nis& nis) const
         }
         else
         {
-            index = Audio::PlayCharSFXbyStr(name, (NisCharacterClass)params.param1, volume, -1.0f, true, false, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(nis.mAudioCharacterIndex).mBip01Position, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(nis.mAudioCharacterIndex).mVelocity, &soundType);
+            // strikers-quest r130: a cut-scene whose animations all went nowhere (a side with every sidekick slot a
+            // captain class, include/port/lineup.h) has no audio character: the first one's place, never index -1
+            const int audioChar = nis.mAudioCharacterIndex >= 0 && nis.mAudioCharacterIndex < 10 ? nis.mAudioCharacterIndex : 0;
+            index = Audio::PlayCharSFXbyStr(name, (NisCharacterClass)params.param1, volume, -1.0f, true, false, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(audioChar).mBip01Position, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(audioChar).mVelocity, &soundType);
             isEmitter = true;
         }
 
@@ -486,7 +494,8 @@ void Nis::Trigger::Fire(Nis& nis) const
         uintptr_t index;   /* PORT: may hold an SFXEmitter* */
         bool stopAtNisEnd;
         unsigned long soundType = (unsigned long)-1;
-        index = Audio::cCharacterSFX::PlayNISRandomCharDialogue((CharDialogueType)params.param2, (NisCharacterClass)params.param1, 100.0f, -1.0f, true, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(nis.mAudioCharacterIndex).mBip01Position, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(nis.mAudioCharacterIndex).mVelocity, &soundType);
+        const int audioChar = nis.mAudioCharacterIndex >= 0 && nis.mAudioCharacterIndex < 10 ? nis.mAudioCharacterIndex : 0;  // r130 (above)
+        index = Audio::cCharacterSFX::PlayNISRandomCharDialogue((CharDialogueType)params.param2, (NisCharacterClass)params.param1, 100.0f, -1.0f, true, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(audioChar).mBip01Position, &ReplayManager::Instance()->GetMutableRenderSnapshot().GetCharacter(audioChar).mVelocity, &soundType);
         stopAtNisEnd = true;
         if (params.param3 != (unsigned long)-1)
             stopAtNisEnd = false;

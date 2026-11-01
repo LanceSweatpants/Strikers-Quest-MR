@@ -322,8 +322,13 @@ unsigned long long glplatResourceMark()
 /**
  * Offset/Address/Size: 0x200 | 0x801B6B28 | size: 0x110
  */
+// strikers-quest r129: the headset's pipelined frame (include/port/xr_quest.h) may still have draws in the FIFO that
+// read what is about to be freed: the worker finishes them first (rare: scene changes, movies, the FE).
+extern "C" void AuroraGXSync(void);
+
 void glplatResourceRelease(unsigned long long marker)
 {
+    AuroraGXSync();
     int level = (int)(marker & 0xFFFFFFFF);
 
     n_phys = (u32)(marker >> 32);

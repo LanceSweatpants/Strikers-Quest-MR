@@ -8,6 +8,7 @@
 // what arrived once a headset frame (poll), so the lockstep never waits on the network in a frame.
 #include "../../include/port/xr_net.h"
 #include "../../include/port/edition.h"  // strikers-quest r43: Classic / Plus, in the hello
+#include "../../include/port/lineup.h"   // r130: the host resolves the sidekick slots' classes
 #include "xr_net.hpp"
 
 extern "C" void PortNetSetFixedStep(int on);  // src/platform/vi.c
@@ -80,7 +81,10 @@ constexpr int kServerPort = 443;
 // r78: 11, the 'F' tail carries each side's co-captain (class, guest, stats). r79: 12, so does the choice
 // (a Grudge Match's co-captain, at its end). r80: 13, guest sidekicks keep their own stats at kick-off
 // (Team.cpp ResetCharacters): an r79 headset would play the same match differently. r86: 14, franchise
-// matches are 4 minutes (GameTweaks).
+// matches are 4 minutes (GameTweaks). r130: still 14: the sidekick slots ride in optional 'S' tails (write_slots),
+// which an older headset never gets; the two then play each side's one sidekick pick. r130 (any slot any character):
+// the tails are 'L' now (each slot also its wanted captain and, in the start, its class); a build with the first 'S'
+// tails and this one carry none to each other (each side's one sidekick pick, the same match on both).
 constexpr uint8_t kProtocol = 14;
 
 uint64_t now_ms() {
@@ -471,11 +475,25 @@ struct Choice {
   char coGuest[24] = {};
   uint32_t coMask = 0;
   float coStats[28] = {};
+  // r130 (the hello's 'S' tail, after its 'H'; no protocol change): this side's three sidekick slots' own picks (cPlayer
+  // m_ID 1-3): kind 0 none (the side's one sidekick pick), 1 the Strikers sidekick, 2 a guest of any role (pack name)
+  // with its own stats. hasSlots: the friend's build sends them (a build before them: false, and no start carries them)
+  bool hasSlots = false;
+  uint8_t slotKind[3] = {};
+  char slotGuest[3][24] = {};
+  uint32_t slotMask[3] = {};
+  float slotStats[3][28] = {};
+  // r130 (any slot any character, the 'L' tails): kind 3 a Strikers captain; each slot's wanted captain (eTeamID, -1 the
+  // sidekick class; the picking headset's roster says it) and, in the start, the class the host gave it (-1 the sidekick
+  // class)
+  int slotWant[3] = {-1, -1, -1};
+  int slotClass[3] = {-1, -1, -1};
 };
 
 // r63, co-op Cup: this headset's cup at its match start (Game.cpp port_net_pack_cup) and its team's side.
 std::vector<uint8_t> g_localCup;
 int g_localCoopSide = 0;
+int g_localTeams[2] = {0, 0};  // r130: both teams of this headset's match at its start (a co-op cup's slot classes)
 // r76, franchise co-op: this headset's whole match at its start (both sides, from its career), sent by
 // the host in the start's 'F' tail.
 PortNetMatch g_localFull{};
@@ -702,6 +720,103 @@ Choice read_choice(Reader& r) {
   return c;
 }
 
+// r130: the 'L' tails (the hello's after its 'H', the start's after its 'C' / 'F'), a side's three sidekick slots, each
+// [kind u8: 0 none, 1 the Strikers sidekick, 2 a guest, 3 a Strikers captain][wanted captain + 1 u8: an eTeamID, 0 the
+// sidekick class][class + 1 u8: the host's (the start), 0 the sidekick class] and for a guest [pack: size u8, bytes]
+// [stat mask u32][the set values]. A build before them never reads one: the hello's tail it reads ends at 'H' (r130's
+// first build looks for 'S' there), and the host sends the start's only to a friend whose hello had one (the start's
+// last byte would be an r44c test friend's cpuPlays: 'L' is no side).
+constexpr size_t kStartMaxBytes = 3900;  // the room server takes 4096 bytes a message (a big co-op cup's start nears it)
+constexpr uint8_t kSlotsTail = 'L';
+
+void write_slots(Writer& w, const Choice& c) {
+  for (int k = 0; k < 3; ++k) {
+    const uint8_t kind = c.slotKind[k] <= 3 ? c.slotKind[k] : 0;
+    w.u8(kind);
+    w.u8(static_cast<uint8_t>(c.slotWant[k] >= 0 && c.slotWant[k] < 8 ? c.slotWant[k] + 1 : 0));
+    w.u8(static_cast<uint8_t>(c.slotClass[k] >= 0 && c.slotClass[k] < 13 ? c.slotClass[k] + 1 : 0));
+    if (kind != 2) continue;
+    const size_t n = strnlen(c.slotGuest[k], sizeof(c.slotGuest[k]) - 1);
+    w.u8(static_cast<uint8_t>(n));
+    w.bytes(c.slotGuest[k], n);
+    const uint32_t mask = c.slotMask[k] & ((1u << 28) - 1u);
+    w.u32(mask);
+    for (int i = 0; i < 28; ++i) {
+      if ((mask & (1u << i)) == 0) continue;
+      uint32_t bits;
+      std::memcpy(&bits, &c.slotStats[k][i], 4);
+      w.u32(bits);
+    }
+  }
+}
+
+// Into `c` (hasSlots once read whole); false when malformed (then none of it).
+bool read_slots(Reader& r, Choice* c) {
+  c->hasSlots = false;
+  for (int k = 0; k < 3; ++k) {
+    c->slotKind[k] = 0;
+    std::memset(c->slotGuest[k], 0, sizeof(c->slotGuest[k]));
+    c->slotMask[k] = 0;
+    c->slotWant[k] = c->slotClass[k] = -1;
+  }
+  for (int k = 0; k < 3 && r.ok; ++k) {
+    const uint8_t kind = r.u8();
+    if (kind > 3) r.ok = false;  // (a kind this build doesn't know: its size neither)
+    const uint8_t want = r.u8(), cls = r.u8();  // r130
+    if (!r.ok) break;
+    c->slotKind[k] = kind;
+    c->slotWant[k] = want >= 1 && want <= 8 ? want - 1 : -1;
+    c->slotClass[k] = cls >= 1 && cls <= 13 ? cls - 1 : -1;
+    if (kind == 3 && c->slotWant[k] < 0) c->slotKind[k] = 1;  // (a Strikers captain with no captain: the sidekick)
+    if (kind != 2) continue;
+    const size_t n = std::min<size_t>(r.u8(), sizeof(c->slotGuest[k]) - 1);
+    r.bytes(c->slotGuest[k], n);
+    c->slotGuest[k][n] = '\0';
+    c->slotMask[k] = r.u32() & ((1u << 28) - 1u);
+    for (int i = 0; i < 28; ++i) {
+      if ((c->slotMask[k] & (1u << i)) == 0) continue;
+      const uint32_t bits = r.u32();
+      std::memcpy(&c->slotStats[k][i], &bits, 4);
+    }
+  }
+  if (!r.ok) {
+    for (int k = 0; k < 3; ++k) {
+      c->slotKind[k] = 0;
+      c->slotMask[k] = 0;
+      c->slotWant[k] = c->slotClass[k] = -1;
+    }
+    return false;
+  }
+  c->hasSlots = true;
+  return true;
+}
+
+// r130: the agreed match's sidekick slots: the sides the start carried (`sides`: 1 home, 2 away), home from `home`'s
+// and away from `away`'s
+void fill_slots(PortNetMatch& m, const Choice& home, const Choice& away, int sides) {
+  const Choice* side[2] = {&home, &away};
+  m.slotsAgreed = 0;
+  for (int s = 0; s < 2; ++s) {
+    for (int k = 0; k < 3; ++k) {
+      m.slotKinds[s][k] = 0;
+      std::memset(m.slotGuests[s][k], 0, sizeof(m.slotGuests[s][k]));
+      m.slotStatMask[s][k] = 0;
+      m.slotWant[s][k] = m.slotClass[s][k] = -1;  // r130
+    }
+    if ((sides & (1 << s)) == 0) continue;
+    for (int k = 0; k < 3; ++k) {
+      m.slotKinds[s][k] = side[s]->slotKind[k];
+      m.slotWant[s][k] = side[s]->slotWant[k];    // r130
+      m.slotClass[s][k] = side[s]->slotClass[k];
+      std::memcpy(m.slotGuests[s][k], side[s]->slotGuest[k], sizeof(m.slotGuests[s][k]));
+      m.slotGuests[s][k][sizeof(m.slotGuests[s][k]) - 1] = '\0';
+      m.slotStatMask[s][k] = side[s]->slotMask[k];
+      std::memcpy(m.slotStats[s][k], side[s]->slotStats[k], sizeof(m.slotStats[s][k]));
+    }
+    m.slotsAgreed |= 1 << s;
+  }
+}
+
 // r63: a Friendly pairs only with a Friendly, a cup only with a cup (co-op). r76: a co-op franchise match
 // only with one.
 int kind_of(uint8_t mode) { return mode == 0 ? 0 : (mode == PORT_NET_MODE_FRANCHISE ? 2 : 1); }
@@ -722,6 +837,10 @@ void send_hello() {
   w.bytes(id.data(), std::min<size_t>(id.size(), 32));
   w.u8(static_cast<uint8_t>(std::min<size_t>(name.size(), 24)));
   w.bytes(name.data(), std::min<size_t>(name.size(), 24));
+  // r130: 'L', this side's three sidekick slots, after the 'H' (a build before them reads the hello as before); also
+  // says this build takes them in the start
+  w.u8(kSlotsTail);
+  write_slots(w, st.localChoice);
   send(std::move(w.v));
   st.lastHelloMs = now_ms();
 }
@@ -908,6 +1027,63 @@ void host_start() {
     w.bytes(g_localCup.data(), g_localCup.size());
   }
   if (franchise) write_full(w, g_localFull);  // r76
+  // r130: 'L', the sidekick slots (a Friendly: both sides', home then away; a co-op cup: the cup team's, the host's),
+  // only to a friend whose hello had them and while the start stays under the room server's limit; else none, and
+  // both headsets play each side's one sidekick pick. A franchise match never (its members stay offline only).
+  // r130 (Lance: "let ANY spot be ANY character"): with the class each slot plays, resolved here for both headsets
+  // (include/port/lineup.h: each captain class once on the field, the co-captains as both headsets keep them).
+  int slotSides = 0;
+  if (!franchise && st.peerChoice.hasSlots) {
+    const int sides = coop ? 1 : 3;
+    {
+      int teams[2] = {st.localChoice.team, st.peerChoice.team};
+      int co[2] = {-1, -1};
+      int want[6], move[6], out[6];
+      for (int i = 0; i < 6; ++i) want[i] = -1, move[i] = 0;
+      if (coop) {
+        // the cup's match (both teams as this headset's cup has them), the slots the cup team's side's
+        const int cupSide = g_localCoopSide == 1 ? 1 : 0;
+        teams[0] = g_localTeams[0];
+        teams[1] = g_localTeams[1];
+        for (int k = 0; k < 3; ++k) {
+          want[cupSide * 3 + k] = st.localChoice.slotKind[k] >= 2 ? st.localChoice.slotWant[k] : -1;
+          move[cupSide * 3 + k] = st.localChoice.slotKind[k] == 2 ? 1 : 0;
+        }
+        PortResolveSlotClasses(teams, co, want, move, out);
+        for (int k = 0; k < 3; ++k) st.localChoice.slotClass[k] = out[cupSide * 3 + k];
+      } else {
+        const int coWant[2] = {st.localChoice.coCaptain, st.peerChoice.coCaptain};
+        PortCoCaptainsAsPlayed(teams, coWant, co);
+        const Choice* side[2] = {&st.localChoice, &st.peerChoice};
+        for (int i = 0; i < 6; ++i) {
+          const Choice& c = *side[i / 3];
+          want[i] = c.slotKind[i % 3] >= 2 ? c.slotWant[i % 3] : -1;
+          move[i] = c.slotKind[i % 3] == 2 ? 1 : 0;
+        }
+        PortResolveSlotClasses(teams, co, want, move, out);
+        for (int k = 0; k < 3; ++k) {
+          st.localChoice.slotClass[k] = out[k];
+          st.peerChoice.slotClass[k] = out[3 + k];
+        }
+      }
+      NLOG("net: the sidekick slots' classes (home %d %d %d, away %d %d %d; -1 the sidekick class)", out[0], out[1],
+           out[2], out[3], out[4], out[5]);
+    }
+    Writer tail;
+    tail.u8(kSlotsTail);
+    tail.u8(static_cast<uint8_t>(sides));
+    write_slots(tail, st.localChoice);
+    if ((sides & 2) != 0) write_slots(tail, st.peerChoice);
+    if (w.v.size() + tail.v.size() <= kStartMaxBytes) {
+      w.bytes(tail.v.data(), tail.v.size());
+      slotSides = sides;
+    } else {
+      NLOG("net: the start has no room for the sidekick slots (%zu + %zu bytes): each side's one sidekick pick",
+           w.v.size(), tail.v.size());
+    }
+  } else if (!franchise) {
+    NLOG("net: the friend's build sends no sidekick slots (an older one): each side's one sidekick pick");
+  }
   st.startMsg = w.v;
   st.match = PortNetMatch{};
   st.match.teams[0] = st.localChoice.team;
@@ -927,6 +1103,7 @@ void host_start() {
     std::memcpy(st.match.guestStats[1][g], st.peerChoice.stats[g], sizeof(st.match.guestStats[1][g]));
   }
   fill_co_captains(st.match, st.localChoice, st.peerChoice);  // r79 (a franchise start's come from 'F')
+  fill_slots(st.match, st.localChoice, st.peerChoice, slotSides);  // r130 (the 'L' tail as sent, its classes)
   if (coop) {
     st.match.coopSide = g_localCoopSide;
     st.match.cupSize = static_cast<int>(std::min(g_localCup.size(), sizeof(st.match.cup)));
@@ -940,6 +1117,7 @@ void host_start() {
     st.match.optionsSize = options.optionsSize;
     std::memcpy(st.match.options, options.options, sizeof(st.match.options));
     st.match.cupSize = 0;
+    st.match.slotsAgreed = 0;  // r130: no 'L' tail (the guest's 'F' start has none either)
   }
   st.frame = 0;  // the friend's first inputs may arrive before this headset's frame 0
   std::memset(st.remoteTag, 0, sizeof(st.remoteTag));
@@ -1205,8 +1383,9 @@ void handle(const std::vector<uint8_t>& msg) {
   case kHello: {
     const bool ready = r.u8() != 0;
     r.u8();  // r43: the Version, the same as this headset's (checked above)
-    const Choice c = read_choice(r);
+    Choice c = read_choice(r);
     if (!r.ok) return;
+    size_t afterH = msg.size();  // r130: where a tail after the 'H' starts
     // r61: the friend's player id and team name, when their build sends them (xrhome).
     if (r.at < msg.size() && msg[r.at] == 'H') {
       Reader tail = r;
@@ -1218,6 +1397,14 @@ void handle(const std::vector<uint8_t>& msg) {
       tail.bytes(name, nameLen);
       if (tail.ok && idLen > 0) xrhome::set_peer(std::string(id, idLen), std::string(name, nameLen));
       if (tail.ok) co.friendName.assign(name, nameLen);  // r76
+      if (tail.ok) afterH = tail.at;
+    }
+    // r130: 'L', the friend's three sidekick slots (a build before them sends none: c.hasSlots stays false, and the
+    // start this headset hosts carries none either)
+    if (afterH < msg.size() && msg[afterH] == kSlotsTail) {
+      Reader tail = r;
+      tail.at = afterH + 1;
+      read_slots(tail, &c);
     }
     if (ready && !st.peerReady) {
       NLOG("net: friend started a %s, waiting at the loading screen",
@@ -1243,8 +1430,8 @@ void handle(const std::vector<uint8_t>& msg) {
     const uint32_t seed = r.u32();
     const int delay = r.u8();
     const uint8_t edition = r.u8();
-    const Choice home = read_choice(r);
-    const Choice away = read_choice(r);
+    Choice home = read_choice(r);
+    Choice away = read_choice(r);
     // r63: a co-op cup start: 'C', the side both play on, the host's cup.
     bool coop = false;
     int coopSide = 0;
@@ -1268,6 +1455,17 @@ void handle(const std::vector<uint8_t>& msg) {
       r.u8();
       if (!read_full(r, &full)) return;
       franchise = true;
+    }
+    // r130: 'L', the sidekick slots of the sides the host sends (1 home, 2 away), with the classes it gave them; a host
+    // before them sends none
+    int slotSides = 0;
+    if (r.ok && r.at < msg.size() && msg[r.at] == kSlotsTail) {
+      r.u8();
+      const uint8_t sides = r.u8();
+      if ((sides & 1) != 0) read_slots(r, &home);
+      if ((sides & 2) != 0) read_slots(r, &away);
+      if (!r.ok) return;  // (malformed: as a bad 'C' / 'F' tail; the host's next resend)
+      slotSides = sides & 3;
     }
     // r44c: optional, from the test friend only (tools/fakefriend): which side the computer plays.
     const uint8_t cpuPlays = r.ok && r.at < msg.size() ? r.u8() : 0;
@@ -1300,6 +1498,11 @@ void handle(const std::vector<uint8_t>& msg) {
       std::memcpy(st.match.guestStats[1][g], away.stats[g], sizeof(st.match.guestStats[1][g]));
     }
     fill_co_captains(st.match, home, away);  // r79
+    fill_slots(st.match, home, away, slotSides);  // r130 (a franchise start's: none, from 'F' below)
+    if (slotSides == 0 && !franchise) {
+      NLOG("net: the start has no sidekick slots (the friend's build is older, or no room): each side's one "
+           "sidekick pick");
+    }
     if (coop) {
       st.match.coopSide = coopSide == 1 ? 1 : 0;
       st.match.cupSize = static_cast<int>(cup.size());
@@ -1702,6 +1905,23 @@ extern "C" int PortNetHoldMatchStart(const PortNetMatch* localChoice, int localS
     st.localChoice.coGuest[sizeof(st.localChoice.coGuest) - 1] = '\0';
     st.localChoice.coMask = localChoice->coStatMask[side];
     std::memcpy(st.localChoice.coStats, localChoice->coStats[side], sizeof(st.localChoice.coStats));
+    // r130: this side's three sidekick slots (the hello's 'L' tail; the start's when the friend's build has them too),
+    // each with the captain it wants (the host gives the classes)
+    st.localChoice.hasSlots = true;
+    xrnet::g_localTeams[0] = localChoice->teams[0];
+    xrnet::g_localTeams[1] = localChoice->teams[1];
+    for (int k = 0; k < 3; ++k) {
+      const uint8_t kind = localChoice->slotKinds[side][k];
+      st.localChoice.slotKind[k] = kind <= 3 ? kind : 0;
+      const int want = localChoice->slotWant[side][k];  // (only kinds 2 and 3 have one; a zeroed match's 0 is none)
+      st.localChoice.slotWant[k] = st.localChoice.slotKind[k] >= 2 && want >= 0 && want < 8 ? want : -1;
+      st.localChoice.slotClass[k] = -1;
+      if (st.localChoice.slotKind[k] == 3 && st.localChoice.slotWant[k] < 0) st.localChoice.slotKind[k] = 1;
+      std::memcpy(st.localChoice.slotGuest[k], localChoice->slotGuests[side][k], sizeof(st.localChoice.slotGuest[k]));
+      st.localChoice.slotGuest[k][sizeof(st.localChoice.slotGuest[k]) - 1] = '\0';
+      st.localChoice.slotMask[k] = localChoice->slotStatMask[side][k];
+      std::memcpy(st.localChoice.slotStats[k], localChoice->slotStats[side][k], sizeof(st.localChoice.slotStats[k]));
+    }
     {
       std::lock_guard<std::mutex> lock(xrnet::sh.m);
       st.localChoice.maker = xrnet::sh.roomMaker ? 1 : 0;  // r64

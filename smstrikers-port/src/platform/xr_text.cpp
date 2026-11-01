@@ -311,17 +311,17 @@ void goal_banner(uint8_t* rgba, int w, int h, const char* name, uint32_t teamRgb
 
 // r44g (r42's crowd volume panel, r44's voice line): the pause settings, one row picked at a time.
 void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row, bool shelf,
-                    int popups) {
+                    int popups, bool home) {
   Canvas cv(w, h);
   const float u = 0.3125f * w;  // r42's whole panel height: 200 at 640 wide
   panel(cv, 8.0f, 8.0f, w - 8.0f, h - 8.0f, 0.16f * u, 0.02f * u, rgb(0x000000, 0.9f), rgb(0xFFFFFF, 0.9f),
         rgb(0x1E2A44, 0.92f), rgb(0x0B1020, 0.92f));
   // The rows' bands, top to bottom: crowd volume (title and bar), voice chat, stadium height; r104: the
   // trophy shelf + badge board, the achievement pop-ups; the hint.
-  const float band[5][2] = {{0.06f * u, 0.76f * u}, {0.80f * u, 1.18f * u}, {1.22f * u, 1.60f * u},
-                            {1.64f * u, 2.02f * u}, {2.06f * u, 2.44f * u}};
+  const float band[6][2] = {{0.06f * u, 0.76f * u}, {0.80f * u, 1.18f * u}, {1.22f * u, 1.60f * u},
+                            {1.64f * u, 2.02f * u}, {2.06f * u, 2.44f * u}, {2.48f * u, 2.86f * u}};  // r133: + HOME GROUND
   const float bx0 = 0.04f * w, bx1 = 0.96f * w;
-  if (row >= 0 && row < 5) {  // the picked row: a lighter band with a gold edge
+  if (row >= 0 && row < 6) {  // the picked row: a lighter band with a gold edge
     const float y0 = band[row][0], y1 = band[row][1];
     for (int y = static_cast<int>(y0) - 3; y <= static_cast<int>(y1) + 3; ++y) {
       for (int x = static_cast<int>(bx0) - 3; x <= static_cast<int>(bx1) + 3; ++x) {
@@ -378,10 +378,11 @@ void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice
   onoff(shelf ? "TROPHY SHELF + BADGES: ON" : "TROPHY SHELF + BADGES: OFF", 1.83f * u, 3, shelf ? 2 : 0);
   onoff(popups == 2 ? "ACHIEVEMENT POP-UPS: ALL" : (popups == 1 ? "ACHIEVEMENT POP-UPS: UNLOCKS ONLY" : "ACHIEVEMENT POP-UPS: OFF"),
         2.25f * u, 4, popups);
+  onoff(home ? "HOME GROUND: ON" : "HOME GROUND: OFF", 2.67f * u, 5, home ? 2 : 0);  // r133: board, banners, corner, shelf
   const char* hint = "RIGHT STICK:  UP / DOWN PICKS,  LEFT / RIGHT CHANGES";
   TextStyle hs{fitted(hint, 0.12f * u), rgb(0xB8C2D6), rgb(0x9AA6BE), rgb(0x05070C), 0.012f * u, rgb(0x000000, 0.0f),
                0.0f, 0.0f};
-  draw_text(cv, hint, 0.5f * w, 0.5f * (2.44f * u + h - 8.0f), hs);
+  draw_text(cv, hint, 0.5f * w, 0.5f * (2.86f * u + h - 8.0f), hs);
   cv.write(rgba);
 }
 
@@ -645,6 +646,265 @@ void fill_rounded(Canvas& cv, float x0, float y0, float x1, float y1, float r, C
   }
 }
 
+// r112: a straight-alpha picture fitted into a box (bottom-centred when `bottom`, else centred): area-averaged
+// where it shrinks, bilinear where it grows (the menu's big portraits); `tint` (alpha > 0) in place of its
+// colours (a silhouette), `fade` its opacity.
+void blit_fit(Canvas& cv, const uint8_t* img, int iw, int ih, float bx, float by, float bw, float bh, bool bottom,
+              Color tint = Color{0.0f, 0.0f, 0.0f, 0.0f}, float fade = 1.0f) {
+  if (img == nullptr || iw <= 0 || ih <= 0 || bw <= 1.0f || bh <= 1.0f) return;
+  const float s = std::min(bw / iw, bh / ih);
+  const int dw = std::max(1, static_cast<int>(iw * s)), dh = std::max(1, static_cast<int>(ih * s));
+  const int ox = static_cast<int>(bx + 0.5f * (bw - dw));
+  const int oy = static_cast<int>(bottom ? by + bh - dh : by + 0.5f * (bh - dh));
+  const float step = 1.0f / s;
+  auto texel = [&](int x, int y, float* r, float* g, float* b, float* a) {
+    x = std::max(0, std::min(iw - 1, x));
+    y = std::max(0, std::min(ih - 1, y));
+    const uint8_t* p = img + (static_cast<size_t>(y) * iw + x) * 4;
+    const float pa = p[3] / 255.0f;
+    *r += p[0] / 255.0f * pa;
+    *g += p[1] / 255.0f * pa;
+    *b += p[2] / 255.0f * pa;
+    *a += pa;
+  };
+  for (int y = 0; y < dh; ++y) {
+    for (int x = 0; x < dw; ++x) {
+      float r = 0, g = 0, b = 0, a = 0;
+      if (s < 1.0f) {
+        const int n = std::max(1, std::min(4, static_cast<int>(std::ceil(step))));
+        for (int sy = 0; sy < n; ++sy)
+          for (int sx = 0; sx < n; ++sx)
+            texel(static_cast<int>((x + (sx + 0.5f) / n) * step), static_cast<int>((y + (sy + 0.5f) / n) * step), &r, &g,
+                  &b, &a);
+        r /= n * n;
+        g /= n * n;
+        b /= n * n;
+        a /= n * n;
+      } else {
+        const float fx = (x + 0.5f) * step - 0.5f, fy = (y + 0.5f) * step - 0.5f;
+        const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+        const float tx = fx - x0, ty = fy - y0;
+        float c[4][4] = {};
+        texel(x0, y0, &c[0][0], &c[0][1], &c[0][2], &c[0][3]);
+        texel(x0 + 1, y0, &c[1][0], &c[1][1], &c[1][2], &c[1][3]);
+        texel(x0, y0 + 1, &c[2][0], &c[2][1], &c[2][2], &c[2][3]);
+        texel(x0 + 1, y0 + 1, &c[3][0], &c[3][1], &c[3][2], &c[3][3]);
+        float v[4];
+        for (int k = 0; k < 4; ++k)
+          v[k] = (c[0][k] * (1 - tx) + c[1][k] * tx) * (1 - ty) + (c[2][k] * (1 - tx) + c[3][k] * tx) * ty;
+        r = v[0];
+        g = v[1];
+        b = v[2];
+        a = v[3];
+      }
+      if (a <= 0.002f) continue;
+      const Color c = tint.a > 0.0f ? Color{tint.r, tint.g, tint.b, 1.0f} : Color{r / a, g / a, b / a, 1.0f};
+      cv.over(ox + x, oy + y, c, a * fade);
+    }
+  }
+}
+
+// r131 (STRIKERS ILLUSTRATED's covers): a straight-alpha picture into a box with the board's picture options:
+// trimmed of its see-through margins, fitted (bottom-centred when `bottom`) or cropped to fill the box (fx, fy: the
+// part kept, 0..1), mirrored, duotone (dark -> light by brightness) or a silhouette (`tint`), `fade` its opacity.
+// Area-averaged where it shrinks, bilinear where it grows (as blit_fit).
+void blit_ex(Canvas& cv, const uint8_t* img, int iw, int ih, float bx, float by, float bw, float bh, bool bottom,
+             bool crop, float fx, float fy, bool trim, bool flip, bool duo, Color dark, Color light, Color tint,
+             float fade) {
+  if (img == nullptr || iw <= 0 || ih <= 0 || bw <= 1.0f || bh <= 1.0f) return;
+  int sx0 = 0, sy0 = 0, sx1 = iw, sy1 = ih;
+  if (trim) {
+    int minX = iw, minY = ih, maxX = -1, maxY = -1;
+    for (int y = 0; y < ih; ++y)
+      for (int x = 0; x < iw; ++x)
+        if (img[(static_cast<size_t>(y) * iw + x) * 4 + 3] > 10) {
+          minX = std::min(minX, x);
+          maxX = std::max(maxX, x);
+          minY = std::min(minY, y);
+          maxY = std::max(maxY, y);
+        }
+    if (maxX < 0) return;
+    sx0 = minX;
+    sy0 = minY;
+    sx1 = maxX + 1;
+    sy1 = maxY + 1;
+  }
+  const float sw = static_cast<float>(sx1 - sx0), sh = static_cast<float>(sy1 - sy0);
+  float s = 0.0f, dx0 = 0.0f, dy0 = 0.0f, cx0 = 0.0f, cy0 = 0.0f, cx1 = 0.0f, cy1 = 0.0f;
+  if (crop) {
+    s = std::max(bw / sw, bh / sh);
+    dx0 = bx + (bw - sw * s) * fx;
+    dy0 = by + (bh - sh * s) * fy;
+    cx0 = bx;
+    cy0 = by;
+    cx1 = bx + bw;
+    cy1 = by + bh;
+  } else {
+    s = std::min(bw / sw, bh / sh);
+    dx0 = bx + 0.5f * (bw - sw * s);
+    dy0 = bottom ? by + bh - sh * s : by + 0.5f * (bh - sh * s);
+    cx0 = dx0;
+    cy0 = dy0;
+    cx1 = dx0 + sw * s;
+    cy1 = dy0 + sh * s;
+  }
+  const float step = 1.0f / s;
+  auto texel = [&](int x, int y, float* r, float* g, float* b, float* a) {
+    x = std::max(sx0, std::min(sx1 - 1, x));
+    y = std::max(sy0, std::min(sy1 - 1, y));
+    const uint8_t* p = img + (static_cast<size_t>(y) * iw + x) * 4;
+    const float pa = p[3] / 255.0f;
+    *r += p[0] / 255.0f * pa;
+    *g += p[1] / 255.0f * pa;
+    *b += p[2] / 255.0f * pa;
+    *a += pa;
+  };
+  const int px0 = std::max(0, static_cast<int>(std::floor(cx0))), px1 = std::min(cv.w, static_cast<int>(std::ceil(cx1)));
+  const int py0 = std::max(0, static_cast<int>(std::floor(cy0))), py1 = std::min(cv.h, static_cast<int>(std::ceil(cy1)));
+  const int n = std::max(1, std::min(4, static_cast<int>(std::ceil(step))));
+  for (int y = py0; y < py1; ++y) {
+    for (int x = px0; x < px1; ++x) {
+      float u = (x + 0.5f - dx0) * step;
+      const float v = (y + 0.5f - dy0) * step;
+      if (u < 0.0f || v < 0.0f || u > sw || v > sh) continue;
+      if (flip) u = sw - u;
+      float r = 0, g = 0, b = 0, a = 0;
+      if (s < 1.0f) {
+        for (int ky = 0; ky < n; ++ky)
+          for (int kx = 0; kx < n; ++kx)
+            texel(sx0 + static_cast<int>(std::floor(u - 0.5f * step + (kx + 0.5f) / n * step)),
+                  sy0 + static_cast<int>(std::floor(v - 0.5f * step + (ky + 0.5f) / n * step)), &r, &g, &b, &a);
+        r /= n * n;
+        g /= n * n;
+        b /= n * n;
+        a /= n * n;
+      } else {
+        const float fu = u - 0.5f, fv = v - 0.5f;
+        const int x0 = static_cast<int>(std::floor(fu)), y0 = static_cast<int>(std::floor(fv));
+        const float tx = fu - x0, ty = fv - y0;
+        float c[4][4] = {};
+        texel(sx0 + x0, sy0 + y0, &c[0][0], &c[0][1], &c[0][2], &c[0][3]);
+        texel(sx0 + x0 + 1, sy0 + y0, &c[1][0], &c[1][1], &c[1][2], &c[1][3]);
+        texel(sx0 + x0, sy0 + y0 + 1, &c[2][0], &c[2][1], &c[2][2], &c[2][3]);
+        texel(sx0 + x0 + 1, sy0 + y0 + 1, &c[3][0], &c[3][1], &c[3][2], &c[3][3]);
+        float vv[4];
+        for (int k = 0; k < 4; ++k)
+          vv[k] = (c[0][k] * (1 - tx) + c[1][k] * tx) * (1 - ty) + (c[2][k] * (1 - tx) + c[3][k] * tx) * ty;
+        r = vv[0];
+        g = vv[1];
+        b = vv[2];
+        a = vv[3];
+      }
+      if (a <= 0.002f) continue;
+      Color c{r / a, g / a, b / a, 1.0f};
+      if (tint.a > 0.0f) {
+        c = Color{tint.r, tint.g, tint.b, 1.0f};
+      } else if (duo) {
+        const float lum = clamp01(0.3f * c.r + 0.59f * c.g + 0.11f * c.b);
+        c = mix(dark, light, lum);
+        c.a = 1.0f;
+      }
+      cv.over(x, y, c, a * fade);
+    }
+  }
+}
+
+// r131: `text` as draw_text, condensed (xscale), leaning (slant: x moved per px up) and turned (degrees, clockwise)
+// about its middle (cx, cy); the shadow at (shadowX, shadowY), the outline, the fill. Coverage sampled bilinearly.
+void draw_text_affine(Canvas& cv, const char* text, float cx, float cy, const TextStyle& s, float xscale, float slant,
+                      float angle) {
+  const int pad = static_cast<int>(std::ceil(s.outlinePx)) + 2;
+  const Mask m = text_mask(text, s.px, pad);
+  if (m.w <= 0 || m.h <= 0) return;
+  const std::vector<float> dist = distance_outside(m);
+  int top = m.h, bottom = 0;
+  for (int y = 0; y < m.h; ++y) {
+    for (int x = 0; x < m.w; ++x) {
+      if (m.a[static_cast<size_t>(y) * m.w + x] > 0.5f) {
+        top = std::min(top, y);
+        bottom = std::max(bottom, y);
+        break;
+      }
+    }
+  }
+  if (top > bottom) {
+    top = 0;
+    bottom = m.h;
+  }
+  const float span = std::max(1.0f, static_cast<float>(bottom - top));
+  std::vector<float> ring(m.a.size());
+  for (size_t i = 0; i < ring.size(); ++i) ring[i] = std::max(m.a[i], clamp01(s.outlinePx + 0.5f - dist[i]));
+  const float mcx = 0.5f * m.w, mcy = 0.5f * (top + bottom);
+  const float rad = angle * 0.017453293f;
+  const float ca = std::cos(rad), sa = std::sin(rad);
+  const float xs = std::max(0.05f, xscale);
+  float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+  const float cu[4] = {-mcx, m.w - mcx, -mcx, m.w - mcx}, cvv[4] = {-mcy, -mcy, m.h - mcy, m.h - mcy};
+  for (int k = 0; k < 4; ++k) {
+    const float u2 = cu[k] * xs - slant * cvv[k];
+    const float X = cx + u2 * ca - cvv[k] * sa, Y = cy + u2 * sa + cvv[k] * ca;
+    bx0 = std::min(bx0, X);
+    by0 = std::min(by0, Y);
+    bx1 = std::max(bx1, X);
+    by1 = std::max(by1, Y);
+  }
+  auto sample = [&](const std::vector<float>& M, float u, float v) {
+    const float fu = u - 0.5f, fv = v - 0.5f;
+    const int x0 = static_cast<int>(std::floor(fu)), y0 = static_cast<int>(std::floor(fv));
+    const float tx = fu - x0, ty = fv - y0;
+    auto at = [&](int x, int y) {
+      return x < 0 || y < 0 || x >= m.w || y >= m.h ? 0.0f : M[static_cast<size_t>(y) * m.w + x];
+    };
+    return (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+  };
+  for (int pass = 0; pass < 3; ++pass) {
+    if (pass == 0 && (s.shadow.a <= 0.0f || (s.shadowX == 0.0f && s.shadowY == 0.0f))) continue;
+    if (pass == 1 && s.outlinePx <= 0.0f) continue;
+    const float ox = pass == 0 ? s.shadowX : 0.0f, oy = pass == 0 ? s.shadowY : 0.0f;
+    const int y0 = static_cast<int>(std::floor(by0 + oy)) - 1, y1 = static_cast<int>(std::ceil(by1 + oy)) + 1;
+    const int x0 = static_cast<int>(std::floor(bx0 + ox)) - 1, x1 = static_cast<int>(std::ceil(bx1 + ox)) + 1;
+    for (int y = std::max(0, y0); y <= std::min(cv.h - 1, y1); ++y) {
+      for (int x = std::max(0, x0); x <= std::min(cv.w - 1, x1); ++x) {
+        const float dx = x + 0.5f - (cx + ox), dy = y + 0.5f - (cy + oy);
+        const float u2 = dx * ca + dy * sa, v = -dx * sa + dy * ca;
+        const float mu = (u2 + slant * v) / xs + mcx, mv = v + mcy;
+        if (pass == 2) {
+          const float cov = sample(m.a, mu, mv);
+          if (cov > 0.0f) cv.over(x, y, mix(s.fillTop, s.fillBottom, clamp01((mv - top) / span)), cov);
+        } else {
+          const float cov = sample(ring, mu, mv);
+          if (cov > 0.0f) cv.over(x, y, pass == 0 ? s.shadow : s.outline, cov);
+        }
+      }
+    }
+  }
+}
+
+// r112: a soft round light (strongest in the middle, gone at `radius`).
+void glow_disc(Canvas& cv, float cx, float cy, float radius, Color c) {
+  for (int y = static_cast<int>(cy - radius); y <= static_cast<int>(cy + radius); ++y) {
+    for (int x = static_cast<int>(cx - radius); x <= static_cast<int>(cx + radius); ++x) {
+      const float d = std::sqrt((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy)) / radius;
+      if (d >= 1.0f) continue;
+      cv.over(x, y, c, (1.0f - d) * (1.0f - d));
+    }
+  }
+}
+
+// r112: a controller button for the hints: a coloured circle with its letter (or a rounded pill for "LT RT"),
+// left edge at x; returns its width.
+float button_glyph(Canvas& cv, const char* glyph, float x, float cy, float size, Color fill) {
+  const float r = 0.5f * size;
+  const float tw = text_width(glyph, 0.62f * size);
+  const bool pill = std::strlen(glyph) > 1;
+  const float wide = pill ? std::max(size, tw + 0.7f * size) : size;
+  fill_rounded(cv, x - 3.0f, cy - r - 3.0f, x + wide + 3.0f, cy + r + 3.0f, r + 3.0f, rgb(0xFFFFFF));
+  fill_rounded(cv, x, cy - r, x + wide, cy + r, r, fill);
+  draw_text(cv, glyph, x + 0.5f * wide, cy,
+            TextStyle{0.62f * size, rgb(0xFFFFFF), rgb(0xE6ECF5), rgb(0x05070C), 2.0f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  return wide;
+}
+
 }  // namespace
 
 void home_board(uint8_t* rgba, int w, int h, const char* title, uint32_t teamRgb, uint32_t teamRgb2,
@@ -868,7 +1128,9 @@ void guest_picker(uint8_t* rgba, int w, int h, const char* title, const GuestTil
                 TextStyle{npx, on ? rgb(0xFFF7B0) : rgb(0xFFFFFF), on ? rgb(0xFFC21F) : rgb(0xD8DEEA), rgb(0x05070C),
                           2.5f, rgb(0x000000, 0.0f), 0.0f, 0.0f});
       if (g.locked || (g.game != nullptr && g.game[0] != '\0')) {
-        const std::string gm = g.locked ? std::string("EVOLVE IN FRANCHISE") : caps(g.game);
+        // r110: a Marvel hero's locked costume is earned with levels, not evolved
+        const bool marvel = g.game != nullptr && std::strcmp(g.game, "Marvel") == 0;
+        const std::string gm = g.locked ? std::string(marvel ? "UNLOCK IN FRANCHISE" : "EVOLVE IN FRANCHISE") : caps(g.game);
         draw_text(cv, gm.c_str(), cx0 + 0.5f * cellW, cy0 + cellH - 0.2f * nameH,
                   TextStyle{fit(gm, 0.3f * nameH, cellW - 28.0f), rgb(0x9CC8FF), rgb(0x6A9AE0), rgb(0x05070C), 1.5f,
                             rgb(0x000000, 0.0f), 0.0f, 0.0f});
@@ -880,6 +1142,312 @@ void guest_picker(uint8_t* rgba, int w, int h, const char* title, const GuestTil
         draw_text(cv, tk.c_str(), cx0 + 0.5f * cellW, cy0 + 0.45f * cellH,
                   TextStyle{fit(tk, 0.2f * cellH, cellW - 28.0f), rgb(0xFF8A80), rgb(0xE04A40), rgb(0x05070C), 2.0f,
                             rgb(0x000000, 0.0f), 0.0f, 0.0f});
+      }
+    }
+  }
+  cv.write(rgba);
+}
+
+// r112: see xr_text.h.
+void character_select(uint8_t* rgba, int w, int h, const char* title, const SelectTab* tabs, int tabCount, int tab,
+                      bool onTabs, const SelectTile* tiles, int count, int cursor, int firstRow, const SelectSpot& spot,
+                      const SelectHint* hints, int hintCount) {
+  Canvas cv(w, h);
+  panel(cv, 6.0f, 6.0f, w - 6.0f, h - 6.0f, 30.0f, 6.0f, rgb(0x000000, 0.92f), rgb(0xFFD23F), rgb(0x1E2A4E, 0.97f),
+        rgb(0x070A14, 0.97f));
+  auto fit = [&](const std::string& text, float px, float room) {
+    const float wide = text_width(text.c_str(), px);
+    return wide > room && wide > 0.0f ? px * room / wide : px;
+  };
+  auto words = [&](const std::string& s, float cx, float cy, float px, float room, Color a, Color b, float outline) {
+    draw_text(cv, s.c_str(), cx, cy, TextStyle{fit(s, px, room), a, b, rgb(0x05070C), outline, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  };
+  const Color gold = rgb(0xFFD23F), cream = rgb(0xFFF7B0), white = rgb(0xFFFFFF), soft = rgb(0xD8DEEA);
+  const uint32_t gameRgb = tab >= 0 && tab < tabCount ? tabs[tab].rgb : 0x31406A;
+  const Color game = rgb(gameRgb);
+  // the games, one tab each
+  const float m = 0.014f * w, tabsTop = 0.02f * h, tabsBottom = 0.115f * h;
+  if (tabCount > 0) {
+    const float tw = (w - 2.0f * m) / tabCount;
+    for (int i = 0; i < tabCount; ++i) {
+      const bool on = i == tab;
+      const float x0 = m + i * tw + 8.0f, x1 = m + (i + 1) * tw - 8.0f, y0 = on ? tabsTop : tabsTop + 0.014f * h;
+      if (on && onTabs) {
+        for (int k = 3; k >= 1; --k)
+          fill_rounded(cv, x0 - 6.0f - 4.0f * k, y0 - 6.0f - 4.0f * k, x1 + 6.0f + 4.0f * k, tabsBottom + 6.0f + 4.0f * k,
+                       26.0f + 4.0f * k, rgb(0xFFD23F, 0.22f));
+      }
+      if (on) fill_rounded(cv, x0 - 6.0f, y0 - 6.0f, x1 + 6.0f, tabsBottom + 6.0f, 26.0f, onTabs ? white : gold);
+      fill_rounded(cv, x0, y0, x1, tabsBottom, 22.0f, rgb(tabs[i].rgb, on ? 1.0f : 0.55f));
+      const std::string n = caps(tabs[i].name);
+      words(n, 0.5f * (x0 + x1), 0.5f * (y0 + tabsBottom) - 0.008f * h, on ? 0.058f * h : 0.044f * h, x1 - x0 - 24.0f,
+            on ? white : rgb(0xFFFFFF, 0.7f), on ? rgb(0xE6ECF5) : rgb(0xD8DEEA, 0.7f), on ? 3.5f : 2.5f);
+      const std::string c = std::to_string(tabs[i].count);
+      words(c, 0.5f * (x0 + x1), tabsBottom - 0.012f * h, 0.02f * h, x1 - x0, rgb(0xFFFFFF, on ? 0.85f : 0.5f),
+            rgb(0xD8DEEA, on ? 0.85f : 0.5f), 1.5f);
+    }
+  }
+  const float top = 0.135f * h, bottom = 0.915f * h;
+  // the spotlight: the one under the cursor, big
+  const float sx0 = m, sx1 = 0.398f * w, scx = 0.5f * (sx0 + sx1);
+  fill_rounded(cv, sx0, top, sx1, bottom, 28.0f, mix(game, rgb(0x000000), 0.55f));
+  glow_disc(cv, scx, 0.47f * h, 0.27f * w, mix(mix(game, rgb(0xFFE696), 0.35f), rgb(0x000000, 0.0f), 0.2f));
+  const float formY0 = top + 0.012f * h, formS = 0.092f * h;
+  const bool strip = spot.forms.size() > 1;
+  const float picTop = strip ? formY0 + formS + 0.02f * h : top + 0.02f * h, picBottom = 0.665f * h;
+  if (spot.rgba != nullptr) {
+    blit_fit(cv, spot.rgba, spot.w, spot.h, sx0 + 0.02f * w, picTop, sx1 - sx0 - 0.04f * w, picBottom - picTop, true,
+             spot.locked ? Color{0.05f, 0.07f, 0.13f, 1.0f} : Color{0.0f, 0.0f, 0.0f, 0.0f});
+  }
+  if (spot.taken) {
+    fill_rounded(cv, sx0 + 0.03f * w, 0.4f * h, sx1 - 0.03f * w, 0.52f * h, 20.0f, rgb(0x05070C, 0.7f));
+    words("TAKEN", scx, 0.46f * h, 0.09f * h, sx1 - sx0 - 0.08f * w, rgb(0xFF8A80), rgb(0xE04A40), 3.0f);
+  }
+  if (strip) {
+    // its forms: the evolutions / costumes, the shown one framed; LT / RT either side
+    const int n = static_cast<int>(spot.forms.size());
+    const float gap = 0.008f * w;
+    float fx = scx - 0.5f * (n * formS + (n - 1) * gap);
+    for (int i = 0; i < n; ++i) {
+      const SelectForm& f = spot.forms[i];
+      const bool on = i == spot.formAt;
+      fill_rounded(cv, fx - (on ? 5.0f : 2.0f), formY0 - (on ? 5.0f : 2.0f), fx + formS + (on ? 5.0f : 2.0f),
+                   formY0 + formS + (on ? 5.0f : 2.0f), 16.0f, on ? gold : rgb(0x6A748A));
+      fill_rounded(cv, fx, formY0, fx + formS, formY0 + formS, 14.0f, rgb(0x0B1020, 0.95f));
+      blit_fit(cv, f.rgba, f.w, f.h, fx + 6.0f, formY0 + 6.0f, formS - 12.0f, formS - 12.0f, true,
+               f.locked ? Color{0.09f, 0.12f, 0.2f, 1.0f} : Color{0.0f, 0.0f, 0.0f, 0.0f});
+      if (f.locked) {
+        const std::string lv = f.level > 0 ? "LV " + std::to_string(f.level) : "?";
+        words(lv, fx + 0.5f * formS, formY0 + 0.5f * formS, 0.034f * h, formS - 10.0f, cream, gold, 2.5f);
+      }
+      fx += formS + gap;
+    }
+    const float lx0 = scx - 0.5f * (n * formS + (n - 1) * gap) - 0.012f * w;
+    const float rx0 = scx + 0.5f * (n * formS + (n - 1) * gap) + 0.012f * w;
+    const float gs = 0.05f * h;
+    const float lw = text_width("LT", 0.62f * gs) + 0.7f * gs;
+    button_glyph(cv, "LT", std::max(sx0 + 8.0f, lx0 - lw), formY0 + 0.5f * formS, gs, rgb(0x3A4A70));
+    button_glyph(cv, "RT", std::min(sx1 - lw - 8.0f, rx0), formY0 + 0.5f * formS, gs, rgb(0x3A4A70));
+  }
+  const std::string name = spot.locked ? std::string("???") : caps(spot.name);
+  words(name, scx, 0.71f * h, 0.082f * h, sx1 - sx0 - 0.04f * w, cream, rgb(0xFFC21F), 4.0f);
+  float statsTop = 0.758f * h;
+  if (spot.note != nullptr && spot.note[0] != '\0') {
+    words(caps(spot.note), scx, 0.765f * h, 0.03f * h, sx1 - sx0 - 0.05f * w, rgb(0x9CC8FF), rgb(0x6A9AE0), 2.0f);
+    statsTop += 0.03f * h;
+  }
+  if (spot.hasCard && !spot.locked) {
+    // its card as bars, no numbers: 2 of 10 for the lowest, all 10 for the top
+    static const char* const kStat[4] = {"SPEED", "SHOOT", "PASS", "TACKLE"};
+    const float row = (bottom - 0.012f * h - statsTop) / 4.0f;
+    const float labelX = sx0 + 0.025f * w, barX0 = sx0 + 0.135f * w, barX1 = sx1 - 0.025f * w;
+    const float seg = (barX1 - barX0) / 10.0f;
+    for (int i = 0; i < 4; ++i) {
+      const float cy = statsTop + (i + 0.5f) * row;
+      text_left(cv, kStat[i], labelX, cy, 0.72f * row, barX0 - labelX - 0.01f * w, soft, rgb(0xB8C2D6), 2.0f);
+      const int lit = 2 + static_cast<int>(std::lround(8.0f * clamp01(spot.card[i])));
+      for (int k = 0; k < 10; ++k) {
+        fill_rounded(cv, barX0 + k * seg + 3.0f, cy - 0.3f * row, barX0 + (k + 1) * seg - 3.0f, cy + 0.3f * row, 6.0f,
+                     k < lit ? gold : rgb(0x2A3550));
+      }
+    }
+  }
+  // the grid: this game's characters (a tile a family)
+  const float gx0 = 0.412f * w, gx1 = w - m - 0.012f * w, gy0 = top, gy1 = bottom;
+  const int cols = 5, rows = 3;
+  const float cw = (gx1 - gx0) / cols, ch = (gy1 - gy0) / rows;
+  for (int i = firstRow * cols; i < count && i < (firstRow + rows) * cols; ++i) {
+    const SelectTile& t = tiles[i];
+    const int c = i % cols, r = i / cols - firstRow;
+    const float x0 = gx0 + c * cw + 8.0f, y0 = gy0 + r * ch + 8.0f, x1 = x0 + cw - 16.0f, y1 = y0 + ch - 16.0f;
+    const bool on = i == cursor && !onTabs;
+    const bool here = i == cursor;
+    if (on) glow_disc(cv, 0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.75f * cw, rgb(0xFFD23F, 0.6f));
+    fill_rounded(cv, x0, y0, x1, y1, 22.0f, on ? gold : (here ? rgb(0xB8C2D6) : mix(game, rgb(0x000000), 0.25f)));
+    const float in = on ? 8.0f : 4.0f;
+    fill_rounded(cv, x0 + in, y0 + in, x1 - in, y1 - in, 18.0f, on ? rgb(0x2B4690) : rgb(0x151C36));
+    const float nameH = 0.2f * (y1 - y0);
+    blit_fit(cv, t.rgba, t.w, t.h, x0 + 14.0f, y0 + 12.0f, x1 - x0 - 28.0f, y1 - y0 - nameH - 18.0f, true);
+    words(caps(t.name), 0.5f * (x0 + x1), y1 - 0.55f * nameH, 0.62f * nameH, x1 - x0 - 24.0f, on ? cream : white,
+          on ? rgb(0xFFC21F) : soft, 2.5f);
+    if (t.forms > 1) {
+      // how many forms it has: little dots at its top right
+      for (int k = 0; k < t.forms && k < 6; ++k) {
+        const float dx = x1 - 22.0f - k * 20.0f, dy = y0 + 22.0f;
+        fill_rounded(cv, dx - 7.0f, dy - 7.0f, dx + 7.0f, dy + 7.0f, 7.0f, on ? rgb(0xFFF7B0) : gold);
+      }
+    }
+    if (t.taken) {
+      fill_rounded(cv, x0 + in, y0 + in, x1 - in, y1 - in, 18.0f, rgb(0x05070C, 0.62f));
+      words("TAKEN", 0.5f * (x0 + x1), 0.5f * (y0 + y1) - 0.05f * ch, 0.16f * ch, x1 - x0 - 28.0f, rgb(0xFF8A80),
+            rgb(0xE04A40), 2.0f);
+    }
+  }
+  const int allRows = (count + cols - 1) / cols;
+  if (allRows > rows) {
+    // more than fits: a scroll bar at the right, the rows shown gold
+    const float tx0 = w - m - 0.009f * w, tx1 = w - m - 0.001f * w, ty0 = gy0 + 8.0f, ty1 = gy1 - 8.0f;
+    fill_rounded(cv, tx0, ty0, tx1, ty1, 0.5f * (tx1 - tx0), rgb(0x2A3550));
+    const float span = ty1 - ty0;
+    fill_rounded(cv, tx0, ty0 + span * firstRow / allRows, tx1, ty0 + span * (firstRow + rows) / allRows,
+                 0.5f * (tx1 - tx0), gold);
+  }
+  // the foot: the title at the left, the buttons beside it
+  const float fy = 0.955f * h, gsz = 0.048f * h;
+  if (title != nullptr && title[0] != '\0') text_left(cv, caps(title), m + 0.01f * w, fy, 0.036f * h, 0.3f * w, cream, gold, 2.5f);
+  float total = 0.0f;
+  for (int i = 0; i < hintCount; ++i) {
+    const float gw = std::strlen(hints[i].glyph) > 1 ? std::max(gsz, text_width(hints[i].glyph, 0.62f * gsz) + 0.7f * gsz) : gsz;
+    total += gw + 0.012f * w + text_width(caps(hints[i].words).c_str(), 0.036f * h) + 0.03f * w;
+  }
+  float hx = std::max(0.34f * w, 0.62f * w - 0.5f * total);
+  for (int i = 0; i < hintCount; ++i) {
+    hx += button_glyph(cv, hints[i].glyph, hx, fy, gsz, rgb(hints[i].rgb)) + 0.012f * w;
+    const std::string s = caps(hints[i].words);
+    text_left(cv, s, hx, fy, 0.036f * h, w - hx, rgb(0xE6ECF5), rgb(0xB8C2D6), 2.0f);
+    hx += text_width(s.c_str(), 0.036f * h) + 0.03f * w;
+  }
+  cv.write(rgba);
+}
+
+// r113: see xr_text.h.
+float board_text_width(const std::string& text, float px) { return text_width(caps(text.c_str()).c_str(), px); }
+
+void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
+  Canvas cv(w, h);
+  for (const BoardPiece& p : pieces) {
+    const Color c = rgb(p.rgb, p.alpha);
+    switch (p.kind) {
+      case BoardPiece::kBox: {
+        if (p.rgb2 == 0 && p.alpha2 < 0.0f) {
+          fill_rounded(cv, p.x0, p.y0, p.x1, p.y1, p.radius, c);
+          break;
+        }
+        // r131: alpha2 >= 0 fades to it (rgb2 0 then: the same colour)
+        const Color c2 = rgb(p.rgb2 != 0 ? p.rgb2 : p.rgb, p.alpha2 >= 0.0f ? p.alpha2 : p.alpha);
+        const float span = std::max(1.0f, p.y1 - p.y0);
+        for (int y = static_cast<int>(p.y0) - 1; y <= static_cast<int>(p.y1) + 1; ++y) {
+          const Color f = mix(c, c2, clamp01((y - p.y0) / span));
+          for (int x = static_cast<int>(p.x0) - 1; x <= static_cast<int>(p.x1) + 1; ++x)
+            cv.over(x, y, f, 0.5f - rounded_rect_sd(x + 0.5f, y + 0.5f, p.x0, p.y0, p.x1, p.y1, p.radius));
+        }
+        break;
+      }
+      case BoardPiece::kRing: {
+        const float wd = std::max(1.0f, p.outline);
+        for (int y = static_cast<int>(p.y0) - 2; y <= static_cast<int>(p.y1) + 2; ++y)
+          for (int x = static_cast<int>(p.x0) - 2; x <= static_cast<int>(p.x1) + 2; ++x) {
+            const float sd = rounded_rect_sd(x + 0.5f, y + 0.5f, p.x0, p.y0, p.x1, p.y1, p.radius);
+            cv.over(x, y, c, std::min(0.5f - sd, 0.5f + sd + wd));
+          }
+        break;
+      }
+      case BoardPiece::kGlow: {
+        const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
+        const float rx = std::max(1.0f, 0.5f * (p.x1 - p.x0)), ry = std::max(1.0f, 0.5f * (p.y1 - p.y0));
+        for (int y = static_cast<int>(p.y0); y <= static_cast<int>(p.y1); ++y)
+          for (int x = static_cast<int>(p.x0); x <= static_cast<int>(p.x1); ++x) {
+            const float dx = (x + 0.5f - cx) / rx, dy = (y + 0.5f - cy) / ry;
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < 1.0f) cv.over(x, y, c, (1.0f - d) * (1.0f - d));
+          }
+        break;
+      }
+      case BoardPiece::kImage:
+        if (p.trim || p.crop || p.flip || p.duo) {  // r131
+          blit_ex(cv, p.img, p.iw, p.ih, p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0, p.bottom, p.crop, p.focusX, p.focusY,
+                  p.trim, p.flip, p.duo, rgb(p.rgb), rgb(p.rgb2), p.silhouette ? c : Color{0.0f, 0.0f, 0.0f, 0.0f},
+                  p.alpha);
+          break;
+        }
+        blit_fit(cv, p.img, p.iw, p.ih, p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0, p.bottom,
+                 p.silhouette ? c : Color{0.0f, 0.0f, 0.0f, 0.0f}, p.alpha);
+        break;
+      case BoardPiece::kText:
+      case BoardPiece::kTextLeft:
+      case BoardPiece::kTextRight: {
+        if (p.text.empty()) break;
+        const std::string s = caps(p.text.c_str());
+        const float xs = p.xscale > 0.05f ? p.xscale : 1.0f;  // r131: condensed
+        float px = p.y1;
+        const float wide = text_width(s.c_str(), px) * xs;
+        if (p.x1 > 0.0f && wide > p.x1) px *= p.x1 / wide;
+        const float wd = text_width(s.c_str(), px) * xs;
+        const float cx = p.kind == BoardPiece::kText ? p.x0 : (p.kind == BoardPiece::kTextLeft ? p.x0 + 0.5f * wd : p.x0 - 0.5f * wd);
+        const Color bottom = p.rgb2 != 0 ? rgb(p.rgb2, p.alpha) : c;
+        const Color rim = p.outline > 0.0f ? rgb(p.outlineRgb, p.alpha) : c;
+        const Color shade = p.shadow > 0.0f ? rgb(p.shadowRgb, p.shadowA * p.alpha) : rgb(0x000000, 0.0f);
+        const TextStyle style{px, c, bottom, rim, p.outline, shade, p.shadow, p.shadow};
+        if (p.slant != 0.0f || p.angle != 0.0f || xs != 1.0f) {
+          draw_text_affine(cv, s.c_str(), cx, p.y0, style, xs, p.slant, p.angle);
+        } else {
+          draw_text(cv, s.c_str(), cx, p.y0, style);
+        }
+        break;
+      }
+      case BoardPiece::kPoly: {  // r131: a convex polygon, edges smoothed
+        const size_t n = p.pts.size() / 2;
+        if (n < 3) break;
+        float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f, area = 0.0f;
+        for (size_t i = 0; i < n; ++i) {
+          const float ax = p.pts[2 * i], ay = p.pts[2 * i + 1];
+          const float bx = p.pts[2 * ((i + 1) % n)], by = p.pts[2 * ((i + 1) % n) + 1];
+          minX = std::min(minX, ax);
+          maxX = std::max(maxX, ax);
+          minY = std::min(minY, ay);
+          maxY = std::max(maxY, ay);
+          area += ax * by - bx * ay;
+        }
+        const float sgn = area > 0.0f ? 1.0f : -1.0f;
+        std::vector<float> edge(n * 3);  // each edge's outward normal and offset
+        for (size_t i = 0; i < n; ++i) {
+          const float ax = p.pts[2 * i], ay = p.pts[2 * i + 1];
+          const float ex = p.pts[2 * ((i + 1) % n)] - ax, ey = p.pts[2 * ((i + 1) % n) + 1] - ay;
+          const float len = std::max(1e-6f, std::sqrt(ex * ex + ey * ey));
+          edge[3 * i] = sgn * ey / len;
+          edge[3 * i + 1] = -sgn * ex / len;
+          edge[3 * i + 2] = ax * edge[3 * i] + ay * edge[3 * i + 1];
+        }
+        for (int y = std::max(0, static_cast<int>(std::floor(minY)) - 1); y <= std::min(cv.h - 1, static_cast<int>(maxY) + 1); ++y)
+          for (int x = std::max(0, static_cast<int>(std::floor(minX)) - 1); x <= std::min(cv.w - 1, static_cast<int>(maxX) + 1); ++x) {
+            float sd = -1e9f;
+            for (size_t i = 0; i < n; ++i)
+              sd = std::max(sd, (x + 0.5f) * edge[3 * i] + (y + 0.5f) * edge[3 * i + 1] - edge[3 * i + 2]);
+            cv.over(x, y, c, 0.5f - sd);
+          }
+        break;
+      }
+      case BoardPiece::kBurst: {  // r131: spikes round the box's middle
+        const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
+        const float rx = std::max(1.0f, 0.5f * (p.x1 - p.x0)), ry = std::max(1.0f, 0.5f * (p.y1 - p.y0));
+        const float rmin = std::min(rx, ry), seg = 6.2831853f / std::max(3, p.points), rot = p.angle * 0.017453293f;
+        for (int y = std::max(0, static_cast<int>(std::floor(p.y0)) - 1); y <= std::min(cv.h - 1, static_cast<int>(p.y1) + 1); ++y)
+          for (int x = std::max(0, static_cast<int>(std::floor(p.x0)) - 1); x <= std::min(cv.w - 1, static_cast<int>(p.x1) + 1); ++x) {
+            const float u = (x + 0.5f - cx) / rx, v = (y + 0.5f - cy) / ry;
+            const float r = std::sqrt(u * u + v * v);
+            float f = (std::atan2(v, u) - rot) / seg;
+            f -= std::floor(f);
+            const float R = p.inner + (1.0f - p.inner) * std::fabs(1.0f - 2.0f * f);
+            cv.over(x, y, c, (R - r) * rmin + 0.5f);
+          }
+        break;
+      }
+      case BoardPiece::kDots: {  // r131: halftone, the dots growing (or shrinking) top to bottom
+        const float cell = std::max(2.0f, p.radius), span = std::max(1.0f, p.y1 - p.y0);
+        for (int y = std::max(0, static_cast<int>(std::floor(p.y0))); y <= std::min(cv.h - 1, static_cast<int>(p.y1)); ++y) {
+          const float py = y + 0.5f;
+          if (py < p.y0 || py > p.y1) continue;
+          const float ccy = p.y0 + (std::floor((py - p.y0) / cell) + 0.5f) * cell;
+          const float rr = cell * (p.dot0 + (p.dot1 - p.dot0) * clamp01((py - p.y0) / span));
+          for (int x = std::max(0, static_cast<int>(std::floor(p.x0))); x <= std::min(cv.w - 1, static_cast<int>(p.x1)); ++x) {
+            const float px = x + 0.5f;
+            if (px < p.x0 || px > p.x1) continue;
+            const float ccx = p.x0 + (std::floor((px - p.x0) / cell) + 0.5f) * cell;
+            const float d = std::sqrt((px - ccx) * (px - ccx) + (py - ccy) * (py - ccy));
+            cv.over(x, y, c, rr - d + 0.5f);
+          }
+        }
+        break;
       }
     }
   }
@@ -1175,7 +1743,7 @@ void xp_meter(uint8_t* rgba, int w, int h, const char* name, int level, int xp, 
 // r70c: see xr_text.h.
 void evolution_scene(uint8_t* rgba, int w, int h, const EvoImage& from, const EvoImage& to, const EvoImage& alt,
                      int stage, float t, int choice, const char* title, const char* line, const char* hint, bool shiny,
-                     int options) {
+                     int options, const EvoImage* all) {
   Canvas cv(w, h);
   panel(cv, 6.0f, 6.0f, w - 6.0f, h - 6.0f, 30.0f, 6.0f, rgb(0x000000, 0.94f), rgb(0xFFD23F), rgb(0x141C3A, 0.97f),
         rgb(0x05070F, 0.97f));
@@ -1252,6 +1820,17 @@ void evolution_scene(uint8_t* rgba, int w, int h, const EvoImage& from, const Ev
     const float ap = 0.16f * h;
     const float aw = text_width(">", ap);
     text_left(cv, ">", cx - 0.5f * aw, picY + 0.5f * picH, ap, aw + 4.0f, rgb(0xFFF7B0), rgb(0xFFC21F), 3.0f);
+  } else if (stage == 0 && options > 2 && all != nullptr) {
+    // r130: a split three to five ways (Tyrogue, Eevee): every form in a row, the chosen one framed in gold
+    const int n = std::min(options, 5);
+    const float gap = 0.02f * w, bw = (0.92f * w - gap * (n - 1)) / n, bh = picH * std::min(1.0f, 1.6f * bw / picW);
+    const float by = picY + 0.5f * (picH - bh);
+    for (int k = 0; k < n; ++k) {
+      const float bx = 0.04f * w + k * (bw + gap);
+      if (k == choice) fill_rounded(cv, bx - 6.0f, by - 6.0f, bx + bw + 6.0f, by + bh + 6.0f, 18.0f, rgb(0xFFD23F, 0.85f));
+      fill_rounded(cv, bx, by, bx + bw, by + bh, 14.0f, rgb(k == choice ? 0x2A3F7A : 0x18224A, 0.95f));
+      blit(all[k], bx + 10.0f, by + 10.0f, bw - 20.0f, bh - 20.0f, 0.0f, 1.0f);
+    }
   } else if (stage == 0) {
     // A split: the two forms side by side, the chosen one framed in gold.
     for (int k = 0; k < 2; ++k) {

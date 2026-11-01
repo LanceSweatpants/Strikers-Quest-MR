@@ -841,12 +841,15 @@ cCharacter* cCharacterSFX::GetCharacterFromNisCharClass(NisCharacterClass charId
                 break;
             }
         }
-        // strikers-quest r79: or a side's co-captain (slot 1, include/port/lineup.h)
+        // strikers-quest r79: or a side's co-captain (slot 1, include/port/lineup.h); r130: any sidekick slot
+        // playing that captain class
         for (int team = 0; pChar == NULL && team < 2; team++)
         {
-            if (PortSecondCaptain(team) == (int)charIdentifier)
+            const int slot = PortSlotOfClass(team, (int)charIdentifier);
+            cFielder* pSlot = slot >= 0 && g_pTeams[team] != NULL ? g_pTeams[team]->GetFielder(slot + 1) : NULL;
+            if (pSlot != NULL && (u32)pSlot->m_eCharacterClass == (u32)charIdentifier)
             {
-                pChar = g_pTeams[team]->GetFielder(1);
+                pChar = pSlot;
             }
         }
         break;
@@ -858,7 +861,14 @@ cCharacter* cCharacterSFX::GetCharacterFromNisCharClass(NisCharacterClass charId
         {
             if ((u32)ConvertToCharacterClass(GameInfoManager::Instance()->GetSidekick((short)team)) == (u32)charIdentifier)
             {
-                pChar = g_pTeams[team]->GetFielder(PortSecondCaptain(team) >= 0 ? 2 : 1);  // r78: past a co-captain
+                // r78: past a co-captain; r130: the team's first player of its sidekick class (none when every slot
+                // plays a captain class: the other team's, else nobody - the callers take a null as no sound)
+                const int sk = PortFirstSidekickPlayer(team);
+                if (sk < 1 || sk > 3)
+                {
+                    continue;
+                }
+                pChar = g_pTeams[team]->GetFielder(sk);
                 break;
             }
         }

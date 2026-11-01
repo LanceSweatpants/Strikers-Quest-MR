@@ -67,6 +67,13 @@ void init();
 // Twice a second from the game thread: picks up a new pick from the panel.
 void poll();
 View view();
+// r124: a match is on (PortHomeMatchBegin .. PortHomeMatchEnd)
+bool in_match();
+// r129: the side you play this match (0 / 1), -1 none seen yet (PortHomeHumanSide)
+int human_side();
+// r134: the Home ground panel's NONE (home-captain.txt "none"): no home ground; clear_none() = automatic again
+bool home_none();
+void clear_none();
 
 // This headset's identity for the online rival (the panel's player id and team name).
 const std::string& my_id();
