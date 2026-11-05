@@ -10,6 +10,7 @@
 #include <unordered_map>
 
 #include "Game/Drawable/DrawableObj.h"
+#include "xr_weather.h"  // r137
 
 extern "C" int PortXrStereoWorld(void);
 
@@ -94,6 +95,12 @@ unsigned s_clipSerial = 0;
 // of the hidden ones: drawn for the life-size stadium, left out of the normal send and the table.
 std::unordered_map<const DrawableObject*, bool> s_cameraSideHidden;
 std::unordered_map<uintptr_t, bool> s_normalSkip;
+// r148: the game camera's own frustum test per object (World::Render, 3D modes: PortXrNoteBroadcastCulled, this frame's
+// answer, noted before the object draws) and this frame's matrix handles of the objects outside it: left out of the
+// broadcast send's 3D world views only. Counts for the census line: objects tested / outside, draws left out.
+std::unordered_map<const DrawableObject*, bool> s_broadcastOut;
+std::unordered_map<uintptr_t, bool> s_broadcastSkip;
+unsigned long s_bcTested = 0, s_bcOutside = 0, s_bcDrawsLeftOut = 0;
 bool s_tableLayer = false;
 bool s_eyeSend = false;
 // Self-test switches (xr_tune): leave a category out of the eye sends to measure what it costs.
@@ -342,6 +349,12 @@ void PortXrClassifyAndMark(const DrawableObject* object, uintptr_t matrixHandle)
         if (hidden != s_cameraSideHidden.end() && hidden->second)
             s_normalSkip[matrixHandle] = true;
     }
+    if (!s_broadcastOut.empty())  // r148: outside the game camera: not in the broadcast picture
+    {
+        std::unordered_map<const DrawableObject*, bool>::const_iterator out = s_broadcastOut.find(object);
+        if (out != s_broadcastOut.end() && out->second)
+            s_broadcastSkip[matrixHandle] = true;
+    }
     const Key key = { object, object->m_uHashID };
     std::unordered_map<Key, Info, KeyHash>::iterator it = s_info.find(key);
     if (it == s_info.end())
@@ -506,6 +519,16 @@ void PortXrNoteCameraSide(const DrawableObject* object, bool hiddenForCamera)
     s_cameraSideHidden[object] = hiddenForCamera;
 }
 
+void PortXrNoteBroadcastCulled(const DrawableObject* object, bool outsideCamera)
+{
+    if (object == NULL)
+        return;
+    s_broadcastOut[object] = outsideCamera;
+    ++s_bcTested;
+    if (outsideCamera)
+        ++s_bcOutside;
+}
+
 // r42: the life-size scorer's handle this frame (whether its eye pass is being sent: s_scorerLayer).
 static uintptr_t s_scorerHandle = 0;
 
@@ -559,8 +582,17 @@ void PortXrTakeDrawCensus(char* out, unsigned long size, unsigned long frames)
     }
     // r58: the eye sends' stadium cull test (see s_cullDiag).
     if (s_cullDiag[0] + s_cullDiag[1] + s_cullDiag[2] > 0 && used < size)
-        snprintf(out + used, size - used, " | eye cull: tested %.0f culled %.0f off %.0f unbounded %.0f",
-                 s_cullDiag[2] / n, s_cullDiag[3] / n, s_cullDiag[0] / n, s_cullDiag[1] / n);
+    {
+        const int w = snprintf(out + used, size - used, " | eye cull: tested %.0f culled %.0f off %.0f unbounded %.0f",
+                               s_cullDiag[2] / n, s_cullDiag[3] / n, s_cullDiag[0] / n, s_cullDiag[1] / n);
+        if (w > 0)
+            used = used + (unsigned long)w < size ? used + (unsigned long)w : size;
+    }
+    // r148: the broadcast send's game-camera cull (3D modes): objects tested / outside the game camera, draws left out
+    if (s_bcTested > 0 && used < size)
+        snprintf(out + used, size - used, " | broadcast cull (game camera): tested %.0f outside %.0f, draws left out %.0f",
+                 s_bcTested / n, s_bcOutside / n, s_bcDrawsLeftOut / n);
+    s_bcTested = s_bcOutside = s_bcDrawsLeftOut = 0;
     memset(s_census, 0, sizeof(s_census));
     memset(s_cullDiag, 0, sizeof(s_cullDiag));
 }
@@ -571,8 +603,10 @@ void PortXrLayersNewMatch(int stadium)
     s_logged = 0;
     s_cullSamples = 0;
     s_tableThinObjects = 0;  // r98
+    s_broadcastOut.clear();  // r148: a new stadium's objects
     s_stadiumId = stadium;
     fprintf(stderr, "[xr-layer] new match, stadium %d\n", stadium);
+    PortWeatherNewMatch(stadium);  // r137: this match's weather (looks only)
 }
 
 void PortXrSetScorerHandle(uintptr_t matrixHandle) { s_scorerHandle = matrixHandle; }
@@ -585,6 +619,14 @@ bool PortXrSkipPacketDraw(uintptr_t matrixHandle)
         return s_scorerHandle == 0 || matrixHandle != s_scorerHandle;
     if (s_scorerHandle != 0 && matrixHandle == s_scorerHandle)
         return true;
+    // r148: the broadcast send's 3D world views (the game camera's: s_cullOn) leave out what the game camera itself would
+    // have culled (Konga in Jumbotron · Stadium: ~430 stadium draws there against ~170 in the Living Room). Eye sends and
+    // the other views (shadow texture, shadow volumes, grabs) never.
+    if (!s_eyeSend && s_cullOn && !s_broadcastSkip.empty() && s_broadcastSkip.count(matrixHandle) != 0)
+    {
+        ++s_bcDrawsLeftOut;
+        return true;
+    }
     if (s_probeState == 2 && s_eyeSend && s_tableLayer && s_cullOn)
         probe_field(matrixHandle);
     // Camera-side objects the game hides from its camera: kept for the life-size stadium only, left
@@ -665,8 +707,12 @@ void PortXrLayersEndFrame()
     s_tableThin.clear();  // r98
     s_sendVValid = false;
     s_normalSkip.clear();
+    s_broadcastSkip.clear();  // r148
     if (!PortXrStereoWorld())
+    {
         s_cameraSideHidden.clear(); // objects come and go with matches; start fresh outside 3D
+        s_broadcastOut.clear();
+    }
     s_eyeSend = false;
     s_tableLayer = false;
     s_cullOn = false;

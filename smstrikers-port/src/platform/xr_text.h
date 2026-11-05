@@ -23,9 +23,15 @@ void goal_banner(uint8_t* rgba, int w, int h, const char* name, uint32_t teamRgb
 // microphone not allowed. r44g: the pause settings panel: those two and your eye height in the
 // stadium (heightCm, + higher), with `row` (0 crowd, 1 voice, 2 height) picked; h about 0.6 w.
 // r104: and two more rows: the trophy shelf + its RetroAchievements badge board on/off (one switch), and the
-// RetroAchievements pop-ups (2 all, 1 unlocks only, 0 off).
+// RetroAchievements pop-ups (2 all, 1 unlocks only, 0 off). r137: and the WEATHER row (`weather` = xr_weather.h
+// PORT_WX_MODE_*: 0 RANDOM, 1 CLEAR, 2 RAIN, 3 SNOW, 4 NIGHT, 5 OFF), row 6. r147: and MENU MUSIC (`music` =
+// port/menu_music.h PORT_MENU_MUSIC_*: 0 LOFI, 1 MY MUSIC, 2 BOTH, 3 OFF; `mySongs` his songs found, -1 unknown), row 7.
 void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row, bool shelf,
-                    int popups, bool home);
+                    int popups, bool home, int weather, int music, int mySongs);
+
+// r147: the menu music's "NOW PLAYING" card: a gold disc with notes, "NOW PLAYING", the title and the artist.
+// Laid out for w : h = 1024 : 220.
+void now_playing_toast(uint8_t* rgba, int w, int h, const char* title, const char* artist);
 
 // r46: a RetroAchievements pop-up: `header` ("ACHIEVEMENT UNLOCKED") with the points (none when
 // points <= 0), the title, and the description (wrapped onto two lines if it must), beside a gold

@@ -25,9 +25,12 @@ public final class Convert {
     private Convert() {}
 
     /** Raised whenever the converter's output changes: headsets make their guests again (GuestSetup's stamp). */
-    public static final int VERSION = 2;  // 2 (1.16): + home figures (charged/Home), Melee standing poses (render/Evo),
+    public static final int VERSION = 4;  // 2 (1.16): + home figures (charged/Home), Melee standing poses (render/Evo),
                                           // r127 / r130's 82 Pokemon (models/Fix + Stand: their post-build fixes),
                                           // the Marvel heroes (mua: RMUE52, its own stamp line)
+                                          // 3 (r135): + 162 Pokemon (models: standbind / fix135 / pivot / pitch /
+                                          // turn / fish post-build steps, scale-show / env-not-card), 512 etch cells
+                                          // 4 (r145): Umbreon's eyes (skin 78 owner), Porygon's colours (tex_square)
 
     /** Makes everything it can; returns how many guests are ready. One guest's failure is a warning, not the end. */
     public static int run(Job job) throws IOException {

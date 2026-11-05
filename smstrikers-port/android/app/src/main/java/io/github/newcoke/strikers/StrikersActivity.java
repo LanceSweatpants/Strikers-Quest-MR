@@ -28,6 +28,8 @@ public class StrikersActivity extends SDLActivity {
     private OverlayView overlay;
     private HudView hud;
     private Preferencias prefs;
+    // strikers-quest r147: the lofi menu music outside matches (MenuMusic, src/platform/menu_music.cpp)
+    private MenuMusic music;
     private final Handler relogio = new Handler(Looper.getMainLooper());
 
     @Override
@@ -136,6 +138,8 @@ public class StrikersActivity extends SDLActivity {
 
         prepararVidro();
         seguirControleFisico();
+        // strikers-quest r147: after super.onCreate, which loaded libmain.so (its side answers MenuMusic's polls)
+        music = MenuMusic.forGame(this);
     }
 
     /** strikers-quest r39: src/platform/xr_net.cpp; takes effect between matches. */
@@ -339,6 +343,13 @@ public class StrikersActivity extends SDLActivity {
         if (hud != null && prefs != null) {
             hud.setVisibility(prefs.ligado(Preferencias.HUD) ? View.VISIBLE : View.GONE);
         }
+        if (music != null) music.setForeground(true);  // r147
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (music != null) music.setForeground(false);  // r147: out of sight, the menu music fades and holds
     }
 
     @Override
@@ -351,6 +362,8 @@ public class StrikersActivity extends SDLActivity {
     @Override
     protected void onDestroy() {
         relogio.removeCallbacksAndMessages(null);
+        if (music != null) music.release();  // r147
+        music = null;
         // strikers-quest r39b: taken before SDL's onDestroy, which tells the game thread to quit and
         // waits for it, but for 1 s at most.
         final Thread game = mSDLThread;

@@ -27,3 +27,34 @@ pk_dragonair slither 1
 pk_hitmontop spin 1
 # r130: Cacnea's hands brushed 3-6 cm into the floor on Daisy's moves (bone-map check g15).
 pk_cacnea arms 0.9
+# r135 (the last 72 evolving Colosseum lines + Duskull, bone-map groups g18-g31: outside/new-roster-r135/MERGE-NOTES.md):
+# nothing glides on land - the caterpillars, snakes, Dewgong and the slugs slither (Slugma's ooze twice as much); the
+# fish swim-wiggle as they float (Chinchou / Wailmer / Wailord / Whiscash 0.6, Feebas 0.8; Horsea / Seadra / Kingdra
+# hover straight, Clamperl hops); Baltoy spins as it goes (its Pokedex: it moves by spinning on its foot).
+pk_caterpie slither 1
+pk_weedle slither 1
+pk_wurmple slither 1
+pk_baltoy spin 1
+pk_slugma slither 2
+pk_magcargo slither 1
+pk_goldeen slither 1
+pk_seaking slither 1
+pk_magikarp slither 1
+pk_gyarados slither 1
+pk_chinchou slither 0.6
+pk_lanturn slither 1
+pk_remoraid slither 1
+pk_octillery slither 1
+pk_carvanha slither 1
+pk_sharpedo slither 1
+pk_wailmer slither 0.6
+pk_wailord slither 0.6
+pk_barboach slither 1
+pk_whiscash slither 0.6
+pk_feebas slither 0.8
+pk_milotic slither 1
+pk_huntail slither 1
+pk_gorebyss slither 1
+pk_dewgong slither 1
+pk_ekans slither 1
+pk_arbok slither 1

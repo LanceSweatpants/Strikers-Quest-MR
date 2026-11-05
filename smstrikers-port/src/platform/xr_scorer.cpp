@@ -35,11 +35,19 @@
 #include "NL/gl/glModel.h"
 #include "NL/nlString.h"  // r53: joints by name (nlStringLowerHash)
 #include "NL/nlTask.h"
+#include "NL/gl/glState.h"             // r143: the scorer's body (body_decode)
+#include "NL/glx/glxDisplayList.h"
+#include "NL/nlRing.h"
+#include "port/xr_body.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>  // r64: clock seed for the celebration bag
+
+#include <mutex>          // r143
+#include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -1045,6 +1053,465 @@ double now_seconds()
 }
 } // namespace
 
+// ---------------------------------------------------------------------------------------------
+// r143 (Lance: Arbok's "see through invisible pole in the back of him", "the characters still appearing to be see
+// through"): the copy's posed body for the effects layer (port/xr_body.h), which hides what falls behind it and lets
+// the pieces bounce off it and land on it. The Strikers character's skin is posed here on the CPU the way its draw
+// is: a stitched packet's vertex (one bone each: its matrix register in the display list, the packet's bone map
+// names the bone, glxSend's slot = (register + 1) x 3) times that bone's pose matrix (ShaderSkinMesh::Pose with the
+// copy's pose, as MakeUserData hands the GPU); a smooth-skinned one (the cut-scenes' blend model) is the vertex
+// AttachSkinData skinned for this very draw. A guest drawn in its place hands over its own (PortXrBodyGuest).
+// ---------------------------------------------------------------------------------------------
+namespace
+{
+
+std::mutex s_bodyMutex;  // the hand-over: game thread (posts) -> render thread (PortXrBodyTake)
+std::vector<float> s_bodyXyz;
+std::vector<uint32_t> s_bodyTris;
+uint32_t s_bodyMesh = 0;  // the triangles' serial
+uintptr_t s_bodyKey = 0;  // whose they are
+int s_bodyNumVerts = 0;
+uint64_t s_bodyGen = 0, s_bodyNs = 0;
+bool s_bodyGuestPosted = false;  // game thread: a guest gave this draw's body
+
+uint64_t body_now_ns()
+{
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+PortXrBodyShape s_bodyShape;  // r144: the last posted body's reach (under s_bodyMutex)
+bool s_bodyShapeOk = false;
+float s_bodyView = 0.0f;      // r144: the direction you see it from (PortXrBodySetView)
+
+void body_post(const float* xyz, int stride, int nv, const uint32_t* tris, int nt, uintptr_t key)
+{
+    if (xyz == NULL || tris == NULL || nv <= 0 || nt <= 0 || stride < 3)
+        return;
+    // r144: its reach round it, its top and how high it rises toward its front (port/xr_body.h)
+    const float c45 = 0.70710678f;
+    float r[8], top = -1e30f, rise[kPortXrBodySlopeCount], side[2][kPortXrBodySlopeCount];
+    for (int k = 0; k < 8; k++)
+        r[k] = -1e30f;
+    for (int k = 0; k < kPortXrBodySlopeCount; k++)
+        rise[k] = side[0][k] = side[1][k] = -1e30f;
+    std::lock_guard<std::mutex> lock(s_bodyMutex);
+    const float view = s_bodyView, cv = cosf(view), sv = sinf(view);
+    s_bodyXyz.resize((size_t)nv * 3);
+    float* o = s_bodyXyz.data();
+    for (int i = 0; i < nv; i++, xyz += stride, o += 3)
+    {
+        const float x = xyz[0], y = xyz[1], z = xyz[2];
+        o[0] = x;
+        o[1] = y;
+        o[2] = z;
+        if (!(x == x && y == y && z == z))
+            continue;
+        const float p = (x + y) * c45, m = (x - y) * c45;
+        r[0] = x > r[0] ? x : r[0];
+        r[1] = p > r[1] ? p : r[1];
+        r[2] = y > r[2] ? y : r[2];
+        r[3] = -m > r[3] ? -m : r[3];
+        r[4] = -x > r[4] ? -x : r[4];
+        r[5] = -p > r[5] ? -p : r[5];
+        r[6] = -y > r[6] ? -y : r[6];
+        r[7] = m > r[7] ? m : r[7];
+        top = z > top ? z : top;
+        const float v = x * cv + y * sv, w = -x * sv + y * cv;  // toward you, and across
+        for (int k = 0; k < kPortXrBodySlopeCount; k++)
+        {
+            const float sx = kPortXrBodySlopes[k] * v;
+            const float h = z + sx, sl = w + sx, sr = -w + sx;
+            rise[k] = h > rise[k] ? h : rise[k];
+            side[0][k] = sl > side[0][k] ? sl : side[0][k];
+            side[1][k] = sr > side[1][k] ? sr : side[1][k];
+        }
+    }
+    if (top > -1e29f)
+    {
+        memcpy(s_bodyShape.reach, r, sizeof r);
+        s_bodyShape.top = top;
+        memcpy(s_bodyShape.rise, rise, sizeof rise);
+        memcpy(s_bodyShape.side, side, sizeof side);
+        s_bodyShape.view = view;
+        s_bodyShapeOk = true;
+    }
+    if (key != s_bodyKey || nv != s_bodyNumVerts || s_bodyTris.size() != (size_t)nt * 3)
+    {
+        s_bodyTris.assign(tris, tris + (size_t)nt * 3);
+        s_bodyKey = key;
+        s_bodyNumVerts = nv;
+        if (++s_bodyMesh == 0)
+            s_bodyMesh = 1;
+    }
+    ++s_bodyGen;
+    s_bodyNs = body_now_ns();
+    s_bodyShape.gen = s_bodyGen;
+    s_bodyShape.postedNs = s_bodyNs;
+}
+
+// A Strikers skin read for the CPU once (per mesh): its vertices (bind place, and the bone or the software vertex
+// they follow) and triangles.
+struct BodyVert
+{
+    float bind[3];
+    int bone;  // into BodyModel::bones (a stitched vertex), -1 for a smooth-skinned one
+    int soft;  // its software vertex (smooth-skinned), -1 for a stitched one
+};
+struct BodyModel
+{
+    const ShaderSkinMesh* mesh;
+    const glModel* model;
+    const glModelPacket* packets;
+    u32 numPackets;
+    uintptr_t firstList;
+    uintptr_t key;
+    bool ok;
+    bool hasSoft;
+    std::vector<BodyVert> verts;
+    std::vector<uint32_t> tris;
+    std::vector<unsigned long> bones;  // bone ids
+};
+BodyModel s_bodyModels[2];  // the rigid model and the cut-scenes' blend one
+int s_bodyModelNext = 0;
+uint32_t s_bodySerial = 0;
+std::vector<float> s_bodyPosed;  // scratch
+std::vector<float> s_bodyMats;   // 12 per bone (3 x 4, GX order)
+
+// A packet's bone map turned round: matrix register -> bone id.
+struct RegToBone
+{
+    unsigned long bone[256];
+    bool has[256];
+    void Add(const unsigned long& boneId, unsigned long* reg)
+    {
+        if (*reg < 256)
+        {
+            bone[*reg] = boneId;
+            has[*reg] = true;
+        }
+    }
+};
+RegToBone s_regs;
+
+inline int body_be16(const u8* p) { return (p[0] << 8) | p[1]; }
+inline float body_f32(const u8* p, bool be)
+{
+    uint32_t u;
+    if (be)
+        u = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+    else
+        memcpy(&u, p, 4);
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+}
+inline float body_s16(const u8* p, bool be)
+{
+    const int16_t v = be ? (int16_t)((p[0] << 8) | p[1]) : (int16_t)(p[0] | (p[1] << 8));
+    return (float)v / 256.0f;  // GX_S16 with 8 fraction bits (glxSend's stride-6 positions)
+}
+
+// A display list's run of entries (body vertices, UINT32_MAX = none) as triangles, by its GX primitive.
+void body_tris(u8 op, const std::vector<uint32_t>& e, std::vector<uint32_t>& out)
+{
+    const size_t n = e.size();
+    struct Add
+    {
+        std::vector<uint32_t>& out;
+        void operator()(uint32_t a, uint32_t b, uint32_t c) const
+        {
+            if (a == 0xFFFFFFFFu || b == 0xFFFFFFFFu || c == 0xFFFFFFFFu || a == b || b == c || a == c)
+                return;
+            out.push_back(a);
+            out.push_back(b);
+            out.push_back(c);
+        }
+    } add = {out};
+    if (op == 0x90) // triangles
+        for (size_t k = 0; k + 2 < n; k += 3)
+            add(e[k], e[k + 1], e[k + 2]);
+    else if (op == 0x98) // a strip (every other one turned back round)
+        for (size_t k = 2; k < n; k++)
+        {
+            if (k & 1)
+                add(e[k - 1], e[k - 2], e[k]);
+            else
+                add(e[k - 2], e[k - 1], e[k]);
+        }
+    else if (op == 0xA0) // a fan
+        for (size_t k = 2; k < n; k++)
+            add(e[0], e[k - 1], e[k]);
+    else if (op == 0x80) // quads
+        for (size_t k = 0; k + 3 < n; k += 4)
+        {
+            add(e[k], e[k + 1], e[k + 2]);
+            add(e[k], e[k + 2], e[k + 3]);
+        }
+}
+
+bool body_decode(const ShaderSkinMesh* mesh, BodyModel& bm)
+{
+    const glModel* model = mesh->pModel;
+    bm.mesh = mesh;
+    bm.model = model;
+    bm.packets = model != NULL ? model->packets : NULL;
+    bm.numPackets = model != NULL ? model->numPackets : 0;
+    bm.firstList = model != NULL && model->packets != NULL && model->numPackets > 0 ? model->packets[0].indexBuffer : 0;
+    bm.ok = false;
+    bm.hasSoft = false;
+    bm.verts.clear();
+    bm.tris.clear();
+    bm.bones.clear();
+    if (++s_bodySerial == 0)
+        s_bodySerial = 1;
+    bm.key = (uintptr_t)s_bodySerial;  // never a guest's (those are its address)
+    if (bm.packets == NULL || bm.numPackets == 0)
+        return false;
+    BoneMapList* first = nlRingGetStart<BoneMapList>(mesh->boneMaps);
+    BoneMapList* mapList = first != NULL ? first->m_next : NULL;  // packet 0's (AttachSkinData's walk)
+    std::vector<uint32_t> entries;
+    std::unordered_map<uint32_t, uint32_t> seen;
+    std::unordered_map<int, uint32_t> softSeen;
+    int skipped = 0, stitchedPackets = 0, softPackets = 0;
+    for (u32 pi = 0; pi < bm.numPackets; pi++, mapList = mapList != NULL ? mapList->m_next : NULL)
+    {
+        const glModelPacket& pk = bm.packets[pi];
+        DisplayList* dl = dlGetStruct(pk.indexBuffer);
+        if (dl == NULL || dl->list == NULL || dl->size < 3)
+            continue;
+        const u8* list = (const u8*)dl->list;
+        const int count = (list[1] << 8) | list[2];
+        const int ns = dl->indices[0];
+        const bool hasMtx = dl->indices[1] != 0;
+        const int rec = hasMtx ? 1 + (ns - 1) * 2 : ns * 2;
+        if (count < 3 || ns < 1 || rec < 2 || 3u + (u32)count * (u32)rec > dl->size)
+            continue;
+        const bool stitched = glGetRasterState(pk.state.raster, GLS_SolidOffset) == 1;
+        const glModelStream* pos = NULL;
+        for (int s = 0; pk.streams != NULL && s < (int)pk.numStreams; s++)
+            if (pk.streams[s].id == 0)
+            {
+                pos = &pk.streams[s];
+                break;
+            }
+        const unsigned char* stitch = NULL;
+        if (stitched)
+        {
+            if (pos == NULL || pos->address == 0 || (pos->stride != 6 && pos->stride != 12) || mapList == NULL || !hasMtx)
+                continue;
+            memset(&s_regs, 0, sizeof s_regs);
+            mapList->boneMap.Walk(&s_regs, &RegToBone::Add);
+            stitch = mesh->stitchArray != NULL && (int)pi < mesh->numPackets ? mesh->stitchArray[pi] : NULL;
+            stitchedPackets++;
+        }
+        else
+        {
+            if (mesh->numSoftwareVerts <= 0)
+                continue;
+            softPackets++;
+        }
+        entries.assign((size_t)count, 0xFFFFFFFFu);
+        seen.clear();
+        for (int k = 0; k < count; k++)
+        {
+            const u8* e = list + 3 + (size_t)k * (size_t)rec;
+            const int idx = body_be16(e + (hasMtx ? 1 : 0));
+            if (stitched)
+            {
+                // the file's stitch byte, else what StitchModel wrote: (register + 1) x 3
+                const int reg = stitch != NULL ? (int)stitch[k] : (e[0] >= 3 && e[0] % 3 == 0 ? e[0] / 3 - 1 : -1);
+                if (reg < 0 || reg > 255 || !s_regs.has[reg])
+                {
+                    skipped++;
+                    continue;
+                }
+                const unsigned long boneId = s_regs.bone[reg];
+                int slot = -1;
+                for (size_t b = 0; b < bm.bones.size(); b++)
+                    if (bm.bones[b] == boneId)
+                    {
+                        slot = (int)b;
+                        break;
+                    }
+                if (slot < 0)
+                {
+                    if (bm.bones.size() >= 255)
+                    {
+                        skipped++;
+                        continue;
+                    }
+                    slot = (int)bm.bones.size();
+                    bm.bones.push_back(boneId);
+                }
+                const uint32_t key = ((uint32_t)idx << 8) | (uint32_t)slot;
+                std::unordered_map<uint32_t, uint32_t>::const_iterator it = seen.find(key);
+                if (it != seen.end())
+                {
+                    entries[k] = it->second;
+                    continue;
+                }
+                if (pos->dataSize != 0 && (u32)(idx + 1) * pos->stride > pos->dataSize)
+                {
+                    skipped++;
+                    continue;
+                }
+                const u8* p = (const u8*)pos->address + (size_t)idx * pos->stride;
+                const bool be = pos->beData != 0;
+                BodyVert v;
+                for (int c = 0; c < 3; c++)
+                    v.bind[c] = pos->stride == 12 ? body_f32(p + 4 * c, be) : body_s16(p + 2 * c, be);
+                v.bone = slot;
+                v.soft = -1;
+                entries[k] = (uint32_t)bm.verts.size();
+                seen[key] = entries[k];
+                bm.verts.push_back(v);
+            }
+            else
+            {
+                if (idx >= mesh->numSoftwareVerts)
+                {
+                    skipped++;
+                    continue;
+                }
+                std::unordered_map<int, uint32_t>::const_iterator it = softSeen.find(idx);
+                if (it != softSeen.end())
+                {
+                    entries[k] = it->second;
+                    continue;
+                }
+                BodyVert v;
+                v.bind[0] = v.bind[1] = v.bind[2] = 0.0f;
+                v.bone = -1;
+                v.soft = idx;
+                entries[k] = (uint32_t)bm.verts.size();
+                softSeen[idx] = entries[k];
+                bm.verts.push_back(v);
+                bm.hasSoft = true;
+            }
+        }
+        body_tris(list[0], entries, bm.tris);
+    }
+    bm.ok = !bm.verts.empty() && !bm.tris.empty();
+    fprintf(stderr,
+            "[port] scorer body: %u packets (%d stitched, %d smooth) -> %d vertices, %d triangles, %d bones, %d "
+            "entries without a bone / vertex\n",
+            (unsigned)bm.numPackets, stitchedPackets, softPackets, (int)bm.verts.size(), (int)(bm.tris.size() / 3),
+            (int)bm.bones.size(), skipped);
+    return bm.ok;
+}
+
+// The Strikers character's skin as the copy's draw just posed it, handed to the effects layer.
+void body_from_skin(cCharacter* ch)
+{
+    ShaderSkinMesh* mesh = (ShaderSkinMesh*)ch->GetSkinMesh();
+    if (mesh == NULL || mesh->pModel == NULL || mesh->pModel->packets == NULL || mesh->pModel->numPackets == 0)
+        return;
+    BodyModel* bm = NULL;
+    for (int i = 0; i < 2 && bm == NULL; i++)
+    {
+        const BodyModel& c = s_bodyModels[i];
+        if (c.mesh == mesh && c.model == mesh->pModel && c.packets == mesh->pModel->packets &&
+            c.numPackets == mesh->pModel->numPackets && c.firstList == mesh->pModel->packets[0].indexBuffer)
+            bm = &s_bodyModels[i];
+    }
+    if (bm == NULL)
+    {
+        bm = &s_bodyModels[s_bodyModelNext];
+        s_bodyModelNext ^= 1;
+        body_decode(mesh, *bm);
+    }
+    if (!bm->ok)
+        return;
+    s_bodyMats.resize(bm->bones.size() * 12);
+    for (size_t b = 0; b < bm->bones.size(); b++)
+    {
+        SkinMatrix* m = NULL;
+        float* o = &s_bodyMats[b * 12];
+        if (mesh->poseMatrices.FindGet(bm->bones[b], &m) && m != NULL)
+            memcpy(o, m->m, sizeof(float) * 12);
+        else
+        {
+            memset(o, 0, sizeof(float) * 12);
+            o[0] = o[5] = o[10] = 1.0f;
+        }
+    }
+    // the software vertices this draw skinned (AttachSkinData points every smooth packet's positions at them)
+    const u8* soft = NULL;
+    if (bm->hasSoft)
+    {
+        for (u32 pi = 0; pi < mesh->pModel->numPackets && soft == NULL; pi++)
+        {
+            const glModelPacket& pk = mesh->pModel->packets[pi];
+            if (glGetRasterState(pk.state.raster, GLS_SolidOffset) != 1 && pk.streams != NULL && pk.numStreams > 0 &&
+                pk.streams[0].id == 0 && pk.streams[0].address != 0 && pk.streams[0].beData == 0 &&
+                pk.streams[0].stride == 12)
+                soft = (const u8*)pk.streams[0].address;
+        }
+        if (soft == NULL)
+            return;
+    }
+    const size_t n = bm->verts.size();
+    s_bodyPosed.resize(n * 3);
+    float* o = s_bodyPosed.data();
+    for (size_t i = 0; i < n; i++, o += 3)
+    {
+        const BodyVert& v = bm->verts[i];
+        if (v.bone >= 0)
+        {
+            const float* M = &s_bodyMats[(size_t)v.bone * 12];
+            const float x = v.bind[0], y = v.bind[1], z = v.bind[2];
+            o[0] = M[0] * x + M[1] * y + M[2] * z + M[3];
+            o[1] = M[4] * x + M[5] * y + M[6] * z + M[7];
+            o[2] = M[8] * x + M[9] * y + M[10] * z + M[11];
+        }
+        else
+            memcpy(o, soft + (size_t)v.soft * 12, sizeof(float) * 3);
+    }
+    body_post(s_bodyPosed.data(), 3, (int)n, bm->tris.data(), (int)(bm->tris.size() / 3), bm->key);
+}
+
+} // namespace
+
+void PortXrBodyGuest(const float* xyz, int stride, int numVerts, const uint32_t* tris, int numTris, uintptr_t key)
+{
+    body_post(xyz, stride, numVerts, tris, numTris, key);
+    s_bodyGuestPosted = true;
+}
+
+bool PortXrBodyTake(uint64_t* gen, uint32_t* mesh, std::vector<float>* xyz, std::vector<uint32_t>* tris,
+                    uint64_t* postedNs)
+{
+    std::lock_guard<std::mutex> lock(s_bodyMutex);
+    if (s_bodyGen == *gen || s_bodyXyz.empty())
+        return false;
+    *gen = s_bodyGen;
+    *xyz = s_bodyXyz;
+    if (*mesh != s_bodyMesh)
+    {
+        *tris = s_bodyTris;
+        *mesh = s_bodyMesh;
+    }
+    *postedNs = s_bodyNs;
+    return true;
+}
+
+bool PortXrBodyShapeNow(PortXrBodyShape* out)
+{
+    std::lock_guard<std::mutex> lock(s_bodyMutex);
+    if (!s_bodyShapeOk)
+        return false;
+    *out = s_bodyShape;
+    return true;
+}
+
+void PortXrBodySetView(float angle)
+{
+    std::lock_guard<std::mutex> lock(s_bodyMutex);
+    s_bodyView = angle == angle ? angle : 0.0f;
+}
+
 void XrScorerFaceOff(const cCharacter* who, int side)
 {
     release_copy();
@@ -1307,11 +1774,14 @@ void XrScorerRender()
     ch->PoseSkinMesh(s_copy->mPoseAccumulator);
     // r77: a guest drawn from its own clips gets what the copy was posed with (its own run, wave,
     // celebration) instead of the field character's frozen frame
+    s_bodyGuestPosted = false;  // r143: a guest drawn in its place gives its body during the send
     PortGuestScorerPose(true, s_posedClip, s_posedNorm, danceSeconds);
     s_copy->SendToGl(*ch);
     PortGuestScorerPose(false, NULL, 0.0f, 0.0f);
     DrawableCharacter::sXrOwnMatrix = false;
     DrawableCharacter::sShadowRenderingDisabled = shadows;
+    if (!s_bodyGuestPosted)
+        body_from_skin(ch);  // r143: else the Strikers character's own skin, as just posed and sent
     const GLSkinMesh* mesh = ch->GetSkinMesh();
     PortXrSetScorerHandle(mesh != NULL && mesh->pModel != NULL && mesh->pModel->numPackets > 0
                               ? mesh->pModel->packets[0].state.matrix

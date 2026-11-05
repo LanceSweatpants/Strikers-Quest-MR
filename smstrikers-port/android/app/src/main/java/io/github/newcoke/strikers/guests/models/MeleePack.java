@@ -40,6 +40,10 @@ final class MeleePack {
         List<Integer> retex;           // texture records "tex/<data>" made again from the picture as it is
         Map<Integer, String> forceSkin; // a DObj owner (joint index) -> its skin mode, if a candidate (r130 Flaaffy:
                                        // colo-maps\g13\fixtest\meleepack_fix.py, env G13_FORCE)
+        int[] scaleShow, scaleHide;    // r135 Swellow (--scale-show / --scale-hide J,J; colo-maps\g22\meleepack_g22.py):
+                                       // those joints + their subtrees kept although shrunk / left out as if shrunk
+        boolean envNotCard;            // r135 Wailmer (--env-not-card; colo-maps\g29\meleepack_wm.py): an envelope-
+                                       // skinned shape on a camera-facing (card) joint stays mesh
     }
 
     /** One pack's bone-map entry (melee-bone-map.json / colo-bone-map.json, as shipped). */
@@ -454,7 +458,10 @@ final class MeleePack {
                 }
             }
             if (cn > 0) pk.vcol = new int[] {(int) (sum[0] / cn), (int) (sum[1] / cn), (int) (sum[2] / cn)};
-            if (o.modelSpaceEnv && (fl & (0x200 | 0x400 | 0x800 | 0x2000)) != 0) billboard.put(packets.size(), ji);
+            // (r135 --env-not-card: Wailmer's body hangs on a joint flagged billboard, but its shapes are envelope-
+            // skinned: HSD places those by their envelopes' joints, so the flag never turns them)
+            if (o.modelSpaceEnv && (fl & (0x200 | 0x400 | 0x800 | 0x2000)) != 0 && !(o.envNotCard && kind == 0x2000))
+                billboard.put(packets.size(), ji);
             pk.tris = new int[trisL.size() * 3];
             for (int t = 0; t < trisL.size(); t++) System.arraycopy(trisL.get(t), 0, pk.tris, t * 3, 3);
             pk.mobj = mobj;
@@ -629,6 +636,13 @@ final class MeleePack {
                 any = true;
             }
         }
+        // r135 (Swellow): parts kept although shrunk / left out as if shrunk, each with its subtree
+        if (o.scaleShow != null || o.scaleHide != null) {
+            for (int j : subtreeOf(o.scaleShow)) hidden[j] = false;
+            for (int j : subtreeOf(o.scaleHide)) hidden[j] = true;
+            any = false;
+            for (int j = 0; j < nj; j++) any |= hidden[j];
+        }
         if (any) {
             for (Pk pk : packets) {
                 final int[] ld = new int[pk.verts.size()];
@@ -645,6 +659,30 @@ final class MeleePack {
                 pk.tris = java.util.Arrays.copyOf(keep, n);
             }
         }
+    }
+
+    /** meleepack_g22._g22_sub: these joints (by index) and every joint under them. */
+    private List<Integer> subtreeOf(int[] ks) {
+        final List<Integer> out = new ArrayList<>();
+        if (ks == null) return out;
+        final boolean[] in = new boolean[joints.size()];
+        for (int k : ks) {
+            if (k < 0 || k >= in.length) throw new IllegalArgumentException("scale-show / hide joint " + k);
+            in[k] = true;
+        }
+        boolean grow = true;
+        while (grow) {
+            grow = false;
+            for (int j = 0; j < in.length; j++) {
+                final int p = parent.get(j);
+                if (!in[j] && p >= 0 && in[p]) {
+                    in[j] = true;
+                    grow = true;
+                }
+            }
+        }
+        for (int j = 0; j < in.length; j++) if (in[j]) out.add(j);
+        return out;
     }
 
     // ------------------------------------------------------------------------------------------------ gas

@@ -228,6 +228,91 @@ mua_mrfantastic	captain	luigi	Mr. Fantastic	Ultimate Alliance
 mua_nickfury	captain	luigi	Nick Fury	Ultimate Alliance
 mua_silversurfer	captain	luigi	Silver Surfer	Ultimate Alliance
 mua_msmarvel	captain	daisy	Ms. Marvel	Ultimate Alliance
+mua_captainmarvel	captain	luigi	Captain Marvel	Ultimate Alliance
+mua_lukecage	captain	luigi	Luke Cage	Ultimate Alliance
+mua_ronin	captain	daisy	Ronin	Ultimate Alliance
+pk_caterpie	captain	peach	Caterpie	Colosseum
+pk_weedle	captain	peach	Weedle	Colosseum
+pk_pidgey	captain	yoshi	Pidgey	Colosseum
+pk_rattata	captain	daisy	Rattata	Colosseum
+pk_spearow	captain	yoshi	Spearow	Colosseum
+pk_ekans	captain	peach	Ekans	Colosseum
+pk_vulpix	captain	daisy	Vulpix	Colosseum
+pk_zubat	captain	yoshi	Zubat	Colosseum
+pk_oddish	captain	mario	Oddish	Colosseum
+pk_paras	captain	daisy	Paras	Colosseum
+pk_venonat	captain	daisy	Venonat	Colosseum
+pk_diglett	captain	mario	Diglett	Colosseum
+pk_meowth	captain	mario	Meowth	Colosseum
+pk_bellsprout	captain	peach	Bellsprout	Colosseum
+pk_tentacool	captain	waluigi	Tentacool	Colosseum
+pk_ponyta	captain	daisy	Ponyta	Colosseum
+pk_magnemite	captain	waluigi	Magnemite	Colosseum
+pk_doduo	captain	waluigi	Doduo	Colosseum
+pk_seel	captain	peach	Seel	Colosseum
+pk_grimer	captain	mario	Grimer	Colosseum
+pk_shellder	captain	mario	Shellder	Colosseum
+pk_krabby	captain	daisy	Krabby	Colosseum
+pk_exeggcute	captain	mario	Exeggcute	Colosseum
+pk_rhyhorn	captain	daisy	Rhyhorn	Colosseum
+pk_chansey	captain	peach	Chansey	Colosseum
+pk_horsea	captain	peach	Horsea	Colosseum
+pk_goldeen	captain	peach	Goldeen	Colosseum
+pk_staryu	captain	daisy	Staryu	Colosseum
+pk_magikarp	captain	peach	Magikarp	Colosseum
+pk_porygon	captain	mario	Porygon	Colosseum
+pk_omanyte	captain	mario	Omanyte	Colosseum
+pk_sentret	captain	daisy	Sentret	Colosseum
+pk_hoothoot	captain	yoshi	Hoothoot	Colosseum
+pk_ledyba	captain	yoshi	Ledyba	Colosseum
+pk_spinarak	captain	daisy	Spinarak	Colosseum
+pk_chinchou	captain	peach	Chinchou	Colosseum
+pk_cleffa	captain	peach	Cleffa	Colosseum
+pk_togepi	captain	peach	Togepi	Colosseum
+pk_natu	captain	yoshi	Natu	Colosseum
+pk_hoppip	captain	peach	Hoppip	Colosseum
+pk_sunkern	captain	mario	Sunkern	Colosseum
+pk_pineco	captain	mario	Pineco	Colosseum
+pk_snubbull	captain	daisy	Snubbull	Colosseum
+pk_slugma	captain	peach	Slugma	Colosseum
+pk_swinub	captain	daisy	Swinub	Colosseum
+pk_remoraid	captain	peach	Remoraid	Colosseum
+pk_phanpy	captain	daisy	Phanpy	Colosseum
+pk_poochyena	captain	daisy	Poochyena	Colosseum
+pk_zigzagoon	captain	daisy	Zigzagoon	Colosseum
+pk_wurmple	captain	peach	Wurmple	Colosseum
+pk_taillow	captain	yoshi	Taillow	Colosseum
+pk_wingull	captain	yoshi	Wingull	Colosseum
+pk_surskit	captain	daisy	Surskit	Colosseum
+pk_nincada	captain	daisy	Nincada	Colosseum
+pk_azurill	captain	peach	Azurill	Colosseum
+pk_skitty	captain	daisy	Skitty	Colosseum
+pk_electrike	captain	daisy	Electrike	Colosseum
+pk_gulpin	captain	mario	Gulpin	Colosseum
+pk_carvanha	captain	peach	Carvanha	Colosseum
+pk_wailmer	captain	waluigi	Wailmer	Colosseum
+pk_numel	captain	daisy	Numel	Colosseum
+pk_spoink	captain	mario	Spoink	Colosseum
+pk_swablu	captain	yoshi	Swablu	Colosseum
+pk_barboach	captain	peach	Barboach	Colosseum
+pk_corphish	captain	daisy	Corphish	Colosseum
+pk_baltoy	captain	waluigi	Baltoy	Colosseum
+pk_lileep	captain	mario	Lileep	Colosseum
+pk_feebas	captain	peach	Feebas	Colosseum
+pk_duskull	captain	waluigi	Duskull	Colosseum
+pk_wynaut	captain	mario	Wynaut	Colosseum
+pk_snorunt	captain	peach	Snorunt	Colosseum
+pk_spheal	captain	mario	Spheal	Colosseum
+pk_clamperl	captain	mario	Clamperl	Colosseum
+mua_nightcrawler	captain	luigi	Nightcrawler	Ultimate Alliance
+mua_jeangrey	captain	peach	Jean Grey	Ultimate Alliance
+mua_professorx	captain	luigi	Professor X	Ultimate Alliance
+mua_vision	captain	luigi	The Vision	Ultimate Alliance
+mua_drdoom	captain	luigi	Dr. Doom	Ultimate Alliance
+mua_mysterio	captain	luigi	Mysterio	Ultimate Alliance
+mua_lizard	captain	luigi	Lizard	Ultimate Alliance
+mua_rhino	captain	donkeykong	Rhino	Ultimate Alliance
+mua_wintersoldier	captain	luigi	Winter Soldier	Ultimate Alliance
 pk_vaporeon	captain	daisy	Vaporeon	Colosseum	franchise	pk_eevee
 pk_jolteon	captain	daisy	Jolteon	Colosseum	franchise	pk_eevee
 pk_flareon	captain	daisy	Flareon	Colosseum	franchise	pk_eevee
@@ -276,3 +361,101 @@ mua_nickfury_c4	captain	luigi	Nick Fury IV	Ultimate Alliance	franchise	mua_nickf
 mua_msmarvel_c2	captain	daisy	Ms. Marvel II	Ultimate Alliance	franchise	mua_msmarvel
 mua_msmarvel_c3	captain	daisy	Ms. Marvel III	Ultimate Alliance	franchise	mua_msmarvel_c2
 mua_msmarvel_c4	captain	daisy	Ms. Marvel IV	Ultimate Alliance	franchise	mua_msmarvel_c3
+mua_captainmarvel_c2	captain	luigi	Captain Marvel II	Ultimate Alliance	franchise	mua_captainmarvel
+mua_captainmarvel_c3	captain	luigi	Captain Marvel III	Ultimate Alliance	franchise	mua_captainmarvel_c2
+mua_captainmarvel_c4	captain	luigi	Captain Marvel IV	Ultimate Alliance	franchise	mua_captainmarvel_c3
+mua_lukecage_c2	captain	luigi	Luke Cage II	Ultimate Alliance	franchise	mua_lukecage
+mua_lukecage_c3	captain	luigi	Luke Cage III	Ultimate Alliance	franchise	mua_lukecage_c2
+mua_lukecage_c4	captain	luigi	Luke Cage IV	Ultimate Alliance	franchise	mua_lukecage_c3
+mua_ronin_c2	captain	daisy	Ronin II	Ultimate Alliance	franchise	mua_ronin
+mua_ronin_c3	captain	daisy	Ronin III	Ultimate Alliance	franchise	mua_ronin_c2
+mua_ronin_c4	captain	daisy	Ronin IV	Ultimate Alliance	franchise	mua_ronin_c3
+pk_metapod	captain	mario	Metapod	Colosseum	franchise	pk_caterpie
+pk_butterfree	captain	yoshi	Butterfree	Colosseum	franchise	pk_metapod
+pk_kakuna	captain	mario	Kakuna	Colosseum	franchise	pk_weedle
+pk_beedrill	captain	luigi	Beedrill	Colosseum	franchise	pk_kakuna
+pk_pidgeotto	captain	yoshi	Pidgeotto	Colosseum	franchise	pk_pidgey
+pk_pidgeot	captain	luigi	Pidgeot	Colosseum	franchise	pk_pidgeotto
+pk_raticate	captain	daisy	Raticate	Colosseum	franchise	pk_rattata
+pk_fearow	captain	luigi	Fearow	Colosseum	franchise	pk_spearow
+pk_arbok	captain	peach	Arbok	Colosseum	franchise	pk_ekans
+pk_ninetales	captain	daisy	Ninetales	Colosseum	franchise	pk_vulpix
+pk_golbat	captain	yoshi	Golbat	Colosseum	franchise	pk_zubat
+pk_crobat	captain	luigi	Crobat	Colosseum	franchise	pk_golbat
+pk_gloom	captain	daisy	Gloom	Colosseum	franchise	pk_oddish
+pk_vileplume	captain	daisy	Vileplume	Colosseum	franchise	pk_gloom
+pk_bellossom	captain	peach	Bellossom	Colosseum	franchise	pk_gloom
+pk_parasect	captain	daisy	Parasect	Colosseum	franchise	pk_paras
+pk_venomoth	captain	yoshi	Venomoth	Colosseum	franchise	pk_venonat
+pk_dugtrio	captain	mario	Dugtrio	Colosseum	franchise	pk_diglett
+pk_persian	captain	daisy	Persian	Colosseum	franchise	pk_meowth
+pk_weepinbell	captain	mario	Weepinbell	Colosseum	franchise	pk_bellsprout
+pk_victreebel	captain	luigi	Victreebel	Colosseum	franchise	pk_weepinbell
+pk_tentacruel	captain	waluigi	Tentacruel	Colosseum	franchise	pk_tentacool
+pk_rapidash	captain	daisy	Rapidash	Colosseum	franchise	pk_ponyta
+pk_magneton	captain	waluigi	Magneton	Colosseum	franchise	pk_magnemite
+pk_dodrio	captain	waluigi	Dodrio	Colosseum	franchise	pk_doduo
+pk_dewgong	captain	peach	Dewgong	Colosseum	franchise	pk_seel
+pk_muk	captain	luigi	Muk	Colosseum	franchise	pk_grimer
+pk_cloyster	captain	luigi	Cloyster	Colosseum	franchise	pk_shellder
+pk_kingler	captain	daisy	Kingler	Colosseum	franchise	pk_krabby
+pk_exeggutor	captain	luigi	Exeggutor	Colosseum	franchise	pk_exeggcute
+pk_rhydon	captain	peach	Rhydon	Colosseum	franchise	pk_rhyhorn
+pk_blissey	captain	peach	Blissey	Colosseum	franchise	pk_chansey
+pk_seadra	captain	waluigi	Seadra	Colosseum	franchise	pk_horsea
+pk_kingdra	captain	donkeykong	Kingdra	Colosseum	franchise	pk_seadra
+pk_seaking	captain	waluigi	Seaking	Colosseum	franchise	pk_goldeen
+pk_starmie	captain	daisy	Starmie	Colosseum	franchise	pk_staryu
+pk_gyarados	captain	donkeykong	Gyarados	Colosseum	franchise	pk_magikarp
+pk_porygon2	captain	mario	Porygon2	Colosseum	franchise	pk_porygon
+pk_omastar	captain	luigi	Omastar	Colosseum	franchise	pk_omanyte
+pk_furret	captain	daisy	Furret	Colosseum	franchise	pk_sentret
+pk_noctowl	captain	luigi	Noctowl	Colosseum	franchise	pk_hoothoot
+pk_ledian	captain	luigi	Ledian	Colosseum	franchise	pk_ledyba
+pk_ariados	captain	daisy	Ariados	Colosseum	franchise	pk_spinarak
+pk_lanturn	captain	waluigi	Lanturn	Colosseum	franchise	pk_chinchou
+pk_clefairy	captain	peach	Clefairy	Colosseum	franchise	pk_cleffa
+pk_clefable	captain	peach	Clefable	Colosseum	franchise	pk_clefairy
+pk_togetic	captain	peach	Togetic	Colosseum	franchise	pk_togepi
+pk_xatu	captain	luigi	Xatu	Colosseum	franchise	pk_natu
+pk_skiploom	captain	peach	Skiploom	Colosseum	franchise	pk_hoppip
+pk_jumpluff	captain	peach	Jumpluff	Colosseum	franchise	pk_skiploom
+pk_sunflora	captain	peach	Sunflora	Colosseum	franchise	pk_sunkern
+pk_forretress	captain	luigi	Forretress	Colosseum	franchise	pk_pineco
+pk_granbull	captain	daisy	Granbull	Colosseum	franchise	pk_snubbull
+pk_magcargo	captain	peach	Magcargo	Colosseum	franchise	pk_slugma
+pk_piloswine	captain	daisy	Piloswine	Colosseum	franchise	pk_swinub
+pk_octillery	captain	waluigi	Octillery	Colosseum	franchise	pk_remoraid
+pk_donphan	captain	daisy	Donphan	Colosseum	franchise	pk_phanpy
+pk_mightyena	captain	daisy	Mightyena	Colosseum	franchise	pk_poochyena
+pk_linoone	captain	daisy	Linoone	Colosseum	franchise	pk_zigzagoon
+pk_silcoon	captain	mario	Silcoon	Colosseum	franchise	pk_wurmple
+pk_cascoon	captain	mario	Cascoon	Colosseum	franchise	pk_wurmple
+pk_beautifly	captain	yoshi	Beautifly	Colosseum	franchise	pk_silcoon
+pk_dustox	captain	yoshi	Dustox	Colosseum	franchise	pk_cascoon
+pk_swellow	captain	yoshi	Swellow	Colosseum	franchise	pk_taillow
+pk_pelipper	captain	luigi	Pelipper	Colosseum	franchise	pk_wingull
+pk_masquerain	captain	yoshi	Masquerain	Colosseum	franchise	pk_surskit
+pk_ninjask	captain	yoshi	Ninjask	Colosseum	franchise	pk_nincada
+pk_shedinja	captain	waluigi	Shedinja	Colosseum	franchise	pk_nincada
+pk_marill	captain	peach	Marill	Colosseum	franchise	pk_azurill
+pk_azumarill	captain	mario	Azumarill	Colosseum	franchise	pk_marill
+pk_delcatty	captain	daisy	Delcatty	Colosseum	franchise	pk_skitty
+pk_manectric	captain	daisy	Manectric	Colosseum	franchise	pk_electrike
+pk_swalot	captain	luigi	Swalot	Colosseum	franchise	pk_gulpin
+pk_sharpedo	captain	waluigi	Sharpedo	Colosseum	franchise	pk_carvanha
+pk_wailord	captain	donkeykong	Wailord	Colosseum	franchise	pk_wailmer
+pk_camerupt	captain	daisy	Camerupt	Colosseum	franchise	pk_numel
+pk_grumpig	captain	mario	Grumpig	Colosseum	franchise	pk_spoink
+pk_altaria	captain	yoshi	Altaria	Colosseum	franchise	pk_swablu
+pk_whiscash	captain	waluigi	Whiscash	Colosseum	franchise	pk_barboach
+pk_crawdaunt	captain	daisy	Crawdaunt	Colosseum	franchise	pk_corphish
+pk_claydol	captain	waluigi	Claydol	Colosseum	franchise	pk_baltoy
+pk_cradily	captain	luigi	Cradily	Colosseum	franchise	pk_lileep
+pk_milotic	captain	peach	Milotic	Colosseum	franchise	pk_feebas
+pk_wobbuffet	captain	luigi	Wobbuffet	Colosseum	franchise	pk_wynaut
+pk_glalie	captain	mario	Glalie	Colosseum	franchise	pk_snorunt
+pk_sealeo	captain	mario	Sealeo	Colosseum	franchise	pk_spheal
+pk_walrein	captain	daisy	Walrein	Colosseum	franchise	pk_sealeo
+pk_huntail	captain	waluigi	Huntail	Colosseum	franchise	pk_clamperl
+pk_gorebyss	captain	peach	Gorebyss	Colosseum	franchise	pk_clamperl

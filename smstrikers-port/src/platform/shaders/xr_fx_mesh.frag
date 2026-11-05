@@ -70,13 +70,14 @@ float sdSeg(vec2 p, vec2 a, vec2 b) {
     vec2 pa = p - a, ba = b - a;
     return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
 }
-// r68c: the guests' own outlines (xr_fx make_etch, tools/outside/etchres.py): 16 x 16 cells (r121) of distance
-// (0.5 = the outline, a quarter of a cell either way over the range), one per guest in roster order.
+// r68c: the guests' own outlines (xr_fx make_etch, tools/outside/etchres.py): 16 x 32 cells (r135; r121 16 x 16) of
+// distance (0.5 = the outline, a quarter of a cell either way over the range), one per guest in roster order.
 layout(set = 0, binding = 0) uniform sampler2D uEtch;
 float sdGuest(int cell, vec2 p) {
     vec2 c = clamp(p, vec2(-0.5), vec2(0.5));
     float outside = length(p - c);
-    vec2 uv = (vec2(float(cell % 16), float(cell / 16)) + vec2(c.x + 0.5, 0.5 - c.y)) / 16.0;  // r121: 16 x 16
+    // r135: 16 across, 32 down (cell i where the 16 x 16 atlas had it, cells 256-511 below)
+    vec2 uv = (vec2(float(cell % 16), float(cell / 16)) + vec2(c.x + 0.5, 0.5 - c.y)) / vec2(16.0, 32.0);
     float d = (textureLod(uEtch, uv, 0.0).r - 128.0 / 255.0) * (255.0 / 127.0) * 0.25;
     return d + outside;
 }
@@ -366,7 +367,7 @@ void main() {
                 }
             }
         }
-    } else if ((shape >= 40 && shape <= 60) || (shape >= 80 && shape <= 118)) {  // r124: 80-89 the Marvel heroes' pieces (r127: 90-92; r130: 93-118)
+    } else if ((shape >= 40 && shape <= 60) || (shape >= 80 && shape <= 133)) {  // r124: 80-89 the Marvel heroes' pieces (r127: 90-92; r130: 93-118; r135: 119-133)
         // r82: the themed celebrations' pieces (xr_fx_mesh.h): the surface from aux: 0 glossy, 1 metal,
         // 2 rough stone, 3 gem / ice (shining, a little glow), 4 wood.
         spec = 0.5;
@@ -466,13 +467,86 @@ void main() {
                 base *= 0.86 + 0.14 * sin(p.x * 61.0) * sin(p.y * 57.0 + 1.1) * sin(p.z * 63.0 + 0.4);
                 spec = 0.05;
                 shine = 8.0;
-            } else if (shape == 106) {
-                // a leaf: its midrib in colour 2
-                float d = abs(p.x) - 0.014;
-                float aa = max(fwidth(d), 1e-4);
-                base = mix(base, c2, 0.7 * (1.0 - smoothstep(-aa, aa, d)) * step(abs(p.y), 0.42));
-                spec = 0.35;
-                shine = 30.0;
+            } else if (shape == 106 || shape == 119 || shape == 120 || shape == 121) {
+                // r135 (Lance: the leaves "look like green pills"): a real leaf (106 oval, 119 maple, 120 long blade) and a
+                // feather (121), each one thin sheet lit on the side you see: the top waxy, the underside paler and duller
+                // with its veins standing out; the leaf's midrib and side veins (the maple's five main veins out from its
+                // stem) in colour 2, paler and yellower toward the stem, darker at the very edge, a little light through
+                // it; the feather's fine barbs and its fluffy down (colour 2) at the base. The stem / quill (mat 1).
+                bool front = dot(N, V) >= 0.0;
+                if (!front) N = -N;
+                metal = false;
+                if (mat == 1) {
+                    base = mix(c2, c1, 0.35) * 0.85;
+                    spec = 0.15;
+                    shine = 16.0;
+                } else {
+                    float s = clamp(aux - 5.0, -1.0, 1.0);  // across the blade (-1 .. 1), 0 on the midrib
+                    float as = abs(s);
+                    float along = 0.0, vein = 0.0;
+                    if (shape == 119) {
+                        vec2 q = p.xy - vec2(0.0, -0.18);
+                        float r = length(q);
+                        along = clamp(r / 0.68, 0.0, 1.0);
+                        float d = 1.0, outAlong = 0.0;  // to the nearest main vein, and how far out along it
+                        for (int i = 0; i < 5; ++i) {
+                            float a = radians(i == 0 ? 90.0 : (i == 1 ? 30.0 : (i == 2 ? 150.0 : (i == 3 ? -18.0 : 198.0))));
+                            vec2 dir = vec2(cos(a), sin(a));
+                            float t = dot(q, dir);
+                            float di = t > 0.0 ? abs(q.x * dir.y - q.y * dir.x) : r;
+                            if (di < d) {
+                                d = di;
+                                outAlong = t;
+                            }
+                        }
+                        float w = 0.012 * (1.0 - 0.7 * along);
+                        float ad = max(fwidth(d), 1e-4);
+                        vein = 1.0 - smoothstep(w - ad, w + ad, d);
+                        // side veins off each main vein, slanting out toward its lobe's tip
+                        float ph = outAlong * 13.0 - d * 9.0;
+                        float dv = abs(fract(ph + 0.5) - 0.5);
+                        float adv = max(fwidth(ph), 1e-3);
+                        vein = max(vein, 0.45 * (1.0 - smoothstep(0.07 - adv, 0.07 + adv, dv)) * smoothstep(0.02, 0.05, d) *
+                                             (1.0 - smoothstep(0.16, 0.24, d)) * smoothstep(0.1, 0.2, along));
+                        as = along;
+                    } else {
+                        along = clamp(shape == 120 ? (p.y + 0.42) / 0.92 : (shape == 121 ? (p.y + 0.3) / 0.78 : (p.y + 0.36) / 0.86),
+                                      0.0, 1.0);
+                        float aa = max(fwidth(s), 1e-3);
+                        float mid = 1.0 - smoothstep(0.09 - aa, 0.09 + aa, as);
+                        // side veins out from the midrib and on toward the tip (the feather: fine barbs close together)
+                        float k = shape == 121 ? 26.0 : (shape == 120 ? 9.0 : 7.0);
+                        float ph = along * k - pow(as, 0.85) * (shape == 121 ? 3.0 : 1.4);
+                        float dv = abs(fract(ph + 0.5) - 0.5);
+                        float wv = shape == 121 ? 0.18 : 0.09 * (1.0 - 0.7 * as);
+                        float adv = max(fwidth(ph), 1e-3);
+                        float side = (1.0 - smoothstep(wv - adv, wv + adv, dv)) * smoothstep(0.08, 0.16, as) *
+                                     (1.0 - smoothstep(0.8, 0.95, as)) * smoothstep(0.03, 0.1, along) *
+                                     (1.0 - smoothstep(0.85, 0.97, along));
+                        vein = max(mid, (shape == 121 ? 0.35 : 0.6) * side);
+                    }
+                    vec3 leaf = c1;
+                    if (shape == 121) {
+                        leaf = mix(c2, c1, smoothstep(0.05, 0.3, along));
+                    } else {
+                        leaf = mix(c1 * vec3(1.12, 1.08, 0.78), c1, smoothstep(0.0, 0.45, along));
+                        leaf *= 1.0 - 0.22 * smoothstep(0.72, 1.0, as);
+                    }
+                    if (front) {
+                        base = mix(leaf, c2, 0.65 * vein);
+                        spec = shape == 121 ? 0.12 : 0.35;
+                        shine = shape == 121 ? 14.0 : 34.0;
+                    } else {
+                        float l = dot(leaf, vec3(0.3, 0.59, 0.11));
+                        base = mix(leaf, vec3(l), 0.3) * 1.25 + 0.04;
+                        base = mix(base, c2 * 1.1, 0.75 * vein);
+                        spec = 0.08;
+                        shine = 12.0;
+                    }
+                    // the light through it: lit from the far side (an underside under the sky, a leaf against the
+                    // light) it glows in its own colour, as a real leaf does; a feather hardly
+                    glow = max(glow, 0.05 + (shape == 121 ? 0.12 : 0.55) * max(dot(-N, kKey), 0.0));
+                }
             } else if (shape == 109) {
                 // an impact burst: colour 1 in the middle, colour 2 out on its spikes, a little glow
                 float d = length(p.xy) - 0.3;
@@ -510,6 +584,100 @@ void main() {
                 float aa = max(fwidth(lines), 1e-4);
                 base *= 1.0 - 0.35 * (1.0 - smoothstep(-aa, aa, lines));
                 if (length(p.xy - vec2(0.0, 0.22)) < 0.035) base = vec3(0.02);
+            // r135: the r135 roster's light pieces (xr_fx_mesh.h r135)
+            } else if (shape == 122) {
+                // a fish: wet and glossy, its belly paler (colour 2), faint scales, a dark eye with a glint each side
+                if (mat == 0) {
+                    base = mix(mix(c1, c2, 0.75), c1, smoothstep(-0.12, 0.04, p.y));
+                    base *= 0.93 + 0.07 * sin(p.x * 70.0 + abs(p.y) * 40.0) * sin(p.y * 70.0);
+                    vec2 e = vec2(p.x - 0.29, p.y - 0.035);
+                    if (abs(p.z) > 0.02 && length(e) < 0.036) base = length(e - vec2(0.01, 0.012)) < 0.011 ? vec3(0.95) : vec3(0.02);
+                }
+                spec = 0.8;
+                shine = 70.0;
+            } else if (shape == 123) {
+                // a screw: the thread wound round its shank, a cross slot in its head
+                if (p.y < 0.3 && p.y > -0.42) {
+                    float th = sin((p.y * 9.0 + atan(p.z, p.x) / 6.2831853) * 6.2831853);
+                    base *= 0.68 + 0.32 * smoothstep(-0.4, 0.4, th);
+                }
+                if (p.y > 0.44 && ((abs(p.x) < 0.025 && abs(p.z) < 0.17) || (abs(p.z) < 0.025 && abs(p.x) < 0.17))) base *= 0.2;
+            } else if (shape == 124) {
+                // a horseshoe magnet: painted (colour 1), its poles bare metal (colour 2)
+                if (p.y < -0.27) {
+                    base = c2;
+                    metal = true;
+                } else {
+                    spec = 0.7;
+                    shine = 60.0;
+                }
+            } else if (shape == 125) {
+                // a crab's pincer: colour 1 out to colour 2 at the fingers' tips, knobbly, glossy
+                base = mix(c1, c2, smoothstep(0.12, 0.42, p.y));
+                base *= 0.9 + 0.1 * sin(p.x * 50.0) * sin(p.y * 47.0);
+                spec = 0.6;
+                shine = 50.0;
+            } else if (shape == 126) {
+                // a scallop shell: lit on the side you see, ribs fanning out from its hinge, growth bands in colour 2
+                if (dot(N, V) < 0.0) N = -N;
+                vec2 q = p.xy - vec2(0.0, -0.32);
+                float rib = 0.5 + 0.5 * cos(atan(q.y, q.x) * 18.0);
+                base = mix(c1, c2, 0.55 * smoothstep(0.35, 0.65, sin(length(q) * 24.0)));
+                base *= 0.78 + 0.22 * rib;
+                spec = 0.5;
+                shine = 40.0;
+            } else if (shape == 127) {
+                // a curling wave: deep at its foot, lighter up its face, foam (colour 2) on its crest and lip
+                base = mix(c1 * 0.7, c1 * 1.15, smoothstep(-0.45, 0.2, p.y));
+                float foam = smoothstep(0.24, 0.36, p.y + 0.35 * max(p.x - 0.1, 0.0));
+                base = mix(base, c2, foam * (0.75 + 0.25 * sin(p.x * 61.0 + p.y * 37.0)));
+                spec = 0.85;
+                shine = 70.0;
+            } else if (shape == 128) {
+                // a pixel cube (Porygon's): each face 3 x 3 pixels in its two colours, dark seams, a little glow
+                vec3 ap = abs(p);
+                vec2 f = ap.x >= ap.y && ap.x >= ap.z ? p.yz : (ap.y >= ap.z ? p.xz : p.xy);
+                vec2 cell = floor((f + 0.3) / 0.2);
+                base = mix(c1, c2, mod(cell.x + cell.y, 2.0));
+                vec2 g = abs(fract((f + 0.3) / 0.2) - 0.5);
+                base *= 1.0 - 0.6 * smoothstep(0.42, 0.48, max(g.x, g.y));
+                glow = max(glow, 0.15);
+                spec = 0.8;
+                shine = 70.0;
+            } else if (shape == 129) {
+                // a light egg: spots in colour 2 (none to see when it is colour 1)
+                vec3 d = normalize(p / vec3(0.36, 0.5, 0.36));
+                if (spotAt(d, vec3(0.0, 0.85, 0.52), 0.94) || spotAt(d, vec3(0.8, 0.3, 0.52), 0.93) ||
+                    spotAt(d, vec3(-0.7, 0.2, -0.68), 0.93) || spotAt(d, vec3(0.3, -0.5, -0.8), 0.94) ||
+                    spotAt(d, vec3(-0.5, -0.6, 0.62), 0.93) || spotAt(d, vec3(0.9, -0.35, -0.25), 0.95)) {
+                    base = c2;
+                }
+                spec = 0.55;
+                shine = 45.0;
+            } else if (shape == 130) {
+                // a shuriken: a hole in its middle, honed bright toward its points
+                float r = length(p.xy);
+                base *= 0.75 + 0.45 * smoothstep(0.22, 0.48, r);
+                if (r < 0.055) base = vec3(0.02);
+            } else if (shape == 131) {
+                // a lab flask: clear glass (colour 1, shining) with a glowing potion (colour 2) in its bottom
+                if (p.y < -0.16) {
+                    base = c2;
+                    glow = max(glow, 0.35);
+                    spec = 0.6;
+                } else {
+                    base = mix(c1, vec3(1.0), 0.3);
+                    spec = 0.95;
+                    shine = 90.0;
+                }
+                if (abs(p.y + 0.16) < 0.012) base = mix(c2, vec3(1.0), 0.5);
+            } else if (shape == 132) {
+                // a bullet: a groove round its casing
+                if (abs(p.y + 0.4) < 0.015) base *= 0.45;
+            } else if (shape == 133) {
+                // a brick chunk: rough clay with old mortar (colour 2) along its edges
+                vec3 ap = abs(p) / vec3(0.45, 0.14, 0.22);
+                if (step(0.88, ap.x) + step(0.8, ap.y) + step(0.85, ap.z) >= 2.0) base = mix(base, c2, 0.8);
             }
         }
     } else if (shape == 23) {        // r57: the shelf: wood with its grain, a gold trim, dark brackets

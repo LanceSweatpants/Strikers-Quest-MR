@@ -8,6 +8,7 @@ layout(push_constant) uniform PC {
     vec4 camPos;  // the eye; w = seconds
     vec4 look;    // x white (0 its colours .. 1 the evolution's white), y alpha, z glow, w soft part
     vec4 glowRgb; // the glow's colour; w = the light from below (the theme's)
+    vec4 up;      // r142: the room's up in the model's own frame (xr_fx_model.frag)
 } pc;
 
 layout(location = 0) in vec3 inPos;

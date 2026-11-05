@@ -12,6 +12,7 @@
 // with the guest's own texture. Rendering only: nothing the match runs on is touched.
 
 #include "port/xr_guest.h"
+#include "port/xr_body.h"  // r143: the life-size scorer's body for the effects layer
 #include "port/franchise.h"
 #include "port/xr_net.h"
 #include "port/guest_validation.h"
@@ -3107,6 +3108,46 @@ void PortGuestScorerPose(bool active, const cSAnim* clip, float normTime, float 
     s_scorerCelebrate = celebrateSeconds < 0.0f ? 0.0f : celebrateSeconds;
 }
 
+// r143 (Lance: Arbok's invisible pole, the characters see-through to what falls behind them): a guest drawn as the
+// life-size scorer hands its body to the effects layer (port/xr_body.h): every vertex as skinned (and lifted) this
+// frame, and the triangles of its solid packets - no gas, no flames, nothing blended - worked out once per guest.
+static void post_scorer_body(const Guest* g, const std::vector<Skinned>& sk, const std::vector<size_t>& skStart)
+{
+    static const Guest* s_trisFor = NULL;
+    static size_t s_trisVerts = 0;
+    static std::vector<uint32_t> s_tris;
+    if (s_trisFor != g || s_trisVerts != sk.size())
+    {
+        s_trisFor = g;
+        s_trisVerts = sk.size();
+        s_tris.clear();
+        for (size_t pi = 0; pi < g->packets.size() && pi < skStart.size(); pi++)
+        {
+            const GPacket& pk = g->packets[pi];
+            if (pk.strip.size() < 3 || pk.strip.size() > 65535 || pk.verts.empty() || pk.soft || pk.gas ||
+                pk.flameFrame >= 0)
+                continue;
+            const size_t base = skStart[pi], nv = pk.verts.size();
+            for (size_t k = 2; k < pk.strip.size(); k++)
+            {
+                uint32_t a = pk.strip[k - 2], b = pk.strip[k - 1];
+                const uint32_t c = pk.strip[k];
+                if (a == b || b == c || a == c || a >= nv || b >= nv || c >= nv || base + nv > sk.size())
+                    continue;
+                if (k & 1)
+                    std::swap(a, b);
+                s_tris.push_back((uint32_t)(base + a));
+                s_tris.push_back((uint32_t)(base + b));
+                s_tris.push_back((uint32_t)(base + c));
+            }
+        }
+    }
+    if (s_tris.empty() || sk.empty())
+        return;
+    PortXrBodyGuest(&sk[0].p.x, (int)(sizeof(Skinned) / sizeof(float)), (int)sk.size(), s_tris.data(),
+                    (int)(s_tris.size() / 3), (uintptr_t)g);
+}
+
 glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* acc, const glModel* hostModel,
                                int* numModels)
 {
@@ -3725,6 +3766,8 @@ glModel** PortGuestFrameModels(const cCharacter& character, cPoseAccumulator* ac
     }
     if (nOut == 0)
         return NULL;
+    if (s_scorerActive)
+        post_scorer_body(g, sk, skStart);  // r143: the life-size scorer's body, for the effects layer
     model->numPackets = (u32)nOut;
     model->packets = outPackets;
     s_frameModels.push_back(model);

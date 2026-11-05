@@ -1,0 +1,318 @@
+# r141: the Pokemon cards' types (xr_cards.cpp fx_theme_of: a BLACK 1/1's world is its PRIMARY type's; a Normal /
+# Flying bird gets the Flying world). The Gen 1-3 Pokemon's real types as the games have them today (Fairy included:
+# the Clefairy, Togepi, Snubbull, Marill, Ralts lines, Mr. Mime ...).
+#   <card key> <primary type> [<secondary type>]
+pk_bulbasaur grass poison
+pk_ivysaur grass poison
+pk_venusaur grass poison
+pk_charmander fire
+pk_charmeleon fire
+pk_charizard fire flying
+pk_squirtle water
+pk_wartortle water
+pk_blastoise water
+pk_mrmime psychic fairy
+pk_mankey fighting
+pk_primeape fighting
+pk_machop fighting
+pk_machoke fighting
+pk_machamp fighting
+pk_geodude rock ground
+pk_graveler rock ground
+pk_golem rock ground
+pk_gastly ghost poison
+pk_haunter ghost poison
+pk_gengar ghost poison
+pk_onix rock ground
+pk_steelix steel ground
+pk_voltorb electric
+pk_electrode electric
+pk_dratini dragon
+pk_dragonair dragon
+pk_dragonite dragon flying
+pk_pichu electric
+pk_pikachu electric
+pk_raichu electric
+pk_igglybuff normal fairy
+pk_jigglypuff normal fairy
+pk_wigglytuff normal fairy
+pk_torchic fire
+pk_combusken fire fighting
+pk_blaziken fire fighting
+pk_drowzee psychic
+pk_hypno psychic
+pk_cubone ground
+pk_marowak ground
+pk_koffing poison
+pk_weezing poison
+pk_mewtwo psychic
+pk_snorlax normal
+pk_magby fire
+pk_magmar fire
+pk_treecko grass
+pk_grovyle grass
+pk_sceptile grass
+pk_mudkip water
+pk_marshtomp water ground
+pk_swampert water ground
+pk_shuppet ghost
+pk_banette ghost
+pk_bagon dragon
+pk_shelgon dragon
+pk_salamence dragon flying
+pk_poliwag water
+pk_poliwhirl water
+pk_poliwrath water fighting
+pk_politoed water
+pk_scyther bug flying
+pk_scizor bug steel
+pk_houndour dark fire
+pk_houndoom dark fire
+pk_beldum steel psychic
+pk_metang steel psychic
+pk_metagross steel psychic
+pk_cyndaquil fire
+pk_quilava fire
+pk_typhlosion fire
+pk_totodile water
+pk_croconaw water
+pk_feraligatr water
+pk_chikorita grass
+pk_bayleef grass
+pk_meganium grass
+pk_abra psychic
+pk_kadabra psychic
+pk_alakazam psychic
+pk_ralts psychic fairy
+pk_kirlia psychic fairy
+pk_gardevoir psychic fairy
+pk_larvitar rock ground
+pk_pupitar rock ground
+pk_tyranitar rock dark
+pk_aron steel rock
+pk_lairon steel rock
+pk_aggron steel rock
+pk_trapinch ground
+pk_vibrava ground dragon
+pk_flygon ground dragon
+pk_elekid electric
+pk_electabuzz electric
+pk_psyduck water
+pk_golduck water
+pk_eevee normal
+pk_vaporeon water
+pk_jolteon electric
+pk_flareon fire
+pk_espeon psychic
+pk_umbreon dark
+pk_tyrogue fighting
+pk_hitmonlee fighting
+pk_hitmonchan fighting
+pk_hitmontop fighting
+pk_mareep electric
+pk_flaaffy electric
+pk_ampharos electric
+pk_teddiursa normal
+pk_ursaring normal
+pk_lotad water grass
+pk_lombre water grass
+pk_ludicolo water grass
+pk_seedot grass
+pk_nuzleaf grass dark
+pk_shiftry grass dark
+pk_shroomish grass
+pk_breloom grass fighting
+pk_slakoth normal
+pk_vigoroth normal
+pk_slaking normal
+pk_makuhita fighting
+pk_hariyama fighting
+pk_whismur normal
+pk_loudred normal
+pk_exploud normal
+pk_meditite fighting psychic
+pk_medicham fighting psychic
+pk_cacnea grass
+pk_cacturne grass dark
+pk_nidoranm poison
+pk_nidorino poison
+pk_nidoking poison ground
+pk_nidoranf poison
+pk_nidorina poison
+pk_nidoqueen poison ground
+pk_kabuto rock water
+pk_kabutops rock water
+pk_anorith rock bug
+pk_armaldo rock bug
+pk_wooper water ground
+pk_quagsire water ground
+pk_smoochum ice psychic
+pk_jynx ice psychic
+pk_sandshrew ground
+pk_sandslash ground
+pk_slowpoke water psychic
+pk_slowbro water psychic
+pk_slowking water psychic
+pk_caterpie bug
+pk_metapod bug
+pk_butterfree bug flying
+pk_weedle bug poison
+pk_kakuna bug poison
+pk_beedrill bug poison
+pk_pidgey normal flying
+pk_pidgeotto normal flying
+pk_pidgeot normal flying
+pk_rattata normal
+pk_raticate normal
+pk_spearow normal flying
+pk_fearow normal flying
+pk_ekans poison
+pk_arbok poison
+pk_vulpix fire
+pk_ninetales fire
+pk_zubat poison flying
+pk_golbat poison flying
+pk_crobat poison flying
+pk_oddish grass poison
+pk_gloom grass poison
+pk_vileplume grass poison
+pk_bellossom grass
+pk_paras bug grass
+pk_parasect bug grass
+pk_venonat bug poison
+pk_venomoth bug poison
+pk_diglett ground
+pk_dugtrio ground
+pk_meowth normal
+pk_persian normal
+pk_bellsprout grass poison
+pk_weepinbell grass poison
+pk_victreebel grass poison
+pk_tentacool water poison
+pk_tentacruel water poison
+pk_ponyta fire
+pk_rapidash fire
+pk_magnemite electric steel
+pk_magneton electric steel
+pk_doduo normal flying
+pk_dodrio normal flying
+pk_seel water
+pk_dewgong water ice
+pk_grimer poison
+pk_muk poison
+pk_shellder water
+pk_cloyster water ice
+pk_krabby water
+pk_kingler water
+pk_exeggcute grass psychic
+pk_exeggutor grass psychic
+pk_rhyhorn ground rock
+pk_rhydon ground rock
+pk_chansey normal
+pk_blissey normal
+pk_horsea water
+pk_seadra water
+pk_kingdra water dragon
+pk_goldeen water
+pk_seaking water
+pk_staryu water
+pk_starmie water psychic
+pk_magikarp water
+pk_gyarados water flying
+pk_porygon normal
+pk_porygon2 normal
+pk_omanyte rock water
+pk_omastar rock water
+pk_sentret normal
+pk_furret normal
+pk_hoothoot normal flying
+pk_noctowl normal flying
+pk_ledyba bug flying
+pk_ledian bug flying
+pk_spinarak bug poison
+pk_ariados bug poison
+pk_chinchou water electric
+pk_lanturn water electric
+pk_cleffa fairy
+pk_clefairy fairy
+pk_clefable fairy
+pk_togepi fairy
+pk_togetic fairy flying
+pk_natu psychic flying
+pk_xatu psychic flying
+pk_hoppip grass flying
+pk_skiploom grass flying
+pk_jumpluff grass flying
+pk_sunkern grass
+pk_sunflora grass
+pk_pineco bug
+pk_forretress bug steel
+pk_snubbull fairy
+pk_granbull fairy
+pk_slugma fire
+pk_magcargo fire rock
+pk_swinub ice ground
+pk_piloswine ice ground
+pk_remoraid water
+pk_octillery water
+pk_phanpy ground
+pk_donphan ground
+pk_poochyena dark
+pk_mightyena dark
+pk_zigzagoon normal
+pk_linoone normal
+pk_wurmple bug
+pk_silcoon bug
+pk_beautifly bug flying
+pk_cascoon bug
+pk_dustox bug poison
+pk_taillow normal flying
+pk_swellow normal flying
+pk_wingull water flying
+pk_pelipper water flying
+pk_surskit bug water
+pk_masquerain bug flying
+pk_nincada bug ground
+pk_ninjask bug flying
+pk_shedinja bug ghost
+pk_azurill normal fairy
+pk_marill water fairy
+pk_azumarill water fairy
+pk_skitty normal
+pk_delcatty normal
+pk_electrike electric
+pk_manectric electric
+pk_gulpin poison
+pk_swalot poison
+pk_carvanha water dark
+pk_sharpedo water dark
+pk_wailmer water
+pk_wailord water
+pk_numel fire ground
+pk_camerupt fire ground
+pk_spoink psychic
+pk_grumpig psychic
+pk_swablu normal flying
+pk_altaria dragon flying
+pk_barboach water ground
+pk_whiscash water ground
+pk_corphish water
+pk_crawdaunt water dark
+pk_baltoy ground psychic
+pk_claydol ground psychic
+pk_lileep rock grass
+pk_cradily rock grass
+pk_feebas water
+pk_milotic water
+pk_duskull ghost
+pk_dusclops ghost
+pk_wynaut psychic
+pk_wobbuffet psychic
+pk_snorunt ice
+pk_glalie ice
+pk_spheal ice water
+pk_sealeo ice water
+pk_walrein ice water
+pk_clamperl water
+pk_huntail water
+pk_gorebyss water

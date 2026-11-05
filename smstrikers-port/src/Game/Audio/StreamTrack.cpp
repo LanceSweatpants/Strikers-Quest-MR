@@ -7,8 +7,57 @@
 #include "NL/nlFileGC.h"
 #include "NL/nlList.h"
 #include "NL/nlString.h"
+#include "port/menu_music.h"  // strikers-quest r147
 
 extern GCAudioStreaming::AudioBufferMgr g_BufferMgr;
+
+// strikers-quest r147 (port/menu_music.h): the game's own front-end music (the FE and FE2 tracks, the only ones
+// the menus play music on: title, main menu, cups, options, loading, credits) under the lofi menu music. Its
+// streams' buffers get the game's volume x PortMenuMusicFEGain; every other stream is left alone.
+namespace
+{
+AudioStreamTrack::StreamTrack* port_fe_track(int which)
+{
+    static const unsigned long kHash[2] = { nlStringLowerHash("FE"), nlStringLowerHash("FE2") };
+    return g_pTrackManager != NULL ? g_pTrackManager->GetTrack(kHash[which]) : NULL;
+}
+
+// Every stream queued on the FE / FE2 tracks (the one playing, the one fading out, the next).
+template <typename Fn>
+void port_each_fe_stream(Fn fn)
+{
+    typedef DLListEntry<AudioStreamTrack::StreamTrack::QUEUED_STREAM> Entry;
+    for (int which = 0; which < 2; which++)
+    {
+        AudioStreamTrack::StreamTrack* track = port_fe_track(which);
+        if (track == NULL)
+            continue;
+        Entry* head = track->m_QueuedStreams.m_Head;
+        Entry* entry = nlDLRingGetStart(head);
+        while (entry != NULL)
+        {
+            if (entry->entry.pStream != NULL && fn(entry->entry.pStream))
+                return;
+            entry = (nlDLRingIsEnd(head, entry) || entry == NULL) ? NULL : entry->m_next;
+        }
+    }
+}
+} // namespace
+
+extern "C" unsigned long PortStreamHeardVolume(const void* stream, unsigned long volume)
+{
+    const float gain = PortMenuMusicFEGain();
+    if (gain >= 0.999f || stream == NULL || g_pTrackManager == NULL)
+        return volume;
+    bool fe = false;
+    port_each_fe_stream([&](GCAudioStreaming::StereoAudioStream* s) {
+        fe = (const void*)static_cast<GCAudioStreaming::AudioStream*>(s) == stream;
+        return fe;
+    });
+    if (!fe)
+        return volume;
+    return (unsigned long)((float)volume * gain + 0.5f);
+}
 
 /**
  * Offset/Address/Size: 0x24E4 | 0x8015723C | size: 0x100
@@ -63,6 +112,16 @@ void AudioStreamTrack::TrackManagerBase::Update(float dT)
                 entry = entry->m_next;
             }
         }
+    }
+
+    // strikers-quest r147: the lofi menu music's state, once a frame; while the front-end music's gain moves, its
+    // streams are given their own volume again (the fades set theirs anyway, a steady one would keep the old gain)
+    if (PortMenuMusicTick(dT, Audio::MasterVolume::GetVolume(Audio::MasterVolume::VG_Music)))
+    {
+        port_each_fe_stream([](GCAudioStreaming::StereoAudioStream* s) {
+            s->SetVolume(s->m_Volume);
+            return false;
+        });
     }
 }
 

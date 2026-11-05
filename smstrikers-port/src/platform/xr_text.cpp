@@ -311,17 +311,19 @@ void goal_banner(uint8_t* rgba, int w, int h, const char* name, uint32_t teamRgb
 
 // r44g (r42's crowd volume panel, r44's voice line): the pause settings, one row picked at a time.
 void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice, int heightCm, int row, bool shelf,
-                    int popups, bool home) {
+                    int popups, bool home, int weather, int music, int mySongs) {
   Canvas cv(w, h);
   const float u = 0.3125f * w;  // r42's whole panel height: 200 at 640 wide
   panel(cv, 8.0f, 8.0f, w - 8.0f, h - 8.0f, 0.16f * u, 0.02f * u, rgb(0x000000, 0.9f), rgb(0xFFFFFF, 0.9f),
         rgb(0x1E2A44, 0.92f), rgb(0x0B1020, 0.92f));
   // The rows' bands, top to bottom: crowd volume (title and bar), voice chat, stadium height; r104: the
   // trophy shelf + badge board, the achievement pop-ups; the hint.
-  const float band[6][2] = {{0.06f * u, 0.76f * u}, {0.80f * u, 1.18f * u}, {1.22f * u, 1.60f * u},
-                            {1.64f * u, 2.02f * u}, {2.06f * u, 2.44f * u}, {2.48f * u, 2.86f * u}};  // r133: + HOME GROUND
+  const float band[8][2] = {{0.06f * u, 0.76f * u}, {0.80f * u, 1.18f * u}, {1.22f * u, 1.60f * u},
+                            {1.64f * u, 2.02f * u}, {2.06f * u, 2.44f * u}, {2.48f * u, 2.86f * u},  // r133: + HOME GROUND
+                            {2.90f * u, 3.28f * u},                                                   // r137: + WEATHER
+                            {3.32f * u, 3.70f * u}};                                                  // r147: + MENU MUSIC
   const float bx0 = 0.04f * w, bx1 = 0.96f * w;
-  if (row >= 0 && row < 6) {  // the picked row: a lighter band with a gold edge
+  if (row >= 0 && row < 8) {  // the picked row: a lighter band with a gold edge
     const float y0 = band[row][0], y1 = band[row][1];
     for (int y = static_cast<int>(y0) - 3; y <= static_cast<int>(y1) + 3; ++y) {
       for (int x = static_cast<int>(bx0) - 3; x <= static_cast<int>(bx1) + 3; ++x) {
@@ -379,10 +381,110 @@ void settings_panel(uint8_t* rgba, int w, int h, int level, int steps, int voice
   onoff(popups == 2 ? "ACHIEVEMENT POP-UPS: ALL" : (popups == 1 ? "ACHIEVEMENT POP-UPS: UNLOCKS ONLY" : "ACHIEVEMENT POP-UPS: OFF"),
         2.25f * u, 4, popups);
   onoff(home ? "HOME GROUND: ON" : "HOME GROUND: OFF", 2.67f * u, 5, home ? 2 : 0);  // r133: board, banners, corner, shelf
+  // r137: the weather of quick matches (OFF: the franchise calendar too): random green, a set one amber, off grey
+  {
+    static const char* const kWeather[6] = {"WEATHER: RANDOM", "WEATHER: CLEAR", "WEATHER: RAIN",
+                                            "WEATHER: SNOW",   "WEATHER: NIGHT", "WEATHER: OFF"};
+    const int wm = weather >= 0 && weather < 6 ? weather : 0;
+    onoff(kWeather[wm], 3.09f * u, 6, wm == 0 ? 2 : (wm == 5 ? 0 : 1));
+  }
+  // r147: the menus' music (port/menu_music.h: 0 LOFI, 1 MY MUSIC, 2 BOTH, 3 OFF): BOTH green, one of the two amber,
+  // off (the game's own menu music) grey; MY MUSIC says how many of his songs it found in Strikers/music
+  {
+    char ml[96];
+    const int mm = music >= 0 && music < 4 ? music : 2;
+    if (mm == 1 && mySongs == 0) {
+      std::snprintf(ml, sizeof(ml), "MENU MUSIC: MY MUSIC (EMPTY: LOFI)");
+    } else if (mm == 1 && mySongs > 0) {
+      std::snprintf(ml, sizeof(ml), "MENU MUSIC: MY MUSIC (%d SONG%s)", mySongs, mySongs == 1 ? "" : "S");
+    } else if (mm == 2 && mySongs > 0) {
+      std::snprintf(ml, sizeof(ml), "MENU MUSIC: LOFI + MY %d SONG%s", mySongs, mySongs == 1 ? "" : "S");
+    } else {
+      static const char* const kMusic[4] = {"MENU MUSIC: LOFI", "MENU MUSIC: MY MUSIC", "MENU MUSIC: BOTH",
+                                            "MENU MUSIC: OFF (THE GAME'S OWN)"};
+      std::snprintf(ml, sizeof(ml), "%s", kMusic[mm]);
+    }
+    onoff(ml, 3.51f * u, 7, mm == 2 ? 2 : (mm == 3 ? 0 : 1));
+  }
   const char* hint = "RIGHT STICK:  UP / DOWN PICKS,  LEFT / RIGHT CHANGES";
   TextStyle hs{fitted(hint, 0.12f * u), rgb(0xB8C2D6), rgb(0x9AA6BE), rgb(0x05070C), 0.012f * u, rgb(0x000000, 0.0f),
                0.0f, 0.0f};
-  draw_text(cv, hint, 0.5f * w, 0.5f * (2.86f * u + h - 8.0f), hs);
+  draw_text(cv, hint, 0.5f * w, 0.5f * (3.70f * u + h - 8.0f), hs);
+  cv.write(rgba);
+}
+
+// r147: the menu music's "NOW PLAYING" card (port/menu_music.h): a gold disc with two beamed notes on the left;
+// "NOW PLAYING" in gold over the title (white, as big as it fits, cut with "..." past that) and the artist (grey).
+void now_playing_toast(uint8_t* rgba, int w, int h, const char* title, const char* artist) {
+  Canvas cv(w, h);
+  const float u = static_cast<float>(h);
+  panel(cv, 6.0f, 6.0f, w - 6.0f, h - 6.0f, 0.24f * u, 0.022f * u, rgb(0x000000, 0.8f), rgb(0xFFD23F, 0.95f),
+        rgb(0x1E2A44, 0.94f), rgb(0x0B1020, 0.94f));
+  auto caps_of = [](const char* s) {
+    std::string r = s != nullptr ? s : "";
+    for (char& c : r) {
+      if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+      else if (static_cast<unsigned char>(c) >= 0x80 || c < 0x20) c = ' ';  // outside the font
+    }
+    return r;
+  };
+  // The disc and its notes.
+  const float R = 0.33f * u, dcx = 0.12f * u + R, dcy = 0.5f * u;
+  auto ellipse_sd = [](float px, float py, float cx, float cy, float rx, float ry, float rot) {
+    const float c = std::cos(rot), s = std::sin(rot);
+    const float x = (px - cx) * c + (py - cy) * s, y = -(px - cx) * s + (py - cy) * c;
+    return (std::sqrt((x / rx) * (x / rx) + (y / ry) * (y / ry)) - 1.0f) * std::min(rx, ry);
+  };
+  auto box_sd = [](float px, float py, float x0, float y0, float x1, float y1) {
+    const float qx = std::max(x0 - px, px - x1), qy = std::max(y0 - py, py - y1);
+    return std::max(qx, qy);
+  };
+  const float h1x = dcx - 0.30f * R, h1y = dcy + 0.36f * R, h2x = dcx + 0.36f * R, h2y = dcy + 0.24f * R;
+  const float hrx = 0.25f * R, hry = 0.18f * R, stemW = 0.075f * R, top1 = dcy - 0.52f * R, top2 = dcy - 0.64f * R;
+  const float s1x = h1x + hrx * 0.86f, s2x = h2x + hrx * 0.86f;
+  for (int y = static_cast<int>(dcy - R) - 3; y <= static_cast<int>(dcy + R) + 3; ++y) {
+    for (int x = static_cast<int>(dcx - R) - 3; x <= static_cast<int>(dcx + R) + 3; ++x) {
+      const float px = x + 0.5f, py = y + 0.5f;
+      const float d = std::sqrt((px - dcx) * (px - dcx) + (py - dcy) * (py - dcy)) - R;
+      cv.over(x, y, rgb(0x241300), 0.5f - (d - 3.0f));
+      const float t = clamp01((py - (dcy - R)) / (2.0f * R));
+      cv.over(x, y, mix(rgb(0xFFF07A), rgb(0xFF9800), t), 0.5f - d);
+      // the notes: two heads, two stems, the beam between the stems' tops (sloping up to the right)
+      float n = std::min(ellipse_sd(px, py, h1x, h1y, hrx, hry, -0.35f), ellipse_sd(px, py, h2x, h2y, hrx, hry, -0.35f));
+      n = std::min(n, box_sd(px, py, s1x - stemW, top1, s1x, h1y));
+      n = std::min(n, box_sd(px, py, s2x - stemW, top2, s2x, h2y));
+      const float bt = (s2x - s1x) > 0.0f ? clamp01((px - (s1x - stemW)) / (s2x - (s1x - stemW))) : 0.0f;
+      const float beamTop = top1 + (top2 - top1) * bt;
+      if (px >= s1x - stemW && px <= s2x) n = std::min(n, std::max(beamTop - py, py - (beamTop + 0.17f * R)));
+      cv.over(x, y, rgb(0x0B1020), 0.5f - n);
+    }
+  }
+  // The words, left-aligned in the room right of the disc.
+  const float left = dcx + R + 0.14f * u, right = w - 0.1f * u, room = right - left;
+  auto put_left = [&](const std::string& s, float y, const TextStyle& st) {
+    draw_text(cv, s.c_str(), left + 0.5f * text_width(s.c_str(), st.px), y, st);
+  };
+  const TextStyle head{0.17f * u, rgb(0xFFF7B0), rgb(0xFFC21F), rgb(0x05070C), 0.012f * u, rgb(0x000000, 0.0f), 0.0f, 0.0f};
+  put_left("NOW PLAYING", 0.22f * u, head);
+  auto fit_line = [&](std::string s, float px, float minPx) {
+    float p = px;
+    const float wide = text_width(s.c_str(), p);
+    if (wide > room) p = std::max(minPx, px * room / wide);
+    while (s.size() > 4 && text_width(s.c_str(), p) > room) s = s.substr(0, s.size() - 4) + "...";
+    return std::make_pair(s, p);
+  };
+  std::string t = caps_of(title);
+  if (t.empty()) t = "MENU MUSIC";
+  const auto tl = fit_line(t, 0.30f * u, 0.21f * u);
+  put_left(tl.first, 0.52f * u,
+           TextStyle{tl.second, rgb(0xFFFFFF), rgb(0xDDE4F0), rgb(0x05070C), 0.016f * u, rgb(0x000000, 0.45f), 0.006f * u,
+                     0.008f * u});
+  const std::string a = caps_of(artist);
+  if (!a.empty()) {
+    const auto al = fit_line(a, 0.18f * u, 0.14f * u);
+    put_left(al.first, 0.80f * u,
+             TextStyle{al.second, rgb(0xC8D2E6), rgb(0xA8B4CC), rgb(0x05070C), 0.01f * u, rgb(0x000000, 0.0f), 0.0f, 0.0f});
+  }
   cv.write(rgba);
 }
 

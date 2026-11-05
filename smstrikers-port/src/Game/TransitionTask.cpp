@@ -81,6 +81,7 @@
 #include "Game/Sys/debug.h"
 #include "dolphin/os.h"
 #include "Game/main.h"
+#include "port/menu_music.h"  // strikers-quest r147: the lofi menu music
 
 int nlSNPrintf(char*, unsigned long, const char*, ...);
 
@@ -722,6 +723,8 @@ void TransitionTask::InitializeGameState()
     InitializeTimeRegions();
 
     m_TransitionState = eTS_InState;
+    // strikers-quest r147: the match is up: the lofi menu music (port/menu_music.h) fades out for the game's own
+    PortMenuMusicSetMatch(1);
 }
 
 /**
@@ -730,6 +733,8 @@ void TransitionTask::InitializeGameState()
 void TransitionTask::DestroyGameState()
 {
     m_TransitionState = eTS_Destroying;
+    // strikers-quest r147: the match is over, back to the menus: the lofi menu music (port/menu_music.h) fades in
+    PortMenuMusicSetMatch(0);
 
     if (g_bFrameStatsOnDisk)
     {

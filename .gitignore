@@ -28,3 +28,9 @@ __pycache__/
 
 
 *.log
+
+# local working backups (moved out of the tree; never commit)
+*.bak-r1*
+*.bak-r9*
+*.bak-r8*
+

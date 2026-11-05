@@ -41,6 +41,9 @@
 #include "xr_ra.h"    // r46: RetroAchievements, its pop-ups
 #include "xr_home.h"  // r61: the home ground
 #include "xr_evo.h"   // r96: the 3D evolution
+#include "xr_big.h"   // r137: big character pictures (the magazine's)
+#include "xr_weather.h"  // r137: weather + night games (looks only)
+#include "xr_cards.h"    // r137: STRIKERS trading cards (franchise packs, the binder)
 #include <cctype>
 #include <ctime>
 // r61: stb_image (public domain / MIT), JPEG only, its functions private to this file: the cup suite's
@@ -52,9 +55,11 @@
 #include "third_party/stb_image.h"
 #include "../../include/port/xr_net.h"
 #include "../../include/port/xr_guest.h"  // r67: guest scorers' names
+#include "../../include/port/xr_body.h"   // r144: the life-size scorer's real reach and height
 #include <functional>  // r70c
 #include "../../include/port/franchise.h"  // r70: franchise mode's hub
 #include "../../include/port/lineup.h"     // r81: the co-captains
+#include "../../include/port/menu_music.h" // r147: the lofi menu music (its setting row, the theme, NOW PLAYING)
 
 #include <algorithm>
 #include <array>  // r112
@@ -65,6 +70,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>  // r137
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -131,7 +137,7 @@ namespace {
 
 constexpr const char* kTag = "strikers_xr";
 // Bumped every headset round; the first log line of a session says which build is running.
-constexpr const char* kBuildTag = "STRIKERS_XR build=r134";
+constexpr const char* kBuildTag = "STRIKERS_XR build=r151";
 
 // r39: every line also goes to the game log (stderr -> /sdcard/Strikers/strikers-log.txt): the
 // headset's system log turns over within minutes, so a session's stats and errors were lost.
@@ -588,6 +594,29 @@ struct State {
     unsigned shows = 0;               // r43b: shows so far (which side it comes in from)
     int statGoals = -1, statAssists = 0;  // r43d: its goals / assists this game (PortXrScorerStats)
     bool statHatTrick = false;            // ... and this goal is its third regular one
+    // r144: its posed body's reach round its feet, its top and its rise toward its front (port/xr_body.h, game units),
+    // the most of each over this show; how far its feet are kept from your head for it (scorer_place)
+    bool shapeOk = false;
+    float reach[8] = {};
+    float top = 0.0f;
+    float rise[kPortXrBodySlopeCount] = {};
+    float sideReach[2][kPortXrBodySlopeCount] = {};
+    PortXrBodyShape cur{};            // its latest pose's own (the banner follows it)
+    float shapeView = 0.0f;           // r144b: the direction rise / side are along (PortXrBodySetView)
+    float turn = 0.0f, turnTarget = 0.0f;  // r144b: turned this far from facing you (a long body side-on)
+    float standTop = 0.0f;            // r144b: its top as it ran in (its size, not a jump's: the clearance)
+    bool standTopOk = false;
+    uint64_t shapeGen = 0, planNs = 0, spaceNs = 0;
+    float keepOff = 2.5f;
+    bool spaceLogged = false;
+    // r144: its banner: over it (1) or beside it (2) for this show (0 not decided yet), its bottom edge as it follows
+    // the body (LOCAL y), and where it went this frame (screen_lift_over_scorer)
+    int bannerMode = 0;
+    float bannerBottom = 0.0f;
+    uint64_t bannerNs = 0;
+    bool bannerKnown = false;
+    XrVector3f bannerAt{};
+    float bannerTop = 0.0f, bannerWidth = 0.0f;
   } scorer;
   Panel banner;                       // r42: "GOAL SCORED BY:" over the scorer
   bool bannerBusy = false;            // its picture is being drawn (g_bannerPixels, g_bannerReady)
@@ -767,6 +796,11 @@ struct State {
   uint64_t raToastShownNs = 0, raToastUntilNs = 0;
   bool raToastPlaced = false;
   XrVector3f raToastPos{0.0f, 0.0f, 0.0f};
+  Panel nowPlaying;                   // r147: the menu music's "NOW PLAYING" card (port/menu_music.h)
+  uint64_t npShownNs = 0;             // when it came up (0: not on show)
+  int npGen = 0, npShownGen = -1;     // the track it is for / the picture on show
+  bool npPlaced = false;
+  XrVector3f npPos{0.0f, 0.0f, 0.0f};
   float charScale = 1.5f;             // Tabletop: players drawn this much bigger (xr_tune "charscale")
   int msaaTable = 4;                  // eye-pass multisampling, table only / with the stadium layer
   int msaaStadium = 4;                // (1 or 4; xr_tune "msaa <table> <stadium>")
@@ -988,7 +1022,7 @@ std::atomic<uint64_t> g_worldDrawnNs{0};
 std::vector<uint8_t> g_bannerPixels;
 std::atomic<bool> g_bannerReady{false};
 constexpr uint32_t kBannerW = 1024, kBannerH = 560;  // r43d: 420 + the stats line
-constexpr uint32_t kSliderW = 640, kSliderH = 632;  // r133: six rows (+ HOME GROUND)  // r44g: the settings panel's rows (r104: five, was 380 for three)
+constexpr uint32_t kSliderW = 640, kSliderH = 800;  // r147: eight rows (+ MENU MUSIC); r137: seven rows (+ WEATHER); r133: six rows (+ HOME GROUND)  // r44g: the settings panel's rows (r104: five, was 380 for three)
 // r51b: the achievements list: one tall picture of every row (xrtext::achievements_list), 8 rows of
 // it in view at a time, under a title bar (xrtext::achievements_header).
 constexpr uint32_t kAchW = 1000, kAchRowH = 94, kAchShownRows = 8, kAchHeadH = 150;
@@ -1036,6 +1070,8 @@ struct FrLiveGlow {
 };
 FrLiveGlow g_frLiveGlow;
 AsyncPanel g_frEvo;                    // r70c: the evolution scene (redrawn ~15 times a second)
+AsyncPanel g_nowPlayingP;              // r147: the menu music's "NOW PLAYING" card (xrtext::now_playing_toast)
+constexpr uint32_t kNowPlayingW = 1024, kNowPlayingH = 220;
 AsyncPanel g_frTickerP, g_frTvP;       // r73: the news wire and the TV in your room
 constexpr uint32_t kFrTickerW = 1600, kFrTickerH = 72, kFrTvW = 960, kFrTvH = 600;
 constexpr uint32_t kFrEvoW = 1152, kFrEvoH = 693;
@@ -1079,6 +1115,7 @@ struct FrSnapshot {
   bool evoReadyCostume = false;               // r111: ... a Marvel hero's next costume
   MagNews mag;                                // r131: STRIKERS ILLUSTRATED's own news (g.magNews)
   MagPick pick;                               // r131: this issue's random cover (mag_pick_issue)
+  std::string cardPull;                       // r137: a big trading-card pull for the cover ("SHINY CHARIZARD"), "" none
   // r77: trades (mode 5): the stage, what you give and its value per option, their offers, the answer
   int tradeStage = 0, tradeWhat = 0;
   bool tradeOpen = false;
@@ -1095,19 +1132,23 @@ struct FrSnapshot {
   std::string lgTyped;
   PortFranchiseLeagueLobby lobby = {};
   PortFranchiseLeagueView league = {};
+  int nextWeather = 0;  // r137: your next game's weather (xr_weather.h PORT_WX_* bits; the calendar)
 };
 // r100: a league code's letters (no 0 / O / 1 / I: xr_league.cpp's)
 constexpr const char* kFrCodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 std::mutex g_frMutex;
 FrSnapshot g_frSnap;
-// r113: the newspaper's front-page photo: the game's own frame a moment after your last goal in a franchise
-// match (on_aurora_frame takes it), cleared when a franchise match starts; who scored it.
-std::mutex g_photoMutex;
-std::vector<uint8_t> g_photo;
-int g_photoW = 0, g_photoH = 0;
-std::string g_photoBy;
-std::atomic<uint64_t> g_photoWantNs{0};
+// (r143: r113's newspaper photo - the game's own frame after your goal - is gone: Lance: "i should never see gameplay
+// as a cover"; STRIKERS ILLUSTRATED draws its own covers)
 AsyncPanel g_paperP[6];  // r113: the newspaper's pages; r131: STRIKERS ILLUSTRATED's 6
+// r137: its big pictures (xr_big): the issue (paperGen) a page of which was drawn without one, still being drawn (-1
+// none), xrbig::generation() when that page started, and when the issue was last drawn again for them (render thread)
+std::atomic<int> g_magBigWait{-1};
+std::atomic<unsigned> g_magBigAt{0};
+uint64_t g_magBigRedrawNs = 0;
+int g_magBigRedrawGen = -1;  // the paperGen of that drawing again (its paper keeps the pages it has till it's done)
+std::atomic<bool> g_hubBigWait{false};  // r137: the hub's MAG page drew this week's cover without its big picture
+std::atomic<unsigned> g_hubBigAt{0};
 PortFranchiseCard g_frCard = {};  // r70b: under g_frMutex
 // r73: what the news wire and the TV show (under g_frMutex)
 struct FrRoom {
@@ -1129,6 +1170,7 @@ void fr_club_place(int club, int* row, int* col) {
 void fr_pick_taken_fill(std::vector<unsigned char>& out);  // r131 (after the menu's entries)
 // The hub's state as the game has it now, for the next picture (game thread).
 void mag_pick_issue(FrSnapshot& s);  // r131 (below)
+void mag_prefetch(const FrSnapshot& s);  // r137 (below)
 void fr_refresh() {
   FrSnapshot s;
   s.mode = g.frMode;
@@ -1141,6 +1183,7 @@ void fr_refresh() {
   if (g.frMode == 0) PortFranchiseSlots(s.slots);  // (reads the three save files)
   PortFranchiseGetView(&s.view);
   PortFranchiseTodayGames(&s.today);
+  s.nextWeather = PortWeatherMode() == PORT_WX_MODE_OFF ? 0 : PortFranchiseNextWeather();  // r137
   s.evo = g.frEvo;
   s.evoStage = g.frEvoStage;
   s.evoChoice = g.frEvoChoice;
@@ -1216,7 +1259,11 @@ void fr_refresh() {
   static std::atomic<unsigned> serial{0};  // r131
   s.serial = ++serial;
   s.mag = g.magNews;  // r131
-  if (g.frMode == 2 && s.view.active) mag_pick_issue(s);  // r131: this week's random cover (kept in the career's file)
+  s.cardPull = xrcards::magazine_pull();  // r137
+  if (g.frMode == 2 && s.view.active) {
+    mag_pick_issue(s);  // r131: this week's random cover (kept in the career's file)
+    mag_prefetch(s);    // r137: its big pictures drawn now (xr_big), ready when it's opened
+  }
   std::lock_guard<std::mutex> lock(g_frMutex);
   g_frSnap = std::move(s);
   ++g.frGen;
@@ -1488,12 +1535,17 @@ constexpr int kMagNX = 24, kMagNY = 8;  // a page's grid: across (it bends this 
 constexpr int kMagNV = (kMagNX + 1) * (kMagNY + 1);
 bool mag_paper_frame(xrfx::Scene& scene, const MagFrame& f, uint64_t now) {
   if (!g.fxReady) return false;
-  if (g.magModelGen != g.paperGen) {
+  // r137: drawn again for its big pictures while open, the pages it has stay up till all six are drawn again
+  bool drawn = g.magModelGen != g.paperGen;
+  for (int pg = 0; drawn && pg < kMagPages; ++pg) {
+    AsyncPanel& a = g_paperP[pg];
+    if (a.forGeneration != g.paperGen || a.ready.load() != a.requested || a.width != kMagW || a.height != kMagH) drawn = false;
+  }
+  if (g.magModelGen != g.paperGen && !drawn &&
+      (g.paperGen != g_magBigRedrawGen || g.magModelGen < 0 || !xrfx::model_up(kMagSlot)))
+    return false;
+  if (drawn) {
     // this issue's pictures up once all six are drawn
-    for (int pg = 0; pg < kMagPages; ++pg) {
-      AsyncPanel& a = g_paperP[pg];
-      if (a.forGeneration != g.paperGen || a.ready.load() != a.requested || a.width != kMagW || a.height != kMagH) return false;
-    }
     xrfx::Model m;
     m.vertexCount = static_cast<uint32_t>(kMagPages * kMagNV);
     for (int pg = 0; pg < kMagPages; ++pg) {
@@ -1707,6 +1759,10 @@ std::string fr_upper(std::string s);                                         // 
 struct Pieces {
   std::vector<xrtext::BoardPiece> v;
   float ox = 0.0f, oy = 0.0f, k = 1.0f;
+  // r137: the big pictures its pieces show (mag_pic), kept as long as it is (a deque: they never move), and whether one
+  // was left out (still being drawn: its portrait in its place)
+  std::deque<GuestPortrait> hold;
+  bool bigMissing = false;
   // r131 (STRIKERS ILLUSTRATED): how the words look until changed: leaning, condensed, turned, a drop shadow, the
   // outline's colour (plain(): upright, full width, none, dark)
   float tSlant = 0.0f, tXscale = 1.0f, tAngle = 0.0f, tShadow = 0.0f, tShadowA = 0.55f;
@@ -1911,6 +1967,22 @@ void hub_hints(Pieces& P, float w, float cy, const std::vector<HubHint>& hints) 
     x += P.width(h.words, px) + 56.0f;
   }
 }
+// r137 (Lance OK'd "the cover star rendered big on the headset when each issue comes out"; the 256 portraits were
+// stretched 3-4x on the 1080 x 1440 pages): a character's big picture (xr_big: its own 3D model drawn `size` px on this
+// headset, the portraits' look, sharp), kept with the page's pieces; else its portrait (no model here: for good; still
+// being drawn: P.bigMissing, and the issue is drawn again once it's there). shiny: its shiny pack's colours.
+const GuestPortrait& mag_pic(Pieces& P, const std::string& key, bool shiny, int size) {
+  if (!key.empty()) {
+    GuestPortrait big;
+    if (xrbig::get(key, shiny, size, &big.rgba)) {
+      big.w = big.h = static_cast<int>(std::lround(std::sqrt(static_cast<double>(big.rgba.size() / 4))));
+      P.hold.push_back(std::move(big));
+      return P.hold.back();
+    }
+    if (!xrbig::failed(key, shiny, size)) P.bigMissing = true;
+  }
+  return guest_portrait(key);
+}
 // The form a franchise form evolves / suits up into (franchise/evolutions.txt's first line from it), "" none.
 std::string next_form_key(const std::string& from) {
   static std::mutex mutex;
@@ -1939,26 +2011,24 @@ std::string club_mascot(const FrClubInfo& c) {
     return c.name.substr(c.place.size() + 1);
   return c.name;
 }
-// Words split in two near the middle (a story's two lines on the paper).
-void split_two(const std::string& s, std::string* a, std::string* b) {
-  if (s.size() < 26) {
-    *a = s;
-    b->clear();
-    return;
+// r135 (Lance: "make the strikers illustrated more clear. its kinda blurry text/image wise"): words too wide for one
+// line at `px` (`roomOne`) split in two at the space where they fit best (line 1 in `room1`, line 2 in `room2`), so
+// they stay big instead of shrinking to fit; *b empty = one line. (Was split_two: by letter count, then shrunk.)
+void mag_fit_two(const Pieces& P, const std::string& s, float px, float roomOne, float room1, float room2,
+                 std::string* a, std::string* b) {
+  *a = s;
+  b->clear();
+  if (P.width(s, px) <= roomOne) return;
+  float best = 1e9f;
+  for (size_t i = 1; i + 1 < s.size(); ++i) {
+    if (s[i] != ' ') continue;
+    const float f = std::max(P.width(s.substr(0, i), px) / room1, P.width(s.substr(i + 1), px) / room2);
+    if (f < best) {
+      best = f;
+      *a = s.substr(0, i);
+      *b = s.substr(i + 1);
+    }
   }
-  size_t best = std::string::npos;
-  for (size_t i = 0; i < s.size(); ++i)
-    if (s[i] == ' ' && (best == std::string::npos ||
-                        std::abs(static_cast<int>(i) - static_cast<int>(s.size() / 2)) <
-                            std::abs(static_cast<int>(best) - static_cast<int>(s.size() / 2))))
-      best = i;
-  if (best == std::string::npos) {
-    *a = s;
-    b->clear();
-    return;
-  }
-  *a = s.substr(0, best);
-  *b = s.substr(best + 1);
 }
 
 // --- r131 (Lance: "i said magazine, changing it from newspaper to magazine, and the reason is i want you to get freaky
@@ -1987,6 +2057,7 @@ struct MagStory {
   int variant = 0;                 // r131: the random cover's colours / sash / mirrored star
   std::string bigWord = "STRAIGHT";  // r131: STREAK's burst word under the number
   std::vector<std::pair<std::string, std::string>> lines;  // the cover lines: a label, its words
+  bool win = false;  // r143: the cover star's club won its last game (CLASSIC's confetti)
 };
 // The form a franchise form evolves / suits up FROM (evolutions.txt's first line to it), "" none.
 std::string prev_form_key(const std::string& to) {
@@ -2054,6 +2125,7 @@ MagStory mag_story_real(const FrSnapshot& s) {
     my = home ? mine->homeGoals : mine->awayGoals;
     their = home ? mine->awayGoals : mine->homeGoals;
     won = my > their;
+    st.win = won;  // r143
     margin = std::abs(my - their);
     ot = mine->overtime;
     if (won) verb = ot ? " STUN " : (margin >= 4 ? " CRUSH " : (margin >= 2 ? " BEAT " : " EDGE "));
@@ -2127,7 +2199,7 @@ MagStory mag_story_real(const FrSnapshot& s) {
     st.kicker = "SEASON " + std::to_string(v.season) + " SUPER STRIKE SERIES";
     st.head1 = v.titles <= 1 ? "CHAMPIONS!" : (v.titles == 2 ? "BACK-TO-BACK!" : "DYNASTY!");
     st.sub = "THE " + mascot(me) + " WIN IT ALL";
-    st.banner = "COMMEMORATIVE ISSUE";
+    st.banner = "SOUVENIR ISSUE";  // r135: was COMMEMORATIVE ISSUE (too long for the corner's band at 40 px)
   } else if (v.phase == PORT_FR_PHASE_DONE) {
     st.tmpl = kMagMoody;
     st.kicker = "SEASON " + std::to_string(v.season) + " IS OVER";
@@ -2257,10 +2329,10 @@ MagStory mag_story_real(const FrSnapshot& s) {
   }
   if (v.nemCount > 0 && st.tmpl != kMagFaceoff && v.nems[0].key[0] != '\0') {
     st.inset = v.nems[0].key;
-    st.insetText = "PLUS: WANTED";
+    st.insetText = "WANTED";  // r135: "PLUS: " cut (the label 40 px in the picture's width)
   } else if (lead != nullptr && st.star != lead->key) {
     st.inset = lead->key;
-    st.insetText = "PLUS: " + fr_upper(lead->name);
+    st.insetText = fr_upper(lead->name);
   }
   if (st.lines.size() < 4 && v.feedCount > 0) {
     const std::string f = v.feed[0];
@@ -2651,6 +2723,7 @@ MagStory mag_story(const FrSnapshot& s) {
   bool ot = false;
   mag_record(v, p.club, &w, &l, &rank);
   const bool played = mag_last_game(v, p.club, &a, &b, &opp, &ot);
+  st.win = played && a > b;  // r143: this issue's star's club
   std::string fact;
   if (played) {
     fact = M + (a > b ? (ot ? " STUN " : (a - b >= 4 ? " CRUSH " : (a - b >= 2 ? " BEAT " : " EDGE ")))
@@ -2676,7 +2749,7 @@ MagStory mag_story(const FrSnapshot& s) {
     case kMagGold:
       st.kicker = realKicker;
       st.sub = "THE " + mascot(v.myClub) + " WIN IT ALL";
-      st.banner = (mag_rand(rng) & 1u) ? "COMMEMORATIVE ISSUE" : "CHAMPIONS EDITION";
+      st.banner = (mag_rand(rng) & 1u) ? "SOUVENIR ISSUE" : "CHAMPIONS EDITION";
       break;
     case kMagBracket:
       st.kicker = realKicker;
@@ -2752,6 +2825,22 @@ MagStory mag_story(const FrSnapshot& s) {
     st.lines.push_back(pool[i]);
     pool.erase(pool.begin() + static_cast<long>(i));
   }
+  // r137: the forecast for your next game when the calendar has one (SNOW GAME, UNDER THE LIGHTS ...): the first cover
+  // line, in the same four slots (no layout change; the dice above are untouched, so both co-op headsets still agree)
+  if (s.nextWeather != 0 && v.nextOpponent >= 0 && v.nextOpponent < nClubs) {
+    const std::string wl = PortWeatherLabel(s.nextWeather);
+    if (!wl.empty()) {
+      st.lines.insert(st.lines.begin(), {"FORECAST", wl + " VS " + place(v.nextOpponent)});
+      if (st.lines.size() > 4) st.lines.pop_back();
+    }
+  }
+  // r137: your latest big trading-card pull (a super rare or a shiny from the last week, xr_cards.cpp): a cover line, after
+  // the forecast (the same four slots)
+  if (!s.cardPull.empty()) {
+    const size_t at = !st.lines.empty() && st.lines[0].first == "FORECAST" ? 1 : 0;
+    st.lines.insert(st.lines.begin() + static_cast<long>(std::min(at, st.lines.size())), {"PULLED", s.cardPull});
+    if (st.lines.size() > 4) st.lines.pop_back();
+  }
   // CLASSIC's "PLUS:" picture: someone else
   if (st.inset == st.star) st.inset.clear();
   return st;
@@ -2777,16 +2866,22 @@ void mag_masthead(Pieces& P, const MagStory& st, float y, float px, uint32_t rgb
                   uint32_t rgb2 = 0) {
   P.style(0.0f, 0.62f);
   P.rim(rim);
-  if (mag_has_sash(st)) P.text("STRIKERS ILLUSTRATED", 40.0f + 445.0f, y, px, 890, rgb, outline, rgb2);
+  // r135: 860 wide (was 890) beside the corner's wider band
+  if (mag_has_sash(st)) P.text("STRIKERS ILLUSTRATED", 40.0f + 430.0f, y, px, 860, rgb, outline, rgb2);
   else P.text("STRIKERS ILLUSTRATED", kMagWf / 2, y, px, 1020, rgb, outline, rgb2);
   P.plain();
 }
-void mag_dateline(Pieces& P, const MagStory& st, float y, uint32_t rgb) {
+// r135: the date and the issue 40 px (were 26: a few pixels tall on the headset); the price only when it fits; an
+// outline where it crosses a light picture (FACEOFF's white stripe)
+void mag_dateline(Pieces& P, const MagStory& st, float y, uint32_t rgb, float outline = 0.0f) {
   P.plain();
-  P.left(st.date, 44, y, 26, 400, rgb);
-  P.right(st.issue + "  -  $3.99", mag_has_sash(st) ? kMagWf - 270 : kMagWf - 44, y, 26, 400, rgb);
+  P.left(st.date, 44, y, 40, 360, rgb, outline);
+  std::string issue = st.issue + " - $3.99";
+  if (P.width(issue, 40) > 370) issue = st.issue;
+  P.right(issue, mag_has_sash(st) ? kMagWf - 284 : kMagWf - 44, y, 40, 370, rgb, outline);
 }
 uint32_t mag_lcg(uint32_t r) { return (r * 1103515245u + 12345u) & 0x7FFFFFFFu; }
+// r135: bars only (its 22 px digits were a blur), the bars the box's height
 void mag_barcode(Pieces& P, float x0, float y0, const MagStory& st) {
   P.box(x0, y0, x0 + 190, y0 + 118, 4, 0xFFFFFF);
   uint32_t r = st.seed * 7919u + 17u;
@@ -2794,34 +2889,42 @@ void mag_barcode(Pieces& P, float x0, float y0, const MagStory& st) {
   while (x < x0 + 172) {
     r = mag_lcg(r);
     const float bw = static_cast<float>(2 + (r >> 8) % 4);
-    if ((r >> 4) % 3 != 0) P.box(x, y0 + 10, x + bw, y0 + 82, 0, kMagInk);
+    if ((r >> 4) % 3 != 0) P.box(x, y0 + 12, x + bw, y0 + 106, 0, kMagInk);
     x += bw + 1 + static_cast<float>((r >> 12) % 3);
   }
-  P.text("0 74470 " + std::to_string(10000 + st.seed % 90000) + " 7", x0 + 95, y0 + 100, 22, 170, kMagInk);
 }
-// a band across the top right corner
+// a band across the top right corner (r135: wider, its words 42 px on one line or 40 px on two, were 38 shrunk to
+// 24-31 to fit). The band: (W - x) + y from 150 to 280; a line centred on its part of the band.
 void mag_sash(Pieces& P, const std::string& text, uint32_t bg, uint32_t fg) {
   const float W = kMagWf;
-  P.poly({W - 240, 0, W - 140, 0, W, 140, W, 240}, mag_darker(bg, 0.55f), 0.6f);
-  P.poly({W - 250, 0, W - 150, 0, W, 150, W, 250}, bg);
-  P.style(0.0f, 0.9f, 45.0f);
-  P.text(text, W - 100, 100, 38, 230, fg);
+  P.poly({W - 270, 0, W - 140, 0, W, 140, W, 270}, mag_darker(bg, 0.55f), 0.6f);
+  P.poly({W - 280, 0, W - 150, 0, W, 150, W, 280}, bg);
+  P.style(0.0f, 0.88f, 45.0f);
+  std::string a = text, b;
+  if (P.width(text, 42) > 244) mag_fit_two(P, text, 40, 0, 208, 284, &a, &b);
+  if (b.empty()) {
+    P.text(a, W - 107.5f, 107.5f, 42, 244, fg);
+  } else {
+    P.text(a, W - 94, 94, 40, 208, fg);
+    P.text(b, W - 121, 121, 40, 284, fg);
+  }
   P.plain();
 }
+// r135: the words 40 px (were 30) on up to two lines, split where they fit; the outline as thick as the label's
 void mag_cover_lines(Pieces& P, const MagStory& st, float x, float y0, float step, int align, uint32_t label,
                      uint32_t detail, float outline, int count) {
   float y = y0;
   for (int i = 0; i < std::min(count, static_cast<int>(st.lines.size())); ++i) {
     std::string d1, d2;
-    split_two(st.lines[i].second, &d1, &d2);
+    mag_fit_two(P, st.lines[i].second, 40, 420, 420, 420, &d1, &d2);
     if (align < 0) {
-      P.left(st.lines[i].first, x, y, 46, 330, label, outline);
-      P.left(d1, x, y + 46, 30, 330, detail, outline * 0.75f);
-      if (!d2.empty()) P.left(d2, x, y + 80, 30, 330, detail, outline * 0.75f);
+      P.left(st.lines[i].first, x, y, 46, 420, label, outline);
+      P.left(d1, x, y + 48, 40, 420, detail, outline);
+      if (!d2.empty()) P.left(d2, x, y + 90, 40, 420, detail, outline);
     } else {
-      P.right(st.lines[i].first, x, y, 46, 330, label, outline);
-      P.right(d1, x, y + 46, 30, 330, detail, outline * 0.75f);
-      if (!d2.empty()) P.right(d2, x, y + 80, 30, 330, detail, outline * 0.75f);
+      P.right(st.lines[i].first, x, y, 46, 420, label, outline);
+      P.right(d1, x, y + 48, 40, 420, detail, outline);
+      if (!d2.empty()) P.right(d2, x, y + 90, 40, 420, detail, outline);
     }
     y += step;
   }
@@ -2847,27 +2950,80 @@ const GuestPortrait& mag_logo(const FrSnapshot& s, int club) {
 }
 
 // --- the covers
-void mag_cover_classic(Pieces& P, const MagStory& st, const std::vector<uint8_t>& photo, int photoW, int photoH) {
+// r143 (Lance: "i should never see gameplay as a cover ... we need those to be generated, copying the famous sports
+// illustrated covers"): CLASSIC's backdrop (it was the game's own frame after your goal, r113's photo), a night game's
+// photo shoot drawn from nothing: a dark sky graded from a club colour, the floodlight banks (their lamps, halos and
+// beams down through the haze), out-of-focus bokeh, the stands' crowd in silhouette with flashes going off, the grass
+// under the lights with a spot where the star stands, the star's rim light in its club's two colours, and confetti in
+// the air after a win. Seeded per issue (st.seed): the palette, how many banks and where, the beams, the bokeh, the
+// crowd. PC check: tools\outside\magazine_preview.py stadium_night (the same draws, the same numbers).
+void mag_stadium_night(Pieces& P, const MagStory& st, uint32_t c1, uint32_t c2) {
+  const float W = kMagWf, H = kMagHf;
+  uint32_t r = st.seed * 2654435761u + 977u;
+  auto rnd = [&](uint32_t n) {  // 0 .. n-1
+    r = mag_lcg(r);
+    return static_cast<int>((r >> 4) % std::max(1u, n));
+  };
+  auto frand = [&]() {  // 0 .. 1
+    r = mag_lcg(r);
+    return static_cast<float>((r >> 4) % 10000u) / 10000.0f;
+  };
+  const int pal = rnd(4);
+  const uint32_t sky[4] = {mag_darker(c1, 0.35f), 0x0B1430, 0x1A0B2E, mag_darker(c2, 0.3f)};
+  P.box(0, 0, W, H, 0, sky[pal], 1.0f, 0x030409);
+  P.glow(-200, -300, W + 200, 700, mag_lighter(c1, 0.2f), 0.25f);  // haze lit by the lamps
+  const int banks = 2 + rnd(2);
+  for (int b = 0; b < banks; ++b) {
+    const int jx = rnd(200), jy = rnd(140);
+    const float bx = banks == 2 ? (b == 0 ? 60.0f + jx : W - 60.0f - jx) : 120.0f + b * (W - 240.0f) / 2.0f + jx * 0.6f - 60.0f;
+    const float by = 60.0f + jy;
+    for (int k = 0; k < 2; ++k) {  // its beams, down toward the pitch
+      const float tx = W * (0.2f + 0.6f * frand());
+      P.poly({bx - 16, by, bx + 16, by, tx + 130, H * 0.74f, tx - 130, H * 0.74f}, 0xFFF4D8, 0.05f);
+    }
+    P.glow(bx - 280, by - 280, bx + 280, by + 280, 0xFFF1C8, 0.45f);
+    for (int l = 0; l < 6; ++l) {  // its lamps, 3 x 2
+      const float lx = bx - 45 + (l % 3) * 45.0f, ly = by - 18 + (l / 3) * 36.0f;
+      P.glow(lx - 26, ly - 26, lx + 26, ly + 26, 0xFFFFFF, 0.95f);
+    }
+  }
+  const int nb = 14 + rnd(10);
+  for (int i = 0; i < nb; ++i) {  // bokeh: lights far behind, out of focus
+    const float x = frand() * W, y = 40 + frand() * 640, d = 30 + frand() * 110, a = 0.06f + 0.1f * frand();
+    const uint32_t col = i % 3 == 0 ? mag_lighter(c1, 0.5f) : (i % 3 == 1 ? 0xFFE9B0u : 0xFFFFFFu);
+    P.box(x - d / 2, y - d / 2, x + d / 2, y + d / 2, d / 2, col, a);
+  }
+  // the stands: rows of heads and shoulders against a dark wall, flashes going off in them
+  const float top = 780.0f + rnd(80);
+  P.box(0, top + 40, W, 1010, 0, 0x05060A, 0.92f, 0x020304);
+  for (int row = 0; row < 3; ++row) {
+    const float yy = top + row * 34.0f;
+    for (float x = -20.0f + rnd(30); x < W + 20;) {
+      const float hr = 13.0f + rnd(6), hy = yy + rnd(10);
+      P.box(x - hr, hy - hr, x + hr, hy + hr, hr, 0x07080C, 0.95f);
+      P.box(x - hr * 1.7f, hy + hr * 0.6f, x + hr * 1.7f, hy + hr * 3.2f, hr, 0x07080C, 0.95f);
+      x += 26.0f + rnd(14);
+    }
+  }
+  for (int i = 0; i < 14; ++i) {
+    const float x = frand() * W, y = top + 10 + frand() * 140;
+    P.glow(x - 14, y - 14, x + 14, y + 14, 0xFFFFFF, 0.8f);
+  }
+  // the grass under the lights, a spot where the star stands; the star's rim light in its two colours
+  P.box(0, 1000, W, H, 0, 0x1F6B2C, 1.0f, 0x061A0B);
+  P.glow(W / 2 - 420, 1080, W / 2 + 420, 1330, 0xE8FFD8, 0.3f);
+  P.glow(80, 220, 760, 1280, mag_lighter(c1, 0.45f), 0.55f);
+  P.glow(320, 160, 1000, 1220, mag_lighter(c2, 0.35f), 0.45f);
+  if (st.win) mag_confetti(P, st, 70, {st.c1, st.c2, 0xFFFFFF, kMagYellow}, 40, 980);
+}
+void mag_cover_classic(Pieces& P, const MagStory& st) {
   const float W = kMagWf, H = kMagHf;
   const int va = st.variant & 3;  // r131: the random cover's variant
   const uint32_t c1 = va == 1 ? st.c2 : (va == 2 ? 0x3A1A6A : st.c1);
   const uint32_t mast[4] = {kMagRed, kMagYellow, 0xFFFFFF, kMagRed}, mastRim[4] = {0xFFFFFF, 0x05070C, kMagRed, kMagYellow};
-  if (!photo.empty() && photoW > 0 && photoH > 0) {
-    P.photo(photo.data(), photoW, photoH, 0, 0, W, H, 0.5f, 0.4f);
-    P.box(0, 0, W, 520, 0, 0x000001, 0.7f, 0, 0.0f);
-    P.box(0, 860, W, H, 0, 0x000001, 0.0f, 0, 0.9f);
-    mag_masthead(P, st, 150, 210, mast[va], mastRim[va], 6);
-  } else {
-    P.box(0, 0, W, H, 0, mag_darker(c1, 0.55f), 1.0f, 0x05070C);
-    P.dots(0, 0, W, 1000, 14, 0.04f, 0.3f, mag_lighter(c1, 0.25f), 0.45f);
-    P.glow(-260, -200, 520, 560, 0xFFF4C8, 0.6f);
-    P.glow(560, -200, 1340, 560, 0xFFF4C8, 0.6f);
-    P.box(0, 1000, W, H, 0, 0x2F8F3A, 1.0f, 0x0B3315);
-    P.box(0, 1056, W, 1062, 0, 0xFFFFFF, 0.45f);
-    mag_masthead(P, st, 150, 210, mast[va], mastRim[va], 6);
-    P.glow(140, 260, 940, 1260, mag_lighter(c1, 0.5f), 0.55f);
-    P.figure(guest_portrait(st.star), 110, 120, W - 30, 1330, false, 0.5f, 1.0f, (va & 1) != 0);
-  }
+  mag_stadium_night(P, st, c1, va == 1 ? st.c1 : st.c2);  // r143 (no game picture: generated)
+  mag_masthead(P, st, 150, 210, mast[va], mastRim[va], 6);
+  P.figure(mag_pic(P, st.star, false, 1024), 110, 120, W - 30, 1330, false, 0.5f, 1.0f, (va & 1) != 0);  // r137: big
   mag_dateline(P, st, 34, 0xFFFFFF);
   mag_cover_lines(P, st, 44, 330, 150, -1, kMagYellow, 0xFFFFFF, 4, 3);
   // PLUS: a small picture of the next story (your nemesis, or the golden boot's leader) at the right
@@ -2875,18 +3031,26 @@ void mag_cover_classic(Pieces& P, const MagStory& st, const std::vector<uint8_t>
     P.box(W - 252, 286, W - 40, 498, 6, 0xFFFFFF);
     P.box(W - 244, 294, W - 48, 490, 4, mag_darker(st.c1, 0.4f), 1.0f, 0x05070C);
     P.figure(guest_portrait(st.inset), W - 240, 300, W - 52, 486, false, 0.5f, 1.0f);
-    P.box(W - 252, 498, W - 40, 548, 0, kMagRed);
-    P.text(st.insetText, W - 146, 523, 30, 196, 0xFFFFFF);
+    // r135: its label 40 px (was 30), a long name on two lines
+    std::string a, b;
+    mag_fit_two(P, st.insetText, 40, 196, 196, 196, &a, &b);
+    P.box(W - 252, 498, W - 40, b.empty() ? 554 : 600, 0, kMagRed);
+    P.text(a, W - 146, 526, 40, 196, 0xFFFFFF);
+    if (!b.empty()) P.text(b, W - 146, 570, 40, 196, 0xFFFFFF);
   }
-  // the headline: a red kicker tab, the words huge and leaning, the story under them
+  // the headline: a red kicker tab, the words huge and leaning, the story under them (r135: the kicker 44 px, was
+  // 38; the story 44 px on up to two lines, was 40 shrunk to fit one)
   P.plain();
-  const float kw = P.width(st.kicker, 38) + 36;
-  P.box(40, 1004, 40 + std::min(1000.0f, kw), 1058, 6, kMagRed);
-  P.left(st.kicker, 58, 1031, 38, 960, 0xFFFFFF);
+  const float kw = P.width(st.kicker, 44) + 36;
+  P.box(40, 998, 40 + std::min(1000.0f, kw), 1062, 6, kMagRed);
+  P.left(st.kicker, 58, 1030, 44, 960, 0xFFFFFF);
   P.style(0.16f, 0.86f, 0.0f, 10, 0x000000, 0.6f);
   P.left(st.head1, 34, 1158, 220, 1012, 0xFFFFFF, 8, 0xFFE27A);
   P.plain();
-  P.left(st.sub, 44, 1282, 40, 790, kMagYellow, 3);
+  std::string s1, s2;
+  mag_fit_two(P, st.sub, 44, 790, 790, 790, &s1, &s2);
+  P.left(s1, 44, 1282, 44, 790, kMagYellow, 3);
+  if (!s2.empty()) P.left(s2, 44, 1334, 44, 790, kMagYellow, 3);
   mag_sash(P, st.banner, va == 1 ? kMagRed : (va == 2 ? 0xFFFFFF : kMagYellow), va == 1 ? 0xFFFFFF : kMagInk);
   mag_barcode(P, W - 234, H - 152, st);
 }
@@ -2899,13 +3063,13 @@ void mag_cover_special(Pieces& P, const MagStory& st) {
   P.burst(W / 2 - 900, 600 - 900, W / 2 + 900, 600 + 900, 30, 0.8f, 0.0f, 0x1C1A14);
   P.glow(W / 2 - 560, 180, W / 2 + 560, 1180, aura[va], 0.8f);
   P.glow(W / 2 - 330, 360, W / 2 + 330, 1000, 0xFFF4C8, 0.55f);
-  P.box(0, 0, W, 66, 0, kMagRed);
-  P.text("SPECIAL " + st.banner, W / 2, 34, 36, 1000, 0xFFFFFF);
+  P.box(0, 0, W, 72, 0, kMagRed);
+  P.text("SPECIAL " + st.banner, W / 2, 37, 44, 1000, 0xFFFFFF);  // r135: 44 px (was 36)
   mag_masthead(P, st, 176, 200, 0xFFF1B0, 0x2A1A00, 4, 0xC9A227);
   P.glow(16, 760, 356, 1160, 0x8A8A8A, 0.35f);
-  P.figure(guest_portrait(st.before), 36, 820, 336, 1110, false, 0.5f, 1.0f, false, 0x4A4A4A, 0x4A4A4A);
-  P.text("BEFORE", 186, 1140, 30, 280, 0x9A9A9A);
-  P.figure(guest_portrait(st.star), 170, 250, W - 40, 1150, false, 0.5f, 1.0f);
+  P.figure(mag_pic(P, st.before, false, 512), 36, 820, 336, 1110, false, 0.5f, 1.0f, false, 0x4A4A4A, 0x4A4A4A);  // r137
+  P.text("BEFORE", 186, 1138, 40, 280, 0xA8A8A8);  // r135: 40 px (was 30), a touch brighter
+  P.figure(mag_pic(P, st.star, st.shiny, 1024), 170, 250, W - 40, 1150, false, 0.5f, 1.0f);  // r137: big (a shiny one shiny)
   P.ring(22, 22, W - 22, H - 22, 0, 4, gold);
   if (st.shiny) {
     P.burst(W - 360, 290, W - 70, 580, 16, 0.62f, 10.0f, kMagYellow);
@@ -2913,12 +3077,12 @@ void mag_cover_special(Pieces& P, const MagStory& st) {
     P.text("SHINY!", W - 215, 435, 66, 230, kMagRed, 4);
     P.plain();
   }
-  P.text(st.kicker, W / 2, 1176, 40, 900, gold);
+  P.text(st.kicker, W / 2, 1172, 44, 900, gold);  // r135: 44 px (was 40)
   P.style(0.12f, 0.88f, 0.0f, 0.0f);
   P.rim(0x2A1A00);
   P.text(st.head1, W / 2, 1270, 200, 1000, 0xFFF1B0, 6, 0xC98A1A);
   P.plain();
-  P.text(st.sub, W / 2, 1372, 40, 960, 0xFFFFFF);
+  P.text(st.sub, W / 2, 1376, 44, 960, 0xFFFFFF);  // r135: 44 px (was 40)
   mag_cover_lines(P, st, 52, 330, 150, -1, gold, 0xFFFFFF, 3, 3);
 }
 void mag_cover_gold(Pieces& P, const FrSnapshot& s, const MagStory& st) {
@@ -2929,10 +3093,10 @@ void mag_cover_gold(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   mag_confetti(P, st, 90, {st.c1, st.c2, 0xFFFFFF, kMagRed, 0x1E5AC8}, 60, 1100);
   mag_masthead(P, st, 150, 210, kMagRed, 0xFFFFFF, 7);
   P.image(mag_logo(s, s.view.myClub), W / 2 - 400, 260, W / 2 + 400, 1060, false, 0.3f);
-  P.figure(guest_portrait(st.star), 130, 250, W - 130, 1130, false, 0.5f, 1.0f);
+  P.figure(mag_pic(P, st.star, false, 1024), 130, 250, W - 130, 1130, false, 0.5f, 1.0f);  // r137: big
   mag_dateline(P, st, 34, 0x3A1A00);
-  P.box(W / 2 - 330, 1098, W / 2 + 330, 1150, 26, 0x3A1A00);
-  P.text(st.kicker, W / 2, 1124, 34, 620, kMagYellow);
+  P.box(W / 2 - 330, 1090, W / 2 + 330, 1148, 29, 0x3A1A00);
+  P.text(st.kicker, W / 2, 1119, 42, 620, kMagYellow);  // r135: 42 px (was 34)
   P.style(0.1f, 0.84f, 0.0f, 12, 0x5A2A00, 0.45f);
   P.rim(0xFFFFFF);
   P.text(st.head1, W / 2, 1236, 210, 1030, kMagRed, 9, 0x8E1010);
@@ -2948,13 +3112,15 @@ void mag_cover_moody(Pieces& P, const MagStory& st) {
   P.box(0, 0, W, H, 0, 0x1A1B20, 1.0f, 0x050506);
   P.glow(W / 2 - 650, 40, W / 2 + 650, 1200, 0x7A7E88, 0.5f);
   mag_masthead(P, st, 150, 210, va == 3 ? kMagRed : 0xFFFFFF, 0x000000, 0);
-  P.figure(guest_portrait(st.star), -140, 170, W + 140, 1500, false, 0.5f, 1.0f, (va & 1) != 0, 0x0A0A0C, light[va]);
+  P.figure(mag_pic(P, st.star, false, 1024), -140, 170, W + 140, 1500, false, 0.5f, 1.0f, (va & 1) != 0, 0x0A0A0C,
+           light[va]);  // r137: big
   P.dots(0, 170, W, H, 9, 0.5f, 0.05f, 0x000000, 0.28f);
   P.box(0, 900, W, H, 0, 0x000001, 0.0f, 0, 0.94f);
   mag_dateline(P, st, 34, 0xB8BCC6);
-  P.box(40, 236, 40 + P.width(st.banner, 30) + 30, 280, 0, kMagRed);
-  P.left(st.banner, 55, 258, 30, 600, 0xFFFFFF);
-  P.text(st.kicker, W / 2, 1030, 40, 960, kMagRed);
+  // r135: the tag, the kicker and the story 40 / 44 / 44 px (were 30 / 40 / 36), the cover lines 150 apart (140)
+  P.box(40, 232, 40 + P.width(st.banner, 40) + 30, 286, 0, kMagRed);
+  P.left(st.banner, 55, 259, 40, 600, 0xFFFFFF);
+  P.text(st.kicker, W / 2, 1030, 44, 960, kMagRed);
   P.style(0.0f, 0.8f);
   if (!st.head2.empty()) {
     P.text(st.head1, W / 2, 1140, 150, 1030, 0xFFFFFF);
@@ -2963,8 +3129,8 @@ void mag_cover_moody(Pieces& P, const MagStory& st) {
     P.text(st.head1, W / 2, 1210, 170, 1030, 0xFFFFFF);
   }
   P.plain();
-  P.text(st.sub, W / 2, 1384, 36, 940, 0xB8BCC6);
-  mag_cover_lines(P, st, W - 44, 330, 140, 1, 0xFFFFFF, 0xD8DCE6, 3, 3);
+  P.text(st.sub, W / 2, 1386, 44, 960, 0xC8CCD6);
+  mag_cover_lines(P, st, W - 44, 330, 150, 1, 0xFFFFFF, 0xD8DCE6, 3, 3);
 }
 void mag_cover_faceoff(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   const float W = kMagWf, H = kMagHf;
@@ -2978,8 +3144,8 @@ void mag_cover_faceoff(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   mag_masthead(P, st, 140, 200, 0xFFFFFF, kMagRed, 5);
   const int va = st.variant & 3;  // r131
   const uint32_t vs[4] = {kMagYellow, 0xFFFFFF, 0xFF8A1E, 0x5AE8FF};
-  P.figure(guest_portrait(st.star), -60, 330, 610, 1190, false, 0.5f, 1.0f, (va & 1) != 0);
-  P.figure(guest_portrait(st.rival), 470, 330, W + 60, 1190, false, 0.5f, 1.0f, (va & 1) == 0);
+  P.figure(mag_pic(P, st.star, false, 1024), -60, 330, 610, 1190, false, 0.5f, 1.0f, (va & 1) != 0);  // r137: big
+  P.figure(mag_pic(P, st.rival, false, 1024), 470, 330, W + 60, 1190, false, 0.5f, 1.0f, (va & 1) == 0);
   P.poly({592, 0, 628, 0, 488, H, 452, H}, 0xFFFFFF);
   P.text(st.kicker, W / 2, 272, 44, 900, kMagYellow, 4);
   P.burst(W / 2 - 170, 600, W / 2 + 170, 940, 14, 0.62f, 0.0f, vs[va]);
@@ -2993,8 +3159,8 @@ void mag_cover_faceoff(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   P.style(0.16f, 0.84f, 0.0f, 10, 0x000000, 0.6f);
   P.text(st.head1, W / 2, 1306, 170, 1030, 0xFFFFFF, 7, 0xFF8A80);
   P.plain();
-  P.text(st.sub, W / 2, 1398, 32, 900, 0xE6ECF5);
-  mag_dateline(P, st, 34, 0xFFFFFF);
+  P.text(st.sub, W / 2, 1400, 44, 980, 0xE6ECF5);  // r135: 44 px (was 32)
+  mag_dateline(P, st, 34, 0xFFFFFF, 3);
   mag_sash(P, st.banner, kMagRed, 0xFFFFFF);
 }
 // one playoff series: two logos stacked, their wins; the one out faded; yours ringed gold; nil = not decided yet
@@ -3041,14 +3207,14 @@ void mag_cover_bracket(Pieces& P, const FrSnapshot& s, const MagStory& st) {
     for (int c = 0; c < 3; ++c)
       for (int k = 0; k < kColN[c]; ++k)
         mag_bracket_slot(P, s, conf == 0 ? kColX[c] : W - kColX[c] - 150, kColY[c][k], 150, nth(c + 1, conf, k));
-  P.text("THE FINAL", W / 2, 352, 30, 220, kMagYellow);
+  P.text("THE FINAL", W / 2, 350, 40, 220, kMagYellow);  // r135: 40 px (was 30)
   mag_bracket_slot(P, s, W / 2 - 85, 374, 170, nth(4, -1, 0));
-  P.figure(guest_portrait(st.star), 300, 640, 780, 1190, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.figure(mag_pic(P, st.star, false, 512), 300, 640, 780, 1190, false, 0.5f, 1.0f, (va & 1) != 0);  // r137: big
   P.box(0, 1020, W, H, 0, 0x000001, 0.0f, 0, 0.9f);
   P.style(0.16f, 0.84f, 0.0f, 10, 0x000000, 0.6f);
   P.text(st.head1, W / 2, 1250, 170, 1030, 0xFFFFFF, 7, kMagYellow);
   P.plain();
-  P.text(st.sub, W / 2, 1352, 38, 980, kMagYellow, 2);
+  P.text(st.sub, W / 2, 1354, 44, 980, kMagYellow, 2);  // r135: 44 px (was 38)
   mag_dateline(P, st, 34, 0xC8D2E6);
   mag_sash(P, st.banner, va == 1 ? 0xFFFFFF : kMagYellow, kMagInk);
 }
@@ -3064,7 +3230,7 @@ void mag_cover_streak(Pieces& P, const MagStory& st) {
   }
   P.glow(80, 300, 900, 1240, halo[va], 0.5f);
   mag_masthead(P, st, 150, 210, va == 1 ? 0xFFFFFF : 0xFFE600, 0x05070C, 7);
-  P.figure(guest_portrait(st.star), 40, 230, 860, 1240, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.figure(mag_pic(P, st.star, false, 1024), 40, 230, 860, 1240, false, 0.5f, 1.0f, (va & 1) != 0);  // r137: big
   P.burst(W - 450, 310, W - 30, 730, 18, 0.7f, 8.0f, 0xFFE600);
   P.style(0.1f);
   P.rim(0xFFFFFF);
@@ -3072,11 +3238,15 @@ void mag_cover_streak(Pieces& P, const MagStory& st) {
   P.plain();
   P.text(st.bigWord, W - 240, 618, 48, 280, kMagInk);
   P.box(0, 1060, W, H, 0, 0x000001, 0.0f, 0, 0.85f);
-  P.text(st.kicker, W / 2, 1126, 42, 960, 0xFFE600, 3);
+  P.text(st.kicker, W / 2, 1126, 44, 960, 0xFFE600, 3);  // r135: 44 px (was 42)
   P.style(0.2f, 0.82f, 0.0f, 10, 0x000000, 0.6f);
   P.text(st.head1, W / 2, 1250, 200, 1030, 0xFFFFFF, 8, 0x9AE8FF);
   P.plain();
-  P.text(st.sub, W / 2 - 110, 1366, 38, 780, 0xFFFFFF, 2);
+  // r135: the story 44 px on up to two lines (was 38 shrunk to fit one)
+  std::string s1, s2;
+  mag_fit_two(P, st.sub, 44, 780, 780, 780, &s1, &s2);
+  P.text(s1, W / 2 - 110, s2.empty() ? 1366 : 1362, 44, 780, 0xFFFFFF, 2);
+  if (!s2.empty()) P.text(s2, W / 2 - 110, 1410, 44, 780, 0xFFFFFF, 2);
   mag_dateline(P, st, 34, 0xFFFFFF);
   mag_cover_lines(P, st, 44, 330, 150, -1, 0xFFE600, 0xFFFFFF, 4, 2);
   mag_barcode(P, W - 234, H - 152, st);
@@ -3097,17 +3267,17 @@ void mag_cover_preview(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   P.poly({0, 1090, W, 910, W, 940, 0, 1120}, band2[va]);
   mag_masthead(P, st, 150, 210, 0xFFFFFF, mag_darker(band1[va], 0.8f), 6);
   P.image(mag_logo(s, st.starClub >= 0 ? st.starClub : v.myClub), 40, 300, 330, 590, false);
-  P.figure(guest_portrait(st.star), 200, 230, W - 20, 1180, false, 0.5f, 1.0f, (va & 1) != 0);
+  P.figure(mag_pic(P, st.star, false, 1024), 200, 230, W - 20, 1180, false, 0.5f, 1.0f, (va & 1) != 0);  // r137: big
   P.box(0, 1100, W, H, 0, 0x000001, 0.0f, 0, 0.75f);
-  P.text(st.kicker, W / 2, 1150, 40, 900, 0xFFD23F, 3);
+  P.text(st.kicker, W / 2, 1150, 44, 900, 0xFFD23F, 3);  // r135: 44 px (was 40)
   P.style(0.1f, 0.84f);
   P.text(st.head1, W / 2, 1222, 76, 900, 0xFFFFFF, 4);
   P.style(0.14f, 0.82f, 0.0f, 10, 0x000000, 0.5f);
   P.text(st.head2, W / 2, 1318, 150, 1030, band1[va], 7, band2[va]);
   P.plain();
-  P.text(st.sub, W / 2, 1404, 32, 900, 0xFFFFFF);
+  P.text(st.sub, W / 2, 1404, 44, 980, 0xFFFFFF);  // r135: 44 px (was 32)
   mag_dateline(P, st, 34, 0xFFFFFF);
-  mag_cover_lines(P, st, 44, 640, 140, -1, 0xFFD23F, 0xFFFFFF, 4, 2);
+  mag_cover_lines(P, st, 44, 640, 150, -1, 0xFFD23F, 0xFFFFFF, 4, 2);
   mag_sash(P, st.banner, band1[va], va == 1 ? kMagInk : 0xFFFFFF);
 }
 
@@ -3122,26 +3292,28 @@ void mag_inside_frame(Pieces& P, const MagStory& st, int page, const std::string
     const float x = leftPage ? W - 70 + i * 5.0f : 65 - i * 5.0f;
     P.box(x, 0, x + 5, H, 0, 0x000001, 0.012f * (i + 1));
   }
+  // r135: the tab, the line under the title, the page number and the running foot 44 / 44 / 44 / 40 px (were 34 / 30
+  // / 34 / 22: a few pixels tall on the headset), the greys darker
   const float outer = leftPage ? 44 : W - 44;
-  const float tw = P.width(section, 34) + 40;
+  const float tw = P.width(section, 44) + 40;
   if (leftPage) {
-    P.box(outer, 40, outer + tw, 92, 0, kMagRed);
-    P.left(section, outer + 20, 66, 34, 600, 0xFFFFFF);
+    P.box(outer, 36, outer + tw, 100, 0, kMagRed);
+    P.left(section, outer + 20, 68, 44, 600, 0xFFFFFF);
   } else {
-    P.box(outer - tw, 40, outer, 92, 0, kMagRed);
-    P.right(section, outer - 20, 66, 34, 600, 0xFFFFFF);
+    P.box(outer - tw, 36, outer, 100, 0, kMagRed);
+    P.right(section, outer - 20, 68, 44, 600, 0xFFFFFF);
   }
   P.box(44, 118, W - 44, 122, 0, kMagInk);
   P.style(0.0f, 0.8f);
   P.text(title, W / 2, 196, 116, 1000, kMagInk);
   P.plain();
-  P.text(sub, W / 2, 278, 30, 1000, 0x6A645A);
+  P.text(sub, W / 2, 278, 44, 1000, 0x4E4840);
   if (leftPage) {
-    P.left(std::to_string(page + 1), 44, H - 44, 34, 100, kMagInk);
-    P.right("STRIKERS ILLUSTRATED  -  " + st.date, W - 90, H - 44, 22, 700, 0x8A847A);
+    P.left(std::to_string(page + 1), 44, H - 44, 44, 100, kMagInk);
+    P.right("STRIKERS ILLUSTRATED - " + st.date, W - 90, H - 44, 40, 800, 0x6A645A);
   } else {
-    P.right(std::to_string(page + 1), W - 44, H - 44, 34, 100, kMagInk);
-    P.left("STRIKERS ILLUSTRATED  -  " + st.date, 90, H - 44, 22, 700, 0x8A847A);
+    P.right(std::to_string(page + 1), W - 44, H - 44, 44, 100, kMagInk);
+    P.left("STRIKERS ILLUSTRATED - " + st.date, 90, H - 44, 40, 800, 0x6A645A);
   }
 }
 void mag_page_scores(Pieces& P, const FrSnapshot& s, const MagStory& st) {
@@ -3162,61 +3334,128 @@ void mag_page_scores(Pieces& P, const FrSnapshot& s, const MagStory& st) {
     P.image(mag_logo(s, g2.home), x0 + 10, y0 + 8, x0 + 10 + th - 16, y0 + th - 8, false, homeWon ? 1.0f : 0.5f);
     P.image(mag_logo(s, g2.away), x0 + 470 - (th - 16), y0 + 8, x0 + 470, y0 + th - 8, false, homeWon ? 0.5f : 1.0f);
     P.style(0.0f, 0.85f);
-    P.text(std::to_string(g2.homeGoals) + "-" + std::to_string(g2.awayGoals), x0 + 240, y0 + 0.47f * th, 0.62f * th,
-           470 - 2 * th, kMagInk);
+    P.text(std::to_string(g2.homeGoals) + "-" + std::to_string(g2.awayGoals), x0 + 240,
+           y0 + (g2.overtime ? 0.42f : 0.47f) * th, 0.62f * th, 470 - 2 * th, kMagInk);
     P.plain();
-    if (g2.overtime) P.text("OT", x0 + 240, y0 + th - 16, 24, 100, kMagRed);
+    if (g2.overtime) P.text("OT", x0 + 240, y0 + th - 22, 40, 100, kMagRed);  // r135: 40 px (was 24)
   }
 }
 void mag_page_table(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   const PortFranchiseView& v = s.view;
   const int nClubs = static_cast<int>(s.clubs.size());
   mag_inside_frame(P, st, 2, "THE TABLE", "THE STANDINGS", "GOLD = IN THE PLAYOFFS");
+  // r135: the conferences one above the other, the page's width each, the top 8 of each (yours in the 8th row when
+  // it is lower down), the words 44 / 46 px (were two columns of all 16 at 30 / 36: a few pixels tall on the
+  // headset), a goal difference column
+  const float W = kMagWf;
   for (int conf = 0; conf < 2; ++conf) {
-    const float x0 = 44.0f + conf * 506;
+    const float yb = conf == 0 ? 316.0f : 836.0f;
     const int first = v.conference[conf][0].club;
-    P.box(x0, 316, x0 + 486, 362, 0, kMagInk);
-    P.text(first >= 0 && first < nClubs ? fr_upper(s.clubs[first].conf) : std::string(conf == 0 ? "CROWN" : "STAR"),
-           x0 + 243, 339, 34, 460, 0xFFFFFF);
-    for (int i = 0; i < 16; ++i) {
+    P.box(44, yb, W - 44, yb + 50, 0, kMagInk);
+    P.left(first >= 0 && first < nClubs ? fr_upper(s.clubs[first].conf) : std::string(conf == 0 ? "CROWN" : "STAR"), 64,
+           yb + 25, 40, 500, 0xFFFFFF);
+    P.right("GD", W - 250, yb + 25, 40, 120, 0xFFFFFF);
+    P.right("W-L", W - 64, yb + 25, 40, 150, 0xFFFFFF);
+    int mineAt = -1;
+    for (int i = 0; i < 16; ++i)
+      if (v.conference[conf][i].mine) mineAt = i;
+    for (int row = 0; row < 8; ++row) {
+      const int i = row == 7 && mineAt > 7 ? mineAt : row;
       const PortFranchiseRow& r = v.conference[conf][i];
       if (r.club < 0 || r.club >= nClubs) continue;
-      const float y = 372.0f + i * 62;
+      const float y = yb + 56 + row * 56.0f;
       bool seeded = false;
       for (int k = 0; k < 7; ++k)
         if (v.seeds[conf][k] == r.club) seeded = true;
-      if (r.mine) P.box(x0, y, x0 + 486, y + 58, 6, 0xFFE27A);
-      else if (i % 2 == 1) P.box(x0, y, x0 + 486, y + 58, 0, 0x000001, 0.04f);
-      if (seeded) P.box(x0, y + 4, x0 + 8, y + 54, 0, 0xC89B2A);
-      P.text(std::to_string(i + 1), x0 + 36, y + 29, 30, 50, 0x6A645A);
-      P.image(mag_logo(s, r.club), x0 + 60, y + 3, x0 + 112, y + 55, false);
-      P.left(fr_upper(s.clubs[r.club].place), x0 + 124, y + 29, 30, 240, kMagInk);
-      P.right(std::to_string(r.wins) + "-" + std::to_string(r.losses), x0 + 478, y + 29, 36, 120, kMagInk);
+      if (r.mine) P.box(44, y, W - 44, y + 52, 6, 0xFFE27A);
+      else if (row % 2 == 1) P.box(44, y, W - 44, y + 52, 0, 0x000001, 0.05f);
+      if (seeded) P.box(44, y + 4, 54, y + 48, 0, 0xC89B2A);
+      P.text(std::to_string(i + 1), 92, y + 26, 44, 70, 0x4E4840);
+      P.image(mag_logo(s, r.club), 134, y + 2, 182, y + 50, false);
+      P.left(fr_upper(s.clubs[r.club].place), 200, y + 26, 44, 560, kMagInk);
+      const int gd = r.goalsFor - r.goalsAgainst;
+      P.right((gd > 0 ? "+" : "") + std::to_string(gd), W - 250, y + 26, 44, 120, 0x4E4840);
+      P.right(std::to_string(r.wins) + "-" + std::to_string(r.losses), W - 64, y + 26, 46, 150, kMagInk);
     }
   }
+}
+// r137: a character's rating (franchise/ratings.txt, as franchise.cpp reads it; 75 without one)
+int mag_rating(const std::string& key) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, int> ratings;
+  static bool read = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!read) {
+    read = true;
+    const char* home = std::getenv("STRIKERS_HOME");
+    FILE* f = home != nullptr ? std::fopen((std::string(home) + "/franchise/ratings.txt").c_str(), "r") : nullptr;
+    if (f != nullptr) {
+      char k[128];
+      int ovr = 0;
+      while (std::fscanf(f, "%127s %d", k, &ovr) == 2) ratings[k] = ovr;
+      std::fclose(f);
+    }
+  }
+  auto it = ratings.find(key);
+  return it != ratings.end() ? it->second : 75;
+}
+// r137 (Lance's clip: week 1's Golden Boot cards a black #1 and two white "-"): the places the scorers don't fill yet
+// (no goals yet) go to the ones to watch: the league's best-rated stars (each club's captain, by rating), (key, club)
+std::vector<std::pair<std::string, int>> mag_watch(const FrSnapshot& s) {
+  const PortFranchiseView& v = s.view;
+  const int leaders = std::max(0, std::min(3, v.leaderCount));
+  std::vector<std::pair<std::string, int>> watch;
+  if (leaders >= 3) return watch;
+  std::vector<std::pair<int, int>> byRating;  // (-rating, club)
+  for (int c = 0; c < static_cast<int>(s.clubs.size()) && c < PORT_FR_CLUBS; ++c)
+    if (v.clubCaptainKey[c][0] != '\0') byRating.push_back({-mag_rating(v.clubCaptainKey[c]), c});
+  std::stable_sort(byRating.begin(), byRating.end());
+  for (const auto& r : byRating) {
+    const std::string key = v.clubCaptainKey[r.second];
+    bool taken = false;
+    for (int i = 0; i < leaders; ++i) taken = taken || key == v.leaders[i].key;
+    for (const auto& w2 : watch) taken = taken || key == w2.first;
+    if (!taken) watch.push_back({key, r.second});
+    if (leaders + static_cast<int>(watch.size()) >= 3) break;
+  }
+  return watch;
 }
 void mag_page_stars(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   const float W = kMagWf;
   const PortFranchiseView& v = s.view;
-  mag_inside_frame(P, st, 3, "STAR WATCH", "THE GOLDEN BOOT RACE", "WHO'S SCORING, WHO'S RISING");
+  // r137: no goals yet: the ones to watch in the empty places, and the line under the title says so
+  const int leaders = std::max(0, std::min(3, v.leaderCount));
+  const std::vector<std::pair<std::string, int>> watch = mag_watch(s);
+  mag_inside_frame(P, st, 3, "STAR WATCH", "THE GOLDEN BOOT RACE",
+                   leaders > 0 ? "WHO'S SCORING, WHO'S RISING"
+                               : (v.lastWeek <= 1 ? "NO GOALS YET - KICKOFF WEEK" : "NO GOALS YET - THE ONES TO WATCH"));
   for (int i = 0; i < 3; ++i) {
     const float x0 = 44.0f + i * 336, y0 = 320;
     P.box(x0, y0, x0 + 320, y0 + 500, 16, i == 0 ? kMagInk : 0xFFFFFF);
     P.ring(x0, y0, x0 + 320, y0 + 500, 16, 3, i == 0 ? 0xC9A227 : 0xD6D0C4);
-    if (i >= v.leaderCount) {
-      P.text("-", x0 + 160, y0 + 250, 80, 200, 0x6A645A);
+    if (i >= leaders) {  // r137: one to watch
+      const int wi = i - leaders;
+      if (wi >= static_cast<int>(watch.size())) continue;
+      const std::string& key = watch[wi].first;
+      P.glow(x0 + 10, y0 + 40, x0 + 310, y0 + 400, i == 0 ? 0xFFD23F : 0xC8D2E6, 0.5f);
+      P.left("TO WATCH", x0 + 22, y0 + 44, 40, 200, i == 0 ? kMagYellow : 0x6A645A);
+      P.image(mag_logo(s, watch[wi].second), x0 + 236, y0 + 12, x0 + 308, y0 + 84, false);
+      P.figure(mag_pic(P, key, false, 512), x0 + 15, y0 + 70, x0 + 305, y0 + 390, false, 0.5f, 1.0f);
+      P.text(mag_name_of(key), x0 + 160, y0 + 418, 44, 300, i == 0 ? 0xFFFFFF : kMagInk);
+      P.text("RATED " + std::to_string(mag_rating(key)), x0 + 160, y0 + 468, 46, 300, i == 0 ? kMagYellow : kMagRed);
       continue;
     }
     const PortFranchiseView::Leader& l = v.leaders[i];
     P.glow(x0 + 10, y0 + 40, x0 + 310, y0 + 400, i == 0 ? 0xFFD23F : 0xC8D2E6, 0.5f);
     P.text("#" + std::to_string(i + 1), x0 + 44, y0 + 44, 48, 80, i == 0 ? kMagYellow : 0x6A645A);
     P.image(mag_logo(s, l.club), x0 + 236, y0 + 12, x0 + 308, y0 + 84, false);
-    P.figure(guest_portrait(l.key), x0 + 15, y0 + 70, x0 + 305, y0 + 390, false, 0.5f, 1.0f);
-    P.text(fr_upper(l.name), x0 + 160, y0 + 420, 38, 296, i == 0 ? 0xFFFFFF : kMagInk);
-    P.text(std::to_string(l.goals) + " GOALS", x0 + 160, y0 + 468, 40, 296, i == 0 ? kMagYellow : kMagRed);
+    P.figure(mag_pic(P, l.key, false, 512), x0 + 15, y0 + 70, x0 + 305, y0 + 390, false, 0.5f, 1.0f);  // r137: big
+    // r135: 44 / 46 px (were 38 / 40)
+    P.text(fr_upper(l.name), x0 + 160, y0 + 418, 44, 300, i == 0 ? 0xFFFFFF : kMagInk);
+    P.text(std::to_string(l.goals) + " GOALS", x0 + 160, y0 + 468, 46, 300, i == 0 ? kMagYellow : kMagRed);
   }
-  P.box(44, 870, W - 44, 916, 0, kMagRed);
-  P.text("RISING", W / 2, 893, 34, 600, 0xFFFFFF);
+  P.box(44, 862, W - 44, 922, 0, kMagRed);
+  P.text("RISING", W / 2, 892, 44, 600, 0xFFFFFF);
   // the nearest to their next form (yours first)
   std::vector<const PortFranchiseEvoRow*> rising;
   for (const PortFranchiseEvoRow& r : s.evoWatch)
@@ -3225,20 +3464,22 @@ void mag_page_stars(Pieces& P, const FrSnapshot& s, const MagStory& st) {
     if (a->mine != b->mine) return a->mine;
     return a->evoLevel - a->level < b->evoLevel - b->level;
   });
+  // r135: the name on its own line (48 px, the row's width), under it the level and the next form 44 px (were 34 /
+  // 32 beside the name)
   for (int i = 0; i < 3 && i < static_cast<int>(rising.size()); ++i) {
     const PortFranchiseEvoRow& r = *rising[i];
-    const float y0 = 932.0f + i * 142;
+    const float y0 = 936.0f + i * 142;
     P.box(44, y0, W - 44, y0 + 130, 12, r.mine ? 0xFFF1B0 : 0xFFFFFF);
     P.ring(44, y0, W - 44, y0 + 130, 12, 2, 0xD6D0C4);
     P.figure(guest_portrait(r.key), 60, y0 + 8, 190, y0 + 124, false, 0.5f, 1.0f);
-    P.left(fr_upper(r.name), 210, y0 + 44, 44, 420, kMagInk);
-    P.left("LV " + std::to_string(r.level), 210, y0 + 96, 34, 200, 0x6A645A);
+    P.left(fr_upper(r.name), 210, y0 + 42, 48, 630, kMagInk);
+    P.left("LV " + std::to_string(r.level), 210, y0 + 96, 44, 200, 0x4E4840);
     P.figure(guest_portrait(next_form_key(r.key)), W - 210, y0 + 8, W - 64, y0 + 124, false, 0.5f, 1.0f, false, 0x2A2620,
              0x2A2620);
-    P.right((r.costume ? "COSTUME AT LV " : "EVOLVES AT LV ") + std::to_string(r.evoLevel), W - 230, y0 + 66, 32, 380,
+    P.right((r.costume ? "COSTUME AT LV " : "EVOLVES AT LV ") + std::to_string(r.evoLevel), W - 230, y0 + 96, 44, 400,
             kMagRed);
   }
-  if (rising.empty()) P.text("NOBODY CLOSE TO A NEW FORM", W / 2, 1100, 40, 1000, 0x6A645A);
+  if (rising.empty()) P.text("NOBODY CLOSE TO A NEW FORM", W / 2, 1100, 44, 1000, 0x4E4840);
 }
 void mag_page_rivals(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   const float W = kMagWf, H = kMagHf;
@@ -3253,17 +3494,18 @@ void mag_page_rivals(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   P.box(110, 320, W - 110, H - 100, 10, 0xE9D2A0, 1.0f, 0xD8BC84);
   P.ring(110, 320, W - 110, H - 100, 10, 6, 0x5A3A1A);
   P.text("WANTED", W / 2, 420, 160, 800, 0x5A1A10);
-  P.text(v.nextNemesis >= 0 ? "YOUR NEXT GAME!" : "FOR BEEF WITH YOUR CAPTAIN", W / 2, 518, 38, 800, kMagRed);
+  // r135: 44 px words (were 38 / 26 / 36), the heat bar taller round its word
+  P.text(v.nextNemesis >= 0 ? "YOUR NEXT GAME!" : "FOR BEEF WITH YOUR CAPTAIN", W / 2, 518, 44, 800, kMagRed);
   P.box(200, 560, W - 200, 1060, 6, 0xF4E6C4);
-  P.figure(guest_portrait(n.key), 220, 580, W - 220, 1050, false, 0.5f, 1.0f);
+  P.figure(mag_pic(P, n.key, false, 512), 220, 580, W - 220, 1050, false, 0.5f, 1.0f);  // r137: big
   if (n.club >= 0) P.image(mag_logo(s, n.club), W - 320, 570, W - 210, 680, false);
   P.ring(200, 560, W - 200, 1060, 6, 4, 0x5A3A1A);
-  P.text(fr_upper(n.name), W / 2, 1120, 84, 800, 0x2A1A0E);
-  P.text(fr_upper(n.title), W / 2, 1194, 44, 800, kMagRed);
-  P.box(230, 1236, W - 230, 1272, 18, 0x5A3A1A, 0.35f);
-  P.box(230, 1236, 230 + (W - 460) * std::max(0.05f, std::min(1.0f, n.heat / 100.0f)), 1272, 18, kMagRed);
-  P.text("HEAT", W / 2, 1254, 26, 300, 0xFFFFFF);
-  P.text("BEAT YOU " + std::to_string(n.beatYou) + "   -   LOST TO YOU " + std::to_string(n.lostToYou), W / 2, 1306, 36,
+  P.text(fr_upper(n.name), W / 2, 1116, 84, 800, 0x2A1A0E);
+  P.text(fr_upper(n.title), W / 2, 1186, 44, 800, kMagRed);
+  P.box(230, 1222, W - 230, 1270, 24, 0x5A3A1A, 0.35f);
+  P.box(230, 1222, 230 + (W - 460) * std::max(0.05f, std::min(1.0f, n.heat / 100.0f)), 1270, 24, kMagRed);
+  P.text("HEAT", W / 2, 1246, 40, 300, 0xFFFFFF, 2);
+  P.text("BEAT YOU " + std::to_string(n.beatYou) + "   -   LOST TO YOU " + std::to_string(n.lostToYou), W / 2, 1304, 44,
          800, 0x2A1A0E);
 }
 // the back cover: an ad, as the magazines had (made up: nobody's real product), one of two by the week
@@ -3293,13 +3535,14 @@ void mag_page_back(Pieces& P, const FrSnapshot& s) {
         P.box(x - 16, y - 14, x + 16, y + 14, 6, 0x2A4A9A);
       }
     P.box(W / 2 + 180, 300, W / 2 + 196, 420, 6, 0x9AA0AA);
+    // r135: 44 / 44 / 40 px (were 36 / 40 / 22), the small print shorter
     P.text("THE STRIKERS BALL PHONE", W / 2, 920, 70, 1000, 0xFFFFFF, 4);
-    P.text("WHEN YOU SUBSCRIBE TO STRIKERS ILLUSTRATED", W / 2, 1000, 36, 1000, 0xC8D2E6);
+    P.text("WHEN YOU SUBSCRIBE TO STRIKERS ILLUSTRATED", W / 2, 1000, 44, 1000, 0xC8D2E6);
     P.box(140, 1060, W - 140, 1220, 24, kMagRed);
     P.text("52 ISSUES", W / 2, 1110, 70, 760, 0xFFFFFF);
-    P.text("ONLY 99 COINS AN ISSUE", W / 2, 1180, 40, 760, kMagYellow);
+    P.text("ONLY 99 COINS AN ISSUE", W / 2, 1180, 44, 760, kMagYellow);
     P.text("CALL 1-800-SUPER-STRIKE", W / 2, 1300, 46, 1000, 0xFFFFFF);
-    P.text("BALL PHONE MAY NOT CONNECT TO ANYTHING. NOT A REAL BALL.", W / 2, 1380, 22, 1000, 0x6A7690);
+    P.text("MAY NOT CONNECT TO ANYTHING. NOT A REAL BALL.", W / 2, 1380, 40, 1000, 0x8A96B0);
   } else {
     const std::string cap = v.myClub >= 0 && v.myClub < static_cast<int>(s.clubs.size()) ? std::string(v.clubCaptainKey[v.myClub]) : "";
     P.box(0, 0, W, H, 0, 0xFFE600, 1.0f, 0xFF8A1E);
@@ -3311,24 +3554,25 @@ void mag_page_back(Pieces& P, const FrSnapshot& s) {
     P.rim(0xFFFFFF);
     P.text("BANANA BLAST", W / 2, 170, 190, 1030, 0x3A2A9A, 8);
     P.plain();
-    P.text("THE SPORTS DRINK OF THE STRIKERS SUPER LEAGUE", W / 2, 280, 34, 1000, 0x3A1A00);
-    // the bottle
+    P.text("THE SPORTS DRINK OF THE STRIKERS SUPER LEAGUE", W / 2, 280, 42, 1000, 0x3A1A00);  // r135: 42 px (was 34)
+    // the bottle (r135: its label taller, the words 46 px unshrunk)
     P.box(W / 2 + 60, 420, W / 2 + 130, 480, 8, 0x3A2A9A);
     P.box(W / 2 + 20, 470, W / 2 + 170, 1130, 60, 0x3A2A9A, 1.0f, 0x1A124A);
-    P.box(W / 2 + 34, 640, W / 2 + 156, 900, 16, 0xFFE600);
+    P.box(W / 2 + 34, 600, W / 2 + 156, 940, 16, 0xFFE600);
     P.style(0.0f, 1.0f, -90.0f);
-    P.text("BANANA BLAST", W / 2 + 95, 770, 46, 250, 0x3A2A9A);
+    P.text("BANANA BLAST", W / 2 + 95, 770, 46, 320, 0x3A2A9A);
     P.plain();
     P.box(W / 2 + 40, 500, W / 2 + 60, 1100, 10, 0xFFFFFF, 0.25f);
-    P.figure(guest_portrait(cap), 40, 360, W / 2 + 40, 1180, false, 0.5f, 1.0f);
+    P.figure(mag_pic(P, cap, false, 1024), 40, 360, W / 2 + 40, 1180, false, 0.5f, 1.0f);  // r137: big
     P.style(0.12f, 0.86f);
     P.text("DRINK LIKE A STRIKER.", W / 2, 1270, 80, 1000, 0x3A2A9A);
     P.plain();
-    P.text("100% BANANA. 0% PEEL. MAY CAUSE SUPER STRIKES.", W / 2, 1360, 30, 1000, 0x3A1A00);
+    P.text("100% BANANA. 0% PEEL. MAY CAUSE SUPER STRIKES.", W / 2, 1362, 42, 1000, 0x3A1A00);  // r135: 42 px (was 30)
   }
 }
-// One page of this week's issue (the cover: the goal photo when there is one, on CLASSIC).
-void mag_page(Pieces& P, const FrSnapshot& s, int page, const std::vector<uint8_t>& photo, int photoW, int photoH) {
+// One page of this week's issue. r143: generated art and character renders only (no game picture: r113's goal photo
+// on CLASSIC is gone, and its capture with it).
+void mag_page(Pieces& P, const FrSnapshot& s, int page) {
   const MagStory st = mag_story(s);
   if (page == 0) {
     switch (st.tmpl) {
@@ -3339,7 +3583,7 @@ void mag_page(Pieces& P, const FrSnapshot& s, int page, const std::vector<uint8_
       case kMagBracket: mag_cover_bracket(P, s, st); break;
       case kMagStreak: mag_cover_streak(P, st); break;
       case kMagPreview: mag_cover_preview(P, s, st); break;
-      default: mag_cover_classic(P, st, photo, photoW, photoH); break;
+      default: mag_cover_classic(P, st); break;
     }
   } else if (page == 1) {
     mag_page_scores(P, s, st);
@@ -3352,6 +3596,33 @@ void mag_page(Pieces& P, const FrSnapshot& s, int page, const std::vector<uint8_
   } else {
     mag_page_back(P, s);
   }
+}
+// r137: an issue's big pictures asked for as soon as it's made (game thread, fr_refresh), the cover's first, at the
+// sizes its pages use (mag_pic's), so xr_big has drawn them by the time it's opened; once an issue.
+void mag_prefetch(const FrSnapshot& s) {
+  const PortFranchiseView& v = s.view;
+  static std::string done;
+  const std::string sig = std::to_string(v.slot) + "/" + std::to_string(v.season) + "/" + std::to_string(v.lastWeek) + "/" +
+                          std::to_string(s.pick.valid ? s.pick.tmpl : -1) + "/" + s.pick.key + "/" + s.pick.rival + "/" +
+                          std::to_string(v.leaderCount) + "/" + std::to_string(v.nemCount) + "/" + std::to_string(v.myClub);
+  if (sig == done) return;
+  done = sig;
+  const MagStory st = mag_story(s);
+  int asked = 0;
+  auto want = [&](const std::string& key, bool shiny, int size) {
+    if (key.empty()) return;
+    xrbig::prefetch(key, shiny, size);
+    ++asked;
+  };
+  want(st.star, st.tmpl == kMagSpecial && st.shiny, st.tmpl == kMagBracket ? 512 : 1024);  // the cover's
+  if (st.tmpl == kMagFaceoff) want(st.rival, false, 1024);
+  if (st.tmpl == kMagSpecial) want(st.before, false, 512);
+  for (int i = 0; i < 3 && i < v.leaderCount; ++i) want(v.leaders[i].key, false, 512);  // star watch
+  for (const auto& w : mag_watch(s)) want(w.first, false, 512);
+  if (v.nemCount > 0) want(v.nems[v.nextNemesis >= 0 && v.nextNemesis < 8 ? v.nextNemesis : 0].key, false, 512);  // rivals
+  if ((v.lastWeek + v.season) % 2 != 0 && v.myClub >= 0 && v.myClub < static_cast<int>(s.clubs.size()))
+    want(v.clubCaptainKey[v.myClub], false, 1024);  // the back cover's ad
+  XLOG("franchise: STRIKERS ILLUSTRATED's %d big pictures asked for (the cover's: %s)", asked, st.star.c_str());
 }
 
 // --- r131 (Lance: "in franchise mode, you have the awards, in 3D (trophies) but everything and everyone else is 2D.
@@ -3369,7 +3640,7 @@ struct FrFigAsk {
     return key == o.key && shiny == o.shiny && omitted == o.omitted && x0 == o.x0 && y0 == o.y0 && x1 == o.x1 && y1 == o.y1;
   }
 };
-constexpr int kFrFigs = xrfx::kModelSlots - 4;  // their model slots 3.. (0-1 the evolution / the menu's, 2 the home corner's; r131: the last the magazine's)
+constexpr int kFrFigs = xrfx::kModelSlots - 10;  // their model slots 3.. (0-1 the evolution / the menu's, 2 the home corner's; r131: the last the magazine's; r137: the two before it the trading cards'; r138: + their specials' and light; r141: + a 1/1's world)
 struct FrFigShared {
   std::mutex mutex;
   std::vector<FrFigAsk> asks;         // the newest picture's
@@ -3439,9 +3710,9 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   };
   auto place = [&](int club) { return club >= 0 && club < nClubs ? fr_upper(s.clubs[club].place) : std::string("?"); };
   const float W = static_cast<float>(w), H = static_cast<float>(h);
-  std::vector<uint8_t> paperPhoto;  // (the PAPER page's front page: its pixels live until the board is drawn)
   std::vector<uint8_t> magCover;    // r131: the MAG page's cover, drawn on its own (lives until the board is drawn)
-  int paperPhotoW = 0, paperPhotoH = 0;
+  xrcards::HubPage cardsPage;  // r137: the CARDS page's pieces (their pictures live until the board is drawn)
+  const int packsWaiting = xrcards::packs_waiting();
   Pieces P;
   FrFigPicture figs;  // r131: the page's characters, standing in 3D in front of it
   P.box(6, 6, W - 6, H - 6, 30, 0xFFD23F);
@@ -3449,14 +3720,18 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   // the pages as pills
   static const char* const kTabs[11] = {"HOME", "TABLE", "PLAYOFFS", "RESULTS", "STARS", "MAG",  // r131: MAG
                                         "HISTORY", "RIVALS", "EVO", "LEVEL", "LEAGUE"};
-  const int pages = lg.active ? 11 : 10;
+  const int pages = (lg.active ? 11 : 10) + 1;  // r137: + CARDS, the last
   const float tw = (W - 60.0f) / pages;
   for (int i = 0; i < pages; ++i) {
     const float x0 = 30 + i * tw + 5, x1 = x0 + tw - 10;
     const bool on = i == s.page;
     P.box(x0, 28, x1, 104, 38, on ? 0xFFD23F : 0x26335E);
-    P.text(kTabs[i], 0.5f * (x0 + x1), 66, 38, x1 - x0 - 24, on ? 0x14141E : 0xD2DAEB);
+    P.text(i == pages - 1 ? "CARDS" : kTabs[i], 0.5f * (x0 + x1), 66, 38, x1 - x0 - 24, on ? 0x14141E : 0xD2DAEB);
     if (i == 8 && !s.evoReadyName.empty()) P.box(x1 - 26, 34, x1 - 8, 52, 9, 0xFF5A4A);  // one of yours is ready
+    if (i == pages - 1 && packsWaiting > 0) {  // r137: packs to open, how many
+      P.box(x1 - 50, 20, x1 + 2, 58, 19, 0xFF5A4A);
+      P.text(std::to_string(std::min(99, packsWaiting)), x1 - 24, 39, 30, 44, 0xFFFFFF, 2.0f);
+    }
   }
   // the line under them: the season, the week, the difficulty (and co-op / league)
   static const char* const kLevelShort[5] = {"", "ROOKIE", "PRO", "SUPERSTAR", "LEGEND"};
@@ -3467,10 +3742,23 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   sub += std::string("  -  ") + kLevelShort[std::max(1, std::min(4, v.difficulty))];
   if (s.coopActive) sub = "CO-OP  -  " + sub;
   if (lg.active) sub = std::string("LEAGUE ") + lg.code + "  -  " + sub;
+  if (packsWaiting > 0) sub += "  -  " + std::to_string(packsWaiting) + (packsWaiting == 1 ? " PACK" : " PACKS") + " TO OPEN";  // r137
+  if (s.page == pages - 1) sub += "  -  " + std::to_string(xrcards::coins()) + " TIZM COINS";  // r140: on the CARDS page
   P.text(sub, W / 2, 148, 42, W - 200, 0xFFD23F, 2.0f);
   std::vector<HubHint> hints = {{"L", "PAGES", 0x3A4A70}};
   const float top = 190, bottom = 1190;
-  if (s.page == 0) {
+  bool cardsOwnB = false;  // r137: a pack open: B is the cards' (skip / done), Y nothing
+  if (s.page == pages - 1) {
+    // r137: CARDS (xr_cards.cpp): the binder (two pages of pockets), your packs, the card under the cursor; while a
+    // pack is open in your hands, how to open it (the binder behind would give its cards away)
+    cardsPage = xrcards::hub_page(W, H, top, bottom);
+    P.v.insert(P.v.end(), cardsPage.pieces.begin(), cardsPage.pieces.end());
+    hints.clear();
+    for (const xrcards::Hint& ch : cardsPage.hints) {
+      hints.push_back({ch.glyph, ch.words, ch.rgb});
+      cardsOwnB = cardsOwnB || ch.glyph == "B";
+    }
+  } else if (s.page == 0) {
     // HOME: your club v theirs, both captains, the buttons stacked in the middle (up / down + A)
     auto team = [&](int club, const char* capKey, bool left, const std::string& record, bool shiny) {
       const float cx = left ? 420.0f : W - 420.0f;
@@ -3502,10 +3790,24 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
         where += "  -  GAME " + std::to_string(v.myGameNo) + "  -  " + std::to_string(v.mySeriesMe) + "-" +
                  std::to_string(v.mySeriesThem);
       P.text(where, W / 2, 450, 40, 560, 0xC8D2E6, 2.0f);
+      // r137: the game's weather from the calendar (SNOW GAME, RAIN, UNDER THE LIGHTS ...), beside a nemesis
+      const int wx = s.nextWeather;
+      const bool wxTag = wx != 0 && PortWeatherLabel(wx)[0] != '\0';
       if (v.nextNemesis >= 0) {
-        P.box(W / 2 - 170, 490, W / 2 + 170, 560, 34, 0x6E1414);
-        P.ring(W / 2 - 170, 490, W / 2 + 170, 560, 34, 4, 0xFF5A4A);
-        P.text("NEMESIS!", W / 2, 525, 48, 320, 0xFFFFFF);
+        const float nx = wxTag ? W / 2 - 185.0f : W / 2.0f;
+        P.box(nx - 170, 490, nx + 170, 560, 34, 0x6E1414);
+        P.ring(nx - 170, 490, nx + 170, 560, 34, 4, 0xFF5A4A);
+        P.text("NEMESIS!", nx, 525, 48, 320, 0xFFFFFF);
+      }
+      if (wxTag) {
+        const bool night = (wx & PORT_WX_NIGHT) != 0, snow = (wx & PORT_WX_SNOW) != 0, rain = (wx & PORT_WX_RAIN) != 0;
+        const float half = v.nextNemesis >= 0 ? 170.0f : 230.0f;
+        const float cx = v.nextNemesis >= 0 ? W / 2 + 185.0f : W / 2.0f;
+        const uint32_t fill = snow ? 0x2A4C78 : (rain ? 0x1E3A5A : 0x111A3C);
+        const uint32_t edge = night ? 0xFFD23F : (snow ? 0xF2F8FF : 0x8FC8FF);
+        P.box(cx - half, 490, cx + half, 560, 34, fill);
+        P.ring(cx - half, 490, cx + half, 560, 34, 4, edge);
+        P.text(PortWeatherLabel(wx), cx, 525, 40, 2 * half - 30, night && !snow && !rain ? 0xFFE9A0 : 0xFFFFFF);
       }
       if (lg.active && lg.vsMember >= 0 && lg.vsMember < lg.memberCount) {
         const std::string who = fr_upper(lg.members[lg.vsMember].name);
@@ -3558,6 +3860,13 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     }
     if (s.coopGuest) P.text("YOUR FRIEND RUNS THIS CAREER: THEY START THE MATCHES", W / 2, 1100, 36, 1600, 0xFFD23F, 2.0f);
     else if (v.headline[0] != '\0') P.text(fr_upper(v.headline), W / 2, 1110, 34, 1700, 0xB8C2D6, 2.0f);
+    {  // r140: the TIZM COINS the last match you played paid (for a few hours after it), and why
+      std::string why;
+      long long when = 0;
+      const int got = xrcards::last_coins(&why, &when);
+      if (got > 0 && !s.coopGuest && static_cast<long long>(std::time(nullptr)) - when < 3LL * 3600)
+        P.text("+" + std::to_string(got) + " TIZM COINS:  " + fr_upper(why), W / 2, 1154, 32, 1800, 0xFFD23F, 2.0f);
+    }
   } else if (s.page == 1) {
     // TABLE: both conferences, logos, the record big
     for (int conf = 0; conf < 2; ++conf) {
@@ -3825,17 +4134,16 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   } else if (s.page == 5) {
     // PAPER: today's front page, small, and A to read it in front of you. r131: MAG, this week's STRIKERS
     // ILLUSTRATED cover small
-    {
-      std::lock_guard<std::mutex> plock(g_photoMutex);
-      paperPhoto = g_photo;
-      paperPhotoW = g_photoW;
-      paperPhotoH = g_photoH;
-    }
     // (drawn on its own and then placed: the cover's lights and its star run past its edges)
     const int coverW = static_cast<int>(kMagW * 0.66f), coverH = static_cast<int>(kMagH * 0.66f);
     Pieces F;
     F.k = 0.66f;
-    mag_page(F, s, 0, paperPhoto, paperPhotoW, paperPhotoH);
+    const unsigned bigAt = xrbig::generation();  // r137
+    mag_page(F, s, 0);  // r143: no game picture
+    if (F.bigMissing) {  // r137: its star's big picture still being drawn: the hub drawn again once it's there
+      g_hubBigAt = bigAt;
+      g_hubBigWait = true;
+    }
     magCover.assign(static_cast<size_t>(coverW) * coverH * 4, 0);
     xrtext::board(magCover.data(), coverW, coverH, F.v);
     const float coverX = W / 2 - 0.5f * coverW - 300;
@@ -3945,8 +4253,10 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     }
     if (lg.owner && lg.canSimRest) hints.push_back({"A", "SIM THE REST", 0x2EA043});
   }
-  hints.push_back({"B", "CAREERS", 0xC0392B});
-  if (!s.coopGuest) hints.push_back({"Y", "TRADES", 0xC9A227});
+  if (!cardsOwnB) {  // r137: (not while a pack is open)
+    hints.push_back({"B", "CAREERS", 0xC0392B});
+    if (!s.coopGuest) hints.push_back({"Y", "TRADES", 0xC9A227});
+  }
   hub_hints(P, W, 1245, hints);
   xrtext::board(px, w, h, P.v);
   fr_figs_publish(s.serial, std::move(figs.asks), W, H);  // r131
@@ -5295,6 +5605,17 @@ void draw_franchise_intro(uint8_t* px, int w, int h, const PortFranchiseCard& c)
     }
   }
   if (c.spectating) P.text("WATCHING", W / 2, 400, 34, 300, 0x9AA6BE, 2.0f);
+  {
+    // r137: tonight's weather (the match's: PortWeatherNewMatch ran at the match's set-up, before this card)
+    const int wx = PortWeatherCurrent();
+    const char* label = PortWeatherLabel(wx);
+    if (label[0] != '\0') {
+      const bool pill = playoff && (c.seriesWins[0] == 2 || c.seriesWins[1] == 2);
+      const float y = playoff ? (pill ? 493.0f : 440.0f) : (c.spectating ? 446.0f : 395.0f);
+      const uint32_t col = (wx & (PORT_WX_RAIN | PORT_WX_SNOW)) == 0 ? 0xFFE9A0 : ((wx & PORT_WX_SNOW) ? 0xF2F8FF : 0xA8D4FF);
+      P.text(label, W / 2, y, pill ? 24 : 34, 420, col, 2.0f);
+    }
+  }
   if (c.nemesis) {
     // the face-off: your nemesis between the two, in red
     const float nx = c.nemesisSide == 0 ? 560.0f : W - 560.0f;
@@ -6143,37 +6464,7 @@ void on_aurora_frame(const uint8_t* pixels, uint32_t width, uint32_t height, uin
   g_frameWidth = width;
   g_frameHeight = height;
   ++g_frameSerial;
-  // r113: the newspaper's photo: this frame once one is asked for (a goal of yours in a franchise match),
-  // box-shrunk to 768 px wide at most; a black one (no game picture in this view) is no photo
-  const uint64_t want = g_photoWantNs.load();
-  if (want != 0 && now_ns() >= want && width > 0 && height > 0) {
-    g_photoWantNs = 0;
-    const uint32_t f = std::max(1u, (width + 767u) / 768u);
-    const int pw = static_cast<int>(width / f), ph = static_cast<int>(height / f);
-    std::vector<uint8_t> photo(static_cast<size_t>(pw) * ph * 4);
-    double luma = 0.0;
-    for (int y = 0; y < ph; ++y)
-      for (int x = 0; x < pw; ++x) {
-        uint32_t sum[3] = {0, 0, 0};
-        for (uint32_t sy = 0; sy < f; ++sy)
-          for (uint32_t sx = 0; sx < f; ++sx) {
-            const uint8_t* p = dst + (static_cast<size_t>(y * f + sy) * width + x * f + sx) * 4;
-            sum[0] += p[0];
-            sum[1] += p[1];
-            sum[2] += p[2];
-          }
-        uint8_t* o = &photo[(static_cast<size_t>(y) * pw + x) * 4];
-        for (int k = 0; k < 3; ++k) o[k] = static_cast<uint8_t>(sum[k] / (f * f));
-        o[3] = 255;
-        luma += 0.3 * o[0] + 0.59 * o[1] + 0.11 * o[2];
-      }
-    if (luma / (static_cast<double>(pw) * ph) > 14.0) {
-      std::lock_guard<std::mutex> plock(g_photoMutex);
-      g_photo = std::move(photo);
-      g_photoW = pw;
-      g_photoH = ph;
-    }
-  }
+  // (r143: r113's newspaper photo is no longer taken from this frame: the magazine draws its own covers)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6192,6 +6483,9 @@ bool init_loader() {
   return xr_ok(initializeLoader(reinterpret_cast<const XrLoaderInitInfoBaseHeaderKHR*>(&info)),
                "xrInitializeLoaderKHR");
 }
+
+// r137: the compositor's per-layer colour scale / bias (the weather's grade on the eye layers: free, no extra pass)
+bool g_hasColorScaleBias = false;
 
 bool create_instance() {
   uint32_t count = 0;
@@ -6237,9 +6531,14 @@ bool create_instance() {
   if (g.hasRenderModelExt) {
     exts.push_back(xrctrl::extension_name());
   }
-  XLOG("extensions: passthrough=%d refresh_rate=%d perf_settings=%d thread_settings=%d render_model=%d",
+  g_hasColorScaleBias = has(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);  // r137: the weather's grade
+  if (g_hasColorScaleBias) {
+    exts.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
+  }
+  XLOG("extensions: passthrough=%d refresh_rate=%d perf_settings=%d thread_settings=%d render_model=%d "
+       "color_scale_bias=%d",
        g.hasPassthroughExt ? 1 : 0, g.hasRefreshRateExt ? 1 : 0, g.hasPerfSettingsExt ? 1 : 0,
-       g.hasThreadSettingsExt ? 1 : 0, g.hasRenderModelExt ? 1 : 0);
+       g.hasThreadSettingsExt ? 1 : 0, g.hasRenderModelExt ? 1 : 0, g_hasColorScaleBias ? 1 : 0);
 
   XrInstanceCreateInfoAndroidKHR android{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
   android.applicationVM = g.vm;
@@ -7442,7 +7741,10 @@ void sync_input() {
           if (g.aimValid[h]) g.aim[h] = loc.pose;
         }
         g.screenEdgeHover = false;
-        if (g.shownScreenValid && (!g.tabletop || g.stereoFailed)) {
+        // r135 (Lance's clip: "the magazine is still letting the light shine into it"): not while STRIKERS
+        // ILLUSTRATED is open - the hand holding it rested its pointer on the big screen's bottom edge, and the lit
+        // edge (white, drawn over everything in the effects layer) ran across the pages
+        if (g.shownScreenValid && (!g.tabletop || g.stereoFailed) && !g.paperOpen) {
           float qx = 0, qy = 0, dist = 0;
           if (g.aimValid[0] && ray_quad(g.aim[0], g.shownScreenPose, &qx, &qy, &dist) &&
               on_quad_edge(qx, qy, g.shownScreenW, g.shownScreenH)) {
@@ -7469,9 +7771,28 @@ void sync_input() {
         const bool rawGrip[2] = {gripRawL, gripRawR}, haveHand[2] = {haveL, haveR};
         const XrVector3f handAt[2] = {handL, handR};
         update_magazine(rawGrip, haveHand, handAt, now_ns());
+        // r137: a trading-card pack / a card in your hands (xr_cards.cpp), or a grip pointing at the binder's pocket
+        const XrPosef* aims[2] = {g.aimValid[0] ? &g.aim[0] : nullptr, g.aimValid[1] ? &g.aim[1] : nullptr};
+        // r142 (Lance: "make the cards more manipulable"): the grips' whole poses - a card in a hand turns with it
+        XrPosef gripAt[2]{};
+        bool gripOk[2] = {false, false};
+        const XrSpace gripSpace[2] = {a.gripSpaceL, a.gripSpaceR};
+        for (int k = 0; k < 2; ++k) {
+          XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+          const XrSpaceLocationFlags need = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+          gripOk[k] = gripSpace[k] != XR_NULL_HANDLE &&
+                      XR_SUCCEEDED(xrLocateSpace(gripSpace[k], g.local, g.frameState.predictedDisplayTime, &loc)) &&
+                      (loc.locationFlags & need) == need;
+          if (gripOk[k]) gripAt[k] = loc.pose;
+        }
+        const XrPosef* grips[2] = {gripOk[0] ? &gripAt[0] : nullptr, gripOk[1] ? &gripAt[1] : nullptr};
+        xrcards::hands(rawGrip, haveHand, handAt, aims, grips, now_ns());
+        // r139: the hands' index triggers (the hand not holding a pack rips it, then turns its cards over one by one)
+        const float cardTrig[2] = {src[kSrcTrigL], src[kSrcTrigR]};
+        xrcards::triggers(cardTrig, now_ns());
       }
-      const bool gripL = gripRawL && !g.magHand[0] && !g.magSpent[0];
-      const bool gripR = gripRawR && !g.magHand[1] && !g.magSpent[1];
+      const bool gripL = gripRawL && !g.magHand[0] && !g.magSpent[0] && !xrcards::hand_busy(0);  // r137: nor a card's
+      const bool gripR = gripRawR && !g.magHand[1] && !g.magSpent[1] && !xrcards::hand_busy(1);
       // r57: the trophy shelf first: a grip that closes on it takes it from the table and screen.
       if (g.mrMode && !g.shelf.placed && g.headValid) place_shelf(g.headPose);
       {
@@ -7830,14 +8151,8 @@ void sync_input() {
         if (g.frOpen && !onMenu) g.frOpen = false;
         if (PortFranchiseMatchActive()) g.frAfterMatch = true;
         {
-          // r113: a franchise match starting: its newspaper photo starts fresh; the paper waits for the hub
+          // r113: a franchise match starting: the paper waits for the hub (r143: no newspaper photo any more)
           const bool matchOn = PortFranchiseMatchActive();
-          if (matchOn && !g.frWasMatch) {
-            std::lock_guard<std::mutex> plock(g_photoMutex);
-            g_photo.clear();
-            g_photoW = g_photoH = 0;
-            g_photoWantNs = 0;
-          }
           g.frWasMatch = matchOn;
           if (matchOn) g.paperOpen = false;
         }
@@ -7972,6 +8287,10 @@ void sync_input() {
           g.paperOpen = false;
           fr_refresh();
           XLOG("franchise: the hub opens (%s)", g.frMode == 2 ? "a career loaded" : "the careers");
+          // r147 (Lance: the lofi loop "has to be the new theme song for the franchise mode. that plays first every time
+          // you go into franchise mode, and then its random from there on"): going in from the main menu (Y), not the
+          // hub coming back after a franchise match (the playlist carries on there)
+          if (!backFromMatch) PortMenuMusicFranchiseEnter();
         }
         g.frPrevY = yDown;
         if (onMenu) status.button &= static_cast<u16>(~PAD_BUTTON_Y);
@@ -8390,7 +8709,7 @@ void sync_input() {
             g.paperPrevLT = ltDown;
             g.paperPrevRT = rtDown;
           } else {  // the hub: the club, the standings, the playoffs, last week's results
-            if (yPress && !PortFranchiseCoopGuest()) {  // r77: Y = trades (the friend's career: theirs to trade)
+            if (yPress && !PortFranchiseCoopGuest() && !xrcards::busy()) {  // r77: Y = trades (the friend's career: theirs to trade)
               g.frMode = 5;
               g.frTradeStage = 0;
               g.frCursor = 0;
@@ -8398,9 +8717,26 @@ void sync_input() {
               XLOG("franchise: trades");
             }
             const PortFranchiseLeagueView& lgv = g_frSnap.league;  // r100: an online league's
-            const int pageCount = lgv.active ? 11 : 10;
+            const int pageCount = (lgv.active ? 11 : 10) + 1;  // r137: + CARDS, the last
             if (g.frPage >= pageCount) g.frPage = 0;
-            if (step && (dir == 1 || dir == 2)) {
+            // r137: the CARDS page (xr_cards.cpp): the binder (stick on its pockets, LT / RT its pages, A opens a pack / X
+            // takes a card out) and a pack open in your hands (A / triggers tear it and turn its cards over, B skips /
+            // puts them away) use the buttons they use; the stick left / right at the binder's edge is the hub's pages
+            bool cardsStick = false, cardsButton = false;
+            if (g.frPage == pageCount - 1 || xrcards::busy()) {
+              xrcards::Input ci;
+              ci.dir = dir;
+              ci.step = step;
+              ci.a = aPress;
+              ci.b = bPress;
+              ci.x = xPress;
+              ci.lt = (status.button & PAD_TRIGGER_L) != 0 || status.triggerLeft > 160;
+              ci.rt = (status.button & PAD_TRIGGER_R) != 0 || status.triggerRight > 160;
+              bool redraw = false;
+              cardsButton = xrcards::hub_input(ci, &redraw, &cardsStick);
+              if (redraw) changed = true;
+            }
+            if (step && (dir == 1 || dir == 2) && !cardsStick) {
               // r71/r72: 8 pages; r77: 9 (the Evo Watch); r97: 10 (the difficulty); r100: 11 in a league (it)
               g.frPage = (g.frPage + (dir == 2 ? 1 : pageCount - 1)) % pageCount;
               g.frCursor = g.frPage == 9 ? std::max(0, std::min(3, PortFranchiseDifficulty() - 1)) : 0;
@@ -8419,7 +8755,9 @@ void sync_input() {
             if (step && dir == 3) g.frCursor = std::max(0, g.frCursor - 1);
             if (step && dir == 4) g.frCursor = std::min(lastOption, g.frCursor + 1);
             if (g.frCursor > lastOption) g.frCursor = lastOption;
-            if (aPress && g.frPage == 0 && vsPerson && hasMatch) {
+            if (cardsButton) {
+              // r137: the cards had it
+            } else if (aPress && g.frPage == 0 && vsPerson && hasMatch) {
               // r100: ready (or not) for the game against a person's club: both ready, it starts on both
               PortFranchiseLeagueView now;
               PortFranchiseLeagueGetView(&now);
@@ -8511,6 +8849,13 @@ void sync_input() {
           if (g.frOpen && PortFranchiseChangeSerial() != g.frChangeSerial) {
             g.frChangeSerial = PortFranchiseChangeSerial();
             fr_refresh();
+          }
+          {
+            static int s_cardsGen = -1;  // r137: the trading cards changed (a pack earned / opened, one out): drawn again
+            if (g.frOpen && xrcards::generation() != s_cardsGen) {
+              s_cardsGen = xrcards::generation();
+              fr_refresh();
+            }
           }
           {
             int has = 0, inHub = 0;
@@ -9159,7 +9504,7 @@ int home_motif(int cls, const std::string& pack) {
   if (idx < 0) return cls + 1;
   for (int guard = 0; guard < 4 && idx >= 0 && PortGuestRosterEvolved(idx); ++guard)
     idx = PortGuestRosterFindAny(0, PortGuestRosterEvolvesFrom(idx));
-  return idx >= 0 && idx < 256 ? 100 + idx : 0;  // r121: 256 cells (the heroes 95-104)
+  return idx >= 0 && idx < xrfx::kEtchCells ? 100 + idx : 0;  // r121: 256 cells (the heroes 95-104); r135: 512
 }
 
 // The home board's text, from the home ground's state.
@@ -11012,7 +11357,11 @@ const char* evo_backdrop(const std::string& key) {
         {"ghostrider", "fire"},      {"humantorch", "fire"},  {"thor", "electric"},   {"storm", "electric"},
         {"iceman", "water"},         {"drstrange", "psychic"}, {"invisiblewoman", "psychic"}, {"ironman", "sky"},
         {"silversurfer", "sky"},     {"msmarvel", "sky"},     {"blade", "ghost"},     {"moonknight", "ghost"},
-        {"thing", "rock"},           {"colossus", "rock"}};
+        {"thing", "rock"},           {"colossus", "rock"},
+        // r135: three more heroes and the nine NPCs, by their powers
+        {"captainmarvel", "sky"},    {"lukecage", "rock"},    {"ronin", "city"},      {"nightcrawler", "ghost"},
+        {"jeangrey", "psychic"},     {"professorx", "psychic"}, {"vision", "sky"},    {"drdoom", "electric"},  // his MUA blasts are hand lightning
+        {"mysterio", "psychic"},     {"lizard", "grass"},     {"rhino", "rock"},      {"wintersoldier", "city"}};
     for (const auto& e : kHero)
       if (h == e.first) return e.second;
     return "city";
@@ -11069,7 +11418,50 @@ const char* evo_backdrop(const std::string& key) {
       {"pk_nidoqueen", "rock"}, {"pk_kabuto", "water"}, {"pk_kabutops", "water"}, {"pk_anorith", "rock"},
       {"pk_armaldo", "rock"}, {"pk_wooper", "water"}, {"pk_quagsire", "water"}, {"pk_smoochum", "psychic"},
       {"pk_jynx", "psychic"}, {"pk_sandshrew", "rock"}, {"pk_sandslash", "rock"}, {"pk_slowpoke", "water"},
-      {"pk_slowbro", "water"}, {"pk_slowking", "psychic"}};
+      {"pk_slowbro", "water"}, {"pk_slowking", "psychic"},
+      // r135: the 162 more, by type (bugs grass; ice water; poison / dark ghost; fairies and round normal ones psychic;
+      // fliers sky; the street's rats and cats city)
+      {"pk_caterpie", "grass"}, {"pk_metapod", "grass"}, {"pk_butterfree", "grass"}, {"pk_weedle", "grass"},
+      {"pk_kakuna", "grass"}, {"pk_beedrill", "grass"}, {"pk_pidgey", "sky"}, {"pk_pidgeotto", "sky"},
+      {"pk_pidgeot", "sky"}, {"pk_rattata", "city"}, {"pk_raticate", "city"}, {"pk_spearow", "sky"},
+      {"pk_fearow", "sky"}, {"pk_ekans", "ghost"}, {"pk_arbok", "ghost"}, {"pk_vulpix", "fire"},
+      {"pk_ninetales", "fire"}, {"pk_zubat", "ghost"}, {"pk_golbat", "ghost"}, {"pk_crobat", "ghost"},
+      {"pk_oddish", "grass"}, {"pk_gloom", "grass"}, {"pk_vileplume", "grass"}, {"pk_bellossom", "grass"},
+      {"pk_paras", "grass"}, {"pk_parasect", "grass"}, {"pk_venonat", "grass"}, {"pk_venomoth", "grass"},
+      {"pk_diglett", "rock"}, {"pk_dugtrio", "rock"}, {"pk_meowth", "city"}, {"pk_persian", "city"},
+      {"pk_bellsprout", "grass"}, {"pk_weepinbell", "grass"}, {"pk_victreebel", "grass"}, {"pk_tentacool", "water"},
+      {"pk_tentacruel", "water"}, {"pk_ponyta", "fire"}, {"pk_rapidash", "fire"}, {"pk_magnemite", "electric"},
+      {"pk_magneton", "electric"}, {"pk_doduo", "sky"}, {"pk_dodrio", "sky"}, {"pk_seel", "water"},
+      {"pk_dewgong", "water"}, {"pk_grimer", "ghost"}, {"pk_muk", "ghost"}, {"pk_shellder", "water"},
+      {"pk_cloyster", "water"}, {"pk_krabby", "water"}, {"pk_kingler", "water"}, {"pk_exeggcute", "grass"},
+      {"pk_exeggutor", "grass"}, {"pk_rhyhorn", "rock"}, {"pk_rhydon", "rock"}, {"pk_chansey", "psychic"},
+      {"pk_blissey", "psychic"}, {"pk_horsea", "water"}, {"pk_seadra", "water"}, {"pk_kingdra", "water"},
+      {"pk_goldeen", "water"}, {"pk_seaking", "water"}, {"pk_staryu", "water"}, {"pk_starmie", "water"},
+      {"pk_magikarp", "water"}, {"pk_gyarados", "water"}, {"pk_porygon", "city"}, {"pk_porygon2", "city"},
+      {"pk_omanyte", "water"}, {"pk_omastar", "water"}, {"pk_sentret", "grass"}, {"pk_furret", "grass"},
+      {"pk_hoothoot", "sky"}, {"pk_noctowl", "sky"}, {"pk_ledyba", "grass"}, {"pk_ledian", "grass"},
+      {"pk_spinarak", "grass"}, {"pk_ariados", "grass"}, {"pk_chinchou", "water"}, {"pk_lanturn", "water"},
+      {"pk_cleffa", "psychic"}, {"pk_clefairy", "psychic"}, {"pk_clefable", "psychic"}, {"pk_togepi", "psychic"},
+      {"pk_togetic", "psychic"}, {"pk_natu", "psychic"}, {"pk_xatu", "psychic"}, {"pk_hoppip", "grass"},
+      {"pk_skiploom", "grass"}, {"pk_jumpluff", "grass"}, {"pk_sunkern", "grass"}, {"pk_sunflora", "grass"},
+      {"pk_pineco", "grass"}, {"pk_forretress", "rock"}, {"pk_snubbull", "psychic"}, {"pk_granbull", "psychic"},
+      {"pk_slugma", "fire"}, {"pk_magcargo", "fire"}, {"pk_swinub", "water"}, {"pk_piloswine", "water"},
+      {"pk_remoraid", "water"}, {"pk_octillery", "water"}, {"pk_phanpy", "rock"}, {"pk_donphan", "rock"},
+      {"pk_poochyena", "ghost"}, {"pk_mightyena", "ghost"}, {"pk_zigzagoon", "grass"}, {"pk_linoone", "grass"},
+      {"pk_wurmple", "grass"}, {"pk_silcoon", "grass"}, {"pk_beautifly", "grass"}, {"pk_cascoon", "grass"},
+      {"pk_dustox", "grass"}, {"pk_taillow", "sky"}, {"pk_swellow", "sky"}, {"pk_wingull", "water"},
+      {"pk_pelipper", "water"}, {"pk_surskit", "grass"}, {"pk_masquerain", "grass"}, {"pk_nincada", "grass"},
+      {"pk_ninjask", "grass"}, {"pk_shedinja", "ghost"}, {"pk_azurill", "psychic"}, {"pk_marill", "water"},
+      {"pk_azumarill", "water"}, {"pk_skitty", "city"}, {"pk_delcatty", "city"}, {"pk_electrike", "electric"},
+      {"pk_manectric", "electric"}, {"pk_gulpin", "ghost"}, {"pk_swalot", "ghost"}, {"pk_carvanha", "water"},
+      {"pk_sharpedo", "water"}, {"pk_wailmer", "water"}, {"pk_wailord", "water"}, {"pk_numel", "fire"},
+      {"pk_camerupt", "fire"}, {"pk_spoink", "psychic"}, {"pk_grumpig", "psychic"}, {"pk_swablu", "sky"},
+      {"pk_altaria", "sky"}, {"pk_barboach", "water"}, {"pk_whiscash", "water"}, {"pk_corphish", "water"},
+      {"pk_crawdaunt", "water"}, {"pk_baltoy", "psychic"}, {"pk_claydol", "psychic"}, {"pk_lileep", "rock"},
+      {"pk_cradily", "rock"}, {"pk_feebas", "water"}, {"pk_milotic", "water"}, {"pk_wynaut", "psychic"},
+      {"pk_wobbuffet", "psychic"}, {"pk_snorunt", "water"}, {"pk_glalie", "water"}, {"pk_spheal", "water"},
+      {"pk_sealeo", "water"}, {"pk_walrein", "water"}, {"pk_clamperl", "water"}, {"pk_huntail", "water"},
+      {"pk_gorebyss", "water"}};
   for (const auto& e : kKind)
     if (k == e.first) return e.second;
   return "sky";  // anyone else: above the clouds
@@ -11437,10 +11829,151 @@ float turn_toward(float from, float to, float u) {
 
 XrVector3f table_point(float gx, float gy, float gz);
 
+// r49 (a player: "sometimes the characters get way too close during the highlight. Koopa and Peach nearly got within
+// an inch of my face"): its feet never nearer than this to your head along the floor (r49c, Lance: 1.5 m "was still
+// close af": 2.5 m).
+constexpr float kScorerPersonalSpace = 2.5f;
+// r144 (Lance on r143: "Arbok is getting too fucking close to me like he was gonna eat me"): and its BODY never
+// nearer than this - its real posed reach toward you, a snake's coils and head or a hero's lunge, on top of its feet's
+// distance (his r142 photo: Arbok's head reaches ~2.4 m out in front of its feet; at 2.5 m it was in his face): 1.3 m,
+// more for the big ones (0.75 x their real height), up to 2.2 m.
+constexpr float kScorerClearMin = 1.3f, kScorerClearMax = 2.2f;
+
+// Meters a game unit of the scorer's copy (scorer_model's scale).
+float scorer_scale() { return scorer_height_m() / std::max(0.2f, g.scorer.height); }
+
+// r144: how far the body reaches from its feet toward a floor direction (ux, uz: unit, LOCAL), in meters, facing `yaw`
+// (m4_game_to_room's): from its 8 reaches round it, the corner of the two that bracket the direction (it lies inside
+// both, so this is never short).
+float scorer_reach_toward(float yaw, float ux, float uz) {
+  const auto& sc = g.scorer;
+  if (!sc.shapeOk) return 0.0f;
+  const float fx = std::cos(yaw), fz = -std::sin(yaw);   // its front (game +X) along the floor
+  const float lx = -std::sin(yaw), lz = -std::cos(yaw);  // its left (game +Y)
+  float a = std::atan2(ux * lx + uz * lz, ux * fx + uz * fz);
+  if (a < 0.0f) a += 6.2831853f;
+  const float step = 0.78539816f;
+  const int k = std::min(7, std::max(0, static_cast<int>(a / step)));
+  const float a0 = static_cast<float>(k) * step;
+  const float r = (sc.reach[k] * std::sin(a0 + step - a) + sc.reach[(k + 1) & 7] * std::sin(a - a0)) / std::sin(step);
+  return std::max(0.0f, r) * scorer_scale();
+}
+
+// r144b (the coordinator: Lance plays MR in his living room, and 3.9-4.8 m put Arbok / Onix in or past his walls): a body
+// whose reach toward you would keep its feet farther out than this turns side-on instead (scorer_place: up to 90
+// degrees, the way that needs less), so its length runs across your view and its reach toward you fits.
+constexpr float kScorerFarthest = 3.2f;
+
+// r144: once a display frame, before the scorer is placed: its body's latest shape folded into this show's (the most
+// of each, so a lunge or a long tail once seen stays counted), its turn (r144b), and how far its feet must stay from
+// your head for its body to stay clear. While it runs in that is set at once (as it will stand, turned to you); once
+// it is here it backs off at up to 3 m/s for a reach it only now shows (a lunge), and never comes back nearer in the
+// show.
+void update_scorer_space() {
+  auto& sc = g.scorer;
+  const uint64_t now = now_ns();
+  const float dt = sc.spaceNs != 0 && now > sc.spaceNs ? std::min(0.1f, static_cast<float>(now - sc.spaceNs) / 1e9f) : 0.0f;
+  sc.spaceNs = now;
+  if (sc.phase == 0 || !sc.planned) return;
+  PortXrBodyShape shape;
+  if (PortXrBodyShapeNow(&shape) && shape.gen != sc.shapeGen && shape.postedNs + 100000000ull >= sc.planNs) {
+    sc.shapeGen = shape.gen;
+    sc.cur = shape;
+    // (rise / side are along the direction it is seen from: a new one starts them afresh)
+    const bool sameView = sc.shapeOk && std::fabs(shape.view - sc.shapeView) < 0.1f;
+    if (!sameView) sc.shapeView = shape.view;
+    for (int k = 0; k < 8; ++k) sc.reach[k] = sc.shapeOk ? std::max(sc.reach[k], shape.reach[k]) : shape.reach[k];
+    for (int k = 0; k < kPortXrBodySlopeCount; ++k) {
+      sc.rise[k] = sameView ? std::max(sc.rise[k], shape.rise[k]) : shape.rise[k];
+      for (int d = 0; d < 2; ++d) sc.sideReach[d][k] = sameView ? std::max(sc.sideReach[d][k], shape.side[d][k]) : shape.side[d][k];
+    }
+    sc.top = sc.shapeOk ? std::max(sc.top, shape.top) : shape.top;
+    if (sc.phase == 1 || !sc.standTopOk) {  // r144b: its size as it runs in (then kept)
+      sc.standTop = sc.standTopOk ? std::max(sc.standTop, shape.top) : shape.top;
+      sc.standTopOk = true;
+    }
+    sc.shapeOk = true;
+  }
+  if (!sc.shapeOk || !g.headValid) return;
+  const float s = scorer_scale();
+  const float clear = std::min(kScorerClearMax, std::max(kScorerClearMin, 0.75f * sc.standTop * s));
+  // where it stands (or will: its spot while it runs in), and you from there
+  const XrVector3f& at = sc.phase == 1 ? sc.spot : sc.lastPos;
+  const float hx = g.headPose.position.x - at.x, hz = g.headPose.position.z - at.z;
+  const float hl = std::sqrt(hx * hx + hz * hz);
+  const float ux = hl > 1e-3f ? hx / hl : 0.0f, uz = hl > 1e-3f ? hz / hl : -1.0f;
+  const float yaw0 = yaw_facing(ux, uz);  // facing you
+  // its feet's distance for it turned phi from facing you
+  auto need = [&](float phi) { return std::max(kScorerPersonalSpace, clear + scorer_reach_toward(yaw0 + phi, ux, uz)); };
+  // r144b: its turn - none if facing you fits in kScorerFarthest; else the least turn (22.5-degree steps, up to 90, the
+  // way that needs less) that fits, else the one that needs least. Chosen freely while it runs in; once here, only
+  // again if a reach it shows now (a lunge) no longer fits, and only for a real gain.
+  if (sc.phase == 1 || need(sc.turnTarget) > kScorerFarthest + 0.05f) {
+    float best = 0.0f, bestNeed = need(0.0f);
+    if (bestNeed > kScorerFarthest) {
+      for (int i = 1; i <= 4; ++i) {
+        const float a = static_cast<float>(i) * 0.39269908f;
+        const float np = need(a), nm = need(-a);
+        const float n = std::min(np, nm);
+        if (n < bestNeed - 0.05f) {
+          bestNeed = n;
+          // the way that needs less; within 10 cm, the way it already turns (no flip-flopping as it runs in)
+          best = std::fabs(np - nm) < 0.1f && sc.turnTarget != 0.0f ? (sc.turnTarget > 0.0f ? a : -a) : (np <= nm ? a : -a);
+        }
+        if (n <= kScorerFarthest) break;
+      }
+      // only a long body (the turn wins it half a metre or more): a hero lunging at you stays facing you
+      if (need(0.0f) - bestNeed < 0.5f) {
+        best = 0.0f;
+        bestNeed = need(0.0f);
+      }
+    }
+    if (sc.phase == 1 || bestNeed < need(sc.turnTarget) - 0.1f) {
+      if (best != sc.turnTarget)
+        XLOG("scorer: its body turned %.0f degrees from facing you (its feet %.2f m out instead of %.2f)",
+             best * 57.29578f, bestNeed, need(0.0f));
+      sc.turnTarget = best;
+    }
+  }
+  // the turn as it stands: at once while it runs in (it turns to you at the end of its run), else eased
+  if (sc.phase == 1) {
+    sc.turn = sc.turnTarget;
+  } else {
+    const float d = sc.turnTarget - sc.turn, step = 1.5f * dt;
+    sc.turn += std::max(-step, std::min(step, d));
+  }
+  PortXrBodySetView(-sc.turn);  // (its rise / side worked out as you see it, for the banner)
+  float want = std::max(need(sc.turnTarget), need(sc.turn));
+  if (sc.phase != 1) {  // and as it stands right now (a turn on its way out, its tail)
+    const float cx = g.headPose.position.x - sc.lastPos.x, cz = g.headPose.position.z - sc.lastPos.z;
+    const float cl = std::sqrt(cx * cx + cz * cz);
+    if (cl > 1e-3f) want = std::max(want, clear + scorer_reach_toward(sc.lastYaw, cx / cl, cz / cl));
+  }
+  if (want > sc.keepOff) sc.keepOff = sc.phase == 1 ? want : std::min(want, sc.keepOff + 3.0f * dt);
+  if (sc.phase == 2 && !sc.spaceLogged) {
+    sc.spaceLogged = true;
+    XLOG("scorer: its body %.2f m tall, reaching %.2f m in front of its feet (%.2f m to the side), turned %.0f degrees "
+         "-> feet kept %.2f m from you (its body %.2f m clear)",
+         sc.top * s, std::max(0.0f, sc.reach[0]) * s, std::max(sc.reach[2], sc.reach[6]) * s, sc.turnTarget * 57.29578f,
+         sc.keepOff, clear);
+  }
+}
 // A show's path, from where you are when it starts: the spot is out in front (below the big screen)
 // or beside the table, and the scorer comes from farther out, running in at PORT_SCORER_SPEED, and
 // leaves the same way.
 void plan_scorer() {
+  // r144: a new show: its body's reach is measured afresh (update_scorer_space)
+  g.scorer.shapeOk = false;
+  g.scorer.keepOff = kScorerPersonalSpace;
+  g.scorer.planNs = now_ns();
+  g.scorer.spaceLogged = false;
+  g.scorer.bannerKnown = false;
+  g.scorer.bannerMode = 0;
+  g.scorer.bannerNs = 0;
+  g.scorer.turn = g.scorer.turnTarget = 0.0f;  // r144b
+  g.scorer.standTopOk = false;
+  g.scorer.shapeView = 0.0f;
+  PortXrBodySetView(0.0f);
   const XrPosef& head = g.headPose;
   float fx = 0.0f, fz = -1.0f;
   if (g.headValid) floor_forward(head, &fx, &fz);
@@ -11542,36 +12075,37 @@ void scorer_place(XrVector3f* pos, float* yaw) {
     const float u = std::max(0.0f, std::min(1.0f, sc.phaseTime / runIn));
     *pos = {sc.spawn.x + (sc.spot.x - sc.spawn.x) * u, sc.spot.y, sc.spawn.z + (sc.spot.z - sc.spawn.z) * u};
     const float run = yaw_facing(-sc.away.x, -sc.away.z);
-    // The last 0.35 s it turns to face you.
-    *yaw = turn_toward(run, toward_head(sc.spot), (sc.phaseTime - (runIn - 0.35f)) / 0.35f);
+    // The last 0.35 s it turns to face you (r144b: or side-on, a long body: sc.turn, update_scorer_space).
+    *yaw = turn_toward(run, toward_head(sc.spot) + sc.turn, (sc.phaseTime - (runIn - 0.35f)) / 0.35f);
   } else if (sc.phase == 2) {
     *pos = sc.spot;
-    *yaw = toward_head(sc.spot);
+    *yaw = toward_head(sc.spot) + sc.turn;
   } else {
     const float t = sc.phaseTime;
     *pos = {sc.leaveFrom.x + sc.away.x * PORT_SCORER_SPEED * t, sc.spot.y,
             sc.leaveFrom.z + sc.away.z * PORT_SCORER_SPEED * t};
     // A quick turn away first.
-    *yaw = turn_toward(toward_head(sc.leaveFrom), yaw_facing(sc.away.x, sc.away.z), t / 0.3f);
+    *yaw = turn_toward(toward_head(sc.leaveFrom) + sc.turn, yaw_facing(sc.away.x, sc.away.z), t / 0.3f);
   }
   // r49 (a player: "sometimes the characters get way too close during the highlight. Koopa and Peach
   // nearly got within an inch of my face"): never nearer than kScorerPersonalSpace to your head, along
   // the floor, wherever you have moved since its path was planned (it is planned once, from where you
   // stood at the goal), and on the way in and out too. It slides round you instead of through you.
-  constexpr float kScorerPersonalSpace = 2.5f;  // r49c (Lance: 1.5 m "was still close af"): 2.5 m
+  // r144: or farther, for its real body to stay clear of you (keepOff, update_scorer_space): it stays out in front.
+  const float space = std::max(kScorerPersonalSpace, sc.keepOff);
   if (g.headValid) {
     const float hx = pos->x - g.headPose.position.x, hz = pos->z - g.headPose.position.z;
     const float d = std::sqrt(hx * hx + hz * hz);
-    if (d < kScorerPersonalSpace) {
+    if (d < space) {
       float ux = hx, uz = hz;
       if (d < 1e-3f) {  // right on top of you: back off the way it faces
         ux = std::cos(*yaw);
         uz = -std::sin(*yaw);
       }
       const float ul = std::max(1e-3f, std::sqrt(ux * ux + uz * uz));
-      pos->x = g.headPose.position.x + ux / ul * kScorerPersonalSpace;
-      pos->z = g.headPose.position.z + uz / ul * kScorerPersonalSpace;
-      if (sc.phase == 2) *yaw = toward_head(*pos);
+      pos->x = g.headPose.position.x + ux / ul * space;
+      pos->z = g.headPose.position.z + uz / ul * space;
+      if (sc.phase == 2) *yaw = toward_head(*pos) + sc.turn;
     }
   }
   sc.lastPos = *pos;
@@ -11583,13 +12117,16 @@ void scorer_place(XrVector3f* pos, float* yaw) {
 // edge clears the scorer's banner. 0 when the screen is off to the side of the scorer.
 float screen_lift_over_scorer(const XrVector3f& center, float width, float height) {
   const XrVector3f& head = g.headPose.position;
-  const float sx = g.scorer.spot.x - head.x, sz = g.scorer.spot.z - head.z;
+  // r144: where its banner really is (scorer_banner_place: over its real body, or beside it), once placed
+  const XrVector3f& b = g.scorer.bannerKnown ? g.scorer.bannerAt : g.scorer.spot;
+  const float sx = b.x - head.x, sz = b.z - head.z;
   const float qx = center.x - head.x, qz = center.z - head.z;
   const float ds = std::sqrt(sx * sx + sz * sz), dq = std::sqrt(qx * qx + qz * qz);
   if (ds < 0.5f || dq < 0.5f) return 0.0f;
-  const float bannerW = 1.1f * std::max(1.0f, ds / 2.5f);  // as drawn (below, PortXrEndFrame)
-  const float bannerTop = g.scorer.spot.y + scorer_height_m() + 0.18f +
-                          bannerW * static_cast<float>(kBannerH) / static_cast<float>(kBannerW);
+  const float bannerW = g.scorer.bannerKnown ? g.scorer.bannerWidth : 1.1f * std::max(1.0f, ds / 2.5f);  // as drawn
+  const float bannerTop = g.scorer.bannerKnown ? g.scorer.bannerTop
+                                               : g.scorer.spot.y + scorer_height_m() + 0.18f +
+                                                     bannerW * static_cast<float>(kBannerH) / static_cast<float>(kBannerW);
   // Side by side already: the angle between them beats their half widths.
   const float cosAngle = std::max(-1.0f, std::min(1.0f, (sx * qx + sz * qz) / (ds * dq)));
   if (std::acos(cosAngle) > std::atan(0.5f * width / dq) + std::atan(0.5f * bannerW / ds)) return 0.0f;
@@ -11605,6 +12142,90 @@ M4 scorer_model() {
   return m4_game_to_room(scale, yaw, pos);
 }
 
+// r144: the smallest slope m (from kPortXrBodySlopes) with s x support(m) - m x D - off <= 0, i.e. every point of the
+// body under (or beside) the line from your eyes at that slope: g(m) falls as m grows and is convex, so between the
+// last slope it fails and the first it holds the chord's root is a safe bound. False when even the steepest fails.
+bool scorer_slope_bound(const float* support, float s, float D, float off, float* mu) {
+  float prevM = 0.0f, prevG = 0.0f;
+  for (int i = 0; i < kPortXrBodySlopeCount; ++i) {
+    const float m = kPortXrBodySlopes[i];
+    const float gm = s * support[i] - m * D - off;
+    if (gm <= 0.0f) {
+      *mu = i == 0 ? m : prevM + (m - prevM) * prevG / std::max(1e-6f, prevG - gm);
+      return true;
+    }
+    prevM = m;
+    prevG = gm;
+  }
+  return false;
+}
+
+// r144 (Lance on r143: the banner "right over the goal scorers faces literally" - Ghost Rider II's: a hero taller than
+// his slot's class height, which r42-r143 hung it over): where the goal banner goes (its middle) and how wide it is,
+// `pop` its pop-up size (it grows up from its bottom edge); once a display frame. Over the scorer AS YOU SEE IT: its
+// bottom edge above every point of the real body from your eyes (the steepest the body rises toward you: rise[]) and
+// 20 cm (at 2.5 m; more farther out) over its top, turned to you (place_panel); it follows the pose - up at once when
+// the body rises (a jump: never across its face), back down slowly. If the body's whole show so far would put it off
+// the top of your view (a giant close by: its top edge over ~39 degrees up), it goes beside the body for the show,
+// at your eye height, on the side the body reaches least toward, past every point of it as you see it (side[]).
+void scorer_banner_place(float pop, XrVector3f* at, float* width) {
+  auto& sc = g.scorer;
+  const XrVector3f& feet = sc.lastPos;
+  const XrVector3f& eye = g.headPose.position;
+  const float dx = feet.x - eye.x, dz = feet.z - eye.z;
+  const float D = std::max(0.5f, std::sqrt(dx * dx + dz * dz));
+  const float k = std::max(1.0f, D / 2.5f);  // r43b: it keeps its size to the eye
+  const float full = 1.1f * k;
+  const float h = full * static_cast<float>(kBannerH) / static_cast<float>(kBannerW);
+  *width = full * pop;
+  const float hNow = *width * static_cast<float>(kBannerH) / static_cast<float>(kBannerW);
+  const uint64_t now = now_ns();
+  const float dt = sc.bannerNs != 0 && now > sc.bannerNs ? std::min(0.1f, static_cast<float>(now - sc.bannerNs) / 1e9f) : 0.0f;
+  sc.bannerNs = now;
+  float bottom = sc.spot.y + scorer_height_m() + 0.18f;  // r42-r143 (until its body's shape is known)
+  *at = {feet.x, bottom + 0.5f * hNow, feet.z};
+  if (sc.shapeOk) {
+    const float s = scorer_scale();
+    const float e = eye.y - feet.y;
+    // over a shape: its bottom edge (LOCAL y); false when that is off the top of your view
+    auto over = [&](const float* rise, float top, float* b) {
+      float mu = 2.0f;
+      const bool ok = scorer_slope_bound(rise, s, D, e, &mu);
+      *b = std::max(feet.y + top * s + 0.2f * k, eye.y + mu * D + 0.12f * k);
+      return ok && (*b + h - eye.y) / D <= 0.8f;  // (its top edge ~39 degrees up at most)
+    };
+    if (sc.bannerMode == 0) {
+      float b = 0.0f;
+      sc.bannerMode = over(sc.rise, sc.top, &b) ? 1 : 2;
+      XLOG("scorer: its banner %s it (its body %.2f m tall, %.2f m out)", sc.bannerMode == 1 ? "over" : "beside",
+           sc.top * s, D);
+    }
+    if (sc.bannerMode == 1) {
+      float target = 0.0f;
+      over(sc.cur.rise, sc.cur.top, &target);
+      sc.bannerBottom = sc.bannerKnown ? std::max(target, sc.bannerBottom - 0.5f * dt) : target;
+      bottom = sc.bannerBottom;
+      *at = {feet.x, bottom + 0.5f * hNow, feet.z};
+    } else {
+      // the side it reaches least toward you (its left, game +Y, is your right)
+      float lamL = 2.0f, lamR = 2.0f;
+      scorer_slope_bound(sc.sideReach[0], s, D, 0.0f, &lamL);
+      scorer_slope_bound(sc.sideReach[1], s, D, 0.0f, &lamR);
+      const bool onLeft = lamL <= lamR;
+      const float off = (std::max(0.0f, onLeft ? lamL : lamR) + 0.06f) * D + 0.5f * full;
+      const float sgn = onLeft ? 1.0f : -1.0f;
+      // across your view: its left as it faces you (side[] are worked out along you, PortXrBodySetView; r144b: turned too)
+      const float lx = -dz / D, lz = dx / D;
+      bottom = std::max(feet.y + 0.3f, eye.y - 0.5f * h);
+      *at = {feet.x + sgn * lx * off, bottom + 0.5f * hNow, feet.z + sgn * lz * off};
+    }
+  }
+  sc.bannerKnown = true;
+  sc.bannerAt = *at;
+  sc.bannerAt.y = bottom + 0.5f * h;
+  sc.bannerTop = bottom + h;
+  sc.bannerWidth = full;
+}
 // A game point on the Tabletop field, in LOCAL space.
 XrVector3f table_point(float gx, float gy, float gz) {
   const M4 t = table_model();
@@ -12278,7 +12899,7 @@ void arm_screen_slot() {
   g.screenDirectThisFrame = true;
   g.screenArmedValid = true;
   g.screenArmedFrame = frame;
-  const bool photo = g_photoWantNs.load() != 0;  // r113: the newspaper's photo is taken from the read-back picture
+  const bool photo = false;  // r143: no read-back for a newspaper photo any more (r113's, from the read-back picture)
   if (pick >= 0) {
     ScreenSlot& slot = g.screenSlots[pick];
     // Dawn's Vulkan backend requires the layout chain; UNDEFINED both ways: the copy rewrites every pixel
@@ -13447,16 +14068,7 @@ extern "C" void PortXrGoal(int team, int character, int superStrike, int hyper, 
       g_homeReactNs.store(now_ns(), std::memory_order_release);
     }
   }
-  // r113: the newspaper's photo, a moment after the ball goes in: every goal of yours in a franchise match
-  // (the newest wins); any other goal only while there's none yet
-  if (PortFranchiseMatchActive()) {
-    bool none = false;
-    {
-      std::lock_guard<std::mutex> plock(g_photoMutex);
-      none = g_photo.empty();
-    }
-    if ((humanPad == xrnet::local_pad() && !ownGoal) || none) g_photoWantNs = now_ns() + 300000000ull;
-  }
+  // (r143: r113's newspaper photo is no longer taken here: the magazine draws its own covers, no game picture)
   ensure_fx();
   if (g.fxReady) {
     xrfx::goal(team, character, superStrike != 0, hyper != 0, ownGoal != 0);
@@ -13622,7 +14234,7 @@ extern "C" void PortXrScorerFrame(int phase, float phaseTime, float height, int 
   // r43d: a hat trick throws the hats as the scorer arrives.
   if (phase == 2 && sc.prevPhase == 1 && sc.statHatTrick) {
     ensure_fx();
-    if (g.fxReady) xrfx::hat_trick(sc.spot.x, sc.spot.y, sc.spot.z, g.mrMode);
+    if (g.fxReady) xrfx::hat_trick(sc.lastPos.x, sc.spot.y, sc.lastPos.z, g.mrMode);  // r144: where it stands
   }
   sc.phase = phase;
   sc.phaseTime = phaseTime;
@@ -13751,17 +14363,22 @@ void load_room_options() {
       if (std::strcmp(key, "shelf") == 0) g.showShelf = value != 0;
       else if (std::strcmp(key, "home") == 0) g.showHome = value != 0;
       else if (std::strcmp(key, "popups") == 0) g.raPopups = std::max(0, std::min(2, value));
+      else if (std::strcmp(key, "weather") == 0) PortWeatherSetMode(value);  // r137 (else strikers.ini `weather`)
+      else if (std::strcmp(key, "music") == 0) PortMenuMusicSetMode(value);  // r147 (else strikers.ini `menu_music`)
     }
     std::fclose(f);
   }
   xrra::set_popups(g.raPopups);
-  XLOG("room options: home ground %s, trophy shelf + badge board %s, achievement pop-ups %s", g.showHome ? "on" : "off", g.showShelf ? "on" : "off",
-       g.raPopups == 2 ? "all" : (g.raPopups == 1 ? "unlocks only" : "off"));
+  XLOG("room options: home ground %s, trophy shelf + badge board %s, achievement pop-ups %s, weather %s, menu music %s", g.showHome ? "on" : "off", g.showShelf ? "on" : "off",
+       g.raPopups == 2 ? "all" : (g.raPopups == 1 ? "unlocks only" : "off"), PortWeatherModeName(PortWeatherMode()),
+       PortMenuMusicModeName(PortMenuMusicMode()));
 }
 
 void save_room_options() {
   if (FILE* f = std::fopen(room_options_path().c_str(), "w")) {
-    std::fprintf(f, "shelf %d\npopups %d\nhome %d\n", g.showShelf ? 1 : 0, g.raPopups, g.showHome ? 1 : 0);
+    // r147: + music (the launcher's Menu music button writes the same line: LobbyActivity / MenuMusic.java)
+    std::fprintf(f, "shelf %d\npopups %d\nhome %d\nweather %d\nmusic %d\n", g.showShelf ? 1 : 0, g.raPopups, g.showHome ? 1 : 0,
+                 PortWeatherMode(), PortMenuMusicMode());
     std::fclose(f);
   }
 }
@@ -13783,7 +14400,7 @@ void settings_input(XrVector2f stick) {
   const int dirY = stick.y > 0.7f ? 1 : (stick.y < -0.7f ? -1 : 0);
   if (dirY != g.settingsStickDirY) {
     g.settingsStickDirY = dirY;
-    const int row = std::max(0, std::min(5, g.settingsRow - dirY));  // up = the row above (r133: 6 rows)
+    const int row = std::max(0, std::min(7, g.settingsRow - dirY));  // up = the row above (r133: 6 rows; r137: 7; r147: 8)
     if (dirY != 0 && row != g.settingsRow) {
       g.settingsRow = row;
       changed();
@@ -13827,6 +14444,22 @@ void settings_input(XrVector2f stick) {
     xrra::set_popups(mode);
     save_room_options();
     XLOG("achievement pop-ups %s", mode == 2 ? "all" : (mode == 1 ? "unlocks only" : "off"));
+  } else if (g.settingsRow == 6) {
+    // r137: the weather (xr_weather.h), once per push, round the six: RANDOM, CLEAR, RAIN, SNOW, NIGHT, OFF. A quick
+    // match on now changes at once; a franchise match keeps its calendar (OFF clears it).
+    if (!first) return;
+    const int mode = (PortWeatherMode() + step + PORT_WX_MODES) % PORT_WX_MODES;
+    PortWeatherSetMode(mode);
+    save_room_options();
+    XLOG("weather %s", PortWeatherModeName(mode));
+  } else if (g.settingsRow == 7) {
+    // r147: the menus' music (port/menu_music.h), once per push, round the four: LOFI, MY MUSIC, BOTH, OFF (the game's
+    // own). Heard from the next menu on (this panel is a match's pause); the launcher's Menu music button is the same.
+    if (!first) return;
+    const int mode = (PortMenuMusicMode() + step + PORT_MENU_MUSIC_MODES) % PORT_MENU_MUSIC_MODES;
+    PortMenuMusicSetMode(mode);
+    save_room_options();
+    XLOG("menu music %s", PortMenuMusicModeName(mode));
   } else {
     const int cm = std::max(kViewHeightMinCm, std::min(kViewHeightMaxCm, g.viewHeightCm + 5 * step));
     if (cm == g.viewHeightCm) return;
@@ -14544,6 +15177,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad bannerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad sliderQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad raQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r46
+  XrCompositionLayerQuad npQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r147: NOW PLAYING
+  XrCompositionLayerColorScaleBiasKHR npFade{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};  // r147: its fade
   XrCompositionLayerQuad achQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r51
   XrCompositionLayerQuad achHeadQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r51b: its title bar
   XrCompositionLayerQuad waitQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};    // r47
@@ -14574,6 +15209,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   const XrCompositionLayerBaseHeader* layers[32];
   uint32_t layerCount = 0;
 
+  // r144: the life-size scorer's real reach this frame, before it is placed (scorer_place, its banner)
+  update_scorer_space();
   // The celebration effects step every display frame, smooth whatever the game's frame rate, with
   // the eyes located for this display time (not the game frame's prediction).
   const uint64_t fxNow = now_ns();
@@ -14652,7 +15289,13 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         }
       }
     }
-    scene.scorerRadius = 0.25f;  // r44e: nearer the body (it also hides what falls behind it, xr_fx)
+    // r143: no cylinder any more (r44e's 0.25 m "pole"): xr_fx gets the scorer's posed body (port/xr_body.h) and puts it
+    // where its layer is drawn with this matrix (game space -> LOCAL; M4's rows = the column-major columns)
+    scene.scorerModelValid = scene.scorerValid;
+    if (scene.scorerValid) {
+      const M4 sm = scorer_model();
+      std::memcpy(scene.scorerModel, sm.m, sizeof(scene.scorerModel));
+    }
     scene.scorerHeight = scorer_height_m();
     // r53: the controllers in your hands, where they are at this display time and what is pressed
     // (the action states hold until the next xrSyncActions), in your team's skin.
@@ -14663,7 +15306,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       int idx = g.skinCaptain - 100;
       for (int guard = 0; guard < 4 && PortGuestRosterEvolved(idx); ++guard)
         idx = PortGuestRosterFindAny(0, PortGuestRosterEvolvesFrom(idx));
-      scene.skinEtch = idx >= 0 && idx < 256 ? 100 + idx : 0;  // r121
+      scene.skinEtch = idx >= 0 && idx < xrfx::kEtchCells ? 100 + idx : 0;  // r121: 256; r135: 512
     }
     // r57: the trophy shelf (your room only).
     scene.shelfValid = g.showShelf && home_on() && g.mrMode && g.shelf.placed;  // r104 / r133: unless switched off
@@ -14800,6 +15443,23 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       }
       XLOG("home screen: suite off");
     }
+    // r137: the weather in the effects layer (xr_fx weather block): rain / snow over the Tabletop field and onto your
+    // table (MR), round you in the life-size stadium with its floodlights at night (VR). Not the Jumbotron in your room
+    // (its picture carries the weather), and only while the game draws its stadium.
+    {
+      const int wx = PortWeatherCurrent();
+      if (wx != 0 && now_ns() - g_worldDrawnNs.load(std::memory_order_relaxed) < 1500000000ull && !g.inSuite &&
+          !g.homeEnvOn && !g.evoRoomOn && !g.stereoFailed && (scene.tabletop || !g.mrMode)) {
+        scene.weather = static_cast<uint8_t>(wx);
+        scene.weatherAmt = PortWeatherFade();
+        scene.snowCover = PortWeatherSnowCover();
+        float xyz[8 * 3];
+        const int n = PortWeatherLights(xyz, 8);
+        for (int i = 0; i < n; ++i) scene.wxLights[i] = XrVector3f{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+        scene.wxLightCount = n;
+        ensure_fx();
+      }
+    }
     scene.shelfCups = g.trophyBits;
     std::memcpy(scene.shelfWins, g.trophyWins, sizeof(scene.shelfWins));
     scene.shelfNewCup = g.newCup;
@@ -14863,6 +15523,37 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // r134 (Lance's clip: "the VR shit for evolution is STILL black and you can only see the environment for .4 of a
     // second before it goes black"): nor while an evolution's room is up - the game's menu picture (black) was laid
     // over the room every frame; it only showed before the first one came
+    // r137: the weather's grade on the 3D eye layers: the compositor's own colour scale / bias (free: no extra pass over
+    // the eye images), only while the game draws its stadium (a match, its highlights; never the menus or the suites).
+    // The life-size stadium the most (kind 2), the Tabletop field / the life-size scorer less (the players stay
+    // readable), and over your room no bias (it would tint the room).
+    XrCompositionLayerColorScaleBiasKHR wxStadium{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+    XrCompositionLayerColorScaleBiasKHR wxMain{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+    {
+      static int s_wxLogged = -1;
+      int wxBits = 0;
+      if (g_hasColorScaleBias && now_ns() - g_worldDrawnNs.load(std::memory_order_relaxed) < 1500000000ull) {
+        float sc[4], bi[4];
+        if (PortWeatherLayerGrade(2, sc, bi)) {
+          wxStadium.colorScale = XrColor4f{sc[0], sc[1], sc[2], sc[3]};
+          wxStadium.colorBias = XrColor4f{bi[0], bi[1], bi[2], bi[3]};
+          stadiumLayer.next = &wxStadium;
+          wxBits = PortWeatherCurrent();
+        }
+        // (not the Jumbotron in your room: its eye layer is only the life-size scorer standing in your own light)
+        const int mainKind = g.mrMode ? 0 : ((splitMode || g.tabletop) ? 1 : 2);
+        if (!(g.mrMode && !g.tabletop) && PortWeatherLayerGrade(mainKind, sc, bi)) {
+          wxMain.colorScale = XrColor4f{sc[0], sc[1], sc[2], sc[3]};
+          wxMain.colorBias = XrColor4f{bi[0], bi[1], bi[2], bi[3]};
+          projLayer.next = &wxMain;
+        }
+      }
+      if (wxBits != s_wxLogged) {
+        s_wxLogged = wxBits;
+        XLOG("weather: eye layers %s%s", wxBits == 0 ? "clear" : PortWeatherLabel(wxBits),
+             g_hasColorScaleBias ? "" : " (no colour scale on this runtime: not graded)");
+      }
+    }
     if (splitMode && g.stadiumValid[0] && g.stadiumValid[1] && !g.homeEnvOn && !evoRoomUp) {
       stadiumLayer.layerFlags = 0;
       stadiumLayer.space = g.local;
@@ -15181,11 +15872,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       if (pop > 0.01f) {
         // r43b: the scorer stops out in front now (up to 8 m); the banner keeps its size to the eye.
         // r49: over where the scorer really stands (kept out of your face, scorer_place).
-        const XrVector3f& feet = g.scorer.lastPos;
-        const float sdx = feet.x - g.headPose.position.x, sdz = feet.z - g.headPose.position.z;
-        const float width = 1.1f * pop * std::max(1.0f, std::sqrt(sdx * sdx + sdz * sdz) / 2.5f);
-        const float height = width * static_cast<float>(kBannerH) / static_cast<float>(kBannerW);
-        const XrVector3f at{feet.x, g.scorer.spot.y + scorer_height_m() + 0.18f + 0.5f * height, feet.z};
+        // r144: over its real body as you see it, never across its face (scorer_banner_place)
+        XrVector3f at{};
+        float width = 0.0f;
+        scorer_banner_place(pop, &at, &width);
         place_panel(bannerQuad, g.banner, at, width);
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&bannerQuad);
         // r44e: a solid for the celebration pieces (they land on it, bounce off it, hide behind it).
@@ -15395,6 +16085,12 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         showFrQuad = true;
       }
     } else if (g.frOpen && g.headValid) {
+      // r137: ... and when the MAG page's cover star's big picture is there (xr_big; at most every 1.5 s)
+      if (g_hubBigWait.load() && xrbig::generation() != g_hubBigAt.load() && nowNs - g_magBigRedrawNs > 1500000000ull) {
+        g_hubBigWait = false;
+        g_magBigRedrawNs = nowNs;
+        ++g_frFigGen;
+      }
       // r131: drawn again too when a character's 3D figure comes to stand in front of it (its portrait left out)
       request_panel(g_franchise, g.frGen * 64 + (g_frFigGen.load() & 63), kGuestW, kGuestH, [](uint8_t* px, int w, int h) {
         FrSnapshot s;
@@ -15416,24 +16112,29 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       // back down onto the left; back the other way), the spine sliding as it opens / closes so what shows stays
       // in the middle (mag_frame). Every page goes up as soon as it's drawn, so a turn never waits for one.
       if (g.paperOpen) {
+        // r137: big pictures (xr_big) ready since a page was drawn without one: the issue drawn again (at most every
+        // 1.5 s; the paper keeps the pages it has till all six are drawn again)
+        if (g_magBigWait.load() == g.paperGen && xrbig::generation() != g_magBigAt.load() &&
+            nowNs - g_magBigRedrawNs > 1500000000ull) {
+          g_magBigWait = -1;
+          g_magBigRedrawNs = nowNs;
+          g_magBigRedrawGen = ++g.paperGen;
+        }
         for (int pg = 0; pg < kMagPages; ++pg) {
-          request_panel(g_paperP[pg], g.paperGen, kMagW, kMagH, [pg](uint8_t* px, int w, int h) {
+          request_panel(g_paperP[pg], g.paperGen, kMagW, kMagH, [pg, gen = g.paperGen](uint8_t* px, int w, int h) {
+            const unsigned bigAt = xrbig::generation();  // r137
             FrSnapshot s;
             {
               std::lock_guard<std::mutex> lock(g_frMutex);
               s = g_frSnap;
             }
-            std::vector<uint8_t> photo;
-            int pw = 0, ph = 0;
-            {
-              std::lock_guard<std::mutex> plock(g_photoMutex);
-              photo = g_photo;
-              pw = g_photoW;
-              ph = g_photoH;
-            }
             Pieces P;
-            mag_page(P, s, pg, photo, pw, ph);
+            mag_page(P, s, pg);  // r143: generated art and character renders only
             xrtext::board(px, w, h, P.v);
+            if (P.bigMissing) {  // r137: drawn with a portrait in a big picture's place
+              g_magBigAt = bigAt;
+              g_magBigWait = gen;
+            }
           });
           show_panel(g_paperP[pg], g.paperPanel[pg]);
         }
@@ -15572,6 +16273,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       frCardValid = g_frCard.valid;
       frPlayoff = g_frCard.round > 0;
     }
+    // r151 (Lance: "i also want that card that comes up at the intro, to be skipped if i skip the intro, it stays on
+    // the screen too long otherwise"): the intro card goes the moment the match is actually played (the intro skipped
+    // or over), and doesn't come back for a later cut-scene
+    if (g.gameplayLive && nowNs < g.frIntroUntilNs) g.frIntroUntilNs = 0;
     const bool frIntroOn = frCardValid && nowNs < g.frIntroUntilNs && g.headValid && !g.paused;
     if (frIntroOn) {
       request_panel(g_frIntro, g.frCardGen, kFrIntroW, kFrIntroH, [](uint8_t* px, int w, int h) {
@@ -15672,7 +16377,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         std::vector<uint8_t> pixels(static_cast<size_t>(kSliderW) * kSliderH * 4);
         const int voice = !xrvoice::enabled() ? 0 : (xrvoice::mic_allowed() ? 1 : 2);  // r44
         xrtext::settings_panel(pixels.data(), kSliderW, kSliderH, g.crowdLevel, 10, voice, g.viewHeightCm,
-                               g.settingsRow, g.showShelf, g.raPopups, home_on());
+                               g.settingsRow, g.showShelf, g.raPopups, home_on(), PortWeatherMode(),  // r137: + WEATHER
+                               PortMenuMusicMode(), PortMenuMusicMySongs());                          // r147: + MENU MUSIC
         panel_upload(g.slider, pixels.data(), kSliderW, kSliderH);
       }
       if (!g.sliderPlaced && g.headValid) {
@@ -15717,6 +16423,22 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         update_select(scene, "", XrVector3f{0.0f, 0.0f, 0.0f}, XrVector3f{1.0f, 0.0f, 0.0f}, 0.0f, nowNs);
       }
     }
+    // r137: STRIKERS TRADING CARDS: the packs earned taken every frame; a pack / its cards / a card out of the binder in
+    // front of you while the hub is up on its pages (xr_cards.cpp), put away when it isn't; their buzz
+    xrcards::set_evo_backdrop(evo_backdrop);  // r138: a shiny Pokemon card's window shows its evolution room
+    xrcards::set_floor(g.floorY);             // r141: where a BLACK 1/1's life-size cameo stands
+    const bool cardsShown = xrcards::frame(scene, g.headPose, g.headValid && g.frOpen && g.frMode == 2 && !g.paperOpen,
+                                           g.fxReady && sceneViews, showFrQuad ? &frQuad : nullptr, nowNs);
+    {
+      float buzzS = 0.0f;
+      const float buzz = xrcards::take_buzz(&buzzS);
+      if (buzz > 0.0f) {
+        g.rumble.amplitude = buzz;
+        g.rumble.seconds = buzzS;
+        g.rumble.startPending = true;
+        g.rumble.stopPending = false;
+      }
+    }
     // r131: the franchise's characters in 3D: the hub's / trades' in front of its panel, awards night's in your room
     const bool frFigPanel = showFrQuad && g.frOpen && (g.frMode == 2 || g.frMode == 5) && !g.gpOpen;
     const bool frFigsUp = fr_figs_frame(scene, frFigPanel ? &frQuad : nullptr, g.fxReady && sceneViews, nowNs);
@@ -15724,7 +16446,8 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // effects layer (its backdrop), not over it (it would hide the Pokemon standing before it); r131: so is the hub's
     // picture while its characters stand in front of it
     const bool frUnder = showFrQuad && ((g.frMode == 3 && g_evoShow.live) || frFigsUp ||
-                                        (g.magMeshShown && g.paperOpen));  // r131: the magazine's paper in front of it
+                                        (g.magMeshShown && g.paperOpen) ||  // r131: the magazine's paper in front of it
+                                        cardsShown);                        // r137: the trading cards in front of it
     if (frUnder) {
       layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
       showFrQuad = false;
@@ -15852,6 +16575,72 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       if (pop > 0.02f) {
         place_panel(raQuad, g.raToast, g.raToastPos, 0.62f * pop);
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&raQuad);
+      }
+    }
+    // r147: the menu music's NOW PLAYING card (port/menu_music.h) as a track starts: 4 s in the big screen's top right
+    // corner (the game's menus and the franchise hub are on it; in front of the hub), else up and right of your view
+    // following lazily; it pops in and fades out (the compositor's colour scale; without it, it shrinks away). Never in
+    // a match. Drawn off this thread.
+    {
+      char npTitle[160], npArtist[160];
+      if (PortMenuMusicTakeNowPlaying(npTitle, sizeof(npTitle), npArtist, sizeof(npArtist))) {
+        const std::string t = npTitle, a = npArtist;
+        request_panel(g_nowPlayingP, ++g.npGen, kNowPlayingW, kNowPlayingH, [t, a](uint8_t* px, int w, int h) {
+          xrtext::now_playing_toast(px, w, h, t.c_str(), a.c_str());
+        });
+      }
+      if (show_panel(g_nowPlayingP, g.nowPlaying) && g_nowPlayingP.shown != g.npShownGen) {
+        g.npShownGen = g_nowPlayingP.shown;
+        g.npShownNs = nowNs;
+        g.npPlaced = false;
+      }
+      constexpr float kNpHoldS = 4.0f, kNpFadeS = 0.6f;
+      const float npT = g.npShownNs != 0 ? static_cast<float>(nowNs - g.npShownNs) / 1e9f : 0.0f;
+      if (g.npShownNs != 0 && (npT >= kNpHoldS + kNpFadeS || PortMenuMusicInMatch() != 0)) g.npShownNs = 0;
+      if (g.npShownNs != 0 && g.nowPlaying.hasImage && g.headValid && layerCount < 32) {
+        const float pop = std::min(1.0f, npT / 0.25f);
+        const float fade = npT > kNpHoldS ? std::max(0.0f, 1.0f - (npT - kNpHoldS) / kNpFadeS) : 1.0f;
+        const float aspect = static_cast<float>(kNowPlayingH) / static_cast<float>(kNowPlayingW);
+        float width;
+        if (scene.screenValid) {
+          width = std::max(0.30f, std::min(0.55f, 0.24f * scene.screenWidth));
+          place_panel(npQuad, g.nowPlaying, scene.screenPose.position, width);
+          npQuad.pose.orientation = scene.screenPose.orientation;
+          const XrVector3f off{0.5f * scene.screenWidth - 0.5f * width - 0.025f * scene.screenWidth,
+                               0.5f * scene.screenHeight - 0.5f * width * aspect - 0.03f * scene.screenHeight, 0.05f};
+          const XrVector3f out = q_rot(scene.screenPose.orientation, off);
+          npQuad.pose.position = {scene.screenPose.position.x + out.x, scene.screenPose.position.y + out.y,
+                                  scene.screenPose.position.z + out.z};
+          g.npPlaced = false;
+        } else {
+          width = 0.36f;
+          float fx = 0.0f, fz = -1.0f;
+          floor_forward(g.headPose, &fx, &fz);
+          const XrVector3f want{g.headPose.position.x + fx * 1.1f - fz * 0.34f, g.headPose.position.y + 0.17f,
+                                g.headPose.position.z + fz * 1.1f + fx * 0.34f};
+          if (!g.npPlaced) {
+            g.npPos = want;
+            g.npPlaced = true;
+          } else {
+            const float dt = scene.dt > 0.0f ? std::min(scene.dt, 0.1f) : 1.0f / 72.0f;
+            const float k = std::min(1.0f, dt * 2.5f);
+            g.npPos.x += (want.x - g.npPos.x) * k;
+            g.npPos.y += (want.y - g.npPos.y) * k;
+            g.npPos.z += (want.z - g.npPos.z) * k;
+          }
+          place_panel(npQuad, g.nowPlaying, g.npPos, width);
+        }
+        const float grow = (0.85f + 0.15f * pop) * (g_hasColorScaleBias ? 1.0f : fade);
+        npQuad.size.width = width * grow;
+        npQuad.size.height = width * aspect * grow;
+        const float alpha = g_hasColorScaleBias ? pop * fade : 1.0f;
+        if (g_hasColorScaleBias) {
+          npFade.colorScale = XrColor4f{alpha, alpha, alpha, alpha};
+          npFade.colorBias = XrColor4f{0.0f, 0.0f, 0.0f, 0.0f};
+          npQuad.next = &npFade;
+        }
+        if (alpha > 0.01f && npQuad.size.width > 0.02f)
+          layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&npQuad);
       }
     }
     if (g.fxReady && g.celebBuzz && xrfx::cannon_waves_fired() > g.buzzWave) {

@@ -23,13 +23,24 @@ final class Np {
         return r;
     }
 
-    /** v @ m (row vector times a C-ordered matrix: numpy's dgemv_n). */
+    /**
+     * v @ m (row vector times a C-ordered matrix: numpy's dgemv_n): one fused multiply-add per term from +0, in order;
+     * r135: for 4 terms numpy sums them in the order 1, 0, 2, 3 (found against numpy on 3,000 random 4 x 4s, every
+     * one; the r127 / r130 checks used rigid bind matrices, where both orders agree: those packs keep their bytes).
+     */
     static double[] vm(double[] v, double[][] m) {
         final int k = v.length, c = m[0].length;
         final double[] r = new double[c];
         for (int j = 0; j < c; j++) {
             double s = 0.0;
-            for (int q = 0; q < k; q++) s = Fma.fma(v[q], m[q][j], s);
+            if (k == 4) {
+                s = Fma.fma(v[1], m[1][j], s);
+                s = Fma.fma(v[0], m[0][j], s);
+                s = Fma.fma(v[2], m[2][j], s);
+                s = Fma.fma(v[3], m[3][j], s);
+            } else {
+                for (int q = 0; q < k; q++) s = Fma.fma(v[q], m[q][j], s);
+            }
             r[j] = s;
         }
         return r;

@@ -12,6 +12,11 @@
 // so this header compiles standalone in every includer.
 void nlServiceFileSystem();
 extern "C" void sndStreamLPFParameter(unsigned long, bool, unsigned long);
+// strikers-quest r147 (port/menu_music.h): the volume a stream's buffers are actually given, from the one the game
+// asked for: the front-end music tracks' streams are scaled by the lofi menu music's crossfade, every other stream
+// is untouched. The stream keeps the game's own number (m_Volume), so its fades read what the game set.
+// src/Game/Audio/StreamTrack.cpp.
+extern "C" unsigned long PortStreamHeardVolume(const void* stream, unsigned long volume);
 
 struct sDSPADPCM
 {
@@ -253,10 +258,12 @@ public:
         {
             AudioStreamBuffer* bufferIndex = NULL;
             AudioStreamBuffer* buffer = GetBuffer((uintptr_t)bufferIndex);
+            // strikers-quest r147: what is heard (the menu music crossfade), see PortStreamHeardVolume
+            const unsigned long heard = PortStreamHeardVolume(this, (unsigned long)clampedVolume);
 
             while (buffer != NULL)
             {
-                buffer->m_Volume = (u8)clampedVolume;
+                buffer->m_Volume = (u8)heard;
                 sndStreamMixParameterEx(buffer->m_StreamId, buffer->m_Volume, buffer->m_Pan, buffer->m_SurroundPan, 0, 0);
                 ((unsigned long&)bufferIndex)++;
                 buffer = GetBuffer((uintptr_t)bufferIndex);

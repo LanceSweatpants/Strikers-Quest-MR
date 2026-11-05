@@ -1,0 +1,473 @@
+# 2026-27 LANCINI TIZM STRIKERS, series 1 (r137, tools/outside/cards_set.py): number, card key (its picture), rarity (C / R / SR), series, its franchise ratings key, name. Tab separated. The numbers never change (new characters go on the end): online trading reads them.
+1	strikers_mario	R	STRIKERS	mario	Mario
+2	strikers_luigi	R	STRIKERS	luigi	Luigi
+3	strikers_peach	R	STRIKERS	peach	Peach
+4	strikers_daisy	R	STRIKERS	daisy	Daisy
+5	strikers_yoshi	R	STRIKERS	yoshi	Yoshi
+6	strikers_donkeykong	R	STRIKERS	donkeykong	Donkey Kong
+7	strikers_wario	R	STRIKERS	wario	Wario
+8	strikers_waluigi	R	STRIKERS	waluigi	Waluigi
+9	strikers_toad	C	STRIKERS	toad	Toad
+10	strikers_koopa	C	STRIKERS	koopa	Koopa
+11	strikers_hammerbro	C	STRIKERS	hammerbros	Hammer Bro
+12	strikers_birdo	C	STRIKERS	birdo	Birdo
+13	bowser	C	CHARGED	bowser	Bowser
+14	bowserjr	C	CHARGED	bowserjr	Bowser Jr.
+15	diddykong	R	CHARGED	diddykong	Diddy Kong
+16	petey	C	CHARGED	petey	Petey Piranha
+17	boo	R	CHARGED	boo	Boo
+18	drybones	R	CHARGED	drybones	Dry Bones
+19	montymole	C	CHARGED	montymole	Monty Mole
+20	shyguy	C	CHARGED	shyguy	Shy Guy
+21	drmario	C	MELEE	drmario	Dr. Mario
+22	falcon	R	MELEE	falcon	Captain Falcon
+23	fox	C	MELEE	fox	Fox
+24	falco	C	MELEE	falco	Falco
+25	link	C	MELEE	link	Link
+26	younglink	C	MELEE	younglink	Young Link
+27	zelda	C	MELEE	zelda	Zelda
+28	sheik	C	MELEE	sheik	Sheik
+29	samus	C	MELEE	samus	Samus
+30	kirby	C	MELEE	kirby	Kirby
+31	ness	C	MELEE	ness	Ness
+32	popo	C	MELEE	popo	Popo
+33	nana	C	MELEE	nana	Nana
+34	marth	C	MELEE	marth	Marth
+35	roy	C	MELEE	roy	Roy
+36	ganondorf	C	MELEE	ganondorf	Ganondorf
+37	gamewatch	C	MELEE	gamewatch	Mr. Game & Watch
+38	pk_bulbasaur	C	POKEMON	pk_bulbasaur	Bulbasaur
+39	pk_ivysaur	C	POKEMON	pk_ivysaur	Ivysaur
+40	pk_venusaur	SR	POKEMON	pk_venusaur	Venusaur
+41	pk_charmander	C	POKEMON	pk_charmander	Charmander
+42	pk_charmeleon	C	POKEMON	pk_charmeleon	Charmeleon
+43	pk_charizard	SR	POKEMON	pk_charizard	Charizard
+44	pk_squirtle	C	POKEMON	pk_squirtle	Squirtle
+45	pk_wartortle	C	POKEMON	pk_wartortle	Wartortle
+46	pk_blastoise	SR	POKEMON	pk_blastoise	Blastoise
+47	pk_mrmime	R	POKEMON	pk_mrmime	Mr. Mime
+48	pk_mankey	C	POKEMON	pk_mankey	Mankey
+49	pk_primeape	R	POKEMON	pk_primeape	Primeape
+50	pk_machop	C	POKEMON	pk_machop	Machop
+51	pk_machoke	C	POKEMON	pk_machoke	Machoke
+52	pk_machamp	SR	POKEMON	pk_machamp	Machamp
+53	pk_geodude	C	POKEMON	pk_geodude	Geodude
+54	pk_graveler	C	POKEMON	pk_graveler	Graveler
+55	pk_golem	SR	POKEMON	pk_golem	Golem
+56	pk_gastly	C	POKEMON	pk_gastly	Gastly
+57	pk_haunter	C	POKEMON	pk_haunter	Haunter
+58	pk_gengar	SR	POKEMON	pk_gengar	Gengar
+59	pk_onix	C	POKEMON	pk_onix	Onix
+60	pk_steelix	C	POKEMON	pk_steelix	Steelix
+61	pk_voltorb	C	POKEMON	pk_voltorb	Voltorb
+62	pk_electrode	R	POKEMON	pk_electrode	Electrode
+63	pk_dratini	C	POKEMON	pk_dratini	Dratini
+64	pk_dragonair	C	POKEMON	pk_dragonair	Dragonair
+65	pk_dragonite	SR	POKEMON	pk_dragonite	Dragonite
+66	pk_pichu	C	POKEMON	pk_pichu	Pichu
+67	pk_pikachu	C	POKEMON	pk_pikachu	Pikachu
+68	pk_raichu	SR	POKEMON	pk_raichu	Raichu
+69	pk_igglybuff	C	POKEMON	pk_igglybuff	Igglybuff
+70	pk_jigglypuff	C	POKEMON	pk_jigglypuff	Jigglypuff
+71	pk_wigglytuff	SR	POKEMON	pk_wigglytuff	Wigglytuff
+72	pk_torchic	C	POKEMON	pk_torchic	Torchic
+73	pk_combusken	C	POKEMON	pk_combusken	Combusken
+74	pk_blaziken	SR	POKEMON	pk_blaziken	Blaziken
+75	pk_drowzee	C	POKEMON	pk_drowzee	Drowzee
+76	pk_hypno	R	POKEMON	pk_hypno	Hypno
+77	pk_cubone	C	POKEMON	pk_cubone	Cubone
+78	pk_marowak	C	POKEMON	pk_marowak	Marowak
+79	pk_koffing	C	POKEMON	pk_koffing	Koffing
+80	pk_weezing	R	POKEMON	pk_weezing	Weezing
+81	pk_mewtwo	SR	POKEMON	pk_mewtwo	Mewtwo
+82	pk_snorlax	R	POKEMON	pk_snorlax	Snorlax
+83	pk_magby	C	POKEMON	pk_magby	Magby
+84	pk_magmar	R	POKEMON	pk_magmar	Magmar
+85	pk_treecko	C	POKEMON	pk_treecko	Treecko
+86	pk_grovyle	C	POKEMON	pk_grovyle	Grovyle
+87	pk_sceptile	SR	POKEMON	pk_sceptile	Sceptile
+88	pk_mudkip	C	POKEMON	pk_mudkip	Mudkip
+89	pk_marshtomp	C	POKEMON	pk_marshtomp	Marshtomp
+90	pk_swampert	SR	POKEMON	pk_swampert	Swampert
+91	pk_shuppet	C	POKEMON	pk_shuppet	Shuppet
+92	pk_banette	R	POKEMON	pk_banette	Banette
+93	pk_bagon	C	POKEMON	pk_bagon	Bagon
+94	pk_shelgon	C	POKEMON	pk_shelgon	Shelgon
+95	pk_salamence	SR	POKEMON	pk_salamence	Salamence
+96	pk_poliwag	C	POKEMON	pk_poliwag	Poliwag
+97	pk_poliwhirl	C	POKEMON	pk_poliwhirl	Poliwhirl
+98	pk_poliwrath	SR	POKEMON	pk_poliwrath	Poliwrath
+99	pk_politoed	SR	POKEMON	pk_politoed	Politoed
+100	pk_scyther	R	POKEMON	pk_scyther	Scyther
+101	pk_scizor	R	POKEMON	pk_scizor	Scizor
+102	pk_houndour	C	POKEMON	pk_houndour	Houndour
+103	pk_houndoom	R	POKEMON	pk_houndoom	Houndoom
+104	pk_beldum	C	POKEMON	pk_beldum	Beldum
+105	pk_metang	C	POKEMON	pk_metang	Metang
+106	pk_metagross	SR	POKEMON	pk_metagross	Metagross
+107	pk_cyndaquil	C	POKEMON	pk_cyndaquil	Cyndaquil
+108	pk_quilava	C	POKEMON	pk_quilava	Quilava
+109	pk_typhlosion	SR	POKEMON	pk_typhlosion	Typhlosion
+110	pk_totodile	C	POKEMON	pk_totodile	Totodile
+111	pk_croconaw	C	POKEMON	pk_croconaw	Croconaw
+112	pk_feraligatr	SR	POKEMON	pk_feraligatr	Feraligatr
+113	pk_chikorita	C	POKEMON	pk_chikorita	Chikorita
+114	pk_bayleef	C	POKEMON	pk_bayleef	Bayleef
+115	pk_meganium	SR	POKEMON	pk_meganium	Meganium
+116	pk_abra	C	POKEMON	pk_abra	Abra
+117	pk_kadabra	C	POKEMON	pk_kadabra	Kadabra
+118	pk_alakazam	SR	POKEMON	pk_alakazam	Alakazam
+119	pk_ralts	C	POKEMON	pk_ralts	Ralts
+120	pk_kirlia	C	POKEMON	pk_kirlia	Kirlia
+121	pk_gardevoir	SR	POKEMON	pk_gardevoir	Gardevoir
+122	pk_larvitar	C	POKEMON	pk_larvitar	Larvitar
+123	pk_pupitar	C	POKEMON	pk_pupitar	Pupitar
+124	pk_tyranitar	SR	POKEMON	pk_tyranitar	Tyranitar
+125	pk_aron	C	POKEMON	pk_aron	Aron
+126	pk_lairon	C	POKEMON	pk_lairon	Lairon
+127	pk_aggron	SR	POKEMON	pk_aggron	Aggron
+128	pk_trapinch	C	POKEMON	pk_trapinch	Trapinch
+129	pk_vibrava	C	POKEMON	pk_vibrava	Vibrava
+130	pk_flygon	SR	POKEMON	pk_flygon	Flygon
+131	pk_elekid	C	POKEMON	pk_elekid	Elekid
+132	pk_electabuzz	R	POKEMON	pk_electabuzz	Electabuzz
+133	pk_psyduck	C	POKEMON	pk_psyduck	Psyduck
+134	pk_golduck	R	POKEMON	pk_golduck	Golduck
+135	pk_eevee	C	POKEMON	pk_eevee	Eevee
+136	pk_vaporeon	R	POKEMON	pk_vaporeon	Vaporeon
+137	pk_jolteon	R	POKEMON	pk_jolteon	Jolteon
+138	pk_flareon	R	POKEMON	pk_flareon	Flareon
+139	pk_espeon	R	POKEMON	pk_espeon	Espeon
+140	pk_umbreon	R	POKEMON	pk_umbreon	Umbreon
+141	pk_tyrogue	C	POKEMON	pk_tyrogue	Tyrogue
+142	pk_hitmonlee	R	POKEMON	pk_hitmonlee	Hitmonlee
+143	pk_hitmonchan	R	POKEMON	pk_hitmonchan	Hitmonchan
+144	pk_hitmontop	R	POKEMON	pk_hitmontop	Hitmontop
+145	pk_mareep	C	POKEMON	pk_mareep	Mareep
+146	pk_flaaffy	C	POKEMON	pk_flaaffy	Flaaffy
+147	pk_ampharos	SR	POKEMON	pk_ampharos	Ampharos
+148	pk_teddiursa	C	POKEMON	pk_teddiursa	Teddiursa
+149	pk_ursaring	R	POKEMON	pk_ursaring	Ursaring
+150	pk_lotad	C	POKEMON	pk_lotad	Lotad
+151	pk_lombre	C	POKEMON	pk_lombre	Lombre
+152	pk_ludicolo	SR	POKEMON	pk_ludicolo	Ludicolo
+153	pk_seedot	C	POKEMON	pk_seedot	Seedot
+154	pk_nuzleaf	C	POKEMON	pk_nuzleaf	Nuzleaf
+155	pk_shiftry	SR	POKEMON	pk_shiftry	Shiftry
+156	pk_shroomish	C	POKEMON	pk_shroomish	Shroomish
+157	pk_breloom	R	POKEMON	pk_breloom	Breloom
+158	pk_slakoth	C	POKEMON	pk_slakoth	Slakoth
+159	pk_vigoroth	C	POKEMON	pk_vigoroth	Vigoroth
+160	pk_slaking	SR	POKEMON	pk_slaking	Slaking
+161	pk_makuhita	C	POKEMON	pk_makuhita	Makuhita
+162	pk_hariyama	R	POKEMON	pk_hariyama	Hariyama
+163	pk_whismur	C	POKEMON	pk_whismur	Whismur
+164	pk_loudred	C	POKEMON	pk_loudred	Loudred
+165	pk_exploud	SR	POKEMON	pk_exploud	Exploud
+166	pk_meditite	C	POKEMON	pk_meditite	Meditite
+167	pk_medicham	R	POKEMON	pk_medicham	Medicham
+168	pk_cacnea	C	POKEMON	pk_cacnea	Cacnea
+169	pk_cacturne	R	POKEMON	pk_cacturne	Cacturne
+170	pk_nidoranm	C	POKEMON	pk_nidoranm	Nidoran M
+171	pk_nidorino	C	POKEMON	pk_nidorino	Nidorino
+172	pk_nidoking	SR	POKEMON	pk_nidoking	Nidoking
+173	pk_nidoranf	C	POKEMON	pk_nidoranf	Nidoran F
+174	pk_nidorina	C	POKEMON	pk_nidorina	Nidorina
+175	pk_nidoqueen	SR	POKEMON	pk_nidoqueen	Nidoqueen
+176	pk_kabuto	C	POKEMON	pk_kabuto	Kabuto
+177	pk_kabutops	R	POKEMON	pk_kabutops	Kabutops
+178	pk_anorith	C	POKEMON	pk_anorith	Anorith
+179	pk_armaldo	R	POKEMON	pk_armaldo	Armaldo
+180	pk_wooper	C	POKEMON	pk_wooper	Wooper
+181	pk_quagsire	C	POKEMON	pk_quagsire	Quagsire
+182	pk_smoochum	C	POKEMON	pk_smoochum	Smoochum
+183	pk_jynx	R	POKEMON	pk_jynx	Jynx
+184	pk_sandshrew	C	POKEMON	pk_sandshrew	Sandshrew
+185	pk_sandslash	R	POKEMON	pk_sandslash	Sandslash
+186	pk_slowpoke	C	POKEMON	pk_slowpoke	Slowpoke
+187	pk_slowbro	C	POKEMON	pk_slowbro	Slowbro
+188	pk_slowking	C	POKEMON	pk_slowking	Slowking
+189	pk_caterpie	C	POKEMON	pk_caterpie	Caterpie
+190	pk_metapod	C	POKEMON	pk_metapod	Metapod
+191	pk_butterfree	SR	POKEMON	pk_butterfree	Butterfree
+192	pk_weedle	C	POKEMON	pk_weedle	Weedle
+193	pk_kakuna	C	POKEMON	pk_kakuna	Kakuna
+194	pk_beedrill	SR	POKEMON	pk_beedrill	Beedrill
+195	pk_pidgey	C	POKEMON	pk_pidgey	Pidgey
+196	pk_pidgeotto	C	POKEMON	pk_pidgeotto	Pidgeotto
+197	pk_pidgeot	SR	POKEMON	pk_pidgeot	Pidgeot
+198	pk_rattata	C	POKEMON	pk_rattata	Rattata
+199	pk_raticate	R	POKEMON	pk_raticate	Raticate
+200	pk_spearow	C	POKEMON	pk_spearow	Spearow
+201	pk_fearow	R	POKEMON	pk_fearow	Fearow
+202	pk_ekans	C	POKEMON	pk_ekans	Ekans
+203	pk_arbok	R	POKEMON	pk_arbok	Arbok
+204	pk_vulpix	C	POKEMON	pk_vulpix	Vulpix
+205	pk_ninetales	R	POKEMON	pk_ninetales	Ninetales
+206	pk_zubat	C	POKEMON	pk_zubat	Zubat
+207	pk_golbat	C	POKEMON	pk_golbat	Golbat
+208	pk_crobat	SR	POKEMON	pk_crobat	Crobat
+209	pk_oddish	C	POKEMON	pk_oddish	Oddish
+210	pk_gloom	C	POKEMON	pk_gloom	Gloom
+211	pk_vileplume	SR	POKEMON	pk_vileplume	Vileplume
+212	pk_bellossom	SR	POKEMON	pk_bellossom	Bellossom
+213	pk_paras	C	POKEMON	pk_paras	Paras
+214	pk_parasect	C	POKEMON	pk_parasect	Parasect
+215	pk_venonat	C	POKEMON	pk_venonat	Venonat
+216	pk_venomoth	R	POKEMON	pk_venomoth	Venomoth
+217	pk_diglett	C	POKEMON	pk_diglett	Diglett
+218	pk_dugtrio	R	POKEMON	pk_dugtrio	Dugtrio
+219	pk_meowth	C	POKEMON	pk_meowth	Meowth
+220	pk_persian	R	POKEMON	pk_persian	Persian
+221	pk_bellsprout	C	POKEMON	pk_bellsprout	Bellsprout
+222	pk_weepinbell	C	POKEMON	pk_weepinbell	Weepinbell
+223	pk_victreebel	SR	POKEMON	pk_victreebel	Victreebel
+224	pk_tentacool	C	POKEMON	pk_tentacool	Tentacool
+225	pk_tentacruel	R	POKEMON	pk_tentacruel	Tentacruel
+226	pk_ponyta	C	POKEMON	pk_ponyta	Ponyta
+227	pk_rapidash	R	POKEMON	pk_rapidash	Rapidash
+228	pk_magnemite	C	POKEMON	pk_magnemite	Magnemite
+229	pk_magneton	R	POKEMON	pk_magneton	Magneton
+230	pk_doduo	C	POKEMON	pk_doduo	Doduo
+231	pk_dodrio	R	POKEMON	pk_dodrio	Dodrio
+232	pk_seel	C	POKEMON	pk_seel	Seel
+233	pk_dewgong	R	POKEMON	pk_dewgong	Dewgong
+234	pk_grimer	C	POKEMON	pk_grimer	Grimer
+235	pk_muk	C	POKEMON	pk_muk	Muk
+236	pk_shellder	C	POKEMON	pk_shellder	Shellder
+237	pk_cloyster	R	POKEMON	pk_cloyster	Cloyster
+238	pk_krabby	C	POKEMON	pk_krabby	Krabby
+239	pk_kingler	R	POKEMON	pk_kingler	Kingler
+240	pk_exeggcute	C	POKEMON	pk_exeggcute	Exeggcute
+241	pk_exeggutor	R	POKEMON	pk_exeggutor	Exeggutor
+242	pk_rhyhorn	C	POKEMON	pk_rhyhorn	Rhyhorn
+243	pk_rhydon	C	POKEMON	pk_rhydon	Rhydon
+244	pk_chansey	C	POKEMON	pk_chansey	Chansey
+245	pk_blissey	C	POKEMON	pk_blissey	Blissey
+246	pk_horsea	C	POKEMON	pk_horsea	Horsea
+247	pk_seadra	C	POKEMON	pk_seadra	Seadra
+248	pk_kingdra	SR	POKEMON	pk_kingdra	Kingdra
+249	pk_goldeen	C	POKEMON	pk_goldeen	Goldeen
+250	pk_seaking	R	POKEMON	pk_seaking	Seaking
+251	pk_staryu	C	POKEMON	pk_staryu	Staryu
+252	pk_starmie	R	POKEMON	pk_starmie	Starmie
+253	pk_magikarp	C	POKEMON	pk_magikarp	Magikarp
+254	pk_gyarados	R	POKEMON	pk_gyarados	Gyarados
+255	pk_porygon	C	POKEMON	pk_porygon	Porygon
+256	pk_porygon2	R	POKEMON	pk_porygon2	Porygon2
+257	pk_omanyte	C	POKEMON	pk_omanyte	Omanyte
+258	pk_omastar	R	POKEMON	pk_omastar	Omastar
+259	pk_sentret	C	POKEMON	pk_sentret	Sentret
+260	pk_furret	R	POKEMON	pk_furret	Furret
+261	pk_hoothoot	C	POKEMON	pk_hoothoot	Hoothoot
+262	pk_noctowl	R	POKEMON	pk_noctowl	Noctowl
+263	pk_ledyba	C	POKEMON	pk_ledyba	Ledyba
+264	pk_ledian	R	POKEMON	pk_ledian	Ledian
+265	pk_spinarak	C	POKEMON	pk_spinarak	Spinarak
+266	pk_ariados	C	POKEMON	pk_ariados	Ariados
+267	pk_chinchou	C	POKEMON	pk_chinchou	Chinchou
+268	pk_lanturn	R	POKEMON	pk_lanturn	Lanturn
+269	pk_cleffa	C	POKEMON	pk_cleffa	Cleffa
+270	pk_clefairy	C	POKEMON	pk_clefairy	Clefairy
+271	pk_clefable	SR	POKEMON	pk_clefable	Clefable
+272	pk_togepi	C	POKEMON	pk_togepi	Togepi
+273	pk_togetic	C	POKEMON	pk_togetic	Togetic
+274	pk_natu	C	POKEMON	pk_natu	Natu
+275	pk_xatu	R	POKEMON	pk_xatu	Xatu
+276	pk_hoppip	C	POKEMON	pk_hoppip	Hoppip
+277	pk_skiploom	C	POKEMON	pk_skiploom	Skiploom
+278	pk_jumpluff	SR	POKEMON	pk_jumpluff	Jumpluff
+279	pk_sunkern	C	POKEMON	pk_sunkern	Sunkern
+280	pk_sunflora	C	POKEMON	pk_sunflora	Sunflora
+281	pk_pineco	C	POKEMON	pk_pineco	Pineco
+282	pk_forretress	C	POKEMON	pk_forretress	Forretress
+283	pk_snubbull	C	POKEMON	pk_snubbull	Snubbull
+284	pk_granbull	C	POKEMON	pk_granbull	Granbull
+285	pk_slugma	C	POKEMON	pk_slugma	Slugma
+286	pk_magcargo	C	POKEMON	pk_magcargo	Magcargo
+287	pk_swinub	C	POKEMON	pk_swinub	Swinub
+288	pk_piloswine	R	POKEMON	pk_piloswine	Piloswine
+289	pk_remoraid	C	POKEMON	pk_remoraid	Remoraid
+290	pk_octillery	R	POKEMON	pk_octillery	Octillery
+291	pk_phanpy	C	POKEMON	pk_phanpy	Phanpy
+292	pk_donphan	C	POKEMON	pk_donphan	Donphan
+293	pk_poochyena	C	POKEMON	pk_poochyena	Poochyena
+294	pk_mightyena	R	POKEMON	pk_mightyena	Mightyena
+295	pk_zigzagoon	C	POKEMON	pk_zigzagoon	Zigzagoon
+296	pk_linoone	R	POKEMON	pk_linoone	Linoone
+297	pk_wurmple	C	POKEMON	pk_wurmple	Wurmple
+298	pk_silcoon	C	POKEMON	pk_silcoon	Silcoon
+299	pk_beautifly	SR	POKEMON	pk_beautifly	Beautifly
+300	pk_cascoon	C	POKEMON	pk_cascoon	Cascoon
+301	pk_dustox	SR	POKEMON	pk_dustox	Dustox
+302	pk_taillow	C	POKEMON	pk_taillow	Taillow
+303	pk_swellow	R	POKEMON	pk_swellow	Swellow
+304	pk_wingull	C	POKEMON	pk_wingull	Wingull
+305	pk_pelipper	R	POKEMON	pk_pelipper	Pelipper
+306	pk_surskit	C	POKEMON	pk_surskit	Surskit
+307	pk_masquerain	R	POKEMON	pk_masquerain	Masquerain
+308	pk_nincada	C	POKEMON	pk_nincada	Nincada
+309	pk_ninjask	R	POKEMON	pk_ninjask	Ninjask
+310	pk_shedinja	C	POKEMON	pk_shedinja	Shedinja
+311	pk_azurill	C	POKEMON	pk_azurill	Azurill
+312	pk_marill	C	POKEMON	pk_marill	Marill
+313	pk_azumarill	SR	POKEMON	pk_azumarill	Azumarill
+314	pk_skitty	C	POKEMON	pk_skitty	Skitty
+315	pk_delcatty	R	POKEMON	pk_delcatty	Delcatty
+316	pk_electrike	C	POKEMON	pk_electrike	Electrike
+317	pk_manectric	R	POKEMON	pk_manectric	Manectric
+318	pk_gulpin	C	POKEMON	pk_gulpin	Gulpin
+319	pk_swalot	C	POKEMON	pk_swalot	Swalot
+320	pk_carvanha	C	POKEMON	pk_carvanha	Carvanha
+321	pk_sharpedo	R	POKEMON	pk_sharpedo	Sharpedo
+322	pk_wailmer	C	POKEMON	pk_wailmer	Wailmer
+323	pk_wailord	R	POKEMON	pk_wailord	Wailord
+324	pk_numel	C	POKEMON	pk_numel	Numel
+325	pk_camerupt	C	POKEMON	pk_camerupt	Camerupt
+326	pk_spoink	C	POKEMON	pk_spoink	Spoink
+327	pk_grumpig	R	POKEMON	pk_grumpig	Grumpig
+328	pk_swablu	C	POKEMON	pk_swablu	Swablu
+329	pk_altaria	R	POKEMON	pk_altaria	Altaria
+330	pk_barboach	C	POKEMON	pk_barboach	Barboach
+331	pk_whiscash	R	POKEMON	pk_whiscash	Whiscash
+332	pk_corphish	C	POKEMON	pk_corphish	Corphish
+333	pk_crawdaunt	R	POKEMON	pk_crawdaunt	Crawdaunt
+334	pk_baltoy	C	POKEMON	pk_baltoy	Baltoy
+335	pk_claydol	R	POKEMON	pk_claydol	Claydol
+336	pk_lileep	C	POKEMON	pk_lileep	Lileep
+337	pk_cradily	C	POKEMON	pk_cradily	Cradily
+338	pk_feebas	C	POKEMON	pk_feebas	Feebas
+339	pk_milotic	R	POKEMON	pk_milotic	Milotic
+340	pk_duskull	C	POKEMON	pk_duskull	Duskull
+341	pk_dusclops	C	POKEMON	pk_dusclops	Dusclops
+342	pk_wynaut	C	POKEMON	pk_wynaut	Wynaut
+343	pk_wobbuffet	C	POKEMON	pk_wobbuffet	Wobbuffet
+344	pk_snorunt	C	POKEMON	pk_snorunt	Snorunt
+345	pk_glalie	R	POKEMON	pk_glalie	Glalie
+346	pk_spheal	C	POKEMON	pk_spheal	Spheal
+347	pk_sealeo	C	POKEMON	pk_sealeo	Sealeo
+348	pk_walrein	SR	POKEMON	pk_walrein	Walrein
+349	pk_clamperl	C	POKEMON	pk_clamperl	Clamperl
+350	pk_huntail	R	POKEMON	pk_huntail	Huntail
+351	pk_gorebyss	R	POKEMON	pk_gorebyss	Gorebyss
+352	mua_ghostrider	C	MARVEL	mua_ghostrider	Ghost Rider
+353	mua_ghostrider_c2	R	MARVEL	mua_ghostrider_c2	Ghost Rider II
+354	mua_ghostrider_c3	R	MARVEL	mua_ghostrider_c3	Ghost Rider III
+355	mua_ghostrider_c4	SR	MARVEL	mua_ghostrider_c4	Ghost Rider IV
+356	mua_drstrange	C	MARVEL	mua_drstrange	Dr. Strange
+357	mua_drstrange_c2	R	MARVEL	mua_drstrange_c2	Dr. Strange II
+358	mua_drstrange_c3	R	MARVEL	mua_drstrange_c3	Dr. Strange III
+359	mua_drstrange_c4	SR	MARVEL	mua_drstrange_c4	Dr. Strange IV
+360	mua_spiderman	C	MARVEL	mua_spiderman	Spider-Man
+361	mua_spiderman_c2	R	MARVEL	mua_spiderman_c2	Spider-Man II
+362	mua_spiderman_c3	R	MARVEL	mua_spiderman_c3	Spider-Man III
+363	mua_spiderman_c4	SR	MARVEL	mua_spiderman_c4	Spider-Man IV
+364	mua_blade	C	MARVEL	mua_blade	Blade
+365	mua_blade_c2	R	MARVEL	mua_blade_c2	Blade II
+366	mua_blade_c3	R	MARVEL	mua_blade_c3	Blade III
+367	mua_blade_c4	SR	MARVEL	mua_blade_c4	Blade IV
+368	mua_spiderwoman	C	MARVEL	mua_spiderwoman	Spider-Woman
+369	mua_spiderwoman_c2	R	MARVEL	mua_spiderwoman_c2	Spider-Woman II
+370	mua_spiderwoman_c3	R	MARVEL	mua_spiderwoman_c3	Spider-Woman III
+371	mua_spiderwoman_c4	SR	MARVEL	mua_spiderwoman_c4	Spider-Woman IV
+372	mua_iceman	C	MARVEL	mua_iceman	Iceman
+373	mua_iceman_c2	R	MARVEL	mua_iceman_c2	Iceman II
+374	mua_iceman_c3	R	MARVEL	mua_iceman_c3	Iceman III
+375	mua_iceman_c4	SR	MARVEL	mua_iceman_c4	Iceman IV
+376	mua_wolverine	C	MARVEL	mua_wolverine	Wolverine
+377	mua_wolverine_c2	R	MARVEL	mua_wolverine_c2	Wolverine II
+378	mua_wolverine_c3	R	MARVEL	mua_wolverine_c3	Wolverine III
+379	mua_wolverine_c4	SR	MARVEL	mua_wolverine_c4	Wolverine IV
+380	mua_colossus	C	MARVEL	mua_colossus	Colossus
+381	mua_colossus_c2	R	MARVEL	mua_colossus_c2	Colossus II
+382	mua_colossus_c3	R	MARVEL	mua_colossus_c3	Colossus III
+383	mua_colossus_c4	SR	MARVEL	mua_colossus_c4	Colossus IV
+384	mua_captainamerica	C	MARVEL	mua_captainamerica	Captain America
+385	mua_captainamerica_c2	R	MARVEL	mua_captainamerica_c2	Captain America II
+386	mua_captainamerica_c3	R	MARVEL	mua_captainamerica_c3	Captain America III
+387	mua_captainamerica_c4	SR	MARVEL	mua_captainamerica_c4	Captain America IV
+388	mua_elektra	C	MARVEL	mua_elektra	Elektra
+389	mua_elektra_c2	R	MARVEL	mua_elektra_c2	Elektra II
+390	mua_elektra_c3	R	MARVEL	mua_elektra_c3	Elektra III
+391	mua_elektra_c4	SR	MARVEL	mua_elektra_c4	Elektra IV
+392	mua_ironman	C	MARVEL	mua_ironman	Iron Man
+393	mua_ironman_c2	R	MARVEL	mua_ironman_c2	Iron Man II
+394	mua_ironman_c3	R	MARVEL	mua_ironman_c3	Iron Man III
+395	mua_ironman_c4	SR	MARVEL	mua_ironman_c4	Iron Man IV
+396	mua_thor	C	MARVEL	mua_thor	Thor
+397	mua_thor_c2	R	MARVEL	mua_thor_c2	Thor II
+398	mua_thor_c3	R	MARVEL	mua_thor_c3	Thor III
+399	mua_thor_c4	SR	MARVEL	mua_thor_c4	Thor IV
+400	mua_deadpool	C	MARVEL	mua_deadpool	Deadpool
+401	mua_deadpool_c2	R	MARVEL	mua_deadpool_c2	Deadpool II
+402	mua_deadpool_c3	R	MARVEL	mua_deadpool_c3	Deadpool III
+403	mua_deadpool_c4	SR	MARVEL	mua_deadpool_c4	Deadpool IV
+404	mua_blackpanther	C	MARVEL	mua_blackpanther	Black Panther
+405	mua_blackpanther_c2	R	MARVEL	mua_blackpanther_c2	Black Panther II
+406	mua_blackpanther_c3	R	MARVEL	mua_blackpanther_c3	Black Panther III
+407	mua_blackpanther_c4	SR	MARVEL	mua_blackpanther_c4	Black Panther IV
+408	mua_daredevil	C	MARVEL	mua_daredevil	Daredevil
+409	mua_daredevil_c2	R	MARVEL	mua_daredevil_c2	Daredevil II
+410	mua_daredevil_c3	R	MARVEL	mua_daredevil_c3	Daredevil III
+411	mua_daredevil_c4	SR	MARVEL	mua_daredevil_c4	Daredevil IV
+412	mua_storm	C	MARVEL	mua_storm	Storm
+413	mua_storm_c2	R	MARVEL	mua_storm_c2	Storm II
+414	mua_storm_c3	R	MARVEL	mua_storm_c3	Storm III
+415	mua_storm_c4	SR	MARVEL	mua_storm_c4	Storm IV
+416	mua_thing	C	MARVEL	mua_thing	Thing
+417	mua_thing_c2	R	MARVEL	mua_thing_c2	Thing II
+418	mua_thing_c3	R	MARVEL	mua_thing_c3	Thing III
+419	mua_thing_c4	SR	MARVEL	mua_thing_c4	Thing IV
+420	mua_humantorch	C	MARVEL	mua_humantorch	Human Torch
+421	mua_humantorch_c2	R	MARVEL	mua_humantorch_c2	Human Torch II
+422	mua_humantorch_c3	R	MARVEL	mua_humantorch_c3	Human Torch III
+423	mua_humantorch_c4	SR	MARVEL	mua_humantorch_c4	Human Torch IV
+424	mua_hawkeye	C	MARVEL	mua_hawkeye	Hawkeye
+425	mua_hawkeye_c2	R	MARVEL	mua_hawkeye_c2	Hawkeye II
+426	mua_hawkeye_c3	R	MARVEL	mua_hawkeye_c3	Hawkeye III
+427	mua_hawkeye_c4	SR	MARVEL	mua_hawkeye_c4	Hawkeye IV
+428	mua_blackwidow	C	MARVEL	mua_blackwidow	Black Widow
+429	mua_blackwidow_c2	R	MARVEL	mua_blackwidow_c2	Black Widow II
+430	mua_blackwidow_c3	R	MARVEL	mua_blackwidow_c3	Black Widow III
+431	mua_blackwidow_c4	SR	MARVEL	mua_blackwidow_c4	Black Widow IV
+432	mua_invisiblewoman	C	MARVEL	mua_invisiblewoman	Invisible Woman
+433	mua_invisiblewoman_c2	R	MARVEL	mua_invisiblewoman_c2	Invisible Woman II
+434	mua_invisiblewoman_c3	R	MARVEL	mua_invisiblewoman_c3	Invisible Woman III
+435	mua_invisiblewoman_c4	SR	MARVEL	mua_invisiblewoman_c4	Invisible Woman IV
+436	mua_moonknight	C	MARVEL	mua_moonknight	Moon Knight
+437	mua_moonknight_c2	R	MARVEL	mua_moonknight_c2	Moon Knight II
+438	mua_moonknight_c3	R	MARVEL	mua_moonknight_c3	Moon Knight III
+439	mua_mrfantastic	C	MARVEL	mua_mrfantastic	Mr. Fantastic
+440	mua_mrfantastic_c2	R	MARVEL	mua_mrfantastic_c2	Mr. Fantastic II
+441	mua_mrfantastic_c3	R	MARVEL	mua_mrfantastic_c3	Mr. Fantastic III
+442	mua_mrfantastic_c4	SR	MARVEL	mua_mrfantastic_c4	Mr. Fantastic IV
+443	mua_nickfury	C	MARVEL	mua_nickfury	Nick Fury
+444	mua_nickfury_c2	R	MARVEL	mua_nickfury_c2	Nick Fury II
+445	mua_nickfury_c3	R	MARVEL	mua_nickfury_c3	Nick Fury III
+446	mua_nickfury_c4	SR	MARVEL	mua_nickfury_c4	Nick Fury IV
+447	mua_silversurfer	C	MARVEL	mua_silversurfer	Silver Surfer
+448	mua_msmarvel	C	MARVEL	mua_msmarvel	Ms. Marvel
+449	mua_msmarvel_c2	R	MARVEL	mua_msmarvel_c2	Ms. Marvel II
+450	mua_msmarvel_c3	R	MARVEL	mua_msmarvel_c3	Ms. Marvel III
+451	mua_msmarvel_c4	SR	MARVEL	mua_msmarvel_c4	Ms. Marvel IV
+452	mua_captainmarvel	C	MARVEL	mua_captainmarvel	Captain Marvel
+453	mua_captainmarvel_c2	R	MARVEL	mua_captainmarvel_c2	Captain Marvel II
+454	mua_captainmarvel_c3	R	MARVEL	mua_captainmarvel_c3	Captain Marvel III
+455	mua_captainmarvel_c4	SR	MARVEL	mua_captainmarvel_c4	Captain Marvel IV
+456	mua_lukecage	C	MARVEL	mua_lukecage	Luke Cage
+457	mua_lukecage_c2	R	MARVEL	mua_lukecage_c2	Luke Cage II
+458	mua_lukecage_c3	R	MARVEL	mua_lukecage_c3	Luke Cage III
+459	mua_lukecage_c4	SR	MARVEL	mua_lukecage_c4	Luke Cage IV
+460	mua_ronin	C	MARVEL	mua_ronin	Ronin
+461	mua_ronin_c2	R	MARVEL	mua_ronin_c2	Ronin II
+462	mua_ronin_c3	R	MARVEL	mua_ronin_c3	Ronin III
+463	mua_ronin_c4	SR	MARVEL	mua_ronin_c4	Ronin IV
+464	mua_nightcrawler	C	MARVEL	mua_nightcrawler	Nightcrawler
+465	mua_jeangrey	C	MARVEL	mua_jeangrey	Jean Grey
+466	mua_professorx	C	MARVEL	mua_professorx	Professor X
+467	mua_vision	C	MARVEL	mua_vision	The Vision
+468	mua_drdoom	C	MARVEL	mua_drdoom	Dr. Doom
+469	mua_mysterio	C	MARVEL	mua_mysterio	Mysterio
+470	mua_lizard	C	MARVEL	mua_lizard	Lizard
+471	mua_rhino	C	MARVEL	mua_rhino	Rhino
+472	mua_wintersoldier	C	MARVEL	mua_wintersoldier	Winter Soldier

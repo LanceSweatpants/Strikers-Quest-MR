@@ -51,6 +51,11 @@ public final class Models {
         final List<int[]> reparent = new ArrayList<>();   // gpk_reparent.py <node>:<parent>
         String stand;                                     // vaporeon (vap_stand.py + vap_applymap.py)
         double[] standFit;                                // its fit's last-bit nudges (sc, Rm, tv: 13 differences)
+        // r135: build options and the post-build steps in the PC's order (each "post <step> <args>" line)
+        int[] scaleShow, scaleHide;                       // meleepack --scale-show / --scale-hide (Swellow)
+        boolean envNotCard;                               // meleepack --env-not-card (Wailmer)
+        final List<String[]> post = new ArrayList<>();
+        boolean texSquare;                                // r145: gpk_texsquare.py on the pack and its shiny (Porygon)
     }
 
     /** Converts everything the player's games allow. Per-guest failures are warned about and skipped. */
@@ -161,6 +166,7 @@ public final class Models {
         if ("hariyama".equals(s.fix)) fin = Fix.hariyama(fin);
         else if (s.fix != null) throw new IOException("unknown fix " + s.fix);
         if (!s.reparent.isEmpty()) fin = Fix.reparent(fin, s.reparent);
+        for (String[] p : s.post) fin = post(job, s, fin, fsys, p);
         // shiny: the final's pictures recoloured, or the rare_ model's pictures in it (a pack without its shiny
         // still plays: the shiny's failure is only warned about)
         byte[] shiny = null;
@@ -182,9 +188,54 @@ public final class Models {
             shiny = null;
         }
         if (s.flameJoint >= 0) fin = Colo.flame(fsys, fin, s.flameJoint, s.flameSize);
+        // r145: the pictures as Colosseum shows them (squared), after the shiny was recoloured from the plain colours
+        if (s.texSquare) {
+            fin = Fix.texSquare(fin);
+            if (shiny != null) shiny = Fix.texSquare(shiny);
+        }
         out.put(s.pack + ".gpk", fin);
         if (shiny != null) out.put(s.pack + "_shiny.gpk", shiny);
         return out;
+    }
+
+    /**
+     * r135: one post-build step on the built pack, as the PC ran it (outside\colo-maps\...):
+     *   reparent N:P ..  gpk_reparent.py            repose OP ..  gpk_repose.py (+ g30 "pitch", g22 "turn")
+     *   standbind CLASS  g20 gpk_standbind.py      fix135 OP ..  g25 gpk_fix135.py
+     *   pivot N:z=H ..   g19 gpk_pivot.py          drop K ..     gpk_drop.py
+     *   fish ANIM FRAME HEIGHT HOVER                g29 fish_repose.py (Milotic)
+     */
+    static byte[] post(Job job, Spec s, byte[] b, byte[] fsys, String[] p) throws IOException {
+        final String[] a = java.util.Arrays.copyOfRange(p, 1, p.length);
+        switch (p[0]) {
+            case "reparent": {
+                final List<int[]> mv = new ArrayList<>();
+                for (String x : a) {
+                    final String[] np = x.split(":");
+                    mv.add(new int[] {Integer.parseInt(np[0]), Integer.parseInt(np[1])});
+                }
+                return Fix.reparent(b, mv);
+            }
+            case "repose": return Fix.repose(b, a);
+            case "fix135": return Fix.fix135(b, a);
+            case "pivot": return Fix.pivot(b, a);
+            case "drop": {
+                final Set<Integer> d = new TreeSet<>();
+                for (String x : a) for (String y : x.split(",")) d.add(Integer.parseInt(y));
+                return Colo.drop(b, d);
+            }
+            case "standbind": {
+                if (job.strikers == null) throw new IOException("standbind: no Strikers files");
+                final String cls = a[0], lc = cls.toLowerCase(java.util.Locale.ROOT);
+                final Map<Integer, double[][]> binds = Fix.glgBind(job.strikers.read("art/characters/" + lc + "/" + lc + ".glg"));
+                return Fix.standbind(b, binds, Fix.standing(job.data.text("base/hostref_all.txt"), cls));
+            }
+            case "fish": {
+                final Stand.Model m = new Stand.Model(Colo.datOf(fsys));
+                return Fix.fish(b, m, Integer.parseInt(a[0]), Py.num(a[1]), Py.num(a[2]), Py.num(a[3]));
+            }
+            default: throw new IOException("unknown post-build step " + p[0]);
+        }
     }
 
     /** colo_guests.py + colopack.py's meleepack options for one Pokemon. */
@@ -206,6 +257,9 @@ public final class Models {
         if (s.yaw != null && Py.num(s.yaw) != 0.0) o.upright = "y" + new BigDecimal(pctG(Py.num(s.yaw))).toPlainString();
         else if (s.upright != null) o.upright = s.upright;  // (colo_guests.py r130: _upright, meleepack's own spelling)
         if (!s.skin.isEmpty()) o.forceSkin = s.skin;
+        o.scaleShow = s.scaleShow;
+        o.scaleHide = s.scaleHide;
+        o.envNotCard = s.envNotCard;
         o.ground = Py.num(Py.fixed(hover, 3));
         o.retex = s.retex.isEmpty() ? null : s.retex;
         return o;
@@ -301,6 +355,15 @@ public final class Models {
                     break;
                 }
                 case "stand": cur.stand = f[1]; break;
+                case "scale_show": cur.scaleShow = ints(f); break;
+                case "scale_hide": cur.scaleHide = ints(f); break;
+                case "env_not_card": cur.envNotCard = true; break;
+                case "tex_square": cur.texSquare = true; break;
+                case "post": {
+                    if (f.length < 2) throw new IOException("guest data: " + l);
+                    cur.post.add(java.util.Arrays.copyOfRange(f, 1, f.length));
+                    break;
+                }
                 case "stand_fit": {
                     cur.standFit = new double[f.length - 1];
                     for (int i = 1; i < f.length; i++) cur.standFit[i - 1] = Double.parseDouble(f[i]);

@@ -43,6 +43,17 @@ Four ways to watch the same match, switched any time by clicking the controller 
 - **Tabletop · Stadium**: the table inside the life-size stadium, with the stands all the way around
   you.
 
+New in alpha 1.17:
+
+- **Lancini Tizm trading cards** in Franchise: earn packs, rip them open with your hands, flip the cards one by
+  one. Silver window cards, Gold /10 pop-outs, Black 1/1 obsidian cards with a kaleidoscope inside, a signed
+  autograph and a life-size reveal; TIZM BOOM, HOMETOWN and SIGNED case hits; God Packs; Tizm Coins, a Card Shop,
+  trade-ins, card levels and set bonuses; a binder on the hub's CARDS tab.
+- **Weather and night games**: rain, snow and floodlights in every view (looks only).
+- **Menu music**: a CC0 lofi playlist outside matches, a Franchise theme, and **MY MUSIC** - put your own songs in
+  `Strikers/music` on your Quest (a file named `theme.mp3` becomes your Franchise theme).
+- **162 more Pokémon** from Colosseum, **Captain Marvel, Luke Cage, Ronin** and 9 Marvel allies and villains.
+
 And around the game:
 
 - **Two versions, Classic and Plus** (alpha 1.3 and newer): pick one with **Version** on the app's
@@ -737,6 +748,10 @@ the same server.
 - [RetroAchievements](https://retroachievements.org) and its community: the Super Mario Strikers
   achievement set, used as they publish it.
 - Button prompt artwork by [Kenney](https://www.kenney.nl) (CC0).
+- Menu music (alpha 1.17), all **CC0 1.0** (public domain): [HoliznaCC0](https://freemusicarchive.org/music/holiznacc0/)
+  - *Spring at last (LOFI TAPE)*, *Only In The Milky Way* Part 1 and Part 2 (Free Music Archive); the Franchise theme
+  *lofi hip hop loop* by omfgdude ([OpenGameArt](https://opengameart.org/content/lofi-hip-hop-loop)). Full list in
+  `smstrikers-port/android/app/src/main/assets/music/CREDITS.txt`.
 - Quest mixed-reality port and the Quest 3 Strikers art: [LanceSweatpants](https://github.com/LanceSweatpants).
 
 ## License

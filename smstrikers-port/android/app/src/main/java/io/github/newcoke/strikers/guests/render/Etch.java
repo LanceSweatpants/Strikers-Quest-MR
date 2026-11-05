@@ -7,30 +7,43 @@ import java.util.Arrays;
  * xr_fx_mesh.frag sdGuest) and the home ground banners' emblem: the guest standing in its idle seen from
  * three-quarters in front (orthographic, fitted to its box), its silhouette (Blender Workbench there, a supersampled
  * rasteriser here: coverage over half, rendered 3x the cell), then a distance map per 128 x 128 cell (the same numbers,
- * float32 as numpy) of a 16 x 16 atlas (r121 --grid 16 + r124 --cell 128, as the headset has it: guests/etch.r8,
- * 2048 x 2048 bytes; the cell = the guest's place in roster.txt, the franchise-only forms keeping their place empty),
+ * float32 as numpy) of a 16 x 32 atlas (r135; etchres.py --grid 16 --cell 128, as the headset has it: guests/etch.r8,
+ * 2048 x 4096 bytes; the cell = the guest's place in roster.txt, the franchise-only forms keeping their place empty),
  * 128 = the outline, below inside, above outside, a quarter of a cell either way over the range. A cell with no guest
- * stays 255 (far outside: nothing etched), as the game's own default.
+ * stays 255 (far outside: nothing etched), as the game's own default. Cell i sits at column i % 16, row i / 16, where
+ * the 16 x 16 atlas of 1.15-1.16 (r121-r134, 2048 x 2048) had it: that one is this one's top half (upgrade).
  */
 public final class Etch {
     private Etch() {}
 
-    public static final int CELL = 128, GRID = 16, RES = 3 * CELL;
+    /** r135: 16 columns x 32 rows of 128 x 128 (xr_fx.h kEtchCells = 512; 1.15-1.16: 16 x 16). */
+    public static final int CELL = 128, COLS = 16, ROWS = 32, CELLS = COLS * ROWS, RES = 3 * CELL;
     static final double RANGE = 0.25, MARGIN = 0.1;
     /** The share of a pixel's (filtered) coverage that makes it inside (etchres.py: alpha over 0.5). */
     static final double THRESHOLD = 0.5;
 
     /** The empty atlas (every texel far outside). */
     public static byte[] atlas() {
-        final byte[] a = new byte[GRID * CELL * GRID * CELL];
+        final byte[] a = new byte[COLS * CELL * ROWS * CELL];
         Arrays.fill(a, (byte) 255);
         return a;
     }
 
     /** One guest's cell into the atlas. */
     public static void put(byte[] atlas, int cell, byte[] v) {
-        final int r = cell / GRID, c = cell % GRID;
-        for (int y = 0; y < CELL; y++) System.arraycopy(v, y * CELL, atlas, (r * CELL + y) * GRID * CELL + c * CELL, CELL);
+        final int r = cell / COLS, c = cell % COLS;
+        for (int y = 0; y < CELL; y++) System.arraycopy(v, y * CELL, atlas, (r * CELL + y) * COLS * CELL + c * CELL, CELL);
+    }
+
+    /**
+     * An etch.r8 already there as this layout's atlas: one of this size as it is, a 16 x 16 one of 128 x 128 cells (1.15-1.16,
+     * 2048 x 2048) as the top half (its cells where they were, the rest empty); null for anything else (1.14's 64 px cells).
+     */
+    public static byte[] upgrade(byte[] old) {
+        final byte[] a = atlas();
+        if (old == null || (old.length != a.length && old.length != COLS * CELL * 16 * CELL)) return null;
+        System.arraycopy(old, 0, a, 0, old.length);
+        return a;
     }
 
     /**
@@ -131,7 +144,7 @@ public final class Etch {
         return mask;
     }
 
-    /** etchres.fit: the silhouette's box into the cell less a margin, the signed distance (cell units) -> 64 x 64 bytes. */
+    /** etchres.fit: the silhouette's box into the cell less a margin, the signed distance (cell units) -> CELL x CELL bytes. */
     public static byte[] cell(boolean[] mask) {
         int x0 = Integer.MAX_VALUE, x1 = -1, y0 = Integer.MAX_VALUE, y1 = -1;
         for (int yy = 0; yy < RES; yy++)

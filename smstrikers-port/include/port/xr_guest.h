@@ -177,10 +177,16 @@ void PortGuestVoiceStopAll();                // Audio::Silence
 // r72: a guest (roster index) says its first clip of `labels` ("taunt,quote,cry"), centred, at the
 // game's voice volume x volume (franchise nemesis taunts: their own voice, no written lines).
 void PortGuestVoiceSay(int guest, const char* labels, float volume);
+// r141: a Strikers captain (eCharacterClass) says its own line, through the game's own voice playback: the character
+// select's "accept" voice (WORLDSFX_FE_ACCEPT_*, the menus' character voice group) - a BLACK 1/1's cameo. False when the
+// game's menu voices aren't loaded now (silent).
+bool PortStrikersVoiceSay(int characterClass);
 // r99: the franchise evolution's music (guests/evo/music_build.evm / music_fanfare.evm, from his Melee disc):
 // 0 the build-up while it evolves, 1 the victory fanfare as it comes out, -1 stop. The game's own sound
 // dips under it.
 void PortEvoMusic(int which);
+// r138: a trading card's own sound (xr_cards.cpp's chimes): a mono 32 kHz clip, centred, at the voice volume x volume.
+void PortCardSound(const short* pcm, int frames, float volume);
 void PortGuestVoiceListener(const float* pos, const float* heading, const float* up);
 extern "C" void PortGuestVoiceMix(int* left, int* right, int frames);  // audio_mix.cpp, game thread
 void PortGuestSetOnlineStats(int side, int role, const float* values, unsigned mask);

@@ -198,8 +198,13 @@ final class Home {
         for (Frame fr : frames) wAll.add(worlds(sk, fr.R, fr.T));
         // the body never under the floor
         final boolean[] skip = new boolean[nb];
+        // (r135: MUA's skinless "Bip01 Footsteps" helper too: it floated Ronin's kneel; no hero before r135 lifts by
+        // this rule and has one)
         if (!h.liftAll && !"claws".equals(extra))
-            for (int i = 0; i < nb; i++) skip[i] = names[i].toLowerCase(java.util.Locale.ROOT).startsWith("fx");
+            for (int i = 0; i < nb; i++) {
+                final String n = names[i].toLowerCase(java.util.Locale.ROOT);
+                skip[i] = n.startsWith("fx") || n.equals("bip01 footsteps");
+            }
         final double[] lift = new double[wAll.size()];
         for (int j = 0; j < wAll.size(); j++) {
             double lowest = Double.NaN;

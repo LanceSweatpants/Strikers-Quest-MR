@@ -14,6 +14,23 @@ home	bowser	bowser	2.25
 home	bowserjr	bowserjr	1.20
 home	diddykong	diddykong	1.20	13,14
 home	petey	petey	2.25
+# r141: the four Charged sidekick guests (their cards' big pictures and their home figures): their idle, wave, power-up,
+# hit reaction, own goal celebrations, and (moves) more big moves for their big pictures (facing you, in action: Dry Bones'
+# menu action turns his back, Shy Guy's deke lies him back - left off)
+home	boo	boo	1.10
+home	drybones	drybones	1.35
+home	montymole	montymole	1.10
+home	shyguy	shyguy	1.15
+moves	boo	fe_idle_action_01,deke_600
+moves	montymole	fe_idle_action_01,deke_600
+moves	shyguy	fe_idle_action_01
+# Dry Bones stands in his in-game idle (his menu idle throws his head back: his big picture showed the back of his skull)
+idle	drybones	idle
+# no cheer from their goal-celebration cut-scenes, and those shots after their own moves (they tumble Monty Mole into a
+# ball, fold Dry Bones into a crawl, roll Shy Guy face down: a BLACK 1/1's throne loops their first big move)
+nocel	montymole
+nocel	drybones
+nocel	shyguy
 # the cut-scenes it does in the corner (Art/nis/<character>_<start><n>.nis; no Mega Strikes; the last two only for its
 # "upset" moves, a goal against you)
 keep	goal_winner_high_

@@ -55,6 +55,11 @@ enum Id : uint8_t {
   // impact burst, a spinning top, a palm, a twig, a cut gem, a lotus, lips, a heart, a star, a dog tag.
   kCrescent, kBadge4, kStretchArm, kSurfboard, kAcorn, kHorn, kCrown, kFossil, kTalon, kSpike, kToadstool, kLilyPad,
   kWool, kLeaf, kSoundWave, kGloveLite, kImpact, kTop, kPalm, kTwig, kGem, kLotus, kLips, kHeartLite, kStarLite, kDogTag,
+  // r135: real leaves (Lance: the plant Pokemon's leaves "look like green pills"): kLeaf rebuilt as an oval leaf, a maple
+  // leaf, a long blade; and the r135 roster's light pieces: a feather, a fish, a screw, a horseshoe magnet, a crab's
+  // pincer, a scallop shell, a curling wave, a pixel cube, a light egg, a shuriken, a lab flask, a bullet, a brick.
+  kMapleLeaf, kBladeLeaf, kFeather, kFish, kScrew, kMagnet, kPincer, kScallop, kWave, kCube, kEggLite, kShuriken, kFlask,
+  kBullet, kBrick,
   kCount
 };
 
@@ -1224,16 +1229,32 @@ inline Set build(float detail) {
   }
   finish(kWool);
 
-  // A leaf along +y, cupped and bent (main colour; the shader's midrib in the detail colour). 48 tris.
-  start(kLeaf);
-  tagged(0.0f, [&] {
-    b.puffy(n(8, 6), 3, 0.0f, 0.0f, 0.0f, 0.03f, 0.5f,
-            [](float t) {
-              const float c = std::cos(t);
-              return RH{0.21f * std::sin(t) * (1.0f - 0.35f * c * c), 0.48f * c};
+  // r135 (Lance: "make the leaves that fall for the plant based pokemon, more realistic looking. right now they look like
+  // green pills"): real leaves. A blade is ONE thin sheet (both faces drawn: xr_fx_mesh.frag lights the side you see,
+  // the top waxy, the underside paler and duller, and paints the midrib and veins): `half` its half width along it (v 0
+  // base .. 1 tip), `shift` its midrib's sideways curve, `lift` its height off the plane (x across from the midrib: the
+  // cup, the bend, a twist). Normals +z (the top). aux = 5 + across (-1 .. 1, 0 on the midrib). nu x nv x 2 tris.
+  auto leaf_sheet = [&](int nu, int nv, float y0, float len, auto half, auto shift, auto lift) {
+    b.patch(nu, nv, 0.0f,
+            [=](float u, float v) {
+              const float s = 1.0f - 2.0f * u, x = half(v) * s;
+              return V3{shift(v) + x, y0 + len * v, lift(x, v)};
             },
-            [](float x, float y) { return 0.3f * x * x + 0.12f * y * y; });
-  });
+            [](float u, float) { return 6.0f - 2.0f * u; });
+  };
+  // Its short stem from the bottom up into the blade's base (detail colour; aux 5: on the midrib). 12 tris.
+  auto leaf_stem = [&](float yTop, float z, float w) {
+    tagged(5.0f, [&] { bar(1.0f, V3{0.0f, -0.5f, z}, V3{0.0f, yTop, z}, w, 0.8f * w); });
+  };
+
+  // An oval leaf along +y (beech / elm): a rounded base, a pointed tip, cupped along its midrib, arched, a touch of
+  // twist, on its stem. 60 tris (28 far).
+  start(kLeaf);
+  leaf_sheet(n(4, 2), n(6, 4), -0.36f, 0.86f,
+             [](float v) { return 0.675f * std::sqrt(v) * std::pow(1.0f - v, 1.1f); },
+             [](float) { return 0.0f; },
+             [](float x, float v) { return 0.85f * x * x - 0.14f * (v - 0.45f) * (v - 0.45f) + 0.12f * x * (v - 0.5f); });
+  leaf_stem(-0.3f, -0.028f, 0.035f);
   finish(kLeaf);
 
   // Sound waves facing +z: three thin arcs ")))" (main colour, shining). 48 tris.
@@ -1372,6 +1393,236 @@ inline Set build(float detail) {
           -0.012f, 0.012f, 0.0f, 0.0f);
   });
   finish(kDogTag);
+
+  // ---- r135: the leaves (kLeaf above) and the r135 roster's light pieces (xr_fx_mesh.frag 119-133). PC preview:
+  // tools\outside\drops135_preview.py. ----
+  // A maple leaf (Shiftry's fans, an autumn leaf) facing +z: five pointed lobes round where its stem joins (0, -0.18), a
+  // few teeth, cupped like a shallow bowl, the top lobe drooping; one sheet. A fan of the outline from that point with a
+  // ring between (the near set): 57 tris (19 far) + its stem's 12.
+  start(kMapleLeaf);
+  {
+    constexpr float cx = 0.0f, cy = -0.18f;
+    static constexpr float kRim[][2] = {{-78.0f, 0.12f}, {-40.0f, 0.24f}, {-18.0f, 0.44f}, {-4.0f, 0.22f}, {14.0f, 0.48f},
+                                        {30.0f, 0.64f},  {47.0f, 0.27f},  {62.0f, 0.5f},   {77.0f, 0.56f}, {90.0f, 0.68f},
+                                        {103.0f, 0.56f}, {118.0f, 0.5f},  {133.0f, 0.27f}, {150.0f, 0.64f}, {166.0f, 0.48f},
+                                        {184.0f, 0.22f}, {198.0f, 0.44f}, {220.0f, 0.24f}, {258.0f, 0.12f}};
+    auto lift = [](float x, float y) {
+      const float dx = x - cx, dy = y - cy, top = std::max(0.0f, y - 0.12f);
+      return 0.2f * (dx * dx + dy * dy) - 0.16f * top * top + 0.05f * dx * dy;
+    };
+    auto vert = [&](float x, float y) {
+      const float e = 1e-3f;
+      const V3 nn = normalize(V3{-(lift(x + e, y) - lift(x - e, y)) / (2.0f * e), -(lift(x, y + e) - lift(x, y - e)) / (2.0f * e),
+                                 1.0f});
+      set.verts.push_back(Vertex{{x, y, lift(x, y)}, {0, 0, 0}, {nn.x, nn.y, nn.z}, 0.0f, 5.0f});
+    };
+    const bool ring = detail > 0.7f;
+    const uint32_t cnt = static_cast<uint32_t>(sizeof(kRim) / sizeof(kRim[0]));
+    const uint32_t base = static_cast<uint32_t>(set.verts.size());
+    vert(cx, cy);
+    for (int pass = ring ? 0 : 1; pass < 2; ++pass) {
+      for (const auto& r : kRim) {
+        const float a = r[0] * kPi / 180.0f, k = pass == 0 ? 0.5f : 1.0f;
+        vert(cx + k * r[1] * std::cos(a), cy + k * r[1] * std::sin(a));
+      }
+    }
+    const uint32_t first = base + 1, outer = ring ? base + 1 + cnt : base + 1;
+    for (uint32_t i = 0; i < cnt; ++i) {
+      const uint32_t j = (i + 1) % cnt;
+      for (uint32_t k : {base, first + i, first + j}) set.indices.push_back(k);
+      if (ring) {
+        for (uint32_t k : {first + i, outer + i, outer + j, first + i, outer + j, first + j}) set.indices.push_back(k);
+      }
+    }
+  }
+  leaf_stem(-0.18f, 0.0f, 0.032f);
+  finish(kMapleLeaf);
+
+  // A long blade (a willow / grass leaf, Bellsprout's): narrow, pointed at both ends, V-folded along its midrib, curving
+  // to one side and twisting a little, on a short stem. 32 tris (20 far) + 12.
+  start(kBladeLeaf);
+  leaf_sheet(2, n(8, 5), -0.42f, 0.92f,
+             [](float v) { return 0.1f * std::pow(std::sin(kPi * std::pow(v, 0.8f)), 0.85f); },
+             [](float v) { return 0.1f * v * v; },
+             [](float x, float v) { return 2.0f * x * x - 0.12f * (v - 0.5f) * (v - 0.5f) + 0.6f * x * v; });
+  leaf_stem(-0.38f, -0.03f, 0.028f);
+  finish(kBladeLeaf);
+
+  // A feather along +y: a soft vane (main colour; the shader's barbs, its fluffy down at the base in colour 2) round a
+  // quill (detail colour) curving a little to the right and up. 40 tris (16 far) + the quill's 24 (12 far).
+  start(kFeather);
+  leaf_sheet(n(4, 2), n(5, 4), -0.3f, 0.78f,
+             [](float v) { return 0.17f * std::pow(v, 0.3f) * std::sqrt(std::max(0.0f, 1.0f - v * v * v)); },
+             [](float v) { return 0.05f * v * v; },
+             [](float x, float v) { return 0.3f * x * x + 0.08f * v * v; });
+  tagged(5.0f, [&] {
+    tube(3, n(4, 2), 1.0f,
+         [](float v) {
+           const float y = -0.5f + 0.98f * v, t = std::max(0.0f, (y + 0.3f) / 0.78f);
+           return V3{0.05f * t * t, y, 0.08f * t * t};
+         },
+         [](float v) { return 0.016f * (1.0f - 0.6f * v); });
+  });
+  finish(kFeather);
+
+  // A fish along +x (its head that way), its side facing +z: a body flattened side to side (main colour; the shader's
+  // eyes, scales, its belly paler in colour 2), a forked tail and a dorsal fin (detail colour). 48 + 16 + 12 tris.
+  start(kFish);
+  tagged(0.0f, [&] {
+    b.patch(n(6, 4), n(4, 3), 0.0f,
+            [](float u, float v) {
+              const float x = 0.44f - 0.74f * v;  // the nose .. the tail's root
+              const float r = 0.2f * std::pow(std::sin(kPi * 0.96f * v), 0.7f) * (1.0f - 0.35f * v);
+              const float t = 2.0f * kPi * u;
+              return V3{x, r * std::cos(t) - 0.02f * v, 0.5f * r * std::sin(t)};
+            },
+            none);
+  });
+  tagged(0.0f, [&] { prism(1.0f, {{-0.28f, 0.0f}, {-0.52f, 0.2f}, {-0.45f, 0.0f}, {-0.52f, -0.2f}}, -0.02f, 0.02f, -0.38f, 0.0f); });
+  tagged(0.0f, [&] { prism(1.0f, {{0.12f, 0.12f}, {-0.02f, 0.29f}, {-0.14f, 0.12f}}, -0.012f, 0.012f, 0.0f, 0.17f); });
+  finish(kFish);
+
+  // A screw along +y: a hex head (its top's cross slot: the shader) on a threaded shank (the shader's thread) to a point
+  // (metal, main colour). 24 + 24 tris.
+  start(kScrew);
+  placed(1.0f, rot_x(-0.5f * kPi), V3{0.0f, 0.38f, 0.0f}, [&] {
+    std::vector<RH> hex;
+    for (int k = 0; k < 6; ++k) hex.push_back({0.24f * std::cos(kPi * k / 3.0f), 0.24f * std::sin(kPi * k / 3.0f)});
+    prism(0.0f, hex, -0.07f, 0.07f, 0.0f, 0.0f);
+  });
+  tagged(1.0f, [&] { b.lathe_poly(1, n(6, 5), 0.0f, {{0.0f, -0.5f}, {0.1f, -0.28f}, {0.1f, 0.31f}}); });
+  finish(kScrew);
+
+  // A horseshoe magnet facing +z, its legs down (main colour; the shader's silver poles in colour 2). 52 tris.
+  start(kMagnet);
+  tagged(0.0f, [&] {
+    std::vector<RH> out, in;
+    auto at = [&](float x, float y, float nx, float ny) {
+      out.push_back({x + 0.08f * nx, y + 0.08f * ny});
+      in.push_back({x - 0.08f * nx, y - 0.08f * ny});
+    };
+    at(-0.25f, -0.46f, -1.0f, 0.0f);
+    for (int k = 0; k <= 4; ++k) {
+      const float a = kPi - kPi * k / 4.0f;
+      at(0.25f * std::cos(a), 0.1f + 0.25f * std::sin(a), std::cos(a), std::sin(a));
+    }
+    at(0.25f, -0.46f, 1.0f, 0.0f);
+    band(0.0f, out, in, -0.075f, 0.075f);
+  });
+  finish(kMagnet);
+
+  // A crab's pincer facing +z, open, pointing up: a palm (main colour) and two curved fingers tapering to points, the
+  // big fixed one and the smaller movable one (the shader takes them to colour 2 at the tips). 72 tris.
+  start(kPincer);
+  tagged(0.0f, [&] {
+    std::vector<RH> palm;
+    for (int k = 0; k < 7; ++k) {
+      const float a = 2.0f * kPi * k / 7.0f;
+      palm.push_back({0.2f * std::cos(a), -0.24f + 0.24f * std::sin(a)});
+    }
+    prism(0.0f, palm, -0.07f, 0.07f, 0.0f, -0.24f);
+    auto finger = [&](float x0, float y0, float x1, float y1, float bow, float w0, int cnt) {
+      std::vector<RH> out, in;
+      for (int k = 0; k < cnt; ++k) {
+        const float t = static_cast<float>(k) / static_cast<float>(cnt - 1);
+        const float x = x0 + (x1 - x0) * t + 4.0f * bow * t * (1.0f - t), y = y0 + (y1 - y0) * t;
+        const float dx = (x1 - x0) + 4.0f * bow * (1.0f - 2.0f * t), dy = y1 - y0;
+        const float l = std::sqrt(dx * dx + dy * dy), w = w0 * std::pow(1.0f - t, 0.8f);
+        out.push_back({x + dy / l * w, y - dx / l * w});
+        in.push_back({x - dy / l * w, y + dx / l * w});
+      }
+      band(0.0f, out, in, -0.05f, 0.05f);
+    };
+    finger(0.1f, -0.08f, -0.02f, 0.5f, 0.12f, 0.1f, 4);    // the fixed finger, bowed out to the right
+    finger(-0.12f, -0.1f, -0.06f, 0.3f, -0.08f, 0.07f, 3);  // the movable one, bowed out to the left
+  });
+  finish(kPincer);
+
+  // A scallop shell facing +z: a ribbed fan from its hinge (0, -0.32), domed (main colour; the shader's ribs and bands in
+  // colour 2), one sheet. 48 tris (32 far).
+  start(kScallop);
+  {
+    const int nu = n(12, 8);
+    b.patch(nu, 2, 0.0f,
+            [nu](float u, float v) {
+              const float a = (1.0f / 6.0f + 2.0f / 3.0f * u) * kPi;  // 30 .. 150 degrees
+              const float r = 0.06f + 0.64f * v;
+              const float rib = 0.035f * v * std::cos(kPi * static_cast<float>(nu) * u);  // up and down at every column
+              return V3{r * std::cos(a), -0.32f + r * std::sin(a),
+                        0.1f * std::sin(kPi * (0.2f + 0.8f * v)) * std::sin(kPi * u) + rib};
+            },
+            none);
+  }
+  finish(kScallop);
+
+  // A curling wave facing +z: a band of water rising from the left, cresting and curling over to the right (main colour,
+  // its crest and lip foaming in colour 2: the shader). 68 tris.
+  start(kWave);
+  tagged(0.0f, [&] {
+    static constexpr float kC[9][3] = {{-0.44f, -0.41f, 0.3f}, {-0.26f, -0.26f, 0.26f}, {-0.1f, -0.02f, 0.22f},
+                                       {0.03f, 0.2f, 0.18f},   {0.15f, 0.34f, 0.15f},   {0.3f, 0.4f, 0.12f},
+                                       {0.41f, 0.33f, 0.09f},  {0.42f, 0.2f, 0.07f},    {0.33f, 0.14f, 0.04f}};
+    std::vector<RH> out, in;
+    for (int k = 0; k < 9; ++k) {
+      const auto& a = kC[k > 0 ? k - 1 : 0];
+      const auto& d = kC[k < 8 ? k + 1 : 8];
+      float tx = d[0] - a[0], ty = d[1] - a[1];
+      const float l = std::sqrt(tx * tx + ty * ty);
+      tx /= l;
+      ty /= l;
+      const float h = 0.5f * kC[k][2];
+      out.push_back({kC[k][0] - ty * h, kC[k][1] + tx * h});  // left of the way it runs: the crest's top and outside
+      in.push_back({kC[k][0] + ty * h, kC[k][1] - tx * h});
+    }
+    band(0.0f, out, in, -0.05f, 0.05f);
+  });
+  finish(kWave);
+
+  // A pixel cube (Porygon's), a unit across at most (main colour; the shader's 3 x 3 pixels a face in both colours). 12 tris.
+  start(kCube);
+  tagged(0.0f, [&] { b.box({0.0f, 0.0f, 0.0f}, {0.3f, 0.3f, 0.3f}, 0.0f); });
+  finish(kCube);
+
+  // A light egg along +y (main colour; the shader's spots in colour 2). 56 tris (30 far).
+  start(kEggLite);
+  tagged(0.0f, [&] {
+    b.lathe(1, n(7, 5), n(4, 3), 0.0f,
+            [](float, float v) {
+              const float phi = -0.5f * kPi + kPi * v, y = std::sin(phi);
+              return RH{0.36f * std::cos(phi) * (1.0f - 0.12f * y), 0.5f * y};
+            },
+            none);
+  });
+  finish(kEggLite);
+
+  // A shuriken facing +z: four swept points (metal, main colour; the shader's hole and honed edges). 32 tris.
+  start(kShuriken);
+  tagged(1.0f, [&] {
+    std::vector<RH> pts;
+    for (int k = 0; k < 8; ++k) {
+      const float a = 0.5f * kPi + kPi * k / 4.0f + (k % 2 == 0 ? 0.0f : 0.12f);
+      const float r = k % 2 == 0 ? 0.5f : 0.13f;
+      pts.push_back({r * std::cos(a), r * std::sin(a)});
+    }
+    prism(0.0f, pts, -0.02f, 0.02f, 0.0f, 0.0f);
+  });
+  finish(kShuriken);
+
+  // A lab flask (conical), upright: clear glass (main colour; the shader's glowing potion in colour 2 in its bottom). 42 tris.
+  start(kFlask);
+  tagged(0.0f, [&] { b.lathe_poly(1, n(7, 5), 0.0f, {{0.0f, -0.5f}, {0.32f, -0.5f}, {0.1f, 0.2f}, {0.1f, 0.46f}}); });
+  finish(kFlask);
+
+  // A bullet along +y: a brass casing (main colour) and its copper point (detail colour), metal. 48 tris.
+  start(kBullet);
+  tagged(1.0f, [&] { b.lathe_poly(1, n(6, 5), 0.0f, {{0.0f, -0.5f}, {0.12f, -0.5f}, {0.12f, 0.06f}}); });
+  tagged(1.0f, [&] { b.lathe_poly(1, n(6, 5), 1.0f, {{0.12f, 0.06f}, {0.085f, 0.32f}, {0.0f, 0.46f}}); });
+  finish(kBullet);
+
+  // A brick (Luke Cage's rubble): rough clay (main colour; the shader's old mortar at its edges in colour 2). 12 tris.
+  start(kBrick);
+  tagged(2.0f, [&] { b.box({0.0f, 0.0f, 0.0f}, {0.45f, 0.14f, 0.22f}, 0.0f); });
+  finish(kBrick);
 
   return set;
 }

@@ -57,6 +57,7 @@ public final class Mua {
         final byte[] fire4;
         try {
             heroes = heroes(job.data);
+            heroes.addAll(Npc.npcs(job.data));  // r135: the NPC guests (guestdata/mua/npcs.txt), one look each
             wad = wad(job.mua);
             shared = shared(wad);
             fire4 = fire4(wad);
@@ -98,6 +99,7 @@ public final class Mua {
             pictures(job, heroes, costumes, pool, done, total);
         } finally {
             pool.shutdownNow();
+            Npc.done();  // (r135: the map packages the NPCs were read from)
         }
         step(job, "Marvel heroes done", total, total);
     }
@@ -126,6 +128,10 @@ public final class Mua {
 
     /** One costume: its match pack, standing pose, home figure and stats into guests/. */
     static void costume(Job job, Wad wad, Hero h, int c, Igb shared, byte[] fire4) throws IOException {
+        if (Npc.is(h)) {  // r135: an NPC guest (its pieces from the map packages, its own cels / home figure)
+            Npc.costume(job, wad, h, shared);
+            return;
+        }
         final String pack = h.pack(c);
         final String cid = h.costumes[c - 1];
         final HeroPack.Costume cos = HeroPack.open(wad.character(h.hero, cid), cid);
@@ -229,8 +235,9 @@ public final class Mua {
         if (!cellBytes.isEmpty()) {
             try {
                 final File ef = job.out("etch.r8");
-                byte[] atlas = ef.isFile() ? Files.readAllBytes(ef.toPath()) : null;
-                if (atlas == null || atlas.length != Etch.atlas().length) atlas = Etch.atlas();
+                // (r135: an older 16 x 16 atlas kept as the 16 x 32 one's top half, Etch.upgrade; else a new one)
+                byte[] atlas = ef.isFile() ? Etch.upgrade(Files.readAllBytes(ef.toPath())) : null;
+                if (atlas == null) atlas = Etch.atlas();
                 for (Map.Entry<String, byte[]> e : cellBytes.entrySet()) Etch.put(atlas, cells.get(e.getKey()), e.getValue());
                 Out.save(ef, atlas);
             } catch (IOException | RuntimeException e) {
@@ -252,7 +259,7 @@ public final class Mua {
                 if (line.startsWith("#") || p.length < 5) continue;
                 final int cell = place++;
                 if (p.length > 5 && p[5].equals("franchise")) continue;
-                if (cell >= Etch.GRID * Etch.GRID) break;
+                if (cell >= Etch.CELLS) break;  // (r135: 512 cells)
                 if (p[0].startsWith("mua_")) out.put(p[0], cell);
             }
         } catch (IOException e) {

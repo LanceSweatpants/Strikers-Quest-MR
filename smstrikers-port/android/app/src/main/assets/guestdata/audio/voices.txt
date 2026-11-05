@@ -598,10 +598,19 @@ empty
 pack pk_alakazam colo
 empty
 
+pack pk_altaria colo
+empty
+
 pack pk_ampharos colo
 empty
 
 pack pk_anorith colo
+empty
+
+pack pk_arbok colo
+empty
+
+pack pk_ariados colo
 empty
 
 pack pk_armaldo colo
@@ -610,16 +619,40 @@ empty
 pack pk_aron colo
 empty
 
+pack pk_azumarill colo
+empty
+
+pack pk_azurill colo
+empty
+
 pack pk_bagon colo
+empty
+
+pack pk_baltoy colo
 empty
 
 pack pk_banette colo
 empty
 
+pack pk_barboach colo
+empty
+
 pack pk_bayleef colo
 empty
 
+pack pk_beautifly colo
+empty
+
+pack pk_beedrill colo
+empty
+
 pack pk_beldum colo
+empty
+
+pack pk_bellossom colo
+same bellossom
+
+pack pk_bellsprout colo
 empty
 
 pack pk_blastoise colo
@@ -628,10 +661,16 @@ same blastoise
 pack pk_blaziken colo
 empty
 
+pack pk_blissey colo
+empty
+
 pack pk_breloom colo
 empty
 
 pack pk_bulbasaur colo
+empty
+
+pack pk_butterfree colo
 empty
 
 pack pk_cacnea colo
@@ -639,6 +678,21 @@ empty
 
 pack pk_cacturne colo
 empty
+
+pack pk_camerupt colo
+empty
+
+pack pk_carvanha colo
+empty
+
+pack pk_cascoon colo
+empty
+
+pack pk_caterpie colo
+empty
+
+pack pk_chansey colo
+same chansey
 
 pack pk_charizard colo
 same charizard
@@ -652,7 +706,40 @@ empty
 pack pk_chikorita colo
 same chikorita
 
+pack pk_chinchou colo
+empty
+
+pack pk_clamperl colo
+empty
+
+pack pk_claydol colo
+empty
+
+pack pk_clefable colo
+empty
+
+pack pk_clefairy colo
+same clefairy
+
+pack pk_cleffa colo
+empty
+
+pack pk_cloyster colo
+empty
+
 pack pk_combusken colo
+empty
+
+pack pk_corphish colo
+empty
+
+pack pk_cradily colo
+empty
+
+pack pk_crawdaunt colo
+empty
+
+pack pk_crobat colo
 empty
 
 pack pk_croconaw colo
@@ -663,6 +750,24 @@ empty
 
 pack pk_cyndaquil colo
 same cyndaquil
+
+pack pk_delcatty colo
+empty
+
+pack pk_dewgong colo
+empty
+
+pack pk_diglett colo
+empty
+
+pack pk_dodrio colo
+empty
+
+pack pk_doduo colo
+empty
+
+pack pk_donphan colo
+empty
 
 pack pk_dragonair colo
 empty
@@ -676,13 +781,28 @@ empty
 pack pk_drowzee colo
 empty
 
+pack pk_dugtrio colo
+empty
+
 pack pk_dusclops colo
+empty
+
+pack pk_duskull colo
+empty
+
+pack pk_dustox colo
 empty
 
 pack pk_eevee colo
 empty
 
+pack pk_ekans colo
+empty
+
 pack pk_electabuzz colo
+empty
+
+pack pk_electrike colo
 empty
 
 pack pk_electrode colo
@@ -694,7 +814,19 @@ empty
 pack pk_espeon colo
 empty
 
+pack pk_exeggcute colo
+empty
+
+pack pk_exeggutor colo
+empty
+
 pack pk_exploud colo
+empty
+
+pack pk_fearow colo
+empty
+
+pack pk_feebas colo
 empty
 
 pack pk_feraligatr colo
@@ -709,6 +841,12 @@ empty
 pack pk_flygon colo
 empty
 
+pack pk_forretress colo
+empty
+
+pack pk_furret colo
+empty
+
 pack pk_gardevoir colo
 empty
 
@@ -721,16 +859,46 @@ empty
 pack pk_geodude colo
 empty
 
+pack pk_glalie colo
+empty
+
+pack pk_gloom colo
+empty
+
+pack pk_golbat colo
+empty
+
+pack pk_goldeen colo
+same goldeen
+
 pack pk_golduck colo
 empty
 
 pack pk_golem colo
 empty
 
+pack pk_gorebyss colo
+empty
+
+pack pk_granbull colo
+empty
+
 pack pk_graveler colo
 empty
 
+pack pk_grimer colo
+empty
+
 pack pk_grovyle colo
+empty
+
+pack pk_grumpig colo
+empty
+
+pack pk_gulpin colo
+empty
+
+pack pk_gyarados colo
 empty
 
 pack pk_hariyama colo
@@ -748,10 +916,22 @@ empty
 pack pk_hitmontop colo
 empty
 
+pack pk_hoothoot colo
+empty
+
+pack pk_hoppip colo
+empty
+
+pack pk_horsea colo
+empty
+
 pack pk_houndoom colo
 empty
 
 pack pk_houndour colo
+empty
+
+pack pk_huntail colo
 empty
 
 pack pk_hypno colo
@@ -769,6 +949,9 @@ same jigglypuff
 pack pk_jolteon colo
 empty
 
+pack pk_jumpluff colo
+empty
+
 pack pk_jynx colo
 empty
 
@@ -781,16 +964,43 @@ empty
 pack pk_kadabra colo
 empty
 
+pack pk_kakuna colo
+empty
+
+pack pk_kingdra colo
+empty
+
+pack pk_kingler colo
+empty
+
 pack pk_kirlia colo
 empty
 
 pack pk_koffing colo
 empty
 
+pack pk_krabby colo
+empty
+
 pack pk_lairon colo
 empty
 
+pack pk_lanturn colo
+empty
+
 pack pk_larvitar colo
+empty
+
+pack pk_ledian colo
+empty
+
+pack pk_ledyba colo
+empty
+
+pack pk_lileep colo
+empty
+
+pack pk_linoone colo
 empty
 
 pack pk_lombre colo
@@ -817,10 +1027,25 @@ empty
 pack pk_magby colo
 empty
 
+pack pk_magcargo colo
+empty
+
+pack pk_magikarp colo
+empty
+
 pack pk_magmar colo
 empty
 
+pack pk_magnemite colo
+empty
+
+pack pk_magneton colo
+empty
+
 pack pk_makuhita colo
+empty
+
+pack pk_manectric colo
 empty
 
 pack pk_mankey colo
@@ -829,10 +1054,16 @@ empty
 pack pk_mareep colo
 empty
 
+pack pk_marill colo
+same marill
+
 pack pk_marowak colo
 empty
 
 pack pk_marshtomp colo
+empty
+
+pack pk_masquerain colo
 empty
 
 pack pk_medicham colo
@@ -844,19 +1075,37 @@ empty
 pack pk_meganium colo
 empty
 
+pack pk_meowth colo
+empty
+
 pack pk_metagross colo
 empty
 
 pack pk_metang colo
 empty
 
+pack pk_metapod colo
+empty
+
 pack pk_mewtwo colo
 same mewtwo
+
+pack pk_mightyena colo
+empty
+
+pack pk_milotic colo
+empty
 
 pack pk_mrmime colo
 empty
 
 pack pk_mudkip colo
+empty
+
+pack pk_muk colo
+empty
+
+pack pk_natu colo
 empty
 
 pack pk_nidoking colo
@@ -877,17 +1126,74 @@ empty
 pack pk_nidorino colo
 empty
 
+pack pk_nincada colo
+empty
+
+pack pk_ninetales colo
+empty
+
+pack pk_ninjask colo
+empty
+
+pack pk_noctowl colo
+empty
+
+pack pk_numel colo
+empty
+
 pack pk_nuzleaf colo
+empty
+
+pack pk_octillery colo
+empty
+
+pack pk_oddish colo
+empty
+
+pack pk_omanyte colo
+empty
+
+pack pk_omastar colo
 empty
 
 pack pk_onix colo
 empty
 
+pack pk_paras colo
+empty
+
+pack pk_parasect colo
+empty
+
+pack pk_pelipper colo
+empty
+
+pack pk_persian colo
+empty
+
+pack pk_phanpy colo
+empty
+
 pack pk_pichu colo
 same pichu
 
+pack pk_pidgeot colo
+empty
+
+pack pk_pidgeotto colo
+empty
+
+pack pk_pidgey colo
+empty
+
 pack pk_pikachu colo
 same pikachu
+
+pack pk_piloswine colo
+empty
+
+pack pk_pineco colo
+empty
 
 pack pk_politoed colo
 empty
@@ -900,6 +1206,18 @@ empty
 
 pack pk_poliwrath colo
 empty
+
+pack pk_ponyta colo
+empty
+
+pack pk_poochyena colo
+empty
+
+pack pk_porygon colo
+empty
+
+pack pk_porygon2 colo
+same porygon2
 
 pack pk_primeape colo
 empty
@@ -922,6 +1240,24 @@ empty
 pack pk_ralts colo
 empty
 
+pack pk_rapidash colo
+empty
+
+pack pk_raticate colo
+empty
+
+pack pk_rattata colo
+empty
+
+pack pk_remoraid colo
+empty
+
+pack pk_rhydon colo
+empty
+
+pack pk_rhyhorn colo
+empty
+
 pack pk_salamence colo
 empty
 
@@ -940,10 +1276,34 @@ same scizor
 pack pk_scyther colo
 empty
 
+pack pk_seadra colo
+empty
+
+pack pk_seaking colo
+empty
+
+pack pk_sealeo colo
+empty
+
 pack pk_seedot colo
 empty
 
+pack pk_seel colo
+empty
+
+pack pk_sentret colo
+empty
+
+pack pk_sharpedo colo
+empty
+
+pack pk_shedinja colo
+empty
+
 pack pk_shelgon colo
+empty
+
+pack pk_shellder colo
 empty
 
 pack pk_shiftry colo
@@ -953,6 +1313,15 @@ pack pk_shroomish colo
 empty
 
 pack pk_shuppet colo
+empty
+
+pack pk_silcoon colo
+empty
+
+pack pk_skiploom colo
+empty
+
+pack pk_skitty colo
 empty
 
 pack pk_slaking colo
@@ -970,22 +1339,85 @@ empty
 pack pk_slowpoke colo
 empty
 
+pack pk_slugma colo
+empty
+
 pack pk_smoochum colo
 empty
 
 pack pk_snorlax colo
 same snorlax
 
+pack pk_snorunt colo
+empty
+
+pack pk_snubbull colo
+empty
+
+pack pk_spearow colo
+empty
+
+pack pk_spheal colo
+empty
+
+pack pk_spinarak colo
+empty
+
+pack pk_spoink colo
+empty
+
 pack pk_squirtle colo
 empty
 
+pack pk_starmie colo
+empty
+
+pack pk_staryu colo
+same staryu
+
 pack pk_steelix colo
+empty
+
+pack pk_sunflora colo
+empty
+
+pack pk_sunkern colo
+empty
+
+pack pk_surskit colo
+empty
+
+pack pk_swablu colo
+empty
+
+pack pk_swalot colo
 empty
 
 pack pk_swampert colo
 empty
 
+pack pk_swellow colo
+empty
+
+pack pk_swinub colo
+empty
+
+pack pk_taillow colo
+empty
+
 pack pk_teddiursa colo
+empty
+
+pack pk_tentacool colo
+empty
+
+pack pk_tentacruel colo
+empty
+
+pack pk_togepi colo
+same togepi
+
+pack pk_togetic colo
 empty
 
 pack pk_torchic colo
@@ -1018,23 +1450,56 @@ empty
 pack pk_vaporeon colo
 empty
 
+pack pk_venomoth colo
+empty
+
+pack pk_venonat colo
+empty
+
 pack pk_venusaur colo
 same venusaur
 
 pack pk_vibrava colo
 empty
 
+pack pk_victreebel colo
+empty
+
 pack pk_vigoroth colo
+empty
+
+pack pk_vileplume colo
 empty
 
 pack pk_voltorb colo
 empty
 
+pack pk_vulpix colo
+empty
+
+pack pk_wailmer colo
+empty
+
+pack pk_wailord colo
+empty
+
+pack pk_walrein colo
+empty
+
 pack pk_wartortle colo
+empty
+
+pack pk_weedle colo
+empty
+
+pack pk_weepinbell colo
 empty
 
 pack pk_weezing colo
 same weezing
+
+pack pk_whiscash colo
+empty
 
 pack pk_whismur colo
 empty
@@ -1042,7 +1507,28 @@ empty
 pack pk_wigglytuff colo
 empty
 
+pack pk_wingull colo
+empty
+
+pack pk_wobbuffet colo
+same wobbuffet
+
 pack pk_wooper colo
+empty
+
+pack pk_wurmple colo
+empty
+
+pack pk_wynaut colo
+empty
+
+pack pk_xatu colo
+empty
+
+pack pk_zigzagoon colo
+empty
+
+pack pk_zubat colo
 empty
 
 pack popo melee

@@ -24,9 +24,11 @@
 #include "xr_fx_mesh.h"
 #include "xr_ctrl_model.h"  // r54: the controllers in your hands
 #include "xr_fx_shaders.h"
+#include "../../include/port/xr_body.h"  // r143: the life-size scorer's posed body
 
 #include <cstdlib>
 #include <string>
+#include <time.h>  // r143: CLOCK_MONOTONIC (the body's age)
 
 // r68c (src/platform/xr_guest.cpp): a guest captain's team colours, by roster index.
 int PortGuestThemeColors(int index, unsigned* main, unsigned* trim, unsigned* patch);
@@ -76,7 +78,13 @@ enum Shape : uint8_t {
   kCrescentPiece = 93, kBadge4Piece, kStretchArmPiece, kSurfboardPiece, kAcornPiece, kHornPiece, kCrownPiece,
   kFossilPiece = 100, kTalonPiece, kSpikePiece, kToadstoolPiece, kLilyPadPiece, kWoolPiece, kLeafPiece, kSoundWavePiece,
   kGloveLitePiece, kImpactPiece, kTopPiece = 110, kPalmPiece, kTwigPiece, kGemPiece, kLotusPiece, kLipsPiece,
-  kHeartLitePiece, kStarLitePiece, kDogTagPiece = 118
+  kHeartLitePiece, kStarLitePiece, kDogTagPiece = 118,
+  // r135: real leaves (kLeafPiece rebuilt as an oval leaf; a maple leaf, a long blade: Lance, "they look like green
+  // pills"; they fall like leaves, leaf_swing) and the r135 roster's light pieces (xr_fx_mesh.h r135; xr_fx_mesh.frag
+  // 119-133; the brick is its own mesh too)
+  kMapleLeafPiece = 119, kBladeLeafPiece = 120, kFeatherPiece = 121, kFishPiece = 122, kScrewPiece = 123,
+  kMagnetPiece = 124, kPincerPiece = 125, kScallopPiece = 126, kWavePiece = 127, kCubePiece = 128, kEggLitePiece = 129,
+  kShurikenPiece = 130, kFlaskPiece = 131, kBulletPiece = 132, kBrickPiece = 133
 };
 
 // The 3D mesh each piece is drawn with (xr_fx_mesh.h); sparks, flashes and the marker stay quads.
@@ -159,6 +167,22 @@ uint8_t mesh_for(Shape shape) {
   case kHeartLitePiece: return mesh::kHeartLite;
   case kStarLitePiece: return mesh::kStarLite;
   case kDogTagPiece: return mesh::kDogTag;
+  // r135
+  case kMapleLeafPiece: return mesh::kMapleLeaf;
+  case kBladeLeafPiece: return mesh::kBladeLeaf;
+  case kFeatherPiece: return mesh::kFeather;
+  case kFishPiece: return mesh::kFish;
+  case kScrewPiece: return mesh::kScrew;
+  case kMagnetPiece: return mesh::kMagnet;
+  case kPincerPiece: return mesh::kPincer;
+  case kScallopPiece: return mesh::kScallop;
+  case kWavePiece: return mesh::kWave;
+  case kCubePiece: return mesh::kCube;
+  case kEggLitePiece: return mesh::kEggLite;
+  case kShurikenPiece: return mesh::kShuriken;
+  case kFlaskPiece: return mesh::kFlask;
+  case kBulletPiece: return mesh::kBullet;
+  case kBrickPiece: return mesh::kBrick;
   default: return kNoMesh;
   }
 }
@@ -247,6 +271,23 @@ Rest rest_for(uint8_t shape) {
   case kHeartLitePiece: return {2, 0.17f};
   case kStarLitePiece: return {2, 0.15f};
   case kDogTagPiece: return {2, 0.012f};
+  // r135: leaves, a feather, a scallop flat (top up), the fish on its side, the screw, egg and bullet on their sides,
+  // the cube, brick and flask on their bases
+  case kMapleLeafPiece: return {2, 0.03f};
+  case kBladeLeafPiece: return {2, 0.02f};
+  case kFeatherPiece: return {2, 0.02f};
+  case kFishPiece: return {2, 0.11f};
+  case kScrewPiece: return {0, 0.2f};
+  case kMagnetPiece: return {2, 0.075f};
+  case kPincerPiece: return {2, 0.07f};
+  case kScallopPiece: return {2, 0.06f};
+  case kWavePiece: return {2, 0.05f};
+  case kCubePiece: return {1, 0.3f};
+  case kEggLitePiece: return {0, 0.34f};
+  case kShurikenPiece: return {2, 0.02f};
+  case kFlaskPiece: return {1, 0.5f};
+  case kBulletPiece: return {0, 0.12f};
+  case kBrickPiece: return {1, 0.14f};
   default: return {2, 0.02f};         // paper, foil, flat quads
   }
 }
@@ -403,8 +444,8 @@ Special special_for_pack(const char* pack) {
     sp.f(kNeedle, 0x5A4A7A, 0xC8CCD4, 1.0f);
     sp.r(kRoomFog, 0xA898C0, 0x3A3050).r(kRoomEyes, st == 1 ? 0x7FE0FF : 0xFF3030, 0x9A7AD0).r(kRoomWisps, 0xA8D8FF, 0x3060FF);
     sp.py(kPyroNone);
-  } else if ((st = stage_in(pack, {"pk_dusclops"})) != 0) {
-    stage(2, 3);
+  } else if ((st = stage_in(pack, {"pk_duskull", "pk_dusclops"})) != 0) {  // r135: + Duskull
+    stage(st, 3);
     sp.f(kFlame, 0xBFF0FF, 0x2060FF, 0.9f, 0.9f);  // ghost fire, blue
     sp.r(kRoomFog, 0x808088, 0x202028).r(kRoomWisps, 0x9FE0FF, 0x2060FF).r(kRoomEyes, 0xFF2A2A, 0xFF8080);
     sp.py(kPyroNone);
@@ -470,18 +511,18 @@ Special special_for_pack(const char* pack) {
   // --- grass, bugs ---
   } else if ((st = stage_in(pack, {"pk_bulbasaur", "pk_ivysaur", "pk_venusaur"})) != 0) {
     stage(st, 3);
-    sp.f(kPetal, 0x5BC24A, 0xA8E070, 1.0f);
+    sp.f(kLeafPiece, 0x4FAE3E, 0xA8E070, 1.0f).f(kBladeLeafPiece, 0x3E9A34, 0x9AD870, 1.0f);  // r135: real leaves
     if (st == 3) sp.f(kPetal, 0xFF8FB8, 0xFFD0E0, 1.0f);
     sp.r(kRoomMotes, 0xF0FF90, 0xA0D040);
     sp.py(kPyroSlash, 0xD0FF90, 0x2E8B3A);
   } else if ((st = stage_in(pack, {"pk_treecko", "pk_grovyle", "pk_sceptile"})) != 0) {
     stage(st, 3);
-    sp.f(kPetal, 0x3FB050, 0xB0F080, 1.1f);
+    sp.f(kBladeLeafPiece, 0x3FB050, 0xB0F080, 1.1f).f(kLeafPiece, 0x2E8A3A, 0x9AD870, 1.0f);  // r135: real leaves
     sp.r(kRoomLeaves, 0x3FB050, 0xB0F080);
     sp.py(kPyroThrow);
   } else if ((st = stage_in(pack, {"pk_scyther", "pk_scizor"})) != 0) {
     stage(st, 2);
-    if (st == 1) sp.f(kPetal, 0x7AC850, 0xC8F090, 0.9f);
+    if (st == 1) sp.f(kBladeLeafPiece, 0x7AC850, 0xC8F090, 1.0f);  // r135: cut grass blades
     else sp.f(kShard, 0xC82828, 0xD84040, 1.0f);
     sp.r(kRoomSlashes, 0xFFFFFF, st == 1 ? 0x9AF07A : 0xFF4040);
     sp.py(kPyroSlash, 0xFFFFFF, st == 1 ? 0x9AF07A : 0xFF4040);
@@ -618,7 +659,7 @@ Special special_for_pack(const char* pack) {
     sp.f(kBanana, 0xFFD83A, 0x6B4423, 1.0f);
   } else if ((st = stage_in(pack, {"petey"})) != 0) {
     sp.stage = 2.5f;
-    sp.f(kPetal, 0x3FA03A, 0xB0E070, 1.2f).f(kDrop, 0x7A4A8A, 0x3A1A4A, 0.8f);
+    sp.f(kLeafPiece, 0x3FA03A, 0xB0E070, 1.2f).f(kDrop, 0x7A4A8A, 0x3A1A4A, 0.8f);  // r135: real leaves
   } else if ((st = stage_in(pack, {"boo"})) != 0) {
     sp.stage = 2.0f;
     sp.f(kWisp, 0xF4F4FF, 0x8A9AFF, 1.0f, 0.8f);
@@ -648,7 +689,7 @@ Special special_for_pack(const char* pack) {
     sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
   } else if ((st = stage_in(pack, {"pk_chikorita", "pk_bayleef", "pk_meganium"})) != 0) {
     stage(st, 3);
-    sp.f(kPetal, 0x7ACB4A, 0xC8F090, 1.0f);
+    sp.f(kLeafPiece, 0x7ACB4A, 0xC8F090, 1.0f);  // r135: real leaves
     if (st == 3) sp.f(kPetal, 0xFF8FB8, 0xFFD0E0, 1.0f);
     sp.r(kRoomLeaves, 0x7ACB4A, 0xC8F090).r(kRoomMotes, 0xF0FF90, 0xA0D040);
     sp.py(kPyroSlash, 0xD0FF90, 0x3A8A3A);
@@ -761,7 +802,7 @@ Special special_for_pack(const char* pack) {
     sp.py(st == 3 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
   } else if ((st = stage_in(pack, {"pk_seedot", "pk_nuzleaf", "pk_shiftry"})) != 0) {  // acorns, leaves; Shiftry's leaf storm
     stage(st, 3);
-    sp.f(kAcornPiece, 0xA0703A, 0x5A3A1A, 1.0f).f(kLeafPiece, 0x4A9A3A, 0xA8D880, 1.0f + 0.15f * (st - 1));
+    sp.f(kAcornPiece, 0xA0703A, 0x5A3A1A, 1.0f).f(st == 3 ? kMapleLeafPiece : kLeafPiece, 0x4A9A3A, 0xA8D880, 1.0f + 0.15f * (st - 1));
     sp.r(kRoomLeaves, 0x4A9A3A, 0xA8D880);
     if (st == 3) sp.r(kRoomSlashes, 0xFFFFFF, 0x8AD06A);
     sp.py(st == 3 ? kPyroSlash : kPyroThrow, 0xFFFFFF, 0x4A9A3A);
@@ -868,6 +909,548 @@ Special special_for_pack(const char* pack) {
     if (st == 1) sp.py(kPyroNone);
     else if (st == 2) sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
     else sp.py(kPyroRings, 0xFF9AD8, 0xA040FF);
+  // --- r135: Lance's 162 more Colosseum Pokemon (73 lines; Duskull joins Dusclops above), on the light pieces (r130's,
+  // r135's) and the quads that face you; the plants' real leaves fall like leaves (leaf_swing) ---
+  } else if ((st = stage_in(pack, {"pk_caterpie", "pk_metapod", "pk_butterfree"})) != 0) {
+    // String Shot silk and leaves; Metapod's hard green shell; Butterfree's sleep powder and wing petals
+    stage(st, 3);
+    if (st == 1) sp.f(kWoolPiece, 0xF4F4EC, 0xFFFFFF, 0.7f).f(kLeafPiece, 0x5AAE3A, 0xB0E080, 1.0f);
+    else if (st == 2) sp.f(kShard, 0x7AC850, 0xC8F0A0, 0.9f).f(kLeafPiece, 0x5AAE3A, 0xB0E080, 1.0f);
+    else sp.f(kSpark, 0xD8C8FF, 0xFFFFFF, 0.6f, 0.8f).f(kPetal, 0xF4F4FF, 0x6A5AC8, 1.0f).f(kPetal, 0xFF9AC8, 0xFFE0F0, 0.9f);
+    sp.r(kRoomMotes, st == 3 ? 0xE0D0FF : 0xE8FFB0, st == 3 ? 0x8A6AE0 : 0x9AD050);
+    if (st == 3) sp.r(kRoomZzz, 0xFFFFFF, 0xC8B8FF);
+    sp.py(st == 3 ? kPyroPuffs : kPyroNone, 0xE0D0FF, 0x8A6AE0);
+  } else if ((st = stage_in(pack, {"pk_weedle", "pk_kakuna", "pk_beedrill"})) != 0) {
+    // poison stingers; Kakuna's golden shell; Beedrill's twin needles and a buzzing swarm
+    stage(st, 3);
+    sp.f(kSpikePiece, 0xE8E0D0, 0xB02A2A, 1.0f).f(kDrop, 0xC070E0, 0x6A1A8A, 0.7f, 0.4f);
+    if (st == 2) sp.f(kShard, 0xE8C040, 0xFFF0A0, 0.9f);
+    if (st == 3) sp.f(kNeedle, 0x2A2A2A, 0xE8E8E8, 1.1f);
+    sp.r(kRoomBubbles, 0xD090F0, 0xFFFFFF);
+    if (st == 3) sp.r(kRoomSlashes, 0xFFE040, 0x1A1A1A);
+    sp.py(st == 3 ? kPyroSlash : kPyroPuffs, 0xFFE040, 0x7A2A9A);
+  } else if ((st = stage_in(pack, {"pk_pidgey", "pk_pidgeotto", "pk_pidgeot"})) != 0) {
+    // feathers on a gust (Sand-Attack's dust); Pidgeot's crest-red ones
+    stage(st, 3);
+    sp.f(kFeatherPiece, 0xB08050, 0xF2E2C0, 1.0f).f(kFeatherPiece, 0xF2E2C0, 0xB08050, 0.8f);
+    if (st == 3) sp.f(kFeatherPiece, 0xE8402A, 0xFFE070, 1.1f);
+    sp.r(kRoomDust, 0xE0D0B0, 0x9A8060);
+    if (st >= 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xC8B090);
+    sp.py(st == 1 ? kPyroFireworks : kPyroSlash, 0xFFFFFF, 0xB08050);
+  } else if ((st = stage_in(pack, {"pk_rattata", "pk_raticate"})) != 0) {
+    // Hyper Fang: fangs and bites, rings where it lands
+    stage(st, 2);
+    sp.f(kSpikePiece, 0xFFFFF0, 0xFFFFFF, 0.9f).f(kImpactPiece, 0xFFFFFF, 0x9A5AC0, 0.9f, 0.3f);
+    sp.r(kRoomFloorRings, 0xFFFFFF, 0xB080D0).r(kRoomDust, 0xC8B898, 0x6A5A48);
+    sp.py(st == 2 ? kPyroSlash : kPyroThrow, 0xFFFFFF, 0x9A5AC0);
+  } else if ((st = stage_in(pack, {"pk_spearow", "pk_fearow"})) != 0) {
+    // brown feathers and pecking beaks, a whirlwind
+    stage(st, 2);
+    sp.f(kFeatherPiece, 0x9A5A30, 0xE8C8A0, 1.0f).f(kTalonPiece, 0xE8B0A0, 0xF8E0C8, 0.9f);
+    sp.r(kRoomSlashes, 0xFFFFFF, 0xC88050).r(kRoomDust, 0xD8C0A0, 0x8A6A48);
+    sp.py(kPyroSlash, 0xFFFFFF, 0xC88050);
+  } else if ((st = stage_in(pack, {"pk_ekans", "pk_arbok"})) != 0) {
+    // poison fangs and acid in a purple haze; Arbok's glare
+    stage(st, 2);
+    sp.f(kDrop, 0xC070E0, 0x6A1A8A, 0.7f, 0.4f).f(kSpikePiece, 0xFFFFF0, 0xFFFFFF, 0.8f).f(kBubble, 0xD8A0F0, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomFog, 0xB890D8, 0x4A1A6A);
+    if (st == 2) sp.r(kRoomEyes, 0xFFD040, 0xE8242A);
+    sp.py(kPyroPuffs, 0xC070E0, 0x6A1A8A);
+  } else if ((st = stage_in(pack, {"pk_vulpix", "pk_ninetales"})) != 0) {
+    // flames and embers; Ninetales' ghostly blue fox fire
+    stage(st, 2);
+    sp.f(kFlame, 0xFFC830, 0xE8300A, 1.0f, 0.9f);
+    if (st == 2) sp.f(kWisp, 0xBFE8FF, 0x3A7AFF, 1.0f, 0.8f);
+    sp.r(kRoomEmbers, 0xFFE070, 0xFF5A10);
+    if (st == 2) sp.r(kRoomWisps, 0xBFE8FF, 0x3A7AFF);
+    sp.py(st == 2 ? kPyroBreath : kPyroFlame, 0xFFE9A0, 0xFF5A10);
+  } else if ((st = stage_in(pack, {"pk_zubat", "pk_golbat", "pk_crobat"})) != 0) {
+    // bats and Supersonic's waves in the dark; Crobat's purple ones, quicker
+    stage(st, 3);
+    sp.f(kVampBatPiece, st == 3 ? 0x7A3AA8 : 0x4A6AC8, 0x7FC8F0, 1.0f).f(kSoundWavePiece, 0xBFE8FF, 0xFFFFFF, 0.9f, 0.5f);
+    sp.r(kRoomFog, 0x303048, 0x0A0A14).r(kRoomPsyRings, 0xBFE8FF, 0x4A6AC8);
+    if (st == 3) sp.r(kRoomSlashes, 0xFFFFFF, 0xA060E0);
+    sp.py(kPyroRings, 0xBFE8FF, 0x7A3AA8);
+  } else if ((st = stage_in(pack, {"pk_oddish", "pk_gloom", "pk_vileplume", "pk_bellossom"})) != 0) {
+    // real leaves and spores; Gloom's smell; Vileplume's great red petals and pollen; Bellossom's flowers
+    stage(st == 4 ? 3 : st, 3);
+    sp.f(st == 4 ? kLeafPiece : kBladeLeafPiece, 0x4FA040, 0xA8D880, 1.0f);
+    if (st == 1) sp.f(kLeafPiece, 0x3E8A34, 0x9AD070, 1.0f).f(kSpark, 0xE8FFB0, 0x9AD050, 0.6f, 0.8f);
+    else if (st == 2) sp.f(kDrop, 0xE8803A, 0x8A3A1A, 0.7f, 0.2f).f(kSpark, 0xFFB0A0, 0xC86A3A, 0.6f, 0.6f);
+    else if (st == 3) sp.f(kPetal, 0xD8303A, 0xF0E0E0, 1.2f).f(kSpark, 0xFFE070, 0xF0A030, 0.6f, 0.8f);
+    else sp.f(kPetal, 0xF2D030, 0xFFF0A0, 1.0f).f(kPetal, 0xE8343A, 0xFFB0A0, 1.0f);
+    sp.r(kRoomLeaves, 0x4FA040, 0xA8D880);
+    if (st == 2) sp.r(kRoomFog, 0xD8A070, 0x6A4A2A);
+    else sp.r(kRoomMotes, 0xF0FF90, 0xA0D040);
+    if (st == 4) sp.py(kPyroFireworks, 0xF2D030, 0xE8343A);
+    else sp.py(kPyroPuffs, 0xD8F0A0, 0x9AC060);
+  } else if ((st = stage_in(pack, {"pk_paras", "pk_parasect"})) != 0) {
+    // its mushrooms and their spores
+    stage(st, 2);
+    sp.f(kToadstoolPiece, 0xE8402A, 0xF2D070, 1.0f).f(kSpark, 0xFFE8B0, 0xE0B050, 0.6f, 0.7f);
+    sp.r(kRoomMotes, 0xFFE8B0, 0xE0A040).r(kRoomFog, 0xE8C090, 0x7A4A20);
+    sp.py(kPyroPuffs, 0xFFE0A0, 0xE07A30);
+  } else if ((st = stage_in(pack, {"pk_venonat", "pk_venomoth"})) != 0) {
+    // poison powder, Psybeam's rings; Venomoth's dusty wings
+    stage(st, 2);
+    sp.f(kSpark, 0xC890F0, 0x7A3AA8, 0.6f, 0.8f).f(kRingFx, 0xFFB0F0, 0x9A50E0, 0.8f, 0.8f);
+    if (st == 2) sp.f(kPetal, 0xC8B0E8, 0x7A5AA8, 1.0f);
+    sp.r(kRoomMotes, 0xE0C0FF, 0x8A4AD0).r(kRoomPsyRings, 0xFFB0F0, 0x9A50E0);
+    sp.py(kPyroPuffs, 0xC890F0, 0x6A2A9A);
+  } else if ((st = stage_in(pack, {"pk_diglett", "pk_dugtrio"})) != 0) {
+    // dirt and rocks thrown up, dust; Dugtrio's quake rings
+    stage(st, 2);
+    sp.f(kRock, 0x8A6A48, 0x5A4430, 0.8f).f(kSpark, 0xC8A070, 0x8A6A48, 0.5f, 0.0f);
+    sp.r(kRoomDust, 0xB89870, 0x6A5038);
+    if (st == 2) sp.r(kRoomFloorRings, 0xD8C0A0, 0x8A6A48);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_meowth", "pk_persian"})) != 0) {
+    // Pay Day: coins everywhere; Persian's red forehead gem
+    stage(st, 2);
+    sp.f(kCoin, 0xFFC21F, 0xFFE27A, 0.9f).f(kStarLitePiece, 0xFFE070, 0xFFF8C0, 0.6f, 0.5f);
+    if (st == 2) sp.f(kGemPiece, 0xE0203A, 0xFF8090, 0.8f, 0.5f);
+    sp.r(kRoomMotes, 0xFFE27A, 0xFFC21F);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xF2E0B0);
+    sp.py(kPyroFireworks, 0xFFC21F, 0xFFF0A0);
+  } else if ((st = stage_in(pack, {"pk_bellsprout", "pk_weepinbell", "pk_victreebel"})) != 0) {
+    // long blade leaves (Razor Leaf), real leaves, acid; Victreebel's leaf storm
+    stage(st, 3);
+    sp.f(kBladeLeafPiece, 0x6AB83A, 0xC8F090, 1.1f).f(kLeafPiece, 0x4FA040, 0xB0E080, 0.9f).f(kDrop, 0xD8F060, 0x7A9A20, 0.7f, 0.3f);
+    sp.r(kRoomLeaves, 0x6AB83A, 0xC8F090);
+    if (st == 3) sp.r(kRoomSlashes, 0xFFFFFF, 0x8AD06A);
+    sp.py(st == 1 ? kPyroThrow : kPyroSlash, 0xFFFFFF, 0x6AB83A);
+  } else if ((st = stage_in(pack, {"pk_tentacool", "pk_tentacruel"})) != 0) {
+    // sea water, its red gems, poison bubbles
+    stage(st, 2);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kGemPiece, 0xE0203A, 0xFF8090, 0.8f, 0.5f).f(kBubble, 0xD8A0F0, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(st == 2 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_ponyta", "pk_rapidash"})) != 0) {
+    // its blazing mane: flames and embers, fire rings where it gallops; Rapidash's horn
+    stage(st, 2);
+    sp.f(kFlame, 0xFFD848, 0xF04010, 1.1f, 0.9f);
+    if (st == 2) sp.f(kHornPiece, 0xF2EEE0, 0xFFFFFF, 1.0f);
+    sp.r(kRoomEmbers, 0xFFE070, 0xFF5A10).r(kRoomFloorRings, 0xFFE070, 0xFF5A10);
+    sp.py(kPyroFlame, 0xFFF0B0, 0xFF3A10);
+  } else if ((st = stage_in(pack, {"pk_magnemite", "pk_magneton"})) != 0) {
+    // lightning bolts, screws and magnets, sparks
+    stage(st, 2);
+    sp.f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.3f, 0.9f).f(kScrewPiece, 0xC8CCD4, 0x8A8E96, 0.9f).f(kMagnetPiece, 0xD8242A, 0xD8DEE8, 0.9f);
+    sp.r(kRoomSparks, 0xFFFFE0, 0xFFD020).r(kRoomLightning, 0xFFFFFF, 0xBFE0FF);
+    sp.py(kPyroNone);
+  } else if ((st = stage_in(pack, {"pk_doduo", "pk_dodrio"})) != 0) {
+    // brown feathers kicked up with the dust
+    stage(st, 2);
+    sp.f(kFeatherPiece, 0xA06A3A, 0xF0D8B0, 1.0f).f(kFeatherPiece, 0x3A2A20, 0xA08060, 0.8f);
+    sp.r(kRoomDust, 0xD8C0A0, 0x8A6A48);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xD8B090);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_seel", "pk_dewgong"})) != 0) {
+    // a snowy shore: snowflakes, sea water; Dewgong's icicles
+    stage(st, 2);
+    sp.f(kSnowflakePiece, 0xE8FAFF, 0xFFFFFF, 1.0f, 0.3f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 2) sp.f(kIcicle, 0xE8FAFF, 0x7FC8F0, 1.0f);
+    sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x9FD8FF);
+  } else if ((st = stage_in(pack, {"pk_grimer", "pk_muk"})) != 0) {
+    // sludge: purple drops and bubbles, a poison fog
+    stage(st, 2);
+    sp.f(kDrop, 0xA070C8, 0x4A1A6A, 0.9f, 0.2f).f(kBubble, 0xC8A0E8, 0xFFFFFF, 0.7f, 0.4f);
+    sp.r(kRoomFog, 0xB890D8, 0x4A1A6A).r(kRoomBubbles, 0xC890F0, 0xFFFFFF);
+    sp.py(kPyroPuffs, 0xA070C8, 0x4A1A6A);
+  } else if ((st = stage_in(pack, {"pk_shellder", "pk_cloyster"})) != 0) {
+    // shells and pearls; Cloyster's spikes in the snow
+    stage(st, 2);
+    sp.f(kScallopPiece, 0x8A6AC8, 0xD0C0F0, 1.0f).f(kPearl, 0xF4F0FF, 0xD0C8F0, 0.5f, 0.2f);
+    if (st == 2) sp.f(kSpikePiece, 0x6A6A88, 0xE8E8F8, 0.9f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x9FD8FF);
+  } else if ((st = stage_in(pack, {"pk_krabby", "pk_kingler"})) != 0) {
+    // pincers and bubbles; Kingler's Crabhammer
+    stage(st, 2);
+    sp.f(kPincerPiece, 0xE0502A, 0xF8E8D0, 1.0f + 0.2f * (st - 1)).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomFloorRings, 0xFFFFFF, 0x7FB8FF);
+    sp.py(st == 2 ? kPyroBlast : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_exeggcute", "pk_exeggutor"})) != 0) {
+    // its eggs (seeds), real leaves, psychic rings; Exeggutor's palm fronds
+    stage(st, 2);
+    sp.f(kEggLitePiece, 0xF8E0D8, 0xE8B8A8, 1.0f);
+    if (st == 2) sp.f(kBladeLeafPiece, 0x4FA040, 0xA8D880, 1.2f).f(kLeafPiece, 0x3E8A34, 0x9AD070, 1.0f);
+    else sp.f(kLeafPiece, 0x4FA040, 0xA8D880, 0.9f);
+    sp.r(kRoomPsyRings, 0xFF9AD8, 0xA040FF);
+    if (st == 2) sp.r(kRoomLeaves, 0x4FA040, 0xA8D880);
+    sp.py(st == 2 ? kPyroRings : kPyroThrow, 0xFF9AD8, 0xA040FF);
+  } else if ((st = stage_in(pack, {"pk_rhyhorn", "pk_rhydon"})) != 0) {
+    // a stampede: rocks, horns, dust and quake rings
+    stage(st, 2);
+    sp.f(kRock, 0x8C8478, 0x5A544C, 1.0f + 0.2f * (st - 1)).f(kHornPiece, 0xD8D0C0, 0xF2EEE0, 0.9f);
+    sp.r(kRoomDust, 0xB8A890, 0x6A5A48).r(kRoomFloorRings, 0xD8C0A0, 0x8A6A48);
+    sp.py(st == 2 ? kPyroBlast : kPyroThrow, 0xFFE0A0, 0xFF7A1A);
+  } else if ((st = stage_in(pack, {"pk_chansey", "pk_blissey"})) != 0) {
+    // its lucky eggs and soft pink hearts, healing sparkles
+    stage(st, 2);
+    sp.f(kEggLitePiece, 0xFFFAF0, 0xFFFAF0, 1.0f).f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f);
+    sp.r(kRoomMotes, 0xFFD0E8, 0xFF8AC0);
+    sp.py(kPyroFireworks, 0xFF9AC0, 0xFFFFFF);
+  } else if ((st = stage_in(pack, {"pk_horsea", "pk_seadra", "pk_kingdra"})) != 0) {
+    // water and ink (Smokescreen), bubbles; Kingdra's whirlpool
+    stage(st, 3);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kDrop, 0x2A2A3A, 0x0A0A14, 0.7f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF).r(kRoomSmoke, 0x505060, 0x202028);
+    if (st == 3) sp.r(kRoomSpiral, 0x7FD0FF, 0x2A5AC8);
+    sp.py(st == 3 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_goldeen", "pk_seaking"})) != 0) {
+    // splashing fish and their horns
+    stage(st, 2);
+    sp.f(kFishPiece, 0xF2F2F0, 0xF07A3A, 1.0f).f(kHornPiece, 0xF2EEE0, 0xFFFFFF, 0.8f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF).r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_staryu", "pk_starmie"})) != 0) {
+    // starfish and their red cores; Starmie's psychic rings
+    stage(st, 2);
+    sp.f(kStarLitePiece, st == 1 ? 0xC8A060 : 0x8A6AC8, 0xF2E0B0, 1.0f).f(kGemPiece, 0xE0203A, 0xFF8090, 0.7f, 0.7f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomPsyRings, 0xFF9AD8, 0xA040FF);
+    sp.py(st == 2 ? kPyroRings : kPyroWater, 0xE6F7FF, 0x8A6AC8);
+  } else if ((st = stage_in(pack, {"pk_magikarp", "pk_gyarados"})) != 0) {
+    // Magikarp's splashes (and more Magikarp); Gyarados' crashing waves and blue dragon fire in a storm
+    stage(st, 2);
+    if (st == 1) {
+      sp.f(kFishPiece, 0xE8542A, 0xF2E0B0, 1.0f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.8f, 0.2f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+      sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+      sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+    } else {
+      sp.f(kWavePiece, 0x2A6AC8, 0xF4FAFF, 1.3f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.8f, 0.2f).f(kFlame, 0xBFE8FF, 0x2A5AFF, 1.0f, 0.9f);
+      sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomLightning, 0xFFFFFF, 0x9FC8FF);
+      sp.py(kPyroSpout, 0xE6F7FF, 0x58A8FF);
+    }
+  } else if ((st = stage_in(pack, {"pk_porygon", "pk_porygon2"})) != 0) {
+    // pixel cubes and data: little cubes, glowing hexes, beams
+    stage(st, 2);
+    sp.f(kCubePiece, 0xFF7A9A, 0x3AA8E8, 1.0f).f(kCubePiece, 0x3AA8E8, 0xFFFFFF, 0.55f, 0.4f);
+    if (st == 2) sp.f(kCubePiece, 0xE8343A, 0x2A5AC8, 0.8f);
+    sp.r(kRoomHex, 0xBFF8FF, 0x30C8FF).r(kRoomLasers, 0xFF9AC8, 0x3AA8E8);
+    sp.py(kPyroFireworks, 0xFF7A9A, 0x3AA8E8);
+  } else if ((st = stage_in(pack, {"pk_omanyte", "pk_omastar"})) != 0) {
+    // spiral shells from the old sea; Omastar's spikes
+    stage(st, 2);
+    sp.f(kFossilPiece, 0x6AA8E0, 0xF2E8C8, 1.0f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 2) sp.f(kSpikePiece, 0xE8D8B0, 0xFFFFFF, 0.9f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF).r(kRoomDust, 0xC8B898, 0x6A5A48);
+    sp.py(st == 2 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_sentret", "pk_furret"})) != 0) {
+    // a scout's forest finds: acorns, green leaves and autumn maple leaves
+    stage(st, 2);
+    sp.f(kAcornPiece, 0xA0703A, 0x5A3A1A, 0.9f).f(kLeafPiece, 0x6AAE3A, 0xC0E080, 1.0f).f(kMapleLeafPiece, 0xD88A30, 0xF0C060, 1.0f);
+    sp.r(kRoomLeaves, 0x6AAE3A, 0xC0E080);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_hoothoot", "pk_noctowl"})) != 0) {
+    // owl feathers by moonlight, Hypnosis; Noctowl's eyes in the dark
+    stage(st, 2);
+    sp.f(kFeatherPiece, 0xA06A3A, 0xF0D8B0, 1.0f).f(kCrescentPiece, 0xFFE070, 0xFFF4C0, 0.9f, 0.6f);
+    sp.r(kRoomFog, 0x303048, 0x0A0A14).r(kRoomSpiral, 0xFFB050, 0x6A3A1A);
+    if (st == 2) sp.r(kRoomEyes, 0xFF3040, 0xFFE070);
+    sp.py(kPyroRings, 0xFFE070, 0xA06A3A);
+  } else if ((st = stage_in(pack, {"pk_ledyba", "pk_ledian"})) != 0) {
+    // the stars it's said to come from (Ledian's Comet Punch), ladybird red
+    stage(st, 2);
+    sp.f(kStarLitePiece, 0xE8342A, 0xFFE070, 1.0f, 0.3f).f(kTwinkle, 0xFFFFFF, 0xFFE070, 0.8f, 0.8f);
+    if (st == 2) sp.f(kImpactPiece, 0xFFE040, 0xE8342A, 0.9f, 0.3f);
+    sp.r(kRoomMotes, 0xFFF0C0, 0xFFC040);
+    sp.py(kPyroFireworks, 0xE8342A, 0xFFE070);
+  } else if ((st = stage_in(pack, {"pk_spinarak", "pk_ariados"})) != 0) {
+    // webs and spiders; Ariados' eyes in the dark
+    stage(st, 2);
+    sp.f(kWebPiece, 0xF2F4F8, 0xFFFFFF, 1.3f).f(kSpiderPiece, st == 1 ? 0x6AB04A : 0xC8243A, 0xF2D030, 0.8f);
+    sp.r(kRoomFog, 0x405040, 0x101810);
+    if (st == 2) sp.r(kRoomEyes, 0xFFD040, 0xC8243A);
+    sp.py(kPyroFireworks, st == 1 ? 0x6AB04A : 0xC8243A, 0xF2D030);
+  } else if ((st = stage_in(pack, {"pk_chinchou", "pk_lanturn"})) != 0) {
+    // the deep sea's lights: glowing orbs, bolts, bubbles
+    stage(st, 2);
+    sp.f(kPearl, 0xFFF4A0, 0xFFE040, 0.6f, 0.9f).f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.2f, 0.9f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomOrbs, 0xFFF4A0, 0x5AB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(kPyroWater, 0xE6F7FF, 0xFFE040);
+  } else if ((st = stage_in(pack, {"pk_cleffa", "pk_clefairy", "pk_clefable"})) != 0) {
+    // a moonlit dance: moons, stars, twinkles
+    stage(st, 3);
+    sp.f(kCrescentPiece, 0xFFF0A0, 0xFFFFFF, 0.9f, 0.6f).f(kStarLitePiece, 0xFFC0D8, 0xFFFFFF, 0.9f, 0.4f).f(kTwinkle, 0xFFFFFF, 0xFFB0D8, 0.8f, 0.8f);
+    sp.r(kRoomMotes, 0xFFE0F0, 0xFF9AC8);
+    if (st >= 2) sp.r(kRoomLevitate, 0xFFD0E8, 0xFF9AC8);
+    sp.py(kPyroFireworks, 0xFFB0D8, 0xFFF0A0);
+  } else if ((st = stage_in(pack, {"pk_togepi", "pk_togetic"})) != 0) {
+    // its egg shell (red and blue spots), hearts, stars; Togetic's white feathers
+    stage(st, 2);
+    sp.f(kEggLitePiece, 0xFFFAF0, 0xE8342A, 0.9f).f(kEggLitePiece, 0xFFFAF0, 0x3A6AE8, 0.9f);
+    if (st == 1) sp.f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f);
+    else sp.f(kFeatherPiece, 0xFFFFFF, 0xF0F0F8, 1.0f);
+    sp.r(kRoomMotes, 0xFFF0C0, 0xFF9AC8);
+    sp.py(kPyroFireworks, 0xE8342A, 0x3A6AE8);
+  } else if ((st = stage_in(pack, {"pk_natu", "pk_xatu"})) != 0) {
+    // green feathers, Future Sight's rings; Xatu's watching eyes, rising
+    stage(st, 2);
+    sp.f(kFeatherPiece, 0x4AB040, 0xF2D030, 1.0f).f(kRingFx, 0xFF9AD8, 0xA040FF, 0.8f, 0.8f);
+    sp.r(kRoomPsyRings, 0xFF9AD8, 0xA040FF);
+    if (st == 2) sp.r(kRoomEyes, 0xFFE040, 0xE8342A).r(kRoomLevitate, 0xFFB0E0, 0xA040FF);
+    sp.py(kPyroRings, 0xFF9AD8, 0xA040FF);
+  } else if ((st = stage_in(pack, {"pk_hoppip", "pk_skiploom", "pk_jumpluff"})) != 0) {
+    // cotton puffs and real leaves on the wind; Skiploom's yellow flower
+    stage(st, 3);
+    sp.f(kWoolPiece, st == 3 ? 0xF4F4FF : 0xFFFFFF, 0xFFFFFF, 0.8f).f(kLeafPiece, 0x6AC84A, 0xC0F090, 1.0f);
+    if (st == 1) sp.f(kBladeLeafPiece, 0x5AB83A, 0xB0E080, 0.9f);
+    else if (st == 2) sp.f(kPetal, 0xFFE040, 0xFFF4A0, 0.9f);
+    else sp.f(kSpark, 0xE8FFB0, 0x9AD050, 0.6f, 0.8f);
+    sp.r(kRoomLeaves, 0x6AC84A, 0xC0F090).r(kRoomMotes, 0xFFFFFF, 0xE8F0FF);
+    sp.py(kPyroPuffs, 0xFFFFFF, 0xC8F0A0);
+  } else if ((st = stage_in(pack, {"pk_sunkern", "pk_sunflora"})) != 0) {
+    // real leaves and sunflower petals in the sun; Sunflora's Solar Beam flashes
+    stage(st, 2);
+    sp.f(kLeafPiece, 0x5AAE3A, 0xB0E080, 1.0f).f(kPetal, 0xFFD020, 0xFFF0A0, 1.0f);
+    if (st == 2) sp.f(kStarLitePiece, 0xFFE040, 0xFFF8C0, 0.8f, 0.6f);
+    sp.r(kRoomMotes, 0xFFF0A0, 0xFFC020);
+    if (st == 2) sp.r(kRoomFlashes, 0xFFFFFF, 0xFFE070);
+    sp.py(kPyroFireworks, 0xFFD020, 0x5AAE3A);
+  } else if ((st = stage_in(pack, {"pk_pineco", "pk_forretress"})) != 0) {
+    // it bursts: Spikes and a blast; Forretress' steel screws
+    stage(st, 2);
+    sp.f(kSpikePiece, 0x6A8A5A, 0xD8E0C8, 0.9f).f(kImpactPiece, 0xFFE040, 0xFF7A1A, 1.0f, 0.3f);
+    if (st == 2) sp.f(kScrewPiece, 0xB8A8D8, 0x6A5A88, 0.9f);
+    sp.r(kRoomSparks, 0xFFF0B0, 0xFF5A10).r(kRoomSmoke, 0x808080, 0x303030);
+    sp.py(kPyroBlast, 0xFFE0A0, 0xFF6A10);
+  } else if ((st = stage_in(pack, {"pk_snubbull", "pk_granbull"})) != 0) {
+    // bones and pink hearts (a fairy); Granbull's fangs
+    stage(st, 2);
+    sp.f(kBone, 0xEDE6D2, 0xC8C0A8, 1.0f).f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f);
+    if (st == 2) sp.f(kSpikePiece, 0xFFFFF0, 0xFFFFFF, 0.8f);
+    sp.r(kRoomMotes, 0xFFD0E8, 0xFF8AC0);
+    if (st == 2) sp.r(kRoomFloorRings, 0xFFFFFF, 0xC870A8);
+    sp.py(st == 2 ? kPyroBlast : kPyroFireworks, 0xFF9AC0, 0xFFFFFF);
+  } else if ((st = stage_in(pack, {"pk_slugma", "pk_magcargo"})) != 0) {
+    // lava drops and flames, smoke; Magcargo's rock shell
+    stage(st, 2);
+    sp.f(kDrop, 0xFFB030, 0xFF3A00, 0.8f, 0.8f).f(kFlame, 0xFFD040, 0xE8300A, 1.0f, 0.9f);
+    if (st == 2) sp.f(kRock, 0x8A6A60, 0x4A3A34, 0.9f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF4010).r(kRoomSmoke, 0x707070, 0x303030);
+    sp.py(kPyroLava, 0xFFD060, 0xFF3A00);
+  } else if ((st = stage_in(pack, {"pk_swinub", "pk_piloswine"})) != 0) {
+    // snow, ice and frozen mud
+    stage(st, 2);
+    sp.f(kSnowflakePiece, 0xE8FAFF, 0xFFFFFF, 1.0f, 0.3f).f(kIceBlock, 0xCFF4FF, 0xFFFFFF, 0.8f).f(kDrop, 0x8B5A2B, 0x4A2E14, 0.8f);
+    sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+    if (st == 2) sp.r(kRoomDust, 0xE8F0F8, 0x9AA8B8);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_remoraid", "pk_octillery"})) != 0) {
+    // Water Gun jets and little fish; Octillery's ink (Octazooka)
+    stage(st, 2);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    if (st == 1) sp.f(kFishPiece, 0xA8B8C8, 0xE8F0F8, 0.9f);
+    else sp.f(kDrop, 0x2A2A3A, 0x0A0A14, 0.8f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomSmoke, 0x404048, 0x101014);
+    sp.py(kPyroSpout, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_phanpy", "pk_donphan"})) != 0) {
+    // Rollout: rocks, impacts, dust and rings; Donphan's tusks
+    stage(st, 2);
+    sp.f(kRock, 0x8C8478, 0x5A544C, 0.9f).f(kImpactPiece, 0xFFE040, 0xFF7A1A, 0.9f, 0.3f);
+    if (st == 2) sp.f(kHornPiece, 0xF2EEE0, 0xFFFFFF, 1.0f);
+    sp.r(kRoomDust, 0xB8A890, 0x6A5A48).r(kRoomFloorRings, 0xD8C0A0, 0x8A6A48);
+    sp.py(st == 2 ? kPyroBlast : kPyroThrow, 0xFFE0A0, 0xFF7A1A);
+  } else if ((st = stage_in(pack, {"pk_poochyena", "pk_mightyena"})) != 0) {
+    // bones and a howl at the moon, eyes in the dark
+    stage(st, 2);
+    sp.f(kBone, 0xEDE6D2, 0xC8C0A8, 1.0f).f(kCrescentPiece, 0xFFE070, 0xFFF4C0, 0.9f, 0.6f);
+    sp.r(kRoomFog, 0x303048, 0x0A0A14).r(kRoomEyes, 0xFF3040, 0xFFD84A);
+    sp.py(kPyroRings, 0xFFD84A, 0x2A2A40);
+  } else if ((st = stage_in(pack, {"pk_zigzagoon", "pk_linoone"})) != 0) {
+    // what Pickup finds (acorns, leaves, a Poke Ball), zigzag dust; Linoone's straight-line slashes
+    stage(st, 2);
+    sp.f(kAcornPiece, 0xA0703A, 0x5A3A1A, 0.9f).f(kLeafPiece, 0x7AB04A, 0xC8E090, 1.0f).f(kPokeBall, 0xE8242A, 0xF4F4F4, 0.7f);
+    sp.r(kRoomDust, 0xD8C8A8, 0x8A7A58);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xC8B898);
+    sp.py(kPyroThrow);
+  } else if ((st = stage_in(pack, {"pk_wurmple", "pk_silcoon", "pk_beautifly", "pk_cascoon", "pk_dustox"})) != 0) {
+    // Wurmple's silk and stings; the cocoons' silk (Silcoon white, Cascoon purple); Beautifly's bright wing petals and
+    // pollen; Dustox's poison powder by moonlight
+    const bool moth = st >= 4;
+    sp.stage = st == 1 ? 1.0f : ((st == 2 || st == 4) ? 2.0f : 3.0f);
+    if (st == 1) sp.f(kWoolPiece, 0xF4F4EC, 0xFFFFFF, 0.7f).f(kSpikePiece, 0xE8E0D0, 0xE8342A, 0.8f).f(kLeafPiece, 0x5AAE3A, 0xB0E080, 1.0f);
+    else if (st == 2 || st == 4) sp.f(kWoolPiece, st == 2 ? 0xFFFFFF : 0xC8A8E0, 0xFFFFFF, 0.9f).f(kSpikePiece, 0xE8E0D0, 0xFFFFFF, 0.7f);
+    else if (st == 3) sp.f(kPetal, 0xFFD030, 0x3A3AA8, 1.0f).f(kPetal, 0xE8342A, 0xFFD030, 1.0f).f(kSpark, 0xFFF0A0, 0xFFC040, 0.6f, 0.8f);
+    else sp.f(kPetal, 0x7AB040, 0xC8E070, 1.0f).f(kSpark, 0xD8F070, 0x8AA830, 0.6f, 0.8f).f(kCrescentPiece, 0xFFF0A0, 0xFFFFFF, 0.8f, 0.6f);
+    sp.r(kRoomMotes, moth ? 0xE0F0A0 : 0xFFF0C0, moth ? 0x8AA830 : 0xFFC040);
+    if (st == 5) sp.r(kRoomFog, 0x405040, 0x101810);
+    sp.py(st == 3 || st == 5 ? kPyroPuffs : kPyroNone, moth ? 0xD8F070 : 0xFFE070, moth ? 0x6A8A20 : 0xE8342A);
+  } else if ((st = stage_in(pack, {"pk_taillow", "pk_swellow"})) != 0) {
+    // navy and white feathers, Wing Attack's slashes
+    stage(st, 2);
+    sp.f(kFeatherPiece, 0x2A3A6A, 0xE8402A, 1.0f).f(kFeatherPiece, 0xF4F4F0, 0xD8D8D0, 0.8f);
+    sp.r(kRoomSlashes, 0xFFFFFF, 0x6A8AC8);
+    sp.py(kPyroSlash, 0xFFFFFF, 0x2A3A6A);
+  } else if ((st = stage_in(pack, {"pk_wingull", "pk_pelipper"})) != 0) {
+    // seagull feathers and sea spray; Pelipper's catch and its rain
+    stage(st, 2);
+    sp.f(kFeatherPiece, 0xFFFFFF, 0xD8E0E8, 1.0f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 2) sp.f(kFishPiece, 0xA8B8C8, 0xE8F0F8, 0.8f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    sp.py(st == 2 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_surskit", "pk_masquerain"})) != 0) {
+    // bubbles on a pond; Masquerain's eye-spot wings staring (Intimidate)
+    stage(st, 2);
+    sp.f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.7f, 0.4f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 2) sp.f(kPetal, 0xD8E8F8, 0x5A8AC8, 1.0f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomEyes, 0xFFE040, 0x3A6AC8);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_nincada", "pk_ninjask", "pk_shedinja"})) != 0) {
+    // Nincada's dug-up dirt; Ninjask too quick to see; Shedinja's empty shell, its halo, ghost fire
+    sp.stage = st == 1 ? 1.0f : 3.0f;
+    if (st == 1) {
+      sp.f(kRock, 0x8A6A48, 0x5A4430, 0.8f).f(kTalonPiece, 0xE8E0D0, 0xFFFFFF, 0.8f);
+      sp.r(kRoomDust, 0xB89870, 0x6A5038);
+      sp.py(kPyroThrow);
+    } else if (st == 2) {
+      sp.f(kSlash, 0xFFFFFF, 0xE8D040, 1.2f, 0.8f).f(kShard, 0xE8D040, 0x2A2A2A, 0.9f);
+      sp.r(kRoomSlashes, 0xFFFFFF, 0xE8D040);
+      sp.py(kPyroSlash, 0xFFFFFF, 0xE8D040);
+    } else {
+      sp.f(kShard, 0xC8A870, 0xF0E0B0, 0.9f).f(kRingFx, 0xFFF0A0, 0xFFD040, 0.9f, 0.8f).f(kWisp, 0xF4F4FF, 0x8A9AFF, 1.0f, 0.8f);
+      sp.r(kRoomFog, 0xA898C0, 0x3A3050).r(kRoomWisps, 0xE8F0FF, 0x7A8AFF);
+      sp.py(kPyroNone);
+    }
+  } else if ((st = stage_in(pack, {"pk_azurill", "pk_marill", "pk_azumarill"})) != 0) {
+    // bubbles and water, bouncing blue balls (their tails)
+    stage(st, 3);
+    sp.f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.7f, 0.4f).f(kPearl, 0x5A9AE8, 0xBFE0FF, 0.6f, 0.2f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st >= 2) sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    sp.py(st == 3 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_skitty", "pk_delcatty"})) != 0) {
+    // Attract's hearts, Sing's notes; Delcatty's elegant stars
+    stage(st, 2);
+    sp.f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f).f(kNoteQuad, 0xFFE070, 0xFFFFFF, 0.8f, 0.3f);
+    if (st == 2) sp.f(kStarLitePiece, 0xC8A0E0, 0xFFF0C0, 0.8f, 0.3f);
+    sp.r(kRoomNotes, 0xFF8FC8, 0xFFD0E8).r(kRoomMotes, 0xFFD0E8, 0xFF8AC0);
+    sp.py(kPyroFireworks, 0xFF9AC0, 0xFFF0C0);
+  } else if ((st = stage_in(pack, {"pk_electrike", "pk_manectric"})) != 0) {
+    // lightning and sparks, a thunderstorm
+    stage(st, 2);
+    sp.f(kBoltPiece, 0xFFE14A, 0xFFF6B0, 1.3f + 0.1f * st, 0.9f).f(kSpark, 0xFFFFE0, 0x7FD0FF, 0.6f, 0.9f);
+    sp.r(kRoomLightning, 0xFFFFFF, 0xFFE040).r(kRoomSparks, 0xFFFFE0, 0xFFD020);
+    sp.py(kPyroNone);
+  } else if ((st = stage_in(pack, {"pk_gulpin", "pk_swalot"})) != 0) {
+    // it swallows anything: sludge, bubbles, the odd pill
+    stage(st, 2);
+    sp.f(kDrop, 0xB8D850, 0x6A8A20, 0.8f, 0.2f).f(kBubble, 0xD8F0A0, 0xFFFFFF, 0.7f, 0.4f).f(kPill, 0xE8242A, 0xFFD21F, 0.7f);
+    sp.r(kRoomFog, 0xB8D850, 0x6B3FA0).r(kRoomBubbles, 0xD8F0A0, 0xFFFFFF);
+    sp.py(kPyroPuffs, 0xB8D850, 0x8A4FC0);
+  } else if ((st = stage_in(pack, {"pk_carvanha", "pk_sharpedo"})) != 0) {
+    // fangs and foam; Sharpedo tearing through the water
+    stage(st, 2);
+    sp.f(kSpikePiece, 0xFFFFF0, 0xFFFFFF, 0.8f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0x3A5AA8);
+    sp.py(st == 2 ? kPyroSlash : kPyroWater, 0xE6F7FF, 0x3A5AA8);
+  } else if ((st = stage_in(pack, {"pk_wailmer", "pk_wailord"})) != 0) {
+    // a whale's water spout; Wailord's waves
+    stage(st, 2);
+    sp.f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.8f, 0.2f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.7f, 0.4f);
+    if (st == 2) sp.f(kWavePiece, 0x3A7AD8, 0xF4FAFF, 1.3f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF).r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    sp.py(kPyroSpout, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_numel", "pk_camerupt"})) != 0) {
+    // embers and rocks; Camerupt's volcanoes erupt: lava, smoke and falling rocks
+    stage(st, 2);
+    sp.f(kFlame, 0xFFC830, 0xE8300A, 1.0f, 0.9f).f(kRock, 0x6A5A50, 0x3A302A, 0.9f);
+    if (st == 2) sp.f(kDrop, 0xFFB030, 0xFF3A00, 0.8f, 0.8f);
+    sp.r(kRoomEmbers, 0xFFD060, 0xFF4010).r(kRoomSmoke, 0x606060, 0x202020);
+    if (st == 2) sp.r(kRoomMeteors, 0x8A6A50, 0x4A3A2A);
+    sp.py(st == 2 ? kPyroLava : kPyroFlame, 0xFFD060, 0xFF3A00);
+  } else if ((st = stage_in(pack, {"pk_spoink", "pk_grumpig"})) != 0) {
+    // its pearls (Spoink's pink, Grumpig's black), psychic rings, bouncing up
+    stage(st, 2);
+    sp.f(kPearl, st == 1 ? 0xFF9AC8 : 0x2A2A3A, st == 1 ? 0xFFD8E8 : 0x8A6AC8, 0.6f, 0.4f).f(kRingFx, 0xFF9AD8, 0xA040FF, 0.8f, 0.8f);
+    sp.r(kRoomPsyRings, 0xFF9AD8, 0xA040FF).r(kRoomLevitate, 0xFFB0E0, 0xA040FF);
+    sp.py(kPyroRings, 0xFF9AD8, 0xA040FF);
+  } else if ((st = stage_in(pack, {"pk_swablu", "pk_altaria"})) != 0) {
+    // cotton-cloud wings and blue feathers; Altaria's humming
+    stage(st, 2);
+    sp.f(kWoolPiece, 0xFFFFFF, 0xFFFFFF, 0.9f).f(kFeatherPiece, 0x6AB8F0, 0xE8F4FF, 1.0f);
+    if (st == 2) sp.f(kNoteQuad, 0xBFE8FF, 0xFFFFFF, 0.8f, 0.3f);
+    sp.r(kRoomMotes, 0xFFFFFF, 0xBFE0FF);
+    if (st == 2) sp.r(kRoomNotes, 0xBFE8FF, 0xFFFFFF);
+    sp.py(st == 2 ? kPyroBreath : kPyroPuffs, 0xE0F0FF, 0x6AB8F0);
+  } else if ((st = stage_in(pack, {"pk_barboach", "pk_whiscash"})) != 0) {
+    // mud, bubbles and whiskered fish; Whiscash's earthquakes
+    stage(st, 2);
+    sp.f(kDrop, 0x8B5A2B, 0x4A2E14, 0.8f).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f).f(kFishPiece, 0x7A9AC8, 0xE8E0C0, 0.9f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomDust, 0xB8A890, 0x6A5A48).r(kRoomFloorRings, 0xD8C0A0, 0x8A6A48);
+    sp.py(st == 2 ? kPyroBlast : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_corphish", "pk_crawdaunt"})) != 0) {
+    // pincers and bubbles; Crawdaunt's Crabhammer slashes
+    stage(st, 2);
+    sp.f(kPincerPiece, 0xD8342A, 0xF2E0B0, 1.0f + 0.2f * (st - 1)).f(kBubble, 0xBFE8FF, 0xFFFFFF, 0.6f, 0.4f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomSlashes, 0xFFFFFF, 0xD8342A);
+    sp.py(st == 2 ? kPyroSlash : kPyroWater, 0xFFFFFF, 0xD8342A);
+  } else if ((st = stage_in(pack, {"pk_baltoy", "pk_claydol"})) != 0) {
+    // clay shards and spinning tops (it spins), psychic rings, dust; Claydol's eyes
+    stage(st, 2);
+    sp.f(kTopPiece, 0xC8A070, 0x8A3A2A, 1.0f).f(kShard, 0xC8A070, 0xE8D0A0, 0.8f);
+    sp.r(kRoomPsyRings, 0xFFE0A0, 0xC86A3A).r(kRoomDust, 0xD8C0A0, 0x8A6A48);
+    if (st == 2) sp.r(kRoomEyes, 0xFF3040, 0xFFE070);
+    sp.py(kPyroRings, 0xFFE0A0, 0xC86A3A);
+  } else if ((st = stage_in(pack, {"pk_lileep", "pk_cradily"})) != 0) {
+    // fossils and sea-lily fronds (purple and green), the old sea's bubbles
+    stage(st, 2);
+    sp.f(kFossilPiece, 0x9A8AA8, 0xD8C8E0, 1.0f).f(kBladeLeafPiece, 0xB070C8, 0xF0C0E8, 1.0f).f(kBladeLeafPiece, 0x6AA040, 0xC0E080, 1.0f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF).r(kRoomDust, 0xC8B898, 0x6A5A48);
+    sp.py(kPyroPuffs, 0xF0C0E8, 0xB070C8);
+  } else if ((st = stage_in(pack, {"pk_feebas", "pk_milotic"})) != 0) {
+    // Feebas' splashing (and itself); Milotic, the most beautiful: shimmering scales, hearts, rain
+    stage(st, 2);
+    if (st == 1) sp.f(kFishPiece, 0x9A7A50, 0x6A8AA8, 1.0f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    else sp.f(kGemPiece, 0xFF9AC0, 0xFFE0F0, 0.8f, 0.6f).f(kGemPiece, 0x6AB8F0, 0xE0F4FF, 0.8f, 0.6f).f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f);
+    sp.r(kRoomRain, 0xE8F6FF, 0x7FB8FF);
+    if (st == 2) sp.r(kRoomMotes, 0xFFD0E8, 0x7FC8FF);
+    sp.py(st == 2 ? kPyroSpout : kPyroWater, 0xE6F7FF, 0x58A8FF);
+  } else if ((st = stage_in(pack, {"pk_wynaut", "pk_wobbuffet"})) != 0) {
+    // Counter and Mirror Coat: a barrier, mirror shards, psychic rings
+    stage(st, 2);
+    sp.f(kShard, 0xD8F0FF, 0xFFFFFF, 0.9f).f(kRingFx, 0x9FD8FF, 0x3A6AE8, 0.8f, 0.8f);
+    sp.r(kRoomBarrier, 0xBFF0FF, 0x7FD0FF).r(kRoomPsyRings, 0x9FD8FF, 0x3A6AE8);
+    sp.py(kPyroRings, 0x9FD8FF, 0x3A6AE8);
+  } else if ((st = stage_in(pack, {"pk_snorunt", "pk_glalie"})) != 0) {
+    // a blizzard: snowflakes, icicles; Glalie's ice blocks and icy breath
+    stage(st, 2);
+    sp.f(kSnowflakePiece, 0xE8FAFF, 0xFFFFFF, 1.0f, 0.3f).f(kIcicle, 0xE8FAFF, 0x7FC8F0, 1.0f);
+    if (st == 2) sp.f(kIceBlock, 0xCFF4FF, 0xFFFFFF, 0.9f);
+    sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+    if (st == 2) sp.r(kRoomFog, 0xE8F4FF, 0x9AB8D8);
+    sp.py(st == 2 ? kPyroBreath : kPyroFireworks, 0xE8FAFF, 0x7FC8F0);
+  } else if ((st = stage_in(pack, {"pk_spheal", "pk_sealeo", "pk_walrein"})) != 0) {
+    // snow and sea water; Spheal's balls rolled on the ice, Sealeo's ice, Walrein's tusks
+    stage(st, 3);
+    sp.f(kSnowflakePiece, 0xE8FAFF, 0xFFFFFF, 1.0f, 0.3f).f(kDrop, 0x9FD8FF, 0x2A7FE0, 0.7f, 0.2f);
+    if (st == 1) sp.f(kPearl, 0x7FB8F0, 0xE0F0FF, 0.6f, 0.2f);
+    else if (st == 2) sp.f(kIceBlock, 0xCFF4FF, 0xFFFFFF, 0.8f);
+    else sp.f(kHornPiece, 0xF2EEE0, 0xFFFFFF, 1.1f);
+    sp.r(kRoomSnow, 0xFFFFFF, 0xCFE8FF);
+    if (st == 3) sp.r(kRoomFloorRings, 0xFFFFFF, 0x9FD8FF);
+    sp.py(kPyroWater, 0xE6F7FF, 0x9FD8FF);
+  } else if ((st = stage_in(pack, {"pk_clamperl", "pk_huntail", "pk_gorebyss"})) != 0) {
+    // its shell and pearls; Huntail's fangs in the deep; Gorebyss' pink grace
+    sp.stage = st == 1 ? 1.0f : 3.0f;
+    sp.f(kPearl, 0xFFF8F0, 0xF0D8E8, 0.55f, 0.3f);
+    if (st == 1) sp.f(kScallopPiece, 0x5A8AE8, 0xD8E8FF, 1.0f);
+    else if (st == 2) sp.f(kSpikePiece, 0xFFFFF0, 0xFFFFFF, 0.8f).f(kFishPiece, 0x3A5AA8, 0xF2D040, 0.9f);
+    else sp.f(kHeartLitePiece, 0xFF9AC0, 0xFFD0E0, 0.8f).f(kFishPiece, 0xFF9AC0, 0xFFE0F0, 0.9f);
+    sp.r(kRoomBubbles, 0xBFE8FF, 0xFFFFFF);
+    if (st == 2) sp.r(kRoomFog, 0x203048, 0x080C14);
+    if (st == 3) sp.r(kRoomMotes, 0xFFD0E8, 0xFF8AC0);
+    sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
   // --- r123 (Lance: "creating things for each super hero to drop from the air during their celebration"): the Marvel
   // heroes (any costume: mua_<hero> / mua_<hero>_cN) ---
   } else if (std::strncmp(pack, "mua_", 4) == 0) {
@@ -984,6 +1567,57 @@ Special special_for_pack(const char* pack) {
       sp.f(kBoltPiece, 0xFFE070, 0xFFF6C0, 1.3f, 0.9f).f(kStarLitePiece, 0xF2C230, 0xFFE890, 1.0f, 0.5f);
       sp.r(kRoomSparks, 0xFFF0A0, 0xF2C230).r(kRoomFlashes, 0xFFFFFF, 0xFFE070);
       sp.py(kPyroBlast, 0xFFE070, 0xC8141E);
+    // r135: three more heroes and the nine NPCs (light pieces, r130 / r135)
+    } else if (is("mua_captainmarvel")) {  // gold Kree stars, photon orbs, Nega-Band rings; photon flashes
+      sp.f(kStarLitePiece, 0xF2C230, 0xFFE890, 1.0f, 0.5f).f(kPearl, 0xFFE070, 0xFFF6C0, 0.6f, 0.9f);
+      sp.f(kRingFx, 0xFFD040, 0xFFF0A0, 0.9f, 0.8f);
+      sp.r(kRoomFlashes, 0xFFFFFF, 0xFFE070).r(kRoomSparks, 0xFFF0A0, 0xF2C230);
+      sp.py(kPyroBlast, 0xFFE070, 0x1E3A8A);
+    } else if (is("mua_lukecage")) {  // broken chain links, brick chunks, gold "Hero for Hire" coins
+      sp.f(kChainPiece, 0xC8CCD4, 0xE8ECF0, 1.0f).f(kBrickPiece, 0xA8442A, 0xD8D0C0, 1.0f).f(kCoin, 0xFFC21F, 0xFFE27A, 0.8f);
+      sp.r(kRoomDust, 0xC8A890, 0x6A4A3A).r(kRoomFloorRings, 0xFFFFFF, 0xF2C230);
+      sp.py(kPyroBlast, 0xFFE070, 0xF2C230);
+    } else if (is("mua_ronin")) {  // shuriken, cherry petals, smoke bombs
+      sp.f(kShurikenPiece, 0x3A3A44, 0xC8CCD4, 1.0f).f(kPetal, 0xFFB8D0, 0xFFE8F0, 0.9f).f(kPearl, 0x1A1A1E, 0x5A5A60, 0.55f);
+      sp.r(kRoomSmoke, 0x707078, 0x2A2A30).r(kRoomSlashes, 0xFFFFFF, 0xFF9AC0);
+      sp.py(kPyroSlash, 0xFFFFFF, 0x1A1A1E);
+    } else if (is("mua_nightcrawler")) {  // brimstone puffs (BAMF!), cutlasses
+      sp.f(kSword, 0xC8CCD4, 0x3A2A5A, 1.1f).f(kWisp, 0x9A6AD0, 0x2A1A4A, 1.0f, 0.8f);
+      sp.r(kRoomSmoke, 0x6A4A8A, 0x1A1028).r(kRoomFlashes, 0xFFFFFF, 0x9A6AD0);
+      sp.py(kPyroPuffs, 0x9A6AD0, 0x2A1A4A);
+    } else if (is("mua_jeangrey")) {  // the Phoenix: fire and gold-red feathers, psychic rings
+      sp.f(kFlame, 0xFFD040, 0xE8300A, 1.2f, 0.9f).f(kFeatherPiece, 0xF2A020, 0xE8300A, 1.1f, 0.4f);
+      sp.r(kRoomEmbers, 0xFFD060, 0xFF4010).r(kRoomPsyRings, 0xFFB030, 0xE8300A);
+      sp.py(kPyroBreath, 0xFFE070, 0xE8300A);
+    } else if (is("mua_professorx")) {  // psychic rings round the room (Cerebro), twinkles, rising
+      sp.f(kRingFx, 0xE0B0FF, 0x8A3FD1, 1.0f, 0.8f).f(kTwinkle, 0xF0D8FF, 0x9A50E0, 0.9f, 0.8f);
+      sp.r(kRoomPsyRings, 0xE0B0FF, 0x8A3FD1).r(kRoomLevitate, 0xF0C8FF, 0x8A3FD1);
+      sp.py(kPyroRings, 0xE0B0FF, 0x8A3FD1);
+    } else if (is("mua_vision")) {  // the Mind Stone's yellow diamonds and green ones, its solar beam
+      sp.f(kGemPiece, 0xF2D030, 0xFFF4A0, 0.9f, 0.6f).f(kGemPiece, 0x3AB86A, 0xB8FFD0, 0.7f, 0.5f);
+      sp.r(kRoomLasers, 0xFFF4A0, 0xF2D030).r(kRoomMotes, 0xFFF0A0, 0xD8342A);
+      sp.py(kPyroBlast, 0xFFF4A0, 0x3AB86A);
+    } else if (is("mua_drdoom")) {  // green magic: runes and bolts, the Latverian crest on a shield
+      sp.f(kRunePiece, 0x3AD86A, 0xB8FFD0, 1.2f, 0.9f).f(kShield, 0x3A6A3A, 0xC8A030, 1.0f);
+      sp.f(kBoltPiece, 0xB8FFC8, 0x2AC85A, 1.1f, 0.9f);
+      sp.r(kRoomPsyRings, 0x5AE88A, 0x1A8A3A).r(kRoomLightning, 0xE0FFE8, 0x2AC85A);
+      sp.py(kPyroRings, 0x5AE88A, 0x1A8A3A);
+    } else if (is("mua_mysterio")) {  // green smoke, fishbowl bubbles, illusions' flashes
+      sp.f(kBubble, 0xE0F4FF, 0xFFFFFF, 1.0f, 0.5f).f(kPearl, 0x7AE07A, 0xC8FFC8, 0.6f, 0.6f);
+      sp.r(kRoomSmoke, 0x6ABA6A, 0x1A3A1A).r(kRoomFog, 0x7AC87A, 0x1A3A1A).r(kRoomFlashes, 0xFFFFFF, 0xA060E0);
+      sp.py(kPyroPuffs, 0x7AE07A, 0x6A2A9A);
+    } else if (is("mua_lizard")) {  // green scales, lab flasks, jungle leaves
+      sp.f(kShard, 0x3A8A3A, 0x8AD06A, 0.8f).f(kFlaskPiece, 0xE0F0F0, 0x7AE07A, 1.0f).f(kLeafPiece, 0x3E8A34, 0x9AD070, 1.0f);
+      sp.r(kRoomFog, 0x5A8A5A, 0x102010).r(kRoomBubbles, 0xC8F0C8, 0xFFFFFF);
+      sp.py(kPyroSlash, 0xFFFFFF, 0x3A8A3A);
+    } else if (is("mua_rhino")) {  // horn chunks, rubble and bricks: a charge through a wall
+      sp.f(kHornPiece, 0x9A9A9E, 0xE8E8E0, 1.1f).f(kRock, 0x8A8070, 0x5A5048, 1.0f).f(kBrickPiece, 0xA8442A, 0xD8D0C0, 0.9f);
+      sp.r(kRoomDust, 0xC8C0B0, 0x6A6458).r(kRoomFloorRings, 0xFFFFFF, 0x9A9A9E);
+      sp.py(kPyroBlast, 0xFFE0A0, 0x8A8070);
+    } else if (is("mua_wintersoldier")) {  // red stars and bullets, laser sights through the smoke
+      sp.f(kStarLitePiece, 0xC8141E, 0xFF6060, 1.0f, 0.3f).f(kBulletPiece, 0xD8A840, 0xC87040, 0.8f);
+      sp.r(kRoomLasers, 0xFF6060, 0xB8141E).r(kRoomSmoke, 0x808080, 0x303030);
+      sp.py(kPyroBlast, 0xFFE0A0, 0xC8141E);
     } else {
       sp.name = "";
     }
@@ -1077,8 +1711,12 @@ struct Particle {
   float burstHeight;  // rockets: where they burst
   float drag;         // sparks: velocity kept per second (willows hang, spheres pop)
   float gravity;      // sparks: share of gravity
-  bool onScorer;      // r42: resting on the life-size scorer's head (rides along, falls when it runs)
-  float restOff[2];   // r42: where on the head, from its feet (x, z)
+  bool onScorer;      // r42: resting on the life-size scorer (rides along, falls when it runs)
+  // r143: which part of its body it rests on: a body vertex (of that mesh serial) and where from it (the copy's
+  // game space), so it rides that very part (r42-r142: a spot on the cylinder's top)
+  float restOff[3];
+  uint32_t restVert;
+  uint32_t restMesh;
   float maxAge;       // r61: a suite piece still in the air is gone this old (fading out), 0 = 25 s
   // r82: the themed kinds: their top opacity, fade-in time, growth (m/s of size), a swirl round you
   // (m/s, pieces and fog), and a trail (1 fire, 2 sparkle; meteors, orbs).
@@ -1103,7 +1741,11 @@ static_assert(sizeof(Instance) == 56, "instance layout");
 // Lance, 2026-10-10: "like we just won the Super Bowl with every goal".
 constexpr uint32_t kMaxParticles = 16000;
 constexpr uint32_t kSlots = 3;
-constexpr uint32_t kMaxOccluderVerts = 256;  // r44e: + the scorer and the banner
+constexpr uint32_t kMaxOccluderVerts = 256;  // r44e: + the banner (r143: the scorer is its own mesh, the body)
+// r143: the life-size scorer's body (port/xr_body.h) on the GPU: the biggest guests are ~5,600 vertices and ~13,000
+// triangles, the Strikers characters ~2,700-5,800 of each
+constexpr uint32_t kBodyMaxVerts = 16384;
+constexpr uint32_t kBodyMaxTris = 32768;
 
 struct Slot {
   VkBuffer instances = VK_NULL_HANDLE;
@@ -1112,6 +1754,13 @@ struct Slot {
   VkBuffer occluders = VK_NULL_HANDLE;
   VkDeviceMemory occluderMemory = VK_NULL_HANDLE;
   void* occluderMapped = nullptr;
+  // r143: the scorer's body this frame (depth only, body_upload): its posed vertices, and its triangles (put up
+  // again only for a new mesh: bodyMesh is the serial they are of)
+  VkBuffer bodyVerts = VK_NULL_HANDLE, bodyIdx = VK_NULL_HANDLE;
+  VkDeviceMemory bodyVertMemory = VK_NULL_HANDLE, bodyIdxMemory = VK_NULL_HANDLE;
+  void* bodyVertMapped = nullptr;
+  void* bodyIdxMapped = nullptr;
+  uint32_t bodyMesh = 0;
   VkCommandBuffer cmd = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   bool pending = false;
@@ -1195,6 +1844,34 @@ struct State {
   };
   std::vector<WebShot> pendingWebs;
   float shelfSparkAccum = 0.0f;  // r57
+
+  // r143: the life-size scorer's body (port/xr_body.h, body_frame): its posed vertices (the copy's game space, Z up)
+  // and triangles as the game thread last posed them, where it stands this frame, and its voxels - the pieces'
+  // collisions (body_hit) - built from the posed mesh whenever a new pose has come and pieces are up.
+  struct Body {
+    uint64_t gen = 0, voxGen = 0, postedNs = 0;
+    uint32_t mesh = 0;              // the triangles' serial (PortXrBodyTake)
+    std::vector<float> xyz;
+    std::vector<uint32_t> tris;
+    bool meshOk = false;            // every triangle's vertices there, within the GPU caps
+    std::vector<uint32_t> used;     // the vertices the triangles use (their box is the voxels')
+    std::vector<float> probe;       // a few of them where the voxels were last built (body_frame: moved enough?)
+    uint64_t voxNs = 0;             // when they were last built
+    float cell = 0.0f, cellM = 0.03f;  // a voxel's size: game units, meters
+    float org[3] = {0.0f, 0.0f, 0.0f};
+    int dim[3] = {0, 0, 0};
+    std::vector<uint8_t> top;       // 0 empty, else 1 + 254 x how high in it its highest surface point is
+    std::vector<uint16_t> tri;      // that point's triangle (its normal, its corners: body_hit; kBodyMaxTris fits)
+    std::vector<uint32_t> set;      // voxels set (emptied before the next build)
+    bool voxOk = false;
+    bool on = false;                // this frame: posed lately, the scorer out, its place known
+    float m[16] = {};               // this frame: the copy's game space -> LOCAL (column-major)
+    float scale = 1.0f;             // meters a game unit
+    float boxMin[3] = {0.0f, 0.0f, 0.0f}, boxMax[3] = {0.0f, 0.0f, 0.0f};  // the voxels' box, LOCAL
+    float centre[3] = {0.0f, 0.0f, 0.0f};  // LOCAL (a running body knocks pieces away from it)
+    bool gpuFailed = false;
+  };
+  Body body;
 
   VkFormat colorFormat = VK_FORMAT_UNDEFINED;
   VkRenderPass renderPass = VK_NULL_HANDLE;
@@ -1441,6 +2118,82 @@ bool faces_you(uint8_t shape) {
   }
 }
 
+// r135 (Lance: "make them FALL like leaves: flutter / side-to-side swing and tumble as they drift down (not a straight
+// drop, not spinning pills), a little lift and sway, landing flat"): a leaf (kLeafPiece, kMapleLeafPiece, kBladeLeafPiece)
+// or a feather falls like one. Most swing side to side like a pendulum: down fastest through the middle of each swing,
+// rising a little and tipping up at its ends, the way it swings turning slowly. One in three tumbles over and over
+// instead, drifting along, a little quicker down. Flat again over the last stretch, lying flat where it lands. Its state
+// (leaf_init): axis[0] the swing's heading, axis[1] the leaf's own heading on it, axis[2] its tumble (rad/s, 0 = it
+// swings), spin the heading's turn (rad/s), flutterFreq the swing (rad/s), flutterAmp the swing's speed (m/s); its last
+// tip and heading in burstHeight / drag (rockets' and sparks' fields; for leaf_rest).
+bool is_leaf(uint8_t shape) {
+  return shape == kLeafPiece || shape == kMapleLeafPiece || shape == kBladeLeafPiece || shape == kFeatherPiece;
+}
+
+void leaf_init(Particle& q, float swing) {
+  q.axis[0] = frand(0.0f, 6.2831853f);
+  q.axis[1] = frand(0.0f, 6.2831853f);
+  q.axis[2] = irand(3) == 0 ? frand(4.5f, 7.0f) * (irand(2) == 0 ? 1.0f : -1.0f) : 0.0f;
+  q.spin = frand(-0.45f, 0.45f);
+  q.flutterFreq = frand(4.4f, 5.6f);  // a swing there and back every 1.1 - 1.4 s
+  q.flutterAmp = swing * (q.axis[2] != 0.0f ? 0.45f : 1.0f);
+  q.fallSpeed *= q.axis[2] != 0.0f ? 0.85f : 0.7f;
+}
+
+// Its turn: laid flat (its +z up), on its own heading, tipped by `tilt` about the level line across its swing (`head`;
+// the swing runs along (cos head, 0, -sin head), a tip > 0 lifts that way's edge).
+void leaf_orient(Particle& q, float head, float tilt) {
+  const float yAxis[3] = {0.0f, 1.0f, 0.0f}, xAxis[3] = {1.0f, 0.0f, 0.0f};
+  const float across[3] = {std::sin(head), 0.0f, std::cos(head)};
+  float lay[4], yaw[4], tip[4], t[4];
+  quat_axis_angle(xAxis, -1.5707963f, lay);
+  quat_axis_angle(yAxis, head + q.axis[1], yaw);
+  quat_axis_angle(across, tilt, tip);
+  quat_mul(yaw, lay, t);
+  quat_mul(tip, t, q.q);
+  q.burstHeight = tilt;
+  q.drag = head;
+}
+
+// This frame's pull on a falling leaf (step_particles eases its velocity to it: vy, vx, vz) and its turn; `above` = its
+// height over what it will land on (it flattens out over the last 5 sizes).
+void leaf_swing(Particle& q, float above, float& vy, float& vx, float& vz) {
+  const float ph = q.age * q.flutterFreq + q.flutterPhase;
+  const float c = std::cos(ph), sn = std::sin(ph);
+  const float head = q.axis[0] + q.spin * q.age;
+  const float hx = std::cos(head), hz = -std::sin(head);
+  const float flat = std::min(1.0f, std::max(0.0f, above / std::max(0.02f, 5.0f * q.size)));
+  float tilt;
+  if (q.axis[2] == 0.0f) {
+    vy = q.fallSpeed * (0.3f * sn * sn - 1.9f * c * c);  // down through the middle, up a little at the ends
+    vx = q.flutterAmp * c * hx;
+    vz = q.flutterAmp * c * hz;
+    tilt = 0.6f * sn * flat;  // its leading edge up at the swing's ends
+  } else {
+    vy = -q.fallSpeed * (1.0f + 0.25f * c);
+    const float drift = q.flutterAmp * (0.7f + 0.3f * c);
+    vx = drift * hx;
+    vz = drift * hz;
+    const float spun = q.axis[2] * q.age + q.flutterPhase;
+    tilt = spun - (1.0f - flat) * 0.5f * std::sin(2.0f * spun);  // near the floor it lingers flat (either face up)
+  }
+  leaf_orient(q, head, tilt);
+}
+
+// Landed: lying flat (the face it was nearer showing), on the heading it fell on.
+void leaf_rest(Particle& q) {
+  leaf_orient(q, q.drag, std::round(q.burstHeight / 3.14159265f) * 3.14159265f);
+}
+
+// A leaf storm's piece (kRoomLeaves): in green, real leaves (oval, maple, long blades); in other colours (Daisy's,
+// a rose's), petals.
+Shape storm_leaf(uint32_t c1) {
+  const uint32_t r = (c1 >> 16) & 255, gr = (c1 >> 8) & 255, b = c1 & 255;
+  if (gr <= r || gr <= b) return kPetal;
+  const int k = irand(5);
+  return k < 2 ? kLeafPiece : (k < 4 ? kBladeLeafPiece : kMapleLeafPiece);
+}
+
 // r82: one of the scorer's themed pieces (Special::fall), falling with the confetti; `which` -1 = any.
 void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, const float v[3], int which = -1) {
   if (room_full() || s.sp.nFall == 0) return;
@@ -1493,6 +2246,23 @@ void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, cons
     // r124: light, wide ones float down slowly, turning lazily
     q.fallSpeed *= 0.55f;
     q.spin = frand(0.5f, 1.3f);
+  }
+  if (is_leaf(f.shape)) {
+    // r135: leaves in a few greens (one darker, one yellower), falling like leaves (leaf_swing)
+    if (f.shape != kFeatherPiece) {
+      const int tone = irand(4);
+      auto toward = [](uint32_t a, uint32_t b, float t) {
+        uint32_t o = 0;
+        for (int sh = 0; sh <= 16; sh += 8) {
+          const float x = static_cast<float>((a >> sh) & 255) * (1.0f - t) + static_cast<float>((b >> sh) & 255) * t;
+          o |= static_cast<uint32_t>(std::min(255.0f, x + 0.5f)) << sh;
+        }
+        return o;
+      };
+      if (tone == 1) q.c1 = pack(toward(c1, 0x000000, 0.22f));
+      else if (tone == 2) q.c1 = pack(toward(c1, 0xC8D040, 0.3f));
+    }
+    leaf_init(q, k.flutter * 2.2f);  // (MR: 0.84 m/s, a sway of ~0.17 m each way)
   }
   s.parts.push_back(q);
 }
@@ -1993,6 +2763,7 @@ Particle* add_drift_piece(const XrVector3f& p, const float v[3], Shape shape, fl
   q.flutterAmp = flutter;
   q.fallSpeed = fallSpeed;
   q.maxAge = maxAge;
+  if (is_leaf(shape) && fallSpeed > 0.0f) leaf_init(q, 6.0f * flutter);  // r135: falling like a leaf
   s.parts.push_back(q);
   return &s.parts.back();
 }
@@ -2207,7 +2978,8 @@ void room_effect(const Scene& sc, const Scale& k, const Space& S, int i, const R
     for (int j = spawn_n(acc, (sc.mr ? 14.0f : 40.0f) * m, dt); j > 0; --j) {
       const XrVector3f p = around(S, 0.5f * S.u, S.r, 0.3f * S.u, std::min(S.top - S.floor - 0.2f, H + 0.4f * S.u));
       const float v[3] = {0.0f, 0.0f, 0.0f};
-      Particle* q = add_drift_piece(p, v, kPetal, k.piece * frand(0.8f, 1.15f) * 1.1f, e.c1, e.c2, 0.12f * S.u, 5.0f, 0.1f * S.u);
+      Particle* q = add_drift_piece(p, v, storm_leaf(e.c1), k.piece * frand(0.8f, 1.15f) * 1.1f, e.c1, e.c2, 0.12f * S.u, 5.0f,
+                                    0.1f * S.u);
       if (q != nullptr) q->orbit = S.u * frand(0.6f, 1.0f);
     }
     break;
@@ -2595,7 +3367,7 @@ void corner_ambient(const Scene& sc, float dt) {
     case kRoomLeaves:
       for (int j = spawn_n(a, 0.7f, dt); j > 0; --j) {
         const float v[3] = {0.0f, 0.0f, 0.0f};
-        add_drift_piece(on_rug(1.4f, 1.7f), v, kPetal, frand(0.05f, 0.07f), e.c1, e.c2, 0.12f, 14.0f, 0.06f);
+        add_drift_piece(on_rug(1.4f, 1.7f), v, storm_leaf(e.c1), frand(0.05f, 0.07f), e.c1, e.c2, 0.12f, 14.0f, 0.06f);
       }
       break;
     case kRoomBubbles:
@@ -2834,6 +3606,365 @@ void step_theme(const Scene& sc, const Scale& k, float dt) {
   if (s.sp.pyro != kPyroFireworks && s.sp.pyro != kPyroNone) pyro_tick(sc, k, S, m, dt);
 }
 
+// ---------------------------------------------------------------------------------------------
+// r143: the life-size scorer's body (port/xr_body.h). Lance (r142): Arbok had "a see through invisible pole in the
+// back of him ... included for everyone", and "the characters still appearing to be see through": r42's collision
+// was an upright cylinder at its feet and r44e's occluder a ten-sided column inside it, so pieces landed on air
+// over a snake's coils, and anything falling behind the body outside that column was drawn over it (this layer is
+// composited over the scorer's). Now the posed body itself: drawn depth-only (render: pixel-exact), and as voxels
+// (about 3 cm; rebuilt from new poses while pieces are up) the pieces bounce off and land on - head, shoulders,
+// back, coils.
+// ---------------------------------------------------------------------------------------------
+
+constexpr int kBodyMaxCells = 262144;
+constexpr uint64_t kBodyStaleNs = 300000000ull;  // not posed for this long: gone (as xr_quest's scorer_shown)
+constexpr uint64_t kBodyVoxEveryNs = 30000000ull;  // voxels rebuilt at most ~33 times a second
+constexpr size_t kBodyProbes = 64;               // vertices checked for "has it moved?" (a quarter voxel)
+
+uint64_t mono_ns() {
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+// A new mesh came (its triangles): checked, and the vertices its triangles use listed.
+void body_new_mesh() {
+  State::Body& b = s.body;
+  const size_t nv = b.xyz.size() / 3, nt = b.tris.size() / 3;
+  b.meshOk = nv > 0 && nt > 0 && nv <= kBodyMaxVerts && nt <= kBodyMaxTris;
+  for (size_t i = 0; b.meshOk && i < b.tris.size(); ++i) b.meshOk = b.tris[i] < nv;
+  b.used.clear();
+  b.probe.clear();
+  if (b.meshOk) {
+    std::vector<uint8_t> seen(nv, 0);
+    for (uint32_t v : b.tris) {
+      if (seen[v]) continue;
+      seen[v] = 1;
+      b.used.push_back(v);
+    }
+  }
+  b.voxOk = false;
+  FXLOG("fx: the scorer's body (mesh %u): %zu vertices (%zu used), %zu triangles%s", b.mesh, nv, b.used.size(), nt,
+        b.meshOk ? "" : " - NOT usable (over the caps or a triangle past the vertices)");
+}
+
+// Whether the body moved a quarter voxel anywhere among its probe vertices since the voxels were built.
+bool body_moved() {
+  const State::Body& b = s.body;
+  const size_t step = std::max<size_t>(1, b.used.size() / kBodyProbes);
+  if (b.probe.size() != 3 * ((b.used.size() + step - 1) / step)) return true;
+  const float lim = 0.0625f * b.cell * b.cell;
+  for (size_t k = 0, o = 0; k < b.used.size(); k += step, o += 3) {
+    const float* p = &b.xyz[b.used[k] * 3];
+    const float dx = p[0] - b.probe[o], dy = p[1] - b.probe[o + 1], dz = p[2] - b.probe[o + 2];
+    if (dx * dx + dy * dy + dz * dz > lim) return true;
+  }
+  return false;
+}
+
+// The voxels of this pose, a 60th of its height (2-6 cm): each triangle rasterized into them along its steepest
+// axis - every column its projection touches, every voxel its plane passes through there - each voxel keeping its
+// highest surface point (how high in it) and that point's triangle (body_hit takes the normal and the corner a
+// landing piece rides from it). A few marks per surface voxel: PC (tools/outside/scorer143_sim.py), Mario 3,136
+// triangles -> ~36,000 marks into ~10,600 voxels; Arbok ~25,000; Houndoom ~26,000 (a byte and a short each).
+bool body_voxelize() {
+  State::Body& b = s.body;
+  if (!b.meshOk || b.used.empty()) return false;
+  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  for (size_t k = 0; k < b.used.size(); ++k) {
+    const float* p = &b.xyz[b.used[k] * 3];
+    for (int a = 0; a < 3; ++a) {
+      lo[a] = std::min(lo[a], p[a]);
+      hi[a] = std::max(hi[a], p[a]);
+    }
+  }
+  if (!(hi[0] >= lo[0] && hi[1] >= lo[1] && hi[2] > lo[2]) || !(hi[2] - lo[2] < 1e6f)) return false;
+  // about a 60th of its height, 2-6 cm
+  const float heightM = (hi[2] - lo[2]) * b.scale;
+  float cell = std::min(0.06f, std::max(0.02f, heightM / 60.0f)) / b.scale;
+  int d[3];
+  for (int guard = 0;; ++guard) {
+    for (int a = 0; a < 3; ++a) d[a] = static_cast<int>((hi[a] - lo[a]) / cell) + 3;
+    if (static_cast<int64_t>(d[0]) * d[1] * d[2] <= kBodyMaxCells || guard > 40) break;
+    cell *= 1.15f;
+  }
+  if (static_cast<int64_t>(d[0]) * d[1] * d[2] > kBodyMaxCells) return false;
+  const size_t cells = static_cast<size_t>(d[0]) * d[1] * d[2];
+  for (uint32_t i : b.set) b.top[i] = 0;  // last build's voxels
+  b.set.clear();
+  if (b.top.size() < cells) {
+    b.top.resize(cells, 0);
+    b.tri.resize(cells, 0);
+  }
+  b.cell = cell;
+  b.cellM = cell * b.scale;
+  for (int a = 0; a < 3; ++a) {
+    b.org[a] = lo[a] - cell;
+    b.dim[a] = d[a];
+  }
+  const float inv = 1.0f / cell;
+  const size_t nt = b.tris.size() / 3;
+  for (size_t t = 0; t < nt; ++t) {
+    const uint32_t* tv = &b.tris[t * 3];
+    float P[3][3];  // its corners in voxels from the grid's corner
+    for (int c = 0; c < 3; ++c) {
+      for (int a = 0; a < 3; ++a) P[c][a] = (b.xyz[tv[c] * 3 + a] - b.org[a]) * inv;
+    }
+    const float e1[3] = {P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]};
+    const float e2[3] = {P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]};
+    const float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+    const float an[3] = {std::fabs(n[0]), std::fabs(n[1]), std::fabs(n[2])};
+    if (!(an[0] + an[1] + an[2] > 1e-9f)) continue;  // a sliver: its neighbours cover it
+    // along its steepest axis k: the plane's depth over the other two (i, j), and how much it changes across a voxel
+    const int k = an[0] >= an[1] && an[0] >= an[2] ? 0 : (an[1] >= an[2] ? 1 : 2);
+    const int i = (k + 1) % 3, j = (k + 2) % 3;
+    const float si = -n[i] / n[k], sj = -n[j] / n[k];
+    const float half = 0.5f * (std::fabs(si) + std::fabs(sj));
+    const float kmin = std::min(P[0][k], std::min(P[1][k], P[2][k])), kmax = std::max(P[0][k], std::max(P[1][k], P[2][k]));
+    const float zmax = std::max(P[0][2], std::max(P[1][2], P[2][2]));
+    const float sgn = (P[1][i] - P[0][i]) * (P[2][j] - P[0][j]) - (P[1][j] - P[0][j]) * (P[2][i] - P[0][i]) >= 0.0f ? 1.0f : -1.0f;
+    float ex[3], ey[3], eo[3];  // its edges in (i, j), and how far outside an edge a touched voxel's middle can be
+    for (int c = 0; c < 3; ++c) {
+      ex[c] = P[(c + 1) % 3][i] - P[c][i];
+      ey[c] = P[(c + 1) % 3][j] - P[c][j];
+      eo[c] = -0.5f * (std::fabs(ex[c]) + std::fabs(ey[c]));
+    }
+    const int i0 = std::max(0, static_cast<int>(std::min(P[0][i], std::min(P[1][i], P[2][i]))));
+    const int i1 = std::min(d[i] - 1, static_cast<int>(std::max(P[0][i], std::max(P[1][i], P[2][i]))));
+    const int j0 = std::max(0, static_cast<int>(std::min(P[0][j], std::min(P[1][j], P[2][j]))));
+    const int j1 = std::min(d[j] - 1, static_cast<int>(std::max(P[0][j], std::max(P[1][j], P[2][j]))));
+    for (int cj = j0; cj <= j1; ++cj) {
+      for (int ci = i0; ci <= i1; ++ci) {
+        const float x = ci + 0.5f, y = cj + 0.5f;
+        bool in = true;
+        for (int c = 0; c < 3 && in; ++c) in = sgn * (ex[c] * (y - P[c][j]) - ey[c] * (x - P[c][i])) >= eo[c];
+        if (!in) continue;
+        const float dc = P[0][k] + si * (x - P[0][i]) + sj * (y - P[0][j]);
+        float dlo = std::max(dc - half, kmin), dhi = std::min(dc + half, kmax);
+        if (dlo > dhi) dlo = dhi = std::min(std::max(dc, kmin), kmax);
+        const int k0 = std::max(0, static_cast<int>(dlo)), k1 = std::min(d[k] - 1, static_cast<int>(dhi));
+        for (int ck = k0; ck <= k1; ++ck) {
+          int c3[3];
+          c3[i] = ci;
+          c3[j] = cj;
+          c3[k] = ck;
+          const uint32_t idx = static_cast<uint32_t>((c3[2] * d[1] + c3[1]) * d[0] + c3[0]);
+          // how high its surface comes in this voxel (lying: the plane's top here; standing: the triangle's top)
+          const float topf = k == 2 ? std::min(dhi, ck + 1.0f) - static_cast<float>(ck)
+                                    : std::min(c3[2] + 1.0f, zmax) - static_cast<float>(c3[2]);
+          const int q = std::min(255, std::max(1, 1 + static_cast<int>(254.0f * topf)));
+          if (b.top[idx] == 0) b.set.push_back(idx);
+          if (q < b.top[idx]) continue;
+          b.top[idx] = static_cast<uint8_t>(q);
+          b.tri[idx] = static_cast<uint16_t>(t);
+        }
+      }
+    }
+  }
+  // where some vertices were for this build (body_moved)
+  const size_t step = std::max<size_t>(1, b.used.size() / kBodyProbes);
+  b.probe.clear();
+  for (size_t k = 0; k < b.used.size(); k += step) {
+    const float* p = &b.xyz[b.used[k] * 3];
+    b.probe.insert(b.probe.end(), p, p + 3);
+  }
+  return true;
+}
+
+// The copy's game space -> LOCAL (a point), with this frame's placement.
+void body_to_local(const float c[3], float out[3]) {
+  const float* m = s.body.m;
+  for (int r = 0; r < 3; ++r) out[r] = m[r] * c[0] + m[4 + r] * c[1] + m[8 + r] * c[2] + m[12 + r];
+}
+// LOCAL -> the copy's game space (the placement is a turn and a scale: its inverse is the transpose over scale^2).
+void body_to_copy(const float p[3], float out[3]) {
+  const float* m = s.body.m;
+  const float dx = p[0] - m[12], dy = p[1] - m[13], dz = p[2] - m[14];
+  const float s2 = s.body.scale * s.body.scale;
+  for (int c = 0; c < 3; ++c) out[c] = (m[c * 4 + 0] * dx + m[c * 4 + 1] * dy + m[c * 4 + 2] * dz) / s2;
+}
+
+// This frame's body: a new pose taken over, the placement, and new voxels when a new pose came and pieces are up.
+void body_frame(const Scene& sc) {
+  State::Body& b = s.body;
+  b.on = false;
+  if (!sc.scorerValid || !sc.scorerModelValid) return;
+  const uint32_t oldMesh = b.mesh;
+  if (PortXrBodyTake(&b.gen, &b.mesh, &b.xyz, &b.tris, &b.postedNs) && b.mesh != oldMesh) body_new_mesh();
+  const uint64_t now = mono_ns();
+  const bool fresh = now < b.postedNs || now - b.postedNs < kBodyStaleNs;
+  if (!fresh || !b.meshOk || b.xyz.size() / 3 > kBodyMaxVerts) return;
+  std::memcpy(b.m, sc.scorerModel, sizeof(b.m));
+  b.scale = std::sqrt(b.m[0] * b.m[0] + b.m[1] * b.m[1] + b.m[2] * b.m[2]);
+  if (!(b.scale > 1e-6f && b.scale < 1e6f)) return;
+  b.on = true;
+  // new voxels for a new pose while pieces are up: at most ~33 a second, and only once it has moved a quarter voxel
+  if (b.gen != b.voxGen && !s.parts.empty() && (!b.voxOk || now - b.voxNs >= kBodyVoxEveryNs)) {
+    b.voxGen = b.gen;
+    if (!b.voxOk || body_moved()) {
+      const bool first = !b.voxOk;
+      b.voxOk = body_voxelize();
+      b.voxNs = now;
+      if (first) {  // the cost on the headset, once per mesh (and after a gap)
+        FXLOG("fx: the scorer's body voxels: %d x %d x %d of %.1f cm, %zu set, built in %.3f ms", b.dim[0], b.dim[1],
+              b.dim[2], 100.0f * b.cellM, b.set.size(), static_cast<double>(mono_ns() - now) / 1e6);
+      }
+    }
+  }
+  if (!b.voxOk) return;
+  // the voxels' box in the room this frame, and its middle
+  for (int a = 0; a < 3; ++a) {
+    b.boxMin[a] = 1e30f;
+    b.boxMax[a] = -1e30f;
+  }
+  for (int i = 0; i < 8; ++i) {
+    const float c[3] = {b.org[0] + ((i & 1) ? b.dim[0] * b.cell : 0.0f), b.org[1] + ((i & 2) ? b.dim[1] * b.cell : 0.0f),
+                        b.org[2] + ((i & 4) ? b.dim[2] * b.cell : 0.0f)};
+    float w[3];
+    body_to_local(c, w);
+    for (int a = 0; a < 3; ++a) {
+      b.boxMin[a] = std::min(b.boxMin[a], w[a]);
+      b.boxMax[a] = std::max(b.boxMax[a], w[a]);
+    }
+  }
+  for (int a = 0; a < 3; ++a) b.centre[a] = 0.5f * (b.boxMin[a] + b.boxMax[a]);
+}
+
+// The voxel a point of the copy's space is in (-1 outside), and how high in it (0..1).
+int body_voxel(const float c[3], float* fz) {
+  const State::Body& b = s.body;
+  const float inv = 1.0f / b.cell;
+  const float fx = (c[0] - b.org[0]) * inv, fy = (c[1] - b.org[1]) * inv, f = (c[2] - b.org[2]) * inv;
+  if (!(fx >= 0.0f && fy >= 0.0f && f >= 0.0f)) return -1;
+  const int ix = static_cast<int>(fx), iy = static_cast<int>(fy), iz = static_cast<int>(f);
+  if (ix >= b.dim[0] || iy >= b.dim[1] || iz >= b.dim[2]) return -1;
+  *fz = f - static_cast<float>(iz);
+  return (iz * b.dim[1] + iy) * b.dim[0] + ix;
+}
+
+struct BodyHit {
+  float n[3];      // LOCAL: the surface's normal, turned toward where the piece came from
+  float surfaceY;  // LOCAL: the height of the highest surface point there
+  bool fromAbove;  // it came down onto it
+  uint32_t vert;   // a body vertex there
+};
+
+// Whether a piece moving from `prev` to `p` (LOCAL) is into the body: in a voxel the body's surface passes through,
+// at or under its highest surface point there (a fast one: the middle of its step too).
+bool body_hit(const float p[3], const float prev[3], BodyHit* h) {
+  const State::Body& b = s.body;
+  if (!b.on || !b.voxOk) return false;
+  const float m = b.cellM;
+  if (p[0] < b.boxMin[0] - m || p[0] > b.boxMax[0] + m || p[1] < b.boxMin[1] - m || p[1] > b.boxMax[1] + m ||
+      p[2] < b.boxMin[2] - m || p[2] > b.boxMax[2] + m) {
+    return false;
+  }
+  float c[3], pc[3], fz = 0.0f;
+  body_to_copy(p, c);
+  body_to_copy(prev, pc);
+  auto solid = [&](const float x[3], int* idx) {
+    *idx = body_voxel(x, &fz);
+    return *idx >= 0 && b.top[*idx] != 0 && fz * 254.0f <= static_cast<float>(b.top[*idx] - 1) + 25.0f;
+  };
+  int idx = -1;
+  bool in = solid(c, &idx);
+  const float step2 = (c[0] - pc[0]) * (c[0] - pc[0]) + (c[1] - pc[1]) * (c[1] - pc[1]) + (c[2] - pc[2]) * (c[2] - pc[2]);
+  if (!in && step2 > 0.25f * b.cell * b.cell) {
+    const float mid[3] = {0.5f * (c[0] + pc[0]), 0.5f * (c[1] + pc[1]), 0.5f * (c[2] + pc[2])};
+    in = solid(mid, &idx);
+    if (in) std::memcpy(c, mid, sizeof(c));
+  }
+  if (!in) return false;
+  const int ix = idx % b.dim[0], iy = (idx / b.dim[0]) % b.dim[1], iz = idx / (b.dim[0] * b.dim[1]);
+  const float topZ = b.org[2] + (static_cast<float>(iz) + static_cast<float>(b.top[idx] - 1) / 254.0f) * b.cell;
+  // the surface there: its triangle's normal (as posed now) and the corner nearest the piece
+  const size_t t = b.tri[idx];
+  float n[3] = {0.0f, 0.0f, 0.0f};
+  uint32_t vert = 0;
+  if (t * 3 + 2 < b.tris.size()) {
+    const float* p0 = &b.xyz[b.tris[t * 3 + 0] * 3];
+    const float* p1 = &b.xyz[b.tris[t * 3 + 1] * 3];
+    const float* p2 = &b.xyz[b.tris[t * 3 + 2] * 3];
+    const float e1[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    const float e2[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+    n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+    n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+    const float nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (float& x : n) x = nl > 1e-12f ? x / nl : 0.0f;
+    float best = 1e30f;
+    for (int k = 0; k < 3; ++k) {
+      const float* pv = &b.xyz[b.tris[t * 3 + k] * 3];
+      const float dd = (pv[0] - c[0]) * (pv[0] - c[0]) + (pv[1] - c[1]) * (pv[1] - c[1]) + (pv[2] - c[2]) * (pv[2] - c[2]);
+      if (dd < best) {
+        best = dd;
+        vert = b.tris[t * 3 + k];
+      }
+    }
+  }
+  const float mid[3] = {b.org[0] + (ix + 0.5f) * b.cell, b.org[1] + (iy + 0.5f) * b.cell, b.org[2] + (iz + 0.5f) * b.cell};
+  const float back[3] = {pc[0] - mid[0], pc[1] - mid[1], pc[2] - mid[2]};
+  if (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < 0.01f) {
+    const float l = std::sqrt(back[0] * back[0] + back[1] * back[1] + back[2] * back[2]);
+    n[0] = l > 1e-6f ? back[0] / l : 0.0f;
+    n[1] = l > 1e-6f ? back[1] / l : 0.0f;
+    n[2] = l > 1e-6f ? back[2] / l : 1.0f;
+  } else if (n[0] * back[0] + n[1] * back[1] + n[2] * back[2] < 0.0f) {
+    n[0] = -n[0];  // a sheet's other side (capes, wings), or the mesh's winding: toward the piece
+    n[1] = -n[1];
+    n[2] = -n[2];
+  }
+  h->fromAbove = pc[2] >= topZ - 0.25f * b.cell;
+  if (h->fromAbove && n[2] < 0.0f) n[2] = -n[2];
+  const float* M = b.m;
+  float nl[3];
+  for (int r = 0; r < 3; ++r) nl[r] = M[r] * n[0] + M[4 + r] * n[1] + M[8 + r] * n[2];
+  const float l = std::sqrt(nl[0] * nl[0] + nl[1] * nl[1] + nl[2] * nl[2]);
+  for (int r = 0; r < 3; ++r) h->n[r] = l > 1e-9f ? nl[r] / l : (r == 1 ? 1.0f : 0.0f);
+  h->surfaceY = M[1] * c[0] + M[5] * c[1] + M[9] * topZ + M[13];
+  h->vert = vert;
+  return true;
+}
+
+// A piece that hit the body (not to rest there) goes back out where it came from, its velocity reflected off the
+// surface losing most of it, with a nudge clear of it (a running one knocks it away from itself).
+void body_bounce(const Scene& sc, Particle& q, const float prev[3], const BodyHit& h) {
+  q.p[0] = prev[0];
+  q.p[1] = prev[1];
+  q.p[2] = prev[2];
+  BodyHit again;
+  if (body_hit(q.p, q.p, &again)) {  // the body moved onto it (an arm, a turn): out of it along the surface
+    for (int a = 0; a < 3; ++a) q.p[a] += again.n[a] * 1.2f * s.body.cellM;
+  }
+  const float vn = q.v[0] * h.n[0] + q.v[1] * h.n[1] + q.v[2] * h.n[2];
+  if (vn < 0.0f) {
+    for (int a = 0; a < 3; ++a) q.v[a] -= 1.6f * vn * h.n[a];
+  }
+  for (int a = 0; a < 3; ++a) q.v[a] += 0.35f * h.n[a];
+  if (!sc.scorerStill) {
+    const float dx = q.p[0] - s.body.centre[0], dz = q.p[2] - s.body.centre[2];
+    const float dl = std::sqrt(dx * dx + dz * dz);
+    if (dl > 1e-4f) {
+      q.v[0] += 0.3f * dx / dl;
+      q.v[2] += 0.3f * dz / dl;
+    }
+  }
+}
+
+// A piece come to rest on the body: which vertex it rides, and where from it.
+void body_attach(Particle& q, uint32_t vert) {
+  const State::Body& b = s.body;
+  q.restVert = vert;
+  q.restMesh = b.mesh;
+  if (static_cast<size_t>(vert) * 3 + 2 >= b.xyz.size()) {
+    q.restMesh = 0;  // (rides nothing: falls off next frame)
+    return;
+  }
+  float c[3];
+  body_to_copy(q.p, c);
+  for (int a = 0; a < 3; ++a) q.restOff[a] = c[a] - b.xyz[vert * 3 + a];
+}
+
 void step_particles(const Scene& sc, const Scale& k, float dt) {
   const float g = sc.mr ? 1.6f : 9.8f;
   // The Tabletop field top, to land on.
@@ -2863,9 +3994,19 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       q.size += q.grow * dt;
       keep = q.age < q.life;
     } else if (q.kind == kKindDrop) {
-      // r82: rain (and lasers) fly straight; a raindrop splashes where it hits the floor.
+      // r82: rain (and lasers) fly straight; a raindrop splashes where it hits the floor. r143: or the scorer.
+      const float dropFrom[3] = {q.p[0], q.p[1], q.p[2]};
       for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
-      if (q.trail == 3 && q.p[1] <= sc.floorY + 0.003f) {
+      BodyHit dropHit;
+      if (q.trail == 3 && s.body.on && s.body.voxOk && body_hit(q.p, dropFrom, &dropHit)) {
+        for (int j = 0; j < 2; ++j) {
+          const float u = sc.mr ? 1.0f : 3.0f;
+          const float sv[3] = {(dropHit.n[0] * 0.4f + frand(-0.25f, 0.25f)) * u, (std::fabs(dropHit.n[1]) * 0.3f + frand(0.2f, 0.45f)) * u,
+                               (dropHit.n[2] * 0.4f + frand(-0.25f, 0.25f)) * u};
+          add_spark(XrVector3f{dropFrom[0], dropFrom[1], dropFrom[2]}, sv, 0.006f * u, 0xFFFFFF, 0x9FD0FF, 0.25f, 1.0f, 1.0f);
+        }
+        keep = false;
+      } else if (q.trail == 3 && q.p[1] <= sc.floorY + 0.003f) {
         for (int j = 0; j < 2; ++j) {
           const float sv[3] = {frand(-0.3f, 0.3f), frand(0.3f, 0.6f), frand(-0.3f, 0.3f)};
           const float u = sc.mr ? 1.0f : 3.0f;
@@ -2950,11 +4091,27 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       const float settle = 1.0f - std::exp(-2.6f * dt);
       // r82: Mewtwo's: the confetti floats (hangs and bobs) while his party lasts, circling you.
       const bool floating = s.levitate && q.maxAge == 0.0f && q.trail == 0;
-      const float targetVy = floating ? 0.08f * std::sin(q.age * 1.2f + q.flutterPhase) : -q.fallSpeed;
-      q.v[1] += (targetVy - q.v[1]) * settle;
-      if (!floating && q.v[1] > 0.0f && q.fallSpeed > 0.0f) q.v[1] -= g * dt;  // still rising (knocked off the scorer's head)
+      float targetVy = floating ? 0.08f * std::sin(q.age * 1.2f + q.flutterPhase) : -q.fallSpeed;
+      // r135: a leaf swings down like a leaf (leaf_swing: its pull and its turn), eased in quicker so the swing holds;
+      // floating, it rocks gently where it hangs
+      const bool leafy = is_leaf(q.shape);
+      const bool leaf = leafy && !floating;
+      float leafX = 0.0f, leafZ = 0.0f;
+      if (leaf) {
+        const float surface = sc.tabletop && sc.mr ? std::max(sc.floorY, tableTop) : sc.floorY;
+        leaf_swing(q, q.p[1] - surface, targetVy, leafX, leafZ);
+      } else if (leafy) {
+        leaf_orient(q, q.axis[0] + q.spin * q.age, 0.3f * std::sin(q.age * 1.3f + q.flutterPhase));
+      }
+      const float leafEase = 1.0f - std::exp(-12.0f * dt);
+      q.v[1] += (targetVy - q.v[1]) * (leaf ? leafEase : settle);
+      if (!floating && !leaf && q.v[1] > 0.0f && q.fallSpeed > 0.0f) q.v[1] -= g * dt;  // still rising (knocked off the scorer's head)
       const float t = q.age * q.flutterFreq + q.flutterPhase;
       float tx = std::sin(t) * q.flutterAmp, tz = std::cos(t * 0.8f + 1.3f) * q.flutterAmp * 0.7f;
+      if (leaf) {
+        tx = leafX;
+        tz = leafZ;
+      }
       // r82: a swirl round you (leaf storms; the floating confetti)
       const float orbit = q.orbit != 0.0f ? q.orbit : (floating ? (sc.mr ? 0.45f : 1.6f) : 0.0f);
       if (orbit != 0.0f) {
@@ -2970,16 +4127,18 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
           add_spark(XrVector3f{q.p[0], q.p[1], q.p[2]}, tv, q.size * frand(0.3f, 0.5f), 0xFFE070, 0xFF5A10, frand(0.3f, 0.5f), 1.5f, -0.1f);
         }
       }
-      const float side = 1.0f - std::exp(-1.6f * dt);
+      const float side = leaf ? leafEase : 1.0f - std::exp(-1.6f * dt);
       q.v[0] += (tx - q.v[0]) * side;
       q.v[2] += (tz - q.v[2]) * side;
       const float prevX = q.p[0], prevY = q.p[1], prevZ = q.p[2];
       for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
-      float dq[4];
-      quat_axis_angle(q.axis, q.spin * dt, dq);
-      float nq[4];
-      quat_mul(dq, q.q, nq);
-      std::memcpy(q.q, nq, sizeof(nq));
+      if (!leafy) {  // (a leaf's turn is leaf_swing's; its axis holds its swing)
+        float dq[4];
+        quat_axis_angle(q.axis, q.spin * dt, dq);
+        float nq[4];
+        quat_mul(dq, q.q, nq);
+        std::memcpy(q.q, nq, sizeof(nq));
+      }
       // Come to rest the way the piece would: paper and coins flat, a mushroom standing, an egg on its
       // side, sitting on the surface rather than half through it; turned at random.
       const Rest rest = rest_for(q.shape);
@@ -2991,29 +4150,22 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
         const float gx = dx * cs - dz * sn, gy = -(dx * sn + dz * cs);
         if (std::fabs(gx) < 23.0f && std::fabs(gy) < 14.0f) landY = tableTop + lift;
       }
-      // r42: the life-size scorer is solid. Over its head (while it stands) a piece settles there;
-      // against its body it bounces off outward.
+      // r42: the life-size scorer is solid. r143: its real body (body_hit: the posed mesh as voxels; r42-r142 an
+      // upright cylinder at its feet, the same for everyone: Lance's "invisible pole"). Coming down onto a part that
+      // faces up while it stands, a piece settles there (head, shoulders, back, a snake's coils) and rides that
+      // part; against any other part it bounces off.
       bool onHead = false;
-      if (sc.scorerValid) {
-        const float R = sc.scorerRadius;
-        const float ox = q.p[0] - sc.scorerFeet.x, oz = q.p[2] - sc.scorerFeet.z;
-        const float r2 = ox * ox + oz * oz;
-        const float top = sc.scorerFeet.y + sc.scorerHeight;
-        if (r2 < R * R && q.p[1] < top + lift && q.p[1] > sc.scorerFeet.y) {
-          if (sc.scorerStill && prevY >= top + lift - 0.03f && r2 < 0.7f * R * 0.7f * R) {
-            landY = top + lift;
+      uint32_t onVert = 0;
+      if (s.body.on && s.body.voxOk) {
+        const float prevP[3] = {prevX, prevY, prevZ};
+        BodyHit hit;
+        if (body_hit(q.p, prevP, &hit)) {
+          if (sc.scorerStill && hit.fromAbove && hit.n[1] > 0.45f) {
+            landY = hit.surfaceY + lift;
             onHead = true;
+            onVert = hit.vert;
           } else {
-            const float r = std::max(1e-3f, std::sqrt(r2));
-            q.p[0] = sc.scorerFeet.x + ox / r * (R + 0.01f);
-            q.p[2] = sc.scorerFeet.z + oz / r * (R + 0.01f);
-            const float out = q.v[0] * ox / r + q.v[2] * oz / r;
-            if (out < 0.0f) {  // moving inward: reflect, losing most of it
-              q.v[0] -= 1.6f * out * ox / r;
-              q.v[2] -= 1.6f * out * oz / r;
-            }
-            q.v[0] += 0.4f * ox / r;  // and a nudge clear of the body
-            q.v[2] += 0.4f * oz / r;
+            body_bounce(sc, q, prevP, hit);
           }
         }
       }
@@ -3063,24 +4215,25 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
           q.trail = 0;
         }
         q.onScorer = onHead;
-        q.restOff[0] = q.p[0] - sc.scorerFeet.x;
-        q.restOff[1] = q.p[2] - sc.scorerFeet.z;
+        if (onHead) body_attach(q, onVert);  // r143: the part of the body it rests on
         q.age = 0.0f;
         const float xAxis[3] = {1.0f, 0.0f, 0.0f}, yAxis[3] = {0.0f, 1.0f, 0.0f}, zAxis[3] = {0.0f, 0.0f, 1.0f};
         float lay[4] = {0.0f, 0.0f, 0.0f, 1.0f}, yaw[4];
         if (rest.up == 2) quat_axis_angle(xAxis, -1.5707963f, lay);
         else if (rest.up == 0) quat_axis_angle(zAxis, 1.5707963f, lay);
         quat_axis_angle(yAxis, frand(0.0f, 6.2831853f), yaw);
-        quat_mul(yaw, lay, q.q);
+        if (is_leaf(q.shape)) leaf_rest(q);  // r135: flat, as it came down
+        else quat_mul(yaw, lay, q.q);
       }
       keep = keep && q.age < (q.maxAge > 0.0f ? q.maxAge : 25.0f) && q.p[1] > sc.floorY - 1.0f;
     } else if (q.onScorer) {
-      // r42: rides on the scorer's head; once it runs (or is gone) the piece falls off.
-      if (sc.scorerValid && sc.scorerStill) {
-        const Rest rest = rest_for(q.shape);
-        q.p[0] = sc.scorerFeet.x + q.restOff[0];
-        q.p[1] = sc.scorerFeet.y + sc.scorerHeight + rest.half * q.size;
-        q.p[2] = sc.scorerFeet.z + q.restOff[1];
+      // r42: rides on the scorer; once it runs (or is gone) the piece falls off. r143: on the very part of its body it
+      // came to rest on (that vertex as posed now, and the piece where it was from it).
+      const State::Body& b = s.body;
+      if (b.on && sc.scorerStill && q.restMesh == b.mesh && static_cast<size_t>(q.restVert) * 3 + 2 < b.xyz.size()) {
+        const float* v = &b.xyz[static_cast<size_t>(q.restVert) * 3];
+        const float c[3] = {v[0] + q.restOff[0], v[1] + q.restOff[1], v[2] + q.restOff[2]};
+        body_to_local(c, q.p);
       } else {
         q.onScorer = false;
         q.landed = false;
@@ -3704,27 +4857,8 @@ uint32_t write_occluders(const Scene& sc, float* out) {
     tri(w[0], w[2], w[3]);
   }
   // r44e (Lance: the celebration pieces "should not go through them even appearance wise"): the
-  // life-size scorer as a ten-sided column a little inside the one the pieces bounce off, and the
-  // goal banner, so a piece behind either is hidden by it instead of drawn over it.
-  if (sc.scorerValid) {
-    constexpr int kSides = 10;
-    const float r = 0.9f * sc.scorerRadius;
-    const float y0 = sc.scorerFeet.y, y1 = sc.scorerFeet.y + sc.scorerHeight;
-    XrVector3f ring0[kSides], ring1[kSides];
-    for (int i = 0; i < kSides; ++i) {
-      const float a = 6.2831853f * i / kSides;
-      const float x = sc.scorerFeet.x + r * std::cos(a), z = sc.scorerFeet.z + r * std::sin(a);
-      ring0[i] = XrVector3f{x, y0, z};
-      ring1[i] = XrVector3f{x, y1, z};
-    }
-    const XrVector3f top{sc.scorerFeet.x, y1, sc.scorerFeet.z};
-    for (int i = 0; i < kSides; ++i) {
-      const int j = (i + 1) % kSides;
-      tri(ring0[i], ring0[j], ring1[j]);
-      tri(ring0[i], ring1[j], ring1[i]);
-      tri(top, ring1[i], ring1[j]);
-    }
-  }
+  // goal banner, so a piece behind it is hidden by it instead of drawn over it. (r44e-r142 also stood
+  // the scorer here as a ten-sided column; r143: its real body, drawn in render from its posed mesh.)
   if (sc.bannerValid) {
     const float hw = 0.5f * sc.bannerWidth, hh = 0.5f * sc.bannerHeight;
     const float corners[4][3] = {{-hw, -hh, 0}, {hw, -hh, 0}, {hw, hh, 0}, {-hw, hh, 0}};
@@ -3854,7 +4988,8 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
 
   VkBuffer staging = VK_NULL_HANDLE;
   VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-  if (!make_filled_buffer(rgba, VkDeviceSize(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &stagingMemory)) {
+  const VkDeviceSize texel = format == VK_FORMAT_R8_UNORM ? 1 : 4;  // r135: one byte a texel for R8 (the etch outlines)
+  if (!make_filled_buffer(rgba, VkDeviceSize(w) * h * texel, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &stagingMemory)) {
     destroy_buffer(staging, stagingMemory);
     return false;
   }
@@ -3930,8 +5065,8 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   return true;
 }
 
-// r68c: the guests' outlines for the etching (STRIKERS_HOME/guests/etch.r8: 8 x 8 cells of 64 x 64,
-// one per guest in roster order, 128 = the outline). Without the file a single "far outside" texel:
+// r68c: the guests' outlines for the etching (STRIKERS_HOME/guests/etch.r8: 8 x 8 cells of 64 x 64 then, r135 16 x 32
+// of 128 x 128, one per pickable guest at its roster place, 128 = the outline). Without the file a single "far outside" texel:
 // nothing is etched for a guest. The set is bound for every pass (the 3D pieces' shader reads it).
 bool make_etch() {
   VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
@@ -3955,37 +5090,48 @@ bool make_etch() {
   // laid out the new way (its cell i to i % 16, i / 16)
   // r124 (Lance on the home ground's banners: "still blurry as shit"): or 128 x 128 a cell (2048 x 2048, etchres.py
   // --cell 128): a banner's emblem is one cell over a quarter of a metre
-  constexpr uint32_t kCell = 64, kGrid = 16;
-  std::vector<uint8_t> rgba(4, 255);
-  uint32_t side = 1;
+  // r135: 16 x 32 cells (kEtchCells: the ~314 pickable guests), 2048 x 4096 (or 1024 x 2048 of 64 px cells), uploaded as
+  // the file is (R8, one byte a texel: 8 MB; r124's 2048 x 2048 went up as 16 MB of RGBA). Cell i stays at
+  // (i % 16, i / 16), so an older 16 x 16 file (2048 x 2048 or 1024 x 1024) is read straight into the top half
+  // (cells 256-511 empty); the 8 x 8 one laid out as before
+  constexpr uint32_t kCols = 16, kRows = kEtchCells / kCols;
+  std::vector<uint8_t> tex(1, 255);
+  uint32_t w = 1, h = 1;
   const char* home = std::getenv("STRIKERS_HOME");
   const std::string path = std::string(home != nullptr && *home ? home : "/storage/emulated/0/Strikers") + "/guests/etch.r8";
   if (FILE* f = std::fopen(path.c_str(), "rb")) {
     std::fseek(f, 0, SEEK_END);
     const long size = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    const uint32_t kSide = size == 2048L * 2048L ? 2048u : kCell * kGrid;
-    std::vector<uint8_t> r(size_t(kSide) * kSide, 255);
-    bool ok = false;
-    if (size == static_cast<long>(kSide) * static_cast<long>(kSide)) {
-      ok = std::fread(r.data(), 1, r.size(), f) == r.size();
-    } else if (size == 512L * 512L) {
-      std::vector<uint8_t> o(512 * 512);
-      ok = std::fread(o.data(), 1, o.size(), f) == o.size();
-      for (uint32_t cell = 0; ok && cell < 64; ++cell)
-        for (uint32_t y = 0; y < kCell; ++y)
-          std::memcpy(&r[(size_t(cell / kGrid) * kCell + y) * kSide + (cell % kGrid) * kCell],
-                      &o[(size_t(cell / 8) * kCell + y) * 512 + (cell % 8) * kCell], kCell);
-    }
-    if (ok) {
-      rgba.resize(r.size() * 4);
-      for (size_t i = 0; i < r.size(); ++i) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = r[i];
-      side = kSide;
+    uint32_t cell = 0;  // the file's cell size in texels (0: not an etch.r8 size)
+    for (const uint32_t px : {128u, 64u})
+      if (size == long(kCols * px) * long(kRows * px) || size == long(kCols * px) * long(16 * px)) cell = px;
+    const bool grid8 = size == 512L * 512L;
+    if (grid8) cell = 64;
+    if (cell != 0) {
+      const uint32_t side = kCols * cell;  // the atlas's width
+      std::vector<uint8_t> r(size_t(side) * kRows * cell, 255);
+      bool ok = false;
+      if (!grid8) {
+        ok = std::fread(r.data(), 1, size_t(size), f) == size_t(size);
+      } else {
+        std::vector<uint8_t> o(512 * 512);
+        ok = std::fread(o.data(), 1, o.size(), f) == o.size();
+        for (uint32_t c = 0; ok && c < 64; ++c)
+          for (uint32_t y = 0; y < cell; ++y)
+            std::memcpy(&r[(size_t(c / kCols) * cell + y) * side + (c % kCols) * cell],
+                        &o[(size_t(c / 8) * cell + y) * 512 + (c % 8) * cell], cell);
+      }
+      if (ok) {
+        tex.swap(r);
+        w = side;
+        h = kRows * cell;
+      }
     }
     std::fclose(f);
   }
-  FXLOG("fx: guest etch outlines %s (%ux%u)", side > 1 ? "loaded" : "not there (no guest etching)", side, side);
-  return make_tex(s.etchTex, s.etchSet, rgba.data(), side, side, VK_FORMAT_R8G8B8A8_UNORM, s.etchSampler, false);
+  FXLOG("fx: guest etch outlines %s (%ux%u)", w > 1 ? "loaded" : "not there (no guest etching)", w, h);
+  return make_tex(s.etchTex, s.etchSet, tex.data(), w, h, VK_FORMAT_R8_UNORM, s.etchSampler, false);
 }
 
 // The room layer's own things, made the first time a suite shows: the textured pipeline, the sky
@@ -4214,6 +5360,7 @@ struct CharPush {
   float camPos[4];
   float look[4];     // white, alpha, glow, soft
   float glowRgb[4];  // w: the light from below
+  float up[4];       // r142: the room's up in the model's own frame (a special card's inside, held any way)
 };
 static_assert(sizeof(CharPush) <= 128, "push constants");
 
@@ -4368,6 +5515,32 @@ bool chars_shown(const Scene& sc) {
   return false;
 }
 
+// r143: the scorer's body for this frame slot: its posed vertices (and its triangles, for a new mesh) into the slot's
+// own buffers (made the first time, host-visible and kept mapped). Returns how many indices to draw, 0 for none.
+uint32_t body_upload(const Scene& sc, Slot& slot) {
+  State::Body& b = s.body;
+  if (!b.on || !sc.scorerValid || !sc.scorerModelValid || !b.meshOk || b.gpuFailed) return 0;
+  const size_t nv = b.xyz.size() / 3, nt = b.tris.size() / 3;
+  if (nv == 0 || nt == 0 || nv > kBodyMaxVerts || nt > kBodyMaxTris) return 0;
+  if (slot.bodyVerts == VK_NULL_HANDLE) {
+    if (!make_host_buffer(sizeof(float) * 3 * kBodyMaxVerts, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &slot.bodyVerts,
+                          &slot.bodyVertMemory, &slot.bodyVertMapped) ||
+        !make_host_buffer(sizeof(uint32_t) * 3 * kBodyMaxTris, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &slot.bodyIdx,
+                          &slot.bodyIdxMemory, &slot.bodyIdxMapped)) {
+      FXERR("fx: no buffers for the scorer's body; it will not hide the pieces behind it");
+      b.gpuFailed = true;
+      return 0;
+    }
+    slot.bodyMesh = 0;
+  }
+  std::memcpy(slot.bodyVertMapped, b.xyz.data(), sizeof(float) * 3 * nv);
+  if (slot.bodyMesh != b.mesh) {
+    std::memcpy(slot.bodyIdxMapped, b.tris.data(), sizeof(uint32_t) * 3 * nt);
+    slot.bodyMesh = b.mesh;
+  }
+  return static_cast<uint32_t>(nt * 3);
+}
+
 // The characters in this eye: solid parts first (they write depth, so the pieces falling round them go
 // behind and in front of them as they should), then the soft ones. Leaves the pieces' set bound again.
 void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const float viewProj[16], const XrVector3f& eye) {
@@ -4382,6 +5555,7 @@ void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const 
       pc.camPos[0] = eye.x;
       pc.camPos[1] = eye.y;
       pc.camPos[2] = eye.z;
+      pc.up[1] = 1.0f;  // r142 (a baked one turns about the room's up only)
       VkDeviceSize vertOffset = 0;
       if (c.bakedFrames > 0) {
         // r131: a baked one: its own space placed in the room (as room_model: turned about +Y, here scaled too), the
@@ -4403,6 +5577,24 @@ void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const 
         pc.camPos[1] = dy / k;
         pc.camPos[2] = (sn * dx + cs * dz) / k;
         vertOffset = VkDeviceSize(static_cast<uint32_t>(md.frame) % c.bakedFrames) * c.vertexCount * 6 * sizeof(float);
+      } else if (md.local) {
+        // r138: a model in its own frame (a trading card's inside, xr_cards.cpp): placed by toWorld, the eye taken into
+        // that frame (its light, its window)
+        mat_mul(viewProj, md.toWorld, pc.viewProj);
+        const float* m = md.toWorld;
+        const float s2 = std::max(1e-10f, m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+        const float dx = eye.x - m[12], dy = eye.y - m[13], dz = eye.z - m[14];
+        pc.camPos[0] = (m[0] * dx + m[1] * dy + m[2] * dz) / s2;
+        pc.camPos[1] = (m[4] * dx + m[5] * dy + m[6] * dz) / s2;
+        pc.camPos[2] = (m[8] * dx + m[9] * dy + m[10] * dz) / s2;
+        // r142: the room's up in that frame (a card held tilted, flat, upside down: its light still from above)
+        const float ux = m[1], uy = m[5], uz = m[9], ul = std::sqrt(ux * ux + uy * uy + uz * uz);
+        if (ul > 1e-8f) {
+          pc.up[0] = ux / ul;
+          pc.up[1] = uy / ul;
+          pc.up[2] = uz / ul;
+        }
+        pc.up[3] = static_cast<float>(md.kaleido & 0xFFFFFFu);  // r147: a BLACK 1/1's kaleidoscope colour (0 none)
       }
       pc.look[0] = md.white;
       pc.look[1] = md.alpha;
@@ -4472,6 +5664,10 @@ void shutdown() {
   if (s.charPool) vkDestroyDescriptorPool(s.dev.device, s.charPool, nullptr);
   if (s.charSetLayout) vkDestroyDescriptorSetLayout(s.dev.device, s.charSetLayout, nullptr);
   for (Slot& slot : s.slots) {
+    if (slot.bodyVertMapped) vkUnmapMemory(s.dev.device, slot.bodyVertMemory);  // r143
+    if (slot.bodyIdxMapped) vkUnmapMemory(s.dev.device, slot.bodyIdxMemory);
+    destroy_buffer(slot.bodyVerts, slot.bodyVertMemory);
+    destroy_buffer(slot.bodyIdx, slot.bodyIdxMemory);
     if (slot.instanceMapped) vkUnmapMemory(s.dev.device, slot.instanceMemory);
     if (slot.occluderMapped) vkUnmapMemory(s.dev.device, slot.occluderMemory);
     if (slot.instances) vkDestroyBuffer(s.dev.device, slot.instances, nullptr);
@@ -4722,6 +5918,20 @@ void evo_sparkle(const XrVector3f& at, float radius, float height, float dt) {
     Particle* q = add_fx(kKindFloat, kTwinkle, p, v, height * frand(0.1f, 0.19f), 1.0f, 0xC8F0FF, 0x7FC8FF, 1.0f, 1.0f,
                          frand(0.6f, 0.9f), 0.25f);
     if (q != nullptr) q->grow = -0.08f;
+  }
+}
+
+// r138: a trading card's sparkle (xr_cards.cpp: a GOLD's drifting off it, a shiny's glitter), evo_sparkle's in its colours
+void card_sparkle(const XrVector3f& at, float radius, float height, float rate, float dt, uint32_t rgb1, uint32_t rgb2) {
+  static float acc = 0.0f;
+  if (!s.ready || room_full()) return;
+  for (int j = spawn_n(acc, rate, std::min(std::max(dt, 0.0f), 0.1f)); j > 0; --j) {
+    const float a = frand(0.0f, 6.2831853f), r = radius * frand(0.6f, 1.15f);
+    const XrVector3f p{at.x + std::cos(a) * r, at.y + height * frand(0.0f, 1.0f), at.z + std::sin(a) * r};
+    const float v[3] = {0.0f, frand(0.02f, 0.06f), 0.0f};
+    Particle* q = add_fx(kKindFloat, kTwinkle, p, v, height * frand(0.08f, 0.15f), 1.0f, rgb1, rgb2, 1.0f, 1.0f,
+                         frand(0.7f, 1.1f), 0.25f);
+    if (q != nullptr) q->grow = -0.06f;
   }
 }
 
@@ -5217,6 +6427,7 @@ static void add_suite_piece(const XrVector3f& p, const float v[3], Shape shape, 
   q.flutterAmp = flutter;
   q.fallSpeed = fallSpeed;
   q.maxAge = maxAge;
+  if (is_leaf(shape) && fallSpeed > 0.0f) leaf_init(q, 6.0f * std::max(flutter, 0.03f));  // r135: falling like a leaf
   s.parts.push_back(q);
 }
 
@@ -5574,6 +6785,315 @@ static uint32_t write_leds(const Scene& sc, Instance* inst) {
   return n;
 }
 
+// r137 (Lance: weather + night games, looks only; xr_weather.h): rain / snow over the Tabletop field and onto your
+// table (MR: splashes on the table, snow settling round the field and lying there), round you in the life-size stadium
+// (VR: rain to the ground with splashes, snow settling), and at night the stadium's floodlights (big glows, beams down
+// to the pitch; little ones on poles at the table field's corners). Its own small pool (never the celebration's
+// pieces or their budget), drawn from a reserved block after the suite's LEDs with the quads' pipeline (depth-tested,
+// premultiplied). Spawn rates and caps follow the load scale; the existing quad looks only (30 streak, 32 ring,
+// 39 flake, 29 puff, 13 soft dot), so no shader change.
+constexpr uint32_t kWeatherParts = 1200;
+extern "C" void PortWeatherSetLoad(float load);  // xr_weather.h (r148)
+struct WxPiece {
+  float p[3], v[3];
+  float size, age, life, phase, yaw;
+  uint8_t kind;  // 0 a raindrop, 1 its splash, 2 a snowflake falling, 3 one lying
+};
+struct WxState {
+  std::vector<WxPiece> pieces;
+  float acc = 0.0f, t = 0.0f;
+  int mode = -1;  // 0 the table (MR), 1 the stadium round you (VR)
+  float patch[30][4];  // snow lying round the table field: game x, y, size (m), seed
+  bool patchesMade = false;
+} wx;
+
+static int weather_mode(const Scene& sc) {
+  if (sc.weather == 0) return -1;
+  if (sc.tabletop && sc.mr) return 0;
+  if (!sc.mr) return 1;
+  return -1;
+}
+static bool weather_shown(const Scene& sc) { return !wx.pieces.empty() || weather_mode(sc) >= 0; }
+
+static void weather_step(const Scene& sc, float dt) {
+  PortWeatherSetLoad(g_loadScale);  // r148: the game-side counts follow the load scale too
+  const int mode = weather_mode(sc);
+  if (mode < 0 && wx.pieces.empty()) {
+    wx.mode = -1;
+    return;
+  }
+  if (mode >= 0 && mode != wx.mode) {
+    wx.pieces.clear();  // a view change: the old view's pieces are in the wrong place
+    wx.mode = mode;
+  }
+  if (wx.pieces.capacity() < kWeatherParts) wx.pieces.reserve(kWeatherParts);
+  wx.t += dt;
+  const bool rain = (sc.weather & 1) != 0, snow = (sc.weather & 2) != 0;
+  const float amt = std::min(1.0f, std::max(0.0f, sc.weatherAmt)) * g_loadScale;
+  const XrVector3f head = head_of(sc);
+  const float tableTop = sc.tablePos.y + 0.002f;
+  const float boxTop = sc.tablePos.y + 2.0f * sc.tableScale;
+  // spawning
+  int falling = 0, lying = 0;
+  for (const WxPiece& q : wx.pieces) {
+    if (q.kind == 0 || q.kind == 2) ++falling;
+    if (q.kind == 3) ++lying;
+  }
+  if (mode >= 0 && (rain || snow)) {
+    // r148: round you in the stadium 420 streaks / 450 flakes at most (were 600 / 650), times the load scale
+    const float rate = mode == 0 ? (rain ? 520.0f : 60.0f) : (rain ? 640.0f : 76.0f);
+    const int cap = static_cast<int>((mode == 0 ? (rain ? 320.0f : 260.0f) : (rain ? 420.0f : 450.0f)) * g_loadScale);
+    for (int j = spawn_n(wx.acc, rate * amt, dt); j > 0 && falling < cap && wx.pieces.size() < kWeatherParts; --j) {
+      WxPiece q{};
+      q.kind = rain ? 0 : 2;
+      q.phase = frand(0.0f, 6.2831853f);
+      if (mode == 0) {
+        const float gx = frand(-27.0f, 27.0f), gy = frand(-17.5f, 17.5f);
+        const XrVector3f p = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, gx, gy, 0.0f);
+        q.p[0] = p.x;
+        q.p[1] = tableTop + frand(0.5f, 0.7f);
+        q.p[2] = p.z;
+        q.v[1] = rain ? -frand(2.4f, 2.9f) : -frand(0.09f, 0.14f);
+        q.size = rain ? 0.034f : frand(0.004f, 0.007f);  // a streak 3.4 cm long, 2 mm wide (reads at a table's distance)
+      } else {
+        const float a = frand(0.0f, 6.2831853f), r = std::sqrt(frand(0.7f * 0.7f, (rain ? 8.0f : 9.0f) * (rain ? 8.0f : 9.0f)));
+        q.p[0] = head.x + std::cos(a) * r;
+        q.p[1] = head.y + (rain ? frand(3.5f, 6.5f) : frand(2.5f, 5.5f));
+        q.p[2] = head.z + std::sin(a) * r;
+        if (rain) {
+          q.v[0] = 0.6f;
+          q.v[1] = -frand(8.5f, 10.5f);
+          q.v[2] = 0.2f;
+        } else {
+          q.v[1] = -frand(0.8f, 1.2f);
+        }
+        q.size = rain ? frand(0.4f, 0.6f) : frand(0.03f, 0.06f);
+      }
+      q.life = 12.0f;
+      wx.pieces.push_back(q);
+      ++falling;
+    }
+  }
+  // moving, landing, splashing, settling
+  const float floorY = sc.floorY;
+  const bool stopping = mode < 0;
+  static std::vector<WxPiece> born;  // r148: kept (no allocation a frame)
+  born.clear();
+  for (size_t i = 0; i < wx.pieces.size();) {
+    WxPiece& q = wx.pieces[i];
+    q.age += dt;
+    bool dead = q.age >= q.life;
+    if (q.kind == 0 || q.kind == 2) {
+      float sway = 0.0f;
+      if (q.kind == 2) sway = (wx.mode == 0 ? 0.02f : 0.35f) * std::sin(wx.t * 1.3f + q.phase);
+      q.p[0] += (q.v[0] + sway) * dt;
+      q.p[1] += q.v[1] * dt;
+      q.p[2] += (q.v[2] + 0.6f * sway * std::cos(q.phase)) * dt;
+      if (wx.mode == 0) {
+        const float dx = (q.p[0] - sc.tablePos.x) / sc.tableScale, dz = (q.p[2] - sc.tablePos.z) / sc.tableScale;
+        const float cs = std::cos(sc.tableYaw), sn = std::sin(sc.tableYaw);
+        const float gx = dx * cs - dz * sn, gy = -(dx * sn + dz * cs);
+        const bool overField = std::fabs(gx) < 22.5f && std::fabs(gy) < 13.5f;
+        if (overField && q.p[1] < boxTop) {
+          dead = true;  // into the field's stand-in box (the game's own splashes / drifts are on the pitch)
+        } else if (q.p[1] <= tableTop) {
+          dead = true;
+          if (!stopping && wx.pieces.size() + born.size() < kWeatherParts) {
+            WxPiece l = q;
+            l.p[1] = tableTop + 0.0015f;
+            l.age = 0.0f;
+            if (q.kind == 0) {
+              l.kind = 1;
+              l.life = 0.22f;
+              l.size = 0.004f;
+              born.push_back(l);
+            } else if (lying < static_cast<int>(240 * g_loadScale)) {  // r148: 240 (was 360)
+              l.kind = 3;
+              l.life = 40.0f;
+              l.yaw = frand(0.0f, 6.2831853f);
+              ++lying;
+              born.push_back(l);
+            }
+          }
+        }
+      } else if (q.p[1] <= floorY + 0.005f) {
+        dead = true;
+        if (!stopping && wx.pieces.size() + born.size() < kWeatherParts) {
+          WxPiece l = q;
+          l.p[1] = floorY + 0.01f;
+          l.age = 0.0f;
+          if (q.kind == 0) {
+            if (irand(2) == 0) {
+              l.kind = 1;
+              l.life = 0.25f;
+              l.size = 0.06f;
+              born.push_back(l);
+            }
+          } else if (lying < static_cast<int>(120 * g_loadScale)) {  // r148: 120 (was 220)
+            l.kind = 3;
+            l.life = 6.0f;
+            l.yaw = frand(0.0f, 6.2831853f);
+            ++lying;
+            born.push_back(l);
+          }
+        }
+      }
+    } else if (q.kind == 3 && stopping && q.life - q.age > 1.5f) {
+      q.life = q.age + 1.5f;  // the weather's gone: what lies melts away quickly
+    }
+    if (dead) {
+      wx.pieces[i] = wx.pieces.back();
+      wx.pieces.pop_back();
+    } else {
+      ++i;
+    }
+  }
+  for (const WxPiece& l : born) wx.pieces.push_back(l);
+  if (snow && mode == 0 && !wx.patchesMade) {
+    wx.patchesMade = true;
+    for (int k = 0; k < 30; ++k) {
+      // round the field box's edge, on the table: along the sides more than the ends
+      const int side = irand(10);
+      float gx, gy;
+      if (side < 7) {
+        gx = frand(-25.0f, 25.0f);
+        gy = (irand(2) ? 1.0f : -1.0f) * frand(14.3f, 16.8f);
+      } else {
+        gx = (irand(2) ? 1.0f : -1.0f) * frand(23.3f, 26.0f);
+        gy = frand(-16.0f, 16.0f);
+      }
+      wx.patch[k][0] = gx;
+      wx.patch[k][1] = gy;
+      wx.patch[k][2] = frand(0.035f, 0.085f);
+      wx.patch[k][3] = frand(0.0f, 1.0f);
+    }
+  }
+}
+
+static uint32_t write_weather(const Scene& sc, Instance* inst) {
+  const XrVector3f head = head_of(sc);
+  const bool night = (sc.weather & 4) != 0 && weather_mode(sc) >= 0;
+  const float amt = std::min(1.0f, std::max(0.0f, sc.weatherAmt));
+  uint32_t n = 0;
+  auto emit = [&](const XrVector3f& p, float size, const float* quat, uint32_t c1, uint32_t c2, uint8_t shape,
+                  float aspect, float alpha, float glow) {
+    if (n >= kWeatherParts || alpha <= 0.002f) return;
+    Instance& o = inst[n++];
+    o.posSize[0] = p.x;
+    o.posSize[1] = p.y;
+    o.posSize[2] = p.z;
+    o.posSize[3] = size;
+    if (quat != nullptr) {
+      std::memcpy(o.quat, quat, sizeof(o.quat));
+    } else {
+      std::memset(o.quat, 0, sizeof(o.quat));  // faces you
+    }
+    o.color1 = c1;
+    o.color2 = c2;
+    o.params[0] = static_cast<float>(shape);
+    o.params[1] = aspect;
+    o.params[2] = alpha;
+    o.params[3] = glow;
+  };
+  const bool table = wx.mode == 0;
+  for (const WxPiece& q : wx.pieces) {
+    const XrVector3f p{q.p[0], q.p[1], q.p[2]};
+    const float dx = p.x - head.x, dy = p.y - head.y, dz = p.z - head.z;
+    const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float nearFade = std::min(1.0f, std::max(0.0f, (d - 0.35f) / 0.5f));  // nothing in your face
+    if (q.kind == 0) {
+      float quat[4];
+      orient_along(quat, p, q.v, head);
+      emit(p, q.size, quat, pack(night ? 0xF2F6FF : 0xE6F0FF), pack(night ? 0xC8D8F0 : 0xA8C0E0), kStreak,
+           table ? 0.06f : 0.024f, (night ? 0.5f : 0.42f) * nearFade, 0.15f);
+    } else if (q.kind == 1) {
+      const float t = q.age / std::max(q.life, 0.05f);
+      float quat[4];
+      orient_flat(quat, 0.0f);
+      emit(p, q.size * (1.0f + 3.0f * t), quat, pack(0xEAF4FF), pack(0xB8D0F0), kRingFx, 1.0f, 0.55f * (1.0f - t), 0.2f);
+    } else if (q.kind == 2) {
+      // most flakes soft dots; one in five a crystal, turning
+      if (static_cast<int>(q.phase * 10.0f) % 5 == 0) {
+        float quat[4];
+        const float axis[3] = {std::sin(q.phase), 0.6f, std::cos(q.phase)};
+        float ax[3] = {axis[0], axis[1], axis[2]};
+        normalize3(ax);
+        quat_axis_angle(ax, wx.t * 1.5f + q.phase, quat);
+        emit(p, q.size * 1.6f, quat, pack(0xFFFFFF), pack(0xDDEBFF), kFlake, 1.0f, 0.9f * nearFade, 0.1f);
+      } else {
+        emit(p, q.size, nullptr, pack(0xFFFFFF), pack(0xE8F0FF), kSpark, 1.0f, 0.85f * nearFade, 0.0f);
+      }
+    } else {
+      // a flake lying: a small soft white spot (a dusting, never polka dots)
+      const float t = q.age / std::max(q.life, 0.05f);
+      float quat[4];
+      orient_flat(quat, q.yaw);
+      emit(p, q.size * (table ? 1.3f : 0.8f), quat, pack(0xFFFFFF), pack(0xEEF4FF), kSpark, 1.0f,
+           (table ? 0.8f : 0.5f) * std::min(1.0f, 4.0f * (1.0f - t)), 0.0f);
+    }
+  }
+  // MR: the snow lying round the table field, growing over the match
+  if (table && (sc.weather & 2) != 0 && wx.patchesMade && sc.snowCover > 0.0f) {
+    for (int k = 0; k < 30; ++k) {
+      const XrVector3f p = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, wx.patch[k][0], wx.patch[k][1], 0.0f);
+      const XrVector3f at{p.x, sc.tablePos.y + 0.0025f, p.z};
+      float quat[4];
+      orient_flat(quat, wx.patch[k][3] * 6.2831853f);
+      const float grow = std::min(1.0f, sc.snowCover * 1.4f - 0.4f * wx.patch[k][3] + 0.3f);
+      if (grow <= 0.0f) continue;
+      emit(at, wx.patch[k][2] * (0.5f + 0.5f * grow), quat, pack(0xFFFFFF), pack(0xE6EEF8, static_cast<uint8_t>(wx.patch[k][3] * 255.0f)),
+           kPuff, 1.6f, 0.9f * grow * amt, 0.0f);
+    }
+  }
+  // night: the floodlights
+  if (night) {
+    if (table) {
+      // four little ones on poles at the field's corners, their beams on the grass
+      for (int k = 0; k < 4; ++k) {
+        const float sx = (k & 1) ? 1.0f : -1.0f, sy = (k & 2) ? 1.0f : -1.0f;
+        const XrVector3f lamp = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, 24.5f * sx, 15.5f * sy, 9.0f);
+        const XrVector3f aim = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, 9.0f * sx, 5.0f * sy, 0.0f);
+        {
+          // its pole, down to the table (a soft grey line), so the lamp stands on something
+          const XrVector3f foot = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, 24.5f * sx, 15.5f * sy, 0.0f);
+          const float upDir[3] = {lamp.x - foot.x, lamp.y - foot.y, lamp.z - foot.z};
+          const XrVector3f mid{0.5f * (lamp.x + foot.x), 0.5f * (lamp.y + foot.y), 0.5f * (lamp.z + foot.z)};
+          float quat[4];
+          orient_along(quat, mid, upDir, head);
+          emit(mid, 9.0f * sc.tableScale, quat, pack(0xB4BAC4), pack(0x5A6068), kStreak, 0.035f, 0.9f * amt, 0.0f);
+        }
+        emit(lamp, 0.045f, nullptr, pack(0xFFFFFF), pack(0xFFE6B0), kSpark, 1.0f, 0.95f * amt, 0.8f);
+        emit(lamp, 0.15f, nullptr, pack(0xFFF0D0), pack(0xFFD890), kSpark, 1.0f, 0.22f * amt, 1.0f);
+        const float dir[3] = {aim.x - lamp.x, aim.y - lamp.y, aim.z - lamp.z};
+        const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        const XrVector3f mid{0.5f * (lamp.x + aim.x), 0.5f * (lamp.y + aim.y), 0.5f * (lamp.z + aim.z)};
+        float quat[4];
+        orient_along(quat, mid, dir, head);
+        emit(mid, len, quat, pack(0xFFF4DC), pack(0xFFE2B0), kStreak, 0.32f, 0.14f * amt, 1.0f);
+      }
+    } else {
+      // the stadium's own floodlight banks (the game's flares), life size round you
+      for (int k = 0; k < sc.wxLightCount && k < 8; ++k) {
+        const XrVector3f& w = sc.wxLights[k];
+        const XrVector3f lamp = game_to_room(sc.stadiumScale, 0.0f, sc.stadiumOrigin, w.x, w.y, w.z);
+        float tx = w.x * 0.5f, ty = w.y * 0.45f;
+        tx = std::max(-16.0f, std::min(16.0f, tx));
+        ty = std::max(-8.5f, std::min(8.5f, ty));
+        const XrVector3f aim = game_to_room(sc.stadiumScale, 0.0f, sc.stadiumOrigin, tx, ty, 0.0f);
+        emit(lamp, 3.0f * sc.stadiumScale, nullptr, pack(0xFFFFFF), pack(0xFFE6B8), kSpark, 1.0f, 0.95f * amt, 0.85f);
+        emit(lamp, 11.0f * sc.stadiumScale, nullptr, pack(0xFFF0D8), pack(0xFFD8A0), kSpark, 1.0f, 0.24f * amt, 1.0f);
+        const float dir[3] = {aim.x - lamp.x, aim.y - lamp.y, aim.z - lamp.z};
+        const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        const XrVector3f mid{0.5f * (lamp.x + aim.x), 0.5f * (lamp.y + aim.y), 0.5f * (lamp.z + aim.z)};
+        float quat[4];
+        orient_along(quat, mid, dir, head);
+        emit(mid, len, quat, pack(0xFFF4DC), pack(0xFFE2B0), kStreak, 0.16f, ((sc.weather & 3) ? 0.16f : 0.11f) * amt, 1.0f);
+      }
+    }
+  }
+  return n;
+}
+
 // r60: the outlines and the pointer dots (Scene::frames, Scene::pointers), drawn last, over
 // everything (no depth test), so a pointer always sees what it is on.
 constexpr uint32_t kUiParts = 6;
@@ -5748,6 +7268,7 @@ static void spawn_web(const Scene& sc, const State::WebShot& w) {
 bool update(const Scene& sc) {
   // r54: the controllers' models, once loaded (here: render only runs while something shows).
   if (s.ready) take_models();
+  body_frame(sc);  // r143: the life-size scorer's body this frame
   // r55: item blasts since the last update.
   for (const State::Blast& b : s.pendingBlasts) spawn_blast(sc, b);
   s.pendingBlasts.clear();
@@ -5784,8 +7305,10 @@ bool update(const Scene& sc) {
   home_sparks(sc, dt);
   suite_live(sc, dt);
   corner_ambient(sc, dt);  // r89: the home corner's own little show
+  weather_step(sc, dt);    // r137: rain / snow / the floodlights (its own pool)
   const bool steady = marker_active(sc) || washing || sc.tableUnderside || hands_shown(sc) || shelf_shown(sc) ||
-                      ui_shown(sc) || sc.homeCount > 0 || sc.roomShown || sc.cornerOn || chars_shown(sc);
+                      ui_shown(sc) || sc.homeCount > 0 || sc.roomShown || sc.cornerOn || chars_shown(sc) ||
+                      weather_shown(sc);
   if (s.stage == Stage::Idle && s.parts.empty() && s.hatsLeft == 0) {
     return s.drop > 0.0f || steady;
   }
@@ -5907,9 +7430,10 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   const bool suite = sc.roomShown;     // r61: the cup suite's live things
   if (s.ready) take_room(false);       // r61: a room let go (render_room puts new ones up)
   const bool chars = s.ready && chars_shown(sc);  // r96: characters standing in your room
+  const bool weather = weather_shown(sc);         // r137
   if (!s.ready ||
       (s.parts.empty() && !marker && !washing && !sc.tableUnderside && !hands && !shelf && !ui && !home && !suite &&
-       !chars)) {
+       !chars && !weather)) {
     return false;
   }
   const uint32_t slotIndex = s.slot;
@@ -5920,6 +7444,8 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     vkResetFences(s.dev.device, 1, &slot.fence);
     slot.pending = false;
   }
+  // r143: the life-size scorer's body into this frame slot's buffers
+  const uint32_t bodyIndices = body_upload(sc, slot);
   // r96: the characters' posed vertices into this frame slot's buffers
   if (chars) {
     for (int i = 0; i < kModelSlots; ++i) {
@@ -5947,7 +7473,9 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   uint32_t count = 0;
   for (const Particle& q : s.parts) {
     // r45d: three left: the marker, the flash, the underside; r53: and the controllers; r57: the shelf.
-    if (count >= kMaxParticles - 3 - kHandParts - kShelfParts - kUiParts - kHomeParts - kSuiteParts - kLedParts) break;
+    if (count >= kMaxParticles - 3 - kHandParts - kShelfParts - kUiParts - kHomeParts - kSuiteParts - kLedParts -
+                     kWeatherParts)
+      break;
     ++filled[bucket_of(q)];
     ++count;
   }
@@ -6100,6 +7628,9 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   // r62: its LED lights, after the suite's slots.
   const uint32_t ledAt = suiteAt + kSuiteParts;
   const uint32_t ledCount = roomDepth ? write_leds(sc, inst + ledAt) : 0;
+  // r137: the weather, after the LEDs' slots
+  const uint32_t wxAt = ledAt + kLedParts;
+  const uint32_t wxCount = weather ? write_weather(sc, inst + wxAt) : 0;
   uint32_t indices = 0;
   for (uint32_t b = 0; b < kQuadBucket; ++b) indices += filled[b] * s.meshRanges[b / mesh::kCount][b % mesh::kCount].indexCount;
   s.statPeakParts = std::max(s.statPeakParts, count);
@@ -6153,6 +7684,18 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     pc.camPos[1] = sc.views[e].pose.position.y;
     pc.camPos[2] = sc.views[e].pose.position.z;
     const VkDeviceSize zero = 0;
+    // r143: the life-size scorer's body before anything (depth only: its own layer, under this one, shows it), so
+    // whatever is behind any part of it - pieces, the figures standing in your room, the shelf - is hidden by it
+    // pixel by pixel, and what is in front of it stays in front
+    if (bodyIndices > 0) {
+      PushConstants bpc = pc;
+      mat_mul(pc.viewProj, sc.scorerModel, bpc.viewProj);
+      vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.occluderPipeline);
+      vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(bpc), &bpc);
+      vkCmdBindVertexBuffers(slot.cmd, 0, 1, &slot.bodyVerts, &zero);
+      vkCmdBindIndexBuffer(slot.cmd, slot.bodyIdx, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(slot.cmd, bodyIndices, 1, 0, 0, 0);
+    }
     // r96: the characters standing in your room, first: what falls round them is drawn against them
     if (chars) draw_chars(sc, slot.cmd, slotIndex, pc.viewProj, sc.views[e].pose.position);
     // r53: the controllers first, so the stand-in solids (the table's box, the banner) never hide a
@@ -6259,6 +7802,7 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
       vkCmdDraw(slot.cmd, 4, filled[kQuadBucket], 0, first[kQuadBucket]);
     }
     if (ledCount > 0) vkCmdDraw(slot.cmd, 4, ledCount, 0, ledAt);  // r62: the suite's LEDs
+    if (wxCount > 0) vkCmdDraw(slot.cmd, 4, wxCount, 0, wxAt);     // r137: the weather
     if (markerCount > 0) {
       vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.markerPipeline);
       vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);

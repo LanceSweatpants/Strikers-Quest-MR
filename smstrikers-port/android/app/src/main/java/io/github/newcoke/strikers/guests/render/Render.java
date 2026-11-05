@@ -69,13 +69,13 @@ public final class Render {
                 : job.data.has("roster.txt") ? job.data.text("roster.txt") : null;
         if (roster != null) {
             for (Work w : work.values()) w.cell = -1;
-            int place = 0;  // r121 (16 x 16 atlas): a guest's cell = its place in roster.txt, as the game looks it up
+            int place = 0;  // r121 (16 x 16 atlas; r135 16 x 32): a guest's cell = its place in roster.txt, as the game looks it up
             for (String line : roster.split("\n")) {
                 final String[] p = line.replace("\r", "").split("\t");
                 if (line.startsWith("#") || p.length < 5) continue;
                 final int cell = place++;
                 if (p.length > 5 && p[5].equals("franchise")) continue;  // (shows its first form's: no cell)
-                if (cell >= Etch.GRID * Etch.GRID) break;
+                if (cell >= Etch.CELLS) break;
                 Work w = work.get(p[0]);
                 if (w == null) {  // a guest we don't list: posed on its slot (retarget) or by its own clip
                     w = new Work();

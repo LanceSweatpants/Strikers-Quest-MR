@@ -26,6 +26,11 @@ void PortXrMarkStadiumHandle(uintptr_t matrixHandle);
 // camera hides or fades it); hiddenForCamera = the game would hide it from the broadcast view this
 // frame. It is drawn solid for the eyes and left out of the normal (broadcast) send only.
 void PortXrNoteCameraSide(const DrawableObject* object, bool hiddenForCamera);
+// r148, World::Render in the 3D modes (where everything is drawn for the eyes): whether the game camera's own frustum
+// test would have left this object out (outsideCamera), as it does in the Living Room. Its packets are then left out of
+// the broadcast (normal) send's 3D world views only - never the eye sends (table, stadium, scorer), the shadow texture
+// or anything else drawn from another camera. Counted in the draw census line ("broadcast cull").
+void PortXrNoteBroadcastCulled(const DrawableObject* object, bool outsideCamera);
 // glxSend.cpp, at the draw: true when the packet is stadium and either the table layer is being
 // sent or the object lies wholly outside the camera of the view being sent.
 bool PortXrSkipPacketDraw(uintptr_t matrixHandle);

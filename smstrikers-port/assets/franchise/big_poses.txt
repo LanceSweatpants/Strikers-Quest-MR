@@ -1,0 +1,343 @@
+# r144 big pictures (cards + magazine covers): the reviewed action poses (src/platform/xr_big.cpp, guests/render/BigPose.java).
+# Lance on r143: "contorted ... dont show their eyes ... arms or legs being bent all crazy". Every character's chosen key was
+# rendered on the PC (tools/outside/big137_pc.py --propose, logs/big144 sheets) and looked at twice (review_*, final_*);
+# only the clean ones are here.
+# A pack not on this list (failed the look, borderline, or made after it) draws in its IDLE portrait pose.
+#   <pack file name without .gpk (its _shiny shares it)>	<BigPose candidate key, or idle>[	view <yaw> <pitch>]
+# view (r144b): the big picture's own camera for one edge-on / back-turned / face-hidden at the default (yaw -70, pitch 0:
+# the portraits' camera; pitch = looking down on it), picked by rendering a 7 x 3 grid of them (logs/big144/fixed_angles.png).
+cap_mario	Mario own windup_kick t 0.8
+cap_yoshi	Yoshi own windup_powershot t 0.65
+cap_donkeykong	DonkeyKong own arm_powerup t 0.8
+cap_waluigi	Waluigi own windup_kick t 0.8
+bowser	move 10 frame 925
+bowserjr	move 11 frame 899
+diddykong	move 5 frame 370
+petey	move 9 frame 860
+boo	move 3 frame 111
+drybones	move 3 frame 83
+shyguy	move 4 frame 92
+drmario	Mario windup_kick t 0.8
+fox	Yoshi windup_kick t 0.8
+link	Mario windup_kick t 0.8
+kirby	Yoshi windup_powershot t 0.65
+ness	Mario windup_kick t 0.8
+popo	Daisy windup_kick t 0.8
+nana	Peach windup_kick t 0.8
+roy	Mario windup_kick t 0.8
+gamewatch	Waluigi windup_kick t 0.8
+pk_bulbasaur	Daisy windup_kick t 0.65
+pk_ivysaur	Daisy windup_kick t 0.65
+pk_venusaur	DonkeyKong captain_shoot_to_score t 0.2
+pk_charmander	Mario arm_powerup t 0.35
+pk_charmeleon	Mario arm_powerup t 0.65
+pk_charizard	DonkeyKong onetimer_ground_600 t 0.65
+pk_blastoise	DonkeyKong arm_powerup t 0.2
+pk_mankey	Wario arm_powerup t 0.8
+pk_machop	Wario windup_kick t 0.8
+pk_machoke	Wario windup_kick t 0.8
+pk_machamp	DonkeyKong arm_powerup t 0.65
+pk_graveler	Wario arm_powerup t 0.8
+pk_golem	DonkeyKong arm_powerup t 0.2
+pk_gastly	Waluigi windup_kick t 0.65
+pk_haunter	Waluigi windup_kick t 0.8
+pk_gengar	Waluigi windup_kick t 0.8
+pk_voltorb	Wario onetimer_ground_600 t 0.35
+pk_electrode	Wario windup_kick t 0.35
+pk_dratini	Peach windup_powershot t 0.2
+pk_dragonair	Peach windup_powershot t 0.2
+pk_dragonite	DonkeyKong onetimer_ground_600 t 0.65
+pk_pichu	Daisy onetimer_ground_600 t 0.8
+pk_pikachu	Yoshi windup_powershot t 0.65
+pk_raichu	Yoshi arm_powerup t 0.35
+pk_jigglypuff	Peach windup_kick t 0.8
+pk_torchic	Yoshi arm_powerup t 0.65
+pk_drowzee	Mario arm_powerup t 0.8
+pk_cubone	Mario windup_kick t 0.65
+pk_marowak	Mario windup_kick t 0.8
+pk_koffing	Waluigi onetimer_ground_600 t 0.8
+pk_weezing	Waluigi onetimer_ground_600 t 0.8
+pk_snorlax	DonkeyKong arm_powerup t 0.65
+pk_magby	Mario windup_powershot t 0.2
+pk_treecko	Yoshi arm_powerup t 0.5
+pk_mudkip	Daisy arm_powerup t 0.2
+pk_marshtomp	Wario windup_kick t 0.65
+pk_shuppet	Peach windup_kick t 0.65
+pk_banette	Waluigi windup_kick t 0.65
+pk_bagon	Wario windup_kick t 0.8
+pk_politoed	Luigi arm_powerup t 0.35
+pk_beldum	Waluigi onetimer_ground_600 t 0.8
+pk_metang	Waluigi windup_kick t 0.8
+pk_metagross	DonkeyKong captain_shoot_to_score t 0.2
+pk_cyndaquil	Daisy onetimer_ground_600 t 0.35
+pk_quilava	Daisy arm_powerup t 0.5
+pk_typhlosion	Luigi arm_powerup t 0.2
+pk_totodile	Mario arm_powerup t 0.35
+pk_croconaw	Mario arm_powerup t 0.5
+pk_chikorita	Daisy onetimer_ground_600 t 0.35
+pk_bayleef	Daisy onetimer_ground_600 t 0.35
+pk_meganium	Daisy onetimer_ground_600 t 0.35
+pk_abra	Peach arm_powerup t 0.8
+pk_kirlia	Luigi arm_powerup t 0.35
+pk_larvitar	Mario windup_kick t 0.8
+pk_pupitar	Luigi onetimer_ground_600 t 0.35
+pk_tyranitar	DonkeyKong arm_powerup t 0.65
+pk_aron	Daisy windup_kick t 0.65
+pk_lairon	Daisy onetimer_ground_600 t 0.35
+pk_aggron	Luigi onetimer_ground_600 t 0.35
+pk_elekid	Mario windup_kick t 0.8
+pk_electabuzz	Mario windup_kick t 0.8
+pk_eevee	Daisy onetimer_ground_600 t 0.35
+pk_vaporeon	Daisy onetimer_ground_600 t 0.35
+pk_flareon	Daisy onetimer_ground_600 t 0.35
+pk_mareep	Daisy onetimer_ground_600 t 0.35
+pk_ampharos	Luigi windup_kick t 0.8
+pk_teddiursa	Peach arm_powerup t 0.5
+pk_lotad	Daisy onetimer_ground_600 t 0.65
+pk_lombre	Mario arm_powerup t 0.8
+pk_ludicolo	Luigi onetimer_ground_600 t 0.8
+pk_seedot	Mario windup_powershot t 0.5
+pk_shroomish	Mario onetimer_ground_600 t 0.8
+pk_hariyama	Mario windup_kick t 0.35
+pk_loudred	Daisy arm_powerup t 0.5
+pk_cacnea	Daisy arm_powerup t 0.65
+pk_nidoranm	Daisy onetimer_ground_600 t 0.8
+pk_nidoking	Daisy arm_powerup t 0.5
+pk_nidoranf	Daisy arm_powerup t 0.2
+pk_nidorina	Daisy onetimer_ground_600 t 0.8
+pk_kabuto	Daisy onetimer_ground_600 t 0.65
+pk_wooper	Mario arm_powerup t 0.2
+pk_quagsire	Luigi onetimer_ground_600 t 0.35
+pk_smoochum	Peach onetimer_ground_600 t 0.8
+pk_jynx	Peach windup_kick t 0.35
+pk_sandshrew	Luigi windup_kick t 0.8
+pk_sandslash	Luigi windup_kick t 0.8
+pk_slowpoke	Daisy onetimer_ground_600 t 0.35
+pk_slowbro	Luigi windup_kick t 0.65
+pk_slowking	Luigi windup_powershot t 0.2
+pk_caterpie	Peach windup_powershot t 0.2
+pk_metapod	Mario windup_powershot t 0.5
+pk_butterfree	Yoshi windup_powershot t 0.5
+pk_weedle	Peach onetimer_ground_600 t 0.35
+pk_kakuna	Mario windup_powershot t 0.35
+pk_beedrill	Luigi windup_kick t 0.8
+pk_pidgey	Yoshi windup_powershot t 0.5
+pk_pidgeotto	Yoshi windup_powershot t 0.5
+pk_pidgeot	Luigi windup_powershot t 0.2
+pk_rattata	Daisy onetimer_ground_600 t 0.35
+pk_raticate	Daisy arm_powerup t 0.65
+pk_spearow	Yoshi onetimer_ground_600 t 0.35
+pk_ekans	Peach onetimer_ground_600 t 0.35
+pk_arbok	Peach windup_powershot t 0.2
+pk_vulpix	Daisy onetimer_ground_600 t 0.35
+pk_zubat	Yoshi onetimer_ground_600 t 0.35
+pk_golbat	Yoshi captain_shoot_to_score t 0.2
+pk_crobat	Luigi captain_shoot_to_score t 0.2
+pk_oddish	Mario onetimer_ground_600 t 0.8
+pk_bellossom	Peach onetimer_ground_600 t 0.35
+pk_paras	Daisy onetimer_ground_600 t 0.35
+pk_parasect	Daisy windup_kick t 0.5
+pk_venonat	Daisy windup_powershot t 0.35
+pk_diglett	Mario windup_powershot t 0.8
+pk_dugtrio	Mario captain_shoot_to_score t 0.8
+pk_meowth	Mario arm_powerup t 0.5
+pk_weepinbell	Mario windup_kick t 0.8
+pk_victreebel	Luigi arm_powerup t 0.8
+pk_tentacool	Waluigi windup_powershot t 0.2
+pk_tentacruel	Waluigi onetimer_ground_600 t 0.8
+pk_magnemite	Waluigi windup_powershot t 0.5
+pk_doduo	Waluigi captain_shoot_to_score t 0.8
+pk_dodrio	Waluigi windup_kick t 0.8
+pk_seel	Peach arm_powerup t 0.2
+pk_grimer	Mario windup_powershot t 0.8
+pk_muk	Luigi windup_powershot t 0.8
+pk_shellder	Mario windup_powershot t 0.2
+pk_cloyster	Luigi windup_powershot t 0.2
+pk_krabby	Daisy windup_kick t 0.5
+pk_kingler	Daisy windup_kick t 0.5
+pk_exeggcute	Mario windup_kick t 0.8
+pk_exeggutor	Luigi arm_powerup t 0.8
+pk_rhyhorn	Daisy onetimer_ground_600 t 0.35
+pk_rhydon	Peach arm_powerup t 0.5
+pk_chansey	Peach windup_kick t 0.65
+pk_horsea	Peach arm_powerup t 0.2
+pk_seadra	Waluigi captain_shoot_to_score t 0.8
+pk_goldeen	Peach windup_powershot t 0.5
+pk_seaking	Waluigi captain_shoot_to_score t 0.8
+pk_staryu	Daisy windup_kick t 0.8
+pk_starmie	Daisy onetimer_ground_600 t 0.8
+pk_magikarp	Peach captain_shoot_to_score t 0.8
+pk_gyarados	DonkeyKong captain_shoot_to_score t 0.65
+pk_omanyte	Mario windup_kick t 0.8
+pk_omastar	Luigi windup_powershot t 0.8
+pk_furret	Daisy onetimer_ground_600 t 0.8
+pk_hoothoot	Yoshi windup_powershot t 0.8
+pk_noctowl	Luigi windup_powershot t 0.2
+pk_spinarak	Daisy windup_kick t 0.8
+pk_ariados	Daisy arm_powerup t 0.2
+pk_chinchou	Peach windup_powershot t 0.35
+pk_lanturn	Waluigi captain_shoot_to_score t 0.2
+pk_cleffa	Peach onetimer_ground_600 t 0.35
+pk_clefairy	Peach arm_powerup t 0.65
+pk_xatu	Luigi windup_kick t 0.8
+pk_jumpluff	Peach onetimer_ground_600 t 0.2
+pk_sunflora	Peach arm_powerup t 0.2
+pk_pineco	Mario windup_kick t 0.65
+pk_forretress	Luigi windup_kick t 0.8
+pk_slugma	Peach onetimer_ground_600 t 0.35
+pk_swinub	Daisy onetimer_ground_600 t 0.35
+pk_piloswine	Daisy onetimer_ground_600 t 0.35
+pk_octillery	Waluigi windup_powershot t 0.5
+pk_phanpy	Daisy onetimer_ground_600 t 0.35
+pk_poochyena	Daisy onetimer_ground_600 t 0.35
+pk_zigzagoon	Daisy onetimer_ground_600 t 0.35
+pk_silcoon	Mario captain_shoot_to_score t 0.2
+pk_beautifly	Yoshi captain_shoot_to_score t 0.2
+pk_cascoon	Mario captain_shoot_to_score t 0.2
+pk_dustox	Yoshi onetimer_ground_600 t 0.35
+pk_taillow	Yoshi windup_powershot t 0.5
+pk_swellow	Yoshi onetimer_ground_600 t 0.35
+pk_pelipper	Luigi captain_shoot_to_score t 0.2
+pk_surskit	Daisy arm_powerup t 0.5
+pk_masquerain	Yoshi captain_shoot_to_score t 0.5
+pk_nincada	Daisy onetimer_ground_600 t 0.65
+pk_shedinja	Waluigi captain_shoot_to_score t 0.2
+pk_azumarill	Mario windup_kick t 0.8
+pk_skitty	Daisy onetimer_ground_600 t 0.35
+pk_delcatty	Daisy arm_powerup t 0.2
+pk_electrike	Daisy onetimer_ground_600 t 0.35
+pk_swalot	Luigi windup_powershot t 0.2
+pk_carvanha	Peach captain_shoot_to_score t 0.8
+pk_sharpedo	Waluigi captain_shoot_to_score t 0.2
+pk_wailmer	Waluigi captain_shoot_to_score t 0.8
+pk_wailord	DonkeyKong captain_shoot_to_score t 0.65
+pk_spoink	Mario arm_powerup t 0.2
+pk_grumpig	Mario windup_kick t 0.8
+pk_swablu	Yoshi windup_powershot t 0.5
+pk_barboach	Peach windup_powershot t 0.2
+pk_whiscash	Waluigi captain_shoot_to_score t 0.8
+pk_corphish	Daisy onetimer_ground_600 t 0.65
+pk_baltoy	Waluigi arm_powerup t 0.2
+pk_claydol	Waluigi arm_powerup t 0.8
+pk_lileep	Mario windup_kick t 0.35
+pk_cradily	Luigi captain_shoot_to_score t 0.65
+pk_duskull	Waluigi windup_powershot t 0.8
+pk_dusclops	DonkeyKong windup_kick t 0.8
+pk_wynaut	Mario windup_kick t 0.8
+pk_wobbuffet	Luigi windup_kick t 0.8
+pk_glalie	Mario arm_powerup t 0.65
+pk_spheal	Mario windup_kick t 0.65
+pk_sealeo	Mario arm_powerup t 0.2
+pk_walrein	Daisy arm_powerup t 0.2
+pk_clamperl	Mario captain_shoot_to_score t 0.5
+mua_drstrange	own_cel3 key 11
+mua_drstrange_c2	own_cel4 key 24
+mua_drstrange_c3	own_cel3 key 42
+mua_drstrange_c4	own_cel3 key 34
+mua_spiderman	own_cel3 key 20
+mua_spiderman_c2	own_cel3 key 20
+mua_spiderman_c3	own_cel3 key 20
+mua_spiderman_c4	own_cel3 key 20
+mua_spiderwoman	own_cel4 key 16
+mua_spiderwoman_c2	own_cel4 key 16
+mua_spiderwoman_c3	own_cel4 key 16
+mua_wolverine	own_cel3 key 12
+mua_wolverine_c2	own_cel3 key 12
+mua_wolverine_c3	own_cel3 key 12
+mua_wolverine_c4	own_cel3 key 12
+mua_colossus	own_cel4 key 30
+mua_colossus_c2	own_cel4 key 30
+mua_captainamerica_c4	own_cel4 key 38
+mua_ironman	move 3 frame 183
+mua_ironman_c2	move 3 frame 180
+mua_ironman_c3	move 3 frame 180
+mua_ironman_c4	move 3 frame 183
+mua_thor	move 3 frame 199
+mua_thor_c2	move 3 frame 199
+mua_thor_c3	move 3 frame 224
+mua_thor_c4	move 3 frame 199
+mua_deadpool	move 3 frame 136
+mua_deadpool_c2	move 3 frame 136
+mua_deadpool_c3	move 3 frame 136
+mua_deadpool_c4	move 3 frame 136
+mua_blackpanther	move 3 frame 215
+mua_blackpanther_c2	move 3 frame 215
+mua_blackpanther_c3	move 3 frame 220
+mua_blackpanther_c4	move 3 frame 215
+mua_daredevil	move 5 frame 258
+mua_daredevil_c2	move 5 frame 258
+mua_daredevil_c3	move 5 frame 258
+mua_daredevil_c4	move 5 frame 258
+mua_thing	move 6 frame 195
+mua_thing_c2	move 6 frame 195
+mua_thing_c3	move 6 frame 195
+mua_thing_c4	move 6 frame 195
+mua_humantorch	move 2 frame 122
+mua_humantorch_c2	move 2 frame 122
+mua_humantorch_c3	move 2 frame 122
+mua_humantorch_c4	move 2 frame 122
+mua_hawkeye	move 5 frame 297
+mua_hawkeye_c2	move 5 frame 297
+mua_hawkeye_c3	move 5 frame 297
+mua_hawkeye_c4	move 5 frame 297
+mua_invisiblewoman	move 3 frame 148
+mua_invisiblewoman_c2	move 3 frame 148
+mua_invisiblewoman_c3	move 3 frame 148
+mua_invisiblewoman_c4	move 3 frame 148
+mua_nickfury	move 3 frame 226
+mua_nickfury_c2	move 3 frame 226
+mua_nickfury_c3	move 3 frame 226
+mua_nickfury_c4	move 3 frame 221
+mua_captainmarvel_c3	own_cel2 key 13
+mua_lukecage	own_cel4 key 13
+mua_lukecage_c2	own_cel4 key 13
+mua_lukecage_c3	own_cel4 key 13
+mua_lukecage_c4	own_cel4 key 13
+mua_professorx	own_cel3 key 5
+mua_vision	own_cel1 key 9
+mua_drdoom	own_cel2 key 16
+strikers_mario	move 8 frame 443
+strikers_luigi	move 3 frame 194
+strikers_daisy	move 5 frame 361
+strikers_waluigi	move 7 frame 500
+strikers_donkeykong	move 8 frame 598
+pk_wingull	idle	view -160 35
+pk_dewgong	idle	view -115 35
+pk_feebas	idle	view 20 0
+pk_huntail	idle	view -115 35
+pk_gorebyss	idle	view -115 35
+pk_altaria	idle	view -160 35
+pk_skiploom	idle	view -25 25
+pk_linoone	idle	view -160 0
+pk_porygon	idle	view 20 35
+montymole	idle	view -115 35
+pk_onix	idle	view -115 60
+pk_steelix	idle	view -70 35
+pk_salamence	idle	view -70 35
+pk_vibrava	idle	view -70 60
+pk_flygon	idle	view -115 0
+pk_anorith	idle	view -25 60
+pk_fearow	idle	view -160 35
+pk_remoraid	idle	view -25 0
+pk_ninjask	idle	view -115 35
+pk_crawdaunt	idle	view -160 35
+pk_sentret	idle	view -70 35
+pk_togetic	idle	view -115 0
+pk_snubbull	idle	view -115 35
+pk_granbull	idle	view -70 35
+pk_gulpin	idle	view -115 15
+pk_numel	idle	view -115 0
+pk_manectric	idle	view -115 15
+pk_umbreon	idle	view -160 0
+pk_espeon	idle	view 20 0
+pk_ninetales	idle	view -160 0
+pk_persian	idle	view -115 15
+pk_ponyta	idle	view -160 0
+pk_rapidash	idle	view -160 0
+pk_kingdra	idle	view -160 0
+pk_milotic	idle	view -115 15
+pk_trapinch	idle	view -115 0
+strikers_yoshi	idle	view -115 0
+mua_moonknight	idle	view -160 0
+mua_moonknight_c2	idle	view -160 0
+mua_moonknight_c3	idle	view -160 0

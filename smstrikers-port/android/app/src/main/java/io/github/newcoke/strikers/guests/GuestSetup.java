@@ -32,9 +32,9 @@ public final class GuestSetup {
         "Marvel: Ultimate Alliance (Wii)"};
     public static final String[] GIVES = {
         "17 Melee fighters, Pokemon voices, the evolution music",
-        "70 Pokemon (+ shiny), the franchise's evolutions",
+        "314 Pokemon (+ shiny), the franchise's evolutions",
         "Bowser, Bowser Jr., Diddy, Petey, Boo, Dry Bones, Monty Mole, Shy Guy + the 3D home ground figures (captains too)",
-        "26 Marvel heroes + their costumes (franchise unlocks), celebrations, home ground figures, costume music",
+        "29 Marvel heroes + their costumes (franchise unlocks) + 9 allies and villains, celebrations, home ground figures, costume music",
     };
 
     private static final String[] EXT = {".iso", ".gcm", ".rvz", ".wia", ".ciso", ".gcz", ".nkit.iso"};

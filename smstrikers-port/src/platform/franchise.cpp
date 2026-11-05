@@ -6,6 +6,8 @@
 #include "port/lineup.h"     // r78: the co-captain
 #include "port/xr_scorer.h"  // r73: the nemesis face-off
 #include "port/xr_league.h"  // r100: online leagues
+#include "xr_weather.h"      // r137: weather (looks only)
+#include "xr_weather_cal.h"
 
 #include "Game/GameInfo.h"
 #include "Game/GameSceneManager.h"
@@ -475,6 +477,44 @@ bool is_human(const Career& c, int club)
 
 // r100: whose nemesis `n` is (an online league member's club; the career's own player otherwise)
 int nem_owner(const Career& c, const Nemesis& n) { return n.owner >= 0 ? n.owner : c.myClub; }
+
+// r146 (Lance: "bonuses for duplicates should you not trade em in as well as in game multipliers due to set bonuses"):
+// the LANCINI TIZM card bonuses xr_cards.cpp works out from the collection (PortFranchiseSetCardBonuses), by card key.
+// Only in a career of this headset's own (never co-op or an online league: the other headsets have other collections),
+// only your club's players; every XP your players get (award_xp, personal_xp, the live meter) times (1 + its percent), a
+// line's evolutions' shiny odds, the coins a played match pays (card_coins_earned).
+struct CardBonus
+{
+    int xpPct = 0, shinyOdds = 0;
+    std::string why;
+};
+std::unordered_map<std::string, CardBonus> s_cardBonus;
+int s_cardCoinPct = 0;
+std::string s_cardCoinPctWhy;
+bool card_bonus_on(const Career& c) { return !c.coop && c.league.empty(); }
+// a player's card: its own key, a Strikers sidekick kind's ("toad": strikers_toad), r130's first-take "cap_<name>"
+const CardBonus* card_bonus(const std::string& key)
+{
+    if (key.empty())
+        return NULL;
+    std::unordered_map<std::string, CardBonus>::const_iterator it = s_cardBonus.find(key);
+    if (it == s_cardBonus.end())
+        it = s_cardBonus.find(key.compare(0, 4, "cap_") == 0 ? "strikers_" + key.substr(4) : "strikers_" + key);
+    return it != s_cardBonus.end() ? &it->second : NULL;
+}
+int card_xp_pct(const Career& c, int club, const std::string& key)
+{
+    if (!card_bonus_on(c) || club != c.myClub)
+        return 0;
+    const CardBonus* b = card_bonus(key);
+    return b != NULL ? std::max(0, std::min(60, b->xpPct)) : 0;
+}
+// `xp` as that player of that club gets it (its card bonus on top)
+int card_xp(const Career& c, int club, const std::string& key, int xp)
+{
+    const int pct = card_xp_pct(c, club, key);
+    return pct > 0 && xp > 0 ? xp + (xp * pct + 50) / 100 : xp;
+}
 
 // r131: the characters a club holds: its captain and backup, its sidekick members, a Charged sidekick guest as its kind
 void club_ids(const ClubState& s, std::vector<std::string>& out)
@@ -1479,12 +1519,15 @@ void award_xp(Career& c, const Game& g)
         if (!is_human(c, side == 0 ? g.home : g.away))  // r100: every person's club
             xp += xp * 15 * diff_k(c) / 100;
         // r78: both captains play (the co-captain), so both get it all (it was half for the one benched)
-        gain(s.cap, xp);
+        // r146: your players each with their card bonus (card_xp: 0 for any other club, co-op, a league)
+        const int club = side == 0 ? g.home : g.away;
+        gain(s.cap, card_xp(c, club, s.captain, xp));
         if (!s.backup.empty())
-            gain(s.bk, xp);
-        gain(s.side, xp);
+            gain(s.bk, card_xp(c, club, s.backup, xp));
+        gain(s.side, card_xp(c, club, s.kind, xp));
         for (int k = 0; k < 3; k++)  // r130: each sidekick member its own (a co-captain's slot 1: on the bench, half)
-            gain(s.mp[k], k == 0 && !s.backup.empty() && !s.mem[0].empty() ? xp / 2 : xp);
+            gain(s.mp[k], card_xp(c, club, s.mem[k].empty() ? s.kind : s.mem[k],
+                                  k == 0 && !s.backup.empty() && !s.mem[0].empty() ? xp / 2 : xp));
     }
 }
 
@@ -2703,7 +2746,13 @@ void do_evolve_slot(Career& c, int club, int slot, const std::string& to)
     const bool wasShiny = p.shiny;
     // r110: a Marvel hero's next costume (no shiny ones), in costume words
     const bool costume = from.compare(0, 4, "mua_") == 0;
-    if (!costume && !p.shiny && next_rand(c.rng) % kShinyOdds == 0)
+    // r146: your Pokemon of an evolution line whose every card you have: a little luckier (card_bonus: 1 in 96)
+    int odds = kShinyOdds;
+    if (card_bonus_on(c) && club == c.myClub)
+        if (const CardBonus* b = card_bonus(from))
+            if (b->shinyOdds > 0 && b->shinyOdds < kShinyOdds)
+                odds = b->shinyOdds;
+    if (!costume && !p.shiny && next_rand(c.rng) % odds == 0)
         p.shiny = true;
     key = to;
     p.declinedAt = 0;
@@ -4422,6 +4471,128 @@ bool PortFranchisePlayoffMatch(int* round, int* conf, int* gameNo, int winsBefor
     return true;
 }
 
+// r137 (Lance: weather + night games, looks only; src/platform/xr_weather.h): the calendar. A club's regular season
+// (xr_weather_cal.h): the last 7 games 3 snowy, 2-3 rain games before, night for derbies (the second meeting with a
+// division rival) + 2 more; the nemesis games and every playoff game at night; one snowy playoff game at most, at a
+// cold home. Stable across reloads: the career's seed, the season and the club's own schedule only.
+static int wx_climate(int club)
+{
+    if (club < 0 || club >= (int)s_clubs.size())
+        return wxcal::kClimateNormal;
+    if (s_clubs[club].stadium == 6)
+        return wxcal::kClimateCovered;  // the Forbidden Dome
+    if (s_clubs[club].div == "Inferno")
+        return wxcal::kClimateHot;
+    if (s_clubs[club].div == "Glacier")
+        return wxcal::kClimateCold;
+    return wxcal::kClimateNormal;
+}
+
+static int wx_game(const Career& c, const Game& g, int club)
+{
+    const int where = wx_climate(g.home);
+    if (g.series >= 0)
+    {
+        bool earlier = false;
+        for (size_t i = 0; i < c.games.size(); i++)
+        {
+            const Game& h = c.games[i];
+            if (h.series >= 0 && h.week < g.week && (h.home == club || h.away == club) &&
+                wx_climate(h.home) == wxcal::kClimateCold)
+                earlier = true;
+        }
+        return wxcal::filter(wxcal::playoff(c.seed, c.season, where, earlier), where);
+    }
+    std::vector<const Game*> mine;
+    for (size_t i = 0; i < c.games.size(); i++)
+        if (c.games[i].series < 0 && (c.games[i].home == club || c.games[i].away == club))
+            mine.push_back(&c.games[i]);
+    std::stable_sort(mine.begin(), mine.end(), [](const Game* a, const Game* b) { return a->week < b->week; });
+    std::vector<wxcal::Game> cal(mine.size());
+    std::vector<uint8_t> out(mine.size());
+    int at = -1;
+    for (size_t i = 0; i < mine.size(); i++)
+    {
+        const Game& h = *mine[i];
+        const int opp = h.home == club ? h.away : h.home;
+        int met = 0;
+        for (size_t j = 0; j < i; j++)
+            if (mine[j]->home == opp || mine[j]->away == opp)
+                met++;
+        const bool division = club >= 0 && club < (int)s_clubs.size() && opp >= 0 && opp < (int)s_clubs.size() &&
+                              s_clubs[club].div == s_clubs[opp].div;
+        cal[i].climate = wx_climate(h.home);
+        cal[i].derby = division && met >= 1 ? 1 : 0;
+        if (&h == &g)
+            at = (int)i;
+    }
+    if (!mine.empty())
+        wxcal::season(c.seed ^ ((uint32_t)club * 2654435761u), c.season, cal.data(), (int)mine.size(), out.data());
+    int bits = at >= 0 ? out[at] : 0;
+    if (nemesis_match(c, g))
+        bits |= wxcal::kNight;
+    return bits;
+}
+
+// Whose calendar a game follows: yours when you play in it (a league's two humans: the home club's, the same on both
+// headsets), else the home club's (watching).
+static int wx_club(const Career& c, const Game& g)
+{
+    const bool mine = g.home == c.myClub || g.away == c.myClub;
+    return mine && !in_league() ? c.myClub : g.home;
+}
+
+int PortFranchiseMatchWeather(void)
+{
+    if (s_match != MATCH_PLAYING || !s_active || s_matchGame < 0 || s_matchGame >= (int)s_career.games.size())
+        return -1;
+    const Game& g = s_career.games[s_matchGame];
+    const int bits = wx_game(s_career, g, wx_club(s_career, g));
+    // the season's whole calendar in the log, once a season (R rain, S snow, N night, - clear)
+    static unsigned s_loggedSeed = 0;
+    static int s_loggedSeason = -1;
+    if (s_loggedSeed != s_career.seed || s_loggedSeason != s_career.season)
+    {
+        s_loggedSeed = s_career.seed;
+        s_loggedSeason = s_career.season;
+        std::string line;
+        for (int week = 1; week <= PORT_FR_WEEKS; week++)
+        {
+            const int b = PortFranchiseWeekWeather(week);
+            line += b < 0 ? " ?" : (std::string(" ") + ((b & wxcal::kRain) ? "R" : "") + ((b & wxcal::kSnow) ? "S" : "") +
+                                    ((b & wxcal::kNight) ? "N" : "") + (b == 0 ? "-" : ""));
+        }
+        fprintf(stderr, "[franchise] weather calendar, season %d, weeks 1-%d:%s\n", s_career.season, PORT_FR_WEEKS,
+                line.c_str());
+    }
+    fprintf(stderr, "[franchise] weather, season %d week %d (%s at home): %s\n", s_career.season, g.week,
+            g.home >= 0 && g.home < (int)s_clubs.size() ? s_clubs[g.home].place.c_str() : "?",
+            bits == 0 ? "clear" : PortWeatherLabel(bits));
+    fflush(stderr);
+    return bits;
+}
+
+int PortFranchiseNextWeather(void)
+{
+    if (!s_active)
+        return 0;
+    const Game* g = my_game(s_career);
+    return g != NULL ? wx_game(s_career, *g, wx_club(s_career, *g)) : 0;
+}
+
+int PortFranchiseWeekWeather(int week)
+{
+    if (!s_active)
+        return -1;
+    for (size_t i = 0; i < s_career.games.size(); i++)
+    {
+        const Game& g = s_career.games[i];
+        if (g.week == week && (g.home == s_career.myClub || g.away == s_career.myClub))
+            return wx_game(s_career, g, wx_club(s_career, g));
+    }
+    return -1;
+}
+
 bool PortFranchisePlayNext()
 {
     if (!PortFranchiseCanPlay() || coop_blocked())
@@ -4559,15 +4730,17 @@ void personal_xp_from(Career& c, const Game& g, const PlayedResult& r)
         // r86: the club's goals made up for the 4-minute match, for all its players as award_xp's
         const int clubGoals = side == 0 ? g.homeGoals : g.awayGoals;
         const int teamXp = played_goal_bonus(c, g, clubGoals);
-        gain(bs ? s.bk : s.cap, capXp + teamXp);
+        const int club = side == 0 ? g.home : g.away;  // r146: your players' card bonuses (card_xp)
+        gain(bs ? s.bk : s.cap, card_xp(c, club, bs ? s.backup : s.captain, capXp + teamXp));
         if (!s.backup.empty())
-            gain(bs ? s.cap : s.bk, (co ? coXp : 0) + teamXp);
-        gain(s.side, skXp + teamXp);
+            gain(bs ? s.cap : s.bk, card_xp(c, club, bs ? s.captain : s.backup, (co ? coXp : 0) + teamXp));
+        gain(s.side, card_xp(c, club, s.kind, skXp + teamXp));
         // r130: each sidekick member its own goals and assists (m_ID k+1; slot 1 is the co-captain's when there is one)
         for (int k = 0; k < 3; k++)
         {
             const bool onField = !(co && k == 0);
-            gain(s.mp[k], onField ? personal_bonus(c, g, r.goals[side][k + 1], assists[k + 1]) + teamXp : teamXp / 2);
+            gain(s.mp[k], card_xp(c, club, s.mem[k].empty() ? s.kind : s.mem[k],
+                                  onField ? personal_bonus(c, g, r.goals[side][k + 1], assists[k + 1]) + teamXp : teamXp / 2));
         }
     }
 }
@@ -5401,6 +5574,166 @@ void PortFranchiseFrame()
     }
 }
 
+// r137: STRIKERS TRADING CARDS (Lance: packs from franchise matches only): your match played earns 1 pack, a win 2, +1 a
+// playoff series won, +1 a trophy (the Super Strike Series). The headset takes them (xr_cards.cpp: rolled and saved there).
+static int s_cardPacks = 0;
+static unsigned s_cardFlags = 0;
+static void card_packs_earned(bool won, bool seriesWon, bool trophy)
+{
+    const int n = 1 + (won ? 1 : 0) + (seriesWon ? 1 : 0) + (trophy ? 1 : 0);
+    s_cardPacks += n;
+    s_cardFlags |= (won ? 1u : 0u) | (seriesWon ? 2u : 0u) | (trophy ? 4u : 0u);
+    fprintf(stderr, "[franchise] cards: %d pack%s earned\n", n, n == 1 ? "" : "s");
+    fflush(stderr);
+}
+int PortFranchiseTakeCardPacks(unsigned* flags)
+{
+    const int n = s_cardPacks;
+    if (flags != NULL)
+        *flags = s_cardFlags;
+    s_cardPacks = 0;
+    s_cardFlags = 0;
+    return n;
+}
+
+// r140: TIZM COINS (Lance: "you should earn coins from goals, assists, tackles, etc. and those coins will be used to buy
+// packs. the shit shouldnt be expensive seeing as we're STILL getting our 1 free pack per game and 2 per win!!"): a
+// franchise match you PLAY pays your side's work in coins, only to buy LANCINI TIZM packs (xr_cards.cpp's CARDS shop: 50
+// a pack, 200 a box of 5); a simmed game pays none (as packs). From the game's own match stats (StatsTracker: your five's
+// assists, hits, steals, item hits) and this match's tallies (the score, its Super Strikes). Tuned so an average played
+// match pays about a pack (~56), a big win about two (tools/outside/coins_sim.py).
+static const int kCoinGoal = 6, kCoinSuperStrike = 6, kCoinAssist = 4, kCoinTacklesPer = 2, kCoinSteal = 1, kCoinItem = 1,
+                 kCoinWin = 10, kCoinShutout = 10;
+static int s_cardCoins = 0;
+static std::string s_cardCoinWhy;
+
+// r146: your club's players' card XP bonuses ("Charizard +45%, Toads +10%"; with `whys` each one's reasons too), "" none
+static std::string card_bonus_line(const Career& c, bool whys = false)
+{
+    if (!s_active || !card_bonus_on(c) || c.myClub < 0 || c.myClub >= PORT_FR_CLUBS)
+        return std::string();
+    const ClubState& s = c.clubs[c.myClub];
+    std::string out;
+    std::vector<std::string> seen;
+    auto add = [&](const std::string& key, const std::string& name) {
+        const int pct = card_xp_pct(c, c.myClub, key);
+        if (pct <= 0 || std::find(seen.begin(), seen.end(), key) != seen.end())
+            return;
+        seen.push_back(key);
+        out += (out.empty() ? "" : ", ") + name + " +" + std::to_string(pct) + "%";
+        const CardBonus* b = card_bonus(key);
+        if (whys && b != NULL && !b->why.empty())
+            out += " (" + b->why + ")";
+    };
+    add(s.captain, name_of(s.captain));
+    if (!s.backup.empty())
+        add(s.backup, name_of(s.backup));
+    bool generic = false;
+    for (int k = 0; k < 3; k++)
+    {
+        if (s.mem[k].empty())
+            generic = true;
+        else
+            add(s.mem[k], name_of(s.mem[k]));
+    }
+    if (generic)
+        add(s.kind, kind_name(s.kind));
+    return out;
+}
+
+void PortFranchiseSetCardBonuses(const PortFranchiseCardBonus* list, int count, int coinPct, const char* coinWhy)
+{
+    s_cardBonus.clear();
+    for (int i = 0; list != NULL && i < count; i++)
+    {
+        CardBonus b;
+        b.xpPct = std::max(0, std::min(60, list[i].xpPct));
+        b.shinyOdds = list[i].shinyOdds;
+        b.why = list[i].why;
+        if (b.xpPct > 0 || b.shinyOdds > 0)
+            s_cardBonus[list[i].key] = b;
+    }
+    s_cardCoinPct = std::max(0, std::min(20, coinPct));
+    s_cardCoinPctWhy = coinWhy != NULL ? coinWhy : "";
+    fprintf(stderr, "[franchise] r146 card bonuses: %d characters, coins +%d%% (%s)\n", (int)s_cardBonus.size(), s_cardCoinPct,
+            s_cardCoinPctWhy.c_str());
+    fflush(stderr);
+}
+static void card_coins_earned(int me, int mine, int theirs)
+{
+    if (me < 0 || me > 1)
+        return;
+    int assists = 0, hits = 0, steals = 0, items = 0;
+    if (StatsTracker* st = nlSingleton<StatsTracker>::s_pInstance)
+        for (int k = 0; k < 5; k++)
+        {
+            const PlayerStats& p = st->mCurrentPlayerStats[me][k];
+            assists += p.mNumAssists;
+            hits += p.mNumHitsMade;
+            steals += p.mNumSteals;
+            items += p.mNumPowerupsHit;
+        }
+    const int ss = s_matchSS[me];
+    struct Part
+    {
+        int n, coins;
+        const char *one, *many;
+        bool once;  // ("win 10", not "1 win 10")
+    };
+    const Part parts[] = {{mine, mine * kCoinGoal, "goal", "goals", false},
+                          {ss, ss * kCoinSuperStrike, "Super Strike", "Super Strikes", false},
+                          {assists, assists * kCoinAssist, "assist", "assists", false},
+                          {hits, hits / kCoinTacklesPer, "tackle", "tackles", false},
+                          {steals, steals * kCoinSteal, "steal", "steals", false},
+                          {items, items * kCoinItem, "item hit", "item hits", false},
+                          {mine > theirs ? 1 : 0, mine > theirs ? kCoinWin : 0, "win", "wins", true},
+                          {theirs == 0 ? 1 : 0, theirs == 0 ? kCoinShutout : 0, "shutout", "shutouts", true}};
+    int total = 0;
+    std::string why;
+    for (const Part& p : parts)
+    {
+        if (p.coins <= 0)
+            continue;
+        total += p.coins;
+        char b[64];
+        if (p.once)
+            snprintf(b, sizeof b, "%s %d", p.one, p.coins);  // "win 10", "shutout 10"
+        else
+            snprintf(b, sizeof b, "%d %s %d", p.n, p.n == 1 ? p.one : p.many, p.coins);  // "3 goals 18"
+        why += (why.empty() ? "" : ", ") + std::string(b);
+    }
+    // r146: your full binder pages' coin multiplier (a career of this headset's own: card_bonus_on), and your players'
+    // card XP bonuses this match, on the breakdown ("..., win 10, binder pages x1.06 +3; card XP: Charizard +45%")
+    if (card_bonus_on(s_career) && s_cardCoinPct > 0 && total > 0)
+    {
+        const int extra = (total * s_cardCoinPct + 50) / 100;
+        if (extra > 0)
+        {
+            char b[80];
+            snprintf(b, sizeof b, "binder pages x%d.%02d +%d", 1 + s_cardCoinPct / 100, s_cardCoinPct % 100, extra);
+            why += (why.empty() ? "" : ", ") + std::string(b);
+            total += extra;
+        }
+    }
+    const std::string xpLine = card_bonus_line(s_career);
+    if (!xpLine.empty())
+        why += "; card XP: " + xpLine;
+    s_cardCoins += total;
+    s_cardCoinWhy = why;
+    fprintf(stderr, "[franchise] cards: %d TIZM coins (%s) - stats: %d-%d, %d SS, %d assists, %d hits, %d steals, %d item hits\n",
+            total, why.c_str(), mine, theirs, ss, assists, hits, steals, items);
+    fflush(stderr);
+}
+int PortFranchiseTakeCardCoins(char* why, int cap)
+{
+    const int n = s_cardCoins;
+    if (why != NULL && cap > 0)
+        copy_str(why, cap, s_cardCoinWhy);
+    s_cardCoins = 0;
+    s_cardCoinWhy.clear();
+    return n;
+}
+
 void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
 {
     if (s_match != MATCH_PLAYING || !s_active || s_matchGame < 0 || s_matchGame >= (int)s_career.games.size())
@@ -5416,6 +5749,8 @@ void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
         const PlayedResult r = capture_played(s_matchGame, scoreHome, scoreAway, overtime);
         const int mine = g.home == c.myClub ? scoreHome : scoreAway, theirs = g.home == c.myClub ? scoreAway : scoreHome;
         const bool won = mine > theirs;
+        card_packs_earned(won, false, false);  // r137
+        card_coins_earned(g.home == c.myClub ? 0 : 1, mine, theirs);  // r140
         const std::string opp = s_clubs[g.home == c.myClub ? g.away : g.home].place;
         league_do("result", [r]() {
             if (!league_apply_played(s_career, r))
@@ -5482,11 +5817,14 @@ void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
                           won ? "hurt_big,ko,hurt,dazed,cry" : "cheer,taunt,quote,cry", 1.0f);
     const char* opp = s_clubs[g.home == c.myClub ? g.away : g.home].place.c_str();
     const int mine = g.home == c.myClub ? g.homeGoals : g.awayGoals, theirs = g.home == c.myClub ? g.awayGoals : g.homeGoals;
+    bool cardSeries = false, cardTrophy = false;  // r137: the cards' bonus packs
     if (g.series >= 0 && g.series < (int)c.series.size())
     {
         // r70b: a playoff game: the series as it stands
         const Series& s = c.series[g.series];
         const int me = s.hi == c.myClub ? s.winsHi : s.winsLo, them = s.hi == c.myClub ? s.winsLo : s.winsHi;
+        cardSeries = won && me >= 3;
+        cardTrophy = cardSeries && s.round == 4;  // the Super Strike Series
         const std::string state = me >= 3 ? "SERIES WON " : (them >= 3 ? "SERIES LOST " : (me > them ? "you lead " : (me < them ? "you trail " : "series tied ")));
         snprintf(buf, sizeof buf, "%s game %d: %s %s %d - %d%s, %s%d-%d", round_name(s.round, s.conf).c_str(),
                  s.winsHi + s.winsLo, won ? "WIN vs" : "LOSS vs", opp, mine, theirs, overtime ? " (OT)" : "",
@@ -5495,6 +5833,14 @@ void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
     else
         snprintf(buf, sizeof buf, "Week %d: %s %s %d - %d%s", c.week, won ? "WIN vs" : "LOSS vs", opp, mine, theirs,
                  overtime ? " (OT)" : "");
+    card_packs_earned(won, cardSeries, cardTrophy);  // r137
+    {  // r146: the card bonuses this match's XP and coins got, logged
+        const std::string bl = card_bonus_line(c, true);
+        if (card_bonus_on(c) && (!bl.empty() || s_cardCoinPct > 0))
+            fprintf(stderr, "[franchise] r146 card bonuses this match: XP %s; coins +%d%% (%s)\n", bl.empty() ? "none" : bl.c_str(),
+                    s_cardCoinPct, s_cardCoinPctWhy.c_str());
+    }
+    card_coins_earned(g.home == c.myClub ? 0 : 1, mine, theirs);  // r140
     c.headline = buf;
     finish_week(c);
     if (c.headline != buf)  // the season moved on too (playoffs, next round, champion): both
@@ -5575,7 +5921,7 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
     out->won = won;
     out->goals = s_matchGoals[me][0];
     out->assists = assists[0];
-    out->gain = team + personal_bonus(c, g, out->goals, out->assists);
+    out->gain = card_xp(c, c.myClub, key, team + personal_bonus(c, g, out->goals, out->assists));  // r146: its card bonus
     out->level = p.level;
     out->xp = p.xp;
     Prog q = p;
@@ -5595,8 +5941,9 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
     copy_str(out->kind, sizeof out->kind, kind_name(s.kind));
     out->skLevel = s.side.level;
     out->skXp = s.side.xp;
-    out->skGain = team + personal_bonus(c, g, s_matchGoals[me][1] + s_matchGoals[me][2] + s_matchGoals[me][3],
-                                        (PortSecondCaptain(me) >= 0 ? 0 : assists[1]) + assists[2] + assists[3]);
+    out->skGain = card_xp(c, c.myClub, s.kind,
+                          team + personal_bonus(c, g, s_matchGoals[me][1] + s_matchGoals[me][2] + s_matchGoals[me][3],
+                                                (PortSecondCaptain(me) >= 0 ? 0 : assists[1]) + assists[2] + assists[3]));
     Prog k = s.side;
     gain(k, out->skGain);
     out->skNewLevel = k.level;
@@ -5609,7 +5956,7 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
         out->co = true;
         out->coGoals = s_matchGoals[me][4];
         out->coAssists = assists[1];
-        out->coGain = team + personal_bonus(c, g, out->coGoals, out->coAssists);
+        out->coGain = card_xp(c, c.myClub, coKey, team + personal_bonus(c, g, out->coGoals, out->coAssists));  // r146
         out->coLevel = cp.level;
         out->coXp = cp.xp;
         Prog cq = cp;

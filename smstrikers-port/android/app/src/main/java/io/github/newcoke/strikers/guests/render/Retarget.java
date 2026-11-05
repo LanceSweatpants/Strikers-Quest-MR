@@ -29,15 +29,29 @@ public final class Retarget {
     private final Map<Integer, Integer> hostIndex = new HashMap<>();
     private final Map<Integer, double[][]> align = new HashMap<>();
     public int mapped;
+    /** r141 (Cel): the host's world matrices of the last pose (its soles, its hips). */
+    public double[][][] lastHost;
+    // r141 (Cel): the match's layers for a guest that flies / floats / is a gas cloud (xr_guest.cpp retarget_pose, r69):
+    // its wings ("guest flap l / r", a flier) turned about its forward by +-flap, a "guest swirl" node turned about the
+    // vertical by swirl, everything up by bob. Off (layers false) everywhere but Cel: Evo / BigPose as before.
+    private static final int FLAP_L = Py.lowerHash("guest flap l"), FLAP_R = Py.lowerHash("guest flap r");
+    private static final int SWIRL = Py.lowerHash("guest swirl");
+    public boolean layers, flies;
+    public double flap, swirl, bob;
 
     /** ref: the class's hostref (null: none); clip: the class's clip (null: its bind, "BIND"). */
     public Retarget(Nl.Host host, String anim, Gpk pack, HostRef.Ref ref, double armScale) {
+        this(host, anim == null ? null : Nl.clip(host.sanim, anim), pack, ref, armScale);
+        if (anim != null && clip == null) throw new IllegalArgumentException("no clip " + anim + " for " + host.cls);
+    }
+
+    /** r141 (Cel): a clip read from elsewhere on the disc (a goal cut-scene's, on the class's own skeleton); null: its bind. */
+    public Retarget(Nl.Host host, Nl.Clip clip, Gpk pack, HostRef.Ref ref, double armScale) {
         this.host = host;
         this.pack = pack;
         this.ref = ref;
         this.armScale = armScale;
-        this.clip = anim == null ? null : Nl.clip(host.sanim, anim);
-        if (anim != null && clip == null) throw new IllegalArgumentException("no clip " + anim + " for " + host.cls);
+        this.clip = clip;
         for (int i = 0; i < host.shier.ids.length; i++) hostIndex.put(host.shier.ids[i], i);
         final Map<Integer, double[][]> binds = host.binds;
         final Gpk.Node[] nodes = pack.nodes;
@@ -101,6 +115,15 @@ public final class Retarget {
 
     /** guest_pose at normalised time t: the guest nodes' world matrices (4 x 4 rows each). */
     public double[][][] pose(double t) {
+        return poseOf(clip == null ? null : clip.at(t));
+    }
+
+    /** r141 (Cel): the same at the clip's key k. */
+    public double[][][] poseKey(int k) {
+        return poseOf(clip == null ? null : clip.key(k));
+    }
+
+    private double[][][] poseOf(Nl.Pose at) {
         final Nl.Shier h = host.shier;
         final Map<Integer, double[][]> binds = host.binds;
         final double[][][] hw;
@@ -110,8 +133,9 @@ public final class Retarget {
                 hw[i] = binds.containsKey(h.ids[i]) ? Py.mul(binds.get(h.ids[i]), Py.rz90()) : Py.ident();
             hw[0] = Py.ident();
         } else {
-            hw = Nl.hostWorld(h, clip.at(t));
+            hw = Nl.hostWorld(h, at);
         }
+        lastHost = hw;
         final Gpk.Node[] nodes = pack.nodes;
         final double[][] rootM = hw[0];
         final boolean haveRefs = ref != null && !ref.refs.isEmpty();
@@ -138,9 +162,11 @@ public final class Retarget {
                     pos[3] = 1.0;
                     w[3] = pos;
                     world[i] = w;
+                    if (layers) layer(i, world, rootM);
                     continue;
                 }
                 world[i] = Py.mul(n.bindLocal, world[par]);
+                if (layers) layer(i, world, rootM);
                 continue;
             }
             mapped++;
@@ -188,6 +214,37 @@ public final class Retarget {
             w[3] = pos;
             world[i] = w;
         }
+        if (layers && bob != 0.0)
+            for (double[][] w : world) w[3][2] += bob;
         return world;
+    }
+
+    /** xr_guest.cpp retarget_pose's flap(i) / swirl(i) (r69), on a node that follows no Strikers bone, before its children. */
+    private void layer(int i, double[][][] world, double[][] rootM) {
+        final int m = pack.nodes[i].map;
+        final double[][] w = world[i];
+        if (flies && (m == FLAP_L || m == FLAP_R)) {
+            // the guest's forward: the clip's +X as the character faces now (rootM's first row)
+            final double l = Math.sqrt(Py.sum(rootM[0][0] * rootM[0][0], rootM[0][1] * rootM[0][1], rootM[0][2] * rootM[0][2]));
+            if (l < 1e-6) return;
+            final double ax = rootM[0][0] / l, ay = rootM[0][1] / l, az = rootM[0][2] / l;
+            final double th = m == FLAP_L ? flap : -flap;
+            final double cs = Trig.cos(th), sn = Trig.sin(th);
+            final double[] M = {cs + (1 - cs) * ax * ax, (1 - cs) * ax * ay + sn * az, (1 - cs) * ax * az - sn * ay,
+                (1 - cs) * ay * ax - sn * az, cs + (1 - cs) * ay * ay, (1 - cs) * ay * az + sn * ax,
+                (1 - cs) * az * ax + sn * ay, (1 - cs) * az * ay - sn * ax, cs + (1 - cs) * az * az};
+            for (int row = 0; row < 3; row++) {
+                final double x = w[row][0], y = w[row][1], z = w[row][2];
+                for (int c = 0; c < 3; c++) w[row][c] = x * M[c] + y * M[3 + c] + z * M[6 + c];
+            }
+        }
+        if (m == SWIRL && swirl != 0.0) {
+            final double cs = Trig.cos(swirl), sn = Trig.sin(swirl);
+            for (int row = 0; row < 3; row++) {
+                final double x = w[row][0], y = w[row][1];
+                w[row][0] = x * cs - y * sn;
+                w[row][1] = x * sn + y * cs;
+            }
+        }
     }
 }

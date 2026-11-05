@@ -15,6 +15,9 @@
 #include "Game/Team.h"
 #include "Game/Sys/audio.h"
 #include "NL/plat/plataudio.h"
+#include "Game/Audio/AudioLoader.h"  // r141: a Strikers captain's line (PortStrikersVoiceSay)
+#include "Game/Audio/AudioLoaderCore.h"
+#include "Game/Audio/WorldAudio.h"
 
 #include <algorithm>
 #include <math.h>
@@ -384,10 +387,67 @@ void PortGuestVoiceSay(int guest, const char* labels, float volume)
     fflush(stderr);
 }
 
+// r141 (coordinator: "Strikers captains silent in the cameo: route their celebration voice through the game's own voice
+// playback"): the character select's own line for the class (FEAudio: "sfx_accept_<char>" = WORLDSFX_FE_ACCEPT_*), from
+// the menus' character voice group (GRPFE_Char_SFX) when it is loaded - the hub's packs are opened in the menus.
+bool PortStrikersVoiceSay(int characterClass)
+{
+    static const Audio::eWorldSFX kAccept[12] = {
+        Audio::WORLDSFX_FE_ACCEPT_BIRDO, Audio::WORLDSFX_FE_ACCEPT_DAISY, Audio::WORLDSFX_FE_ACCEPT_DK,
+        Audio::WORLDSFX_FE_ACCEPT_HAM,   Audio::WORLDSFX_FE_ACCEPT_KOOPA, Audio::WORLDSFX_FE_ACCEPT_LUIGI,
+        Audio::WORLDSFX_FE_ACCEPT_MARIO, Audio::WORLDSFX_FE_ACCEPT_PEACH, Audio::WORLDSFX_FE_ACCEPT_TOAD,
+        Audio::WORLDSFX_FE_ACCEPT_WALUIGI, Audio::WORLDSFX_FE_ACCEPT_WARIO, Audio::WORLDSFX_FE_ACCEPT_YOSHI};
+    if (characterClass < 0 || characterClass >= 12 || !AudioLoader::IsInited() ||
+        sebringAudioGroups[1].loadType == SND_GROUP_LOAD_NOT_LOADED)
+    {
+        fprintf(stderr, "[guest] a Strikers captain's line: the menus' character voices aren't loaded now\n");
+        fflush(stderr);
+        return false;
+    }
+    Audio::gWorldSFX.Play(kAccept[characterClass], 100.0f, -1.0f, false, 100.0f);
+    fprintf(stderr, "[guest] Strikers %s says its line\n", characterClass == 6 ? "Mario" : "captain");
+    fflush(stderr);
+    return true;
+}
+
 void PortGuestVoiceStopAll()
 {
     for (Playing& p : s_playing)
         p.clip = NULL;
+}
+
+// r138: a trading card's own sound (xr_cards.cpp: a special card's chime as it's turned over), a mono 32 kHz clip played
+// centred at the game's voice volume x volume. Four kept in turn (one still playing is let go first).
+void PortCardSound(const short* pcm, int frames, float volume)
+{
+    static Clip s_clips[4];
+    static int s_next = 0;
+    static int s_owner;
+    if (pcm == NULL || frames <= 0)
+        return;
+    const float gain = Audio::MasterVolume::GetVoiceVolume() * volume;
+    if (!(gain > 0.001f))
+        return;
+    Clip& c = s_clips[s_next];
+    s_next = (s_next + 1) % 4;
+    for (Playing& p : s_playing)
+        if (p.clip == &c)
+            p.clip = NULL;
+    c.label = "card";
+    c.pcm.assign(pcm, pcm + frames);
+    Playing* slot = NULL;
+    for (Playing& p : s_playing)
+        if (p.clip == NULL)
+        {
+            slot = &p;
+            break;
+        }
+    if (slot == NULL)
+        slot = &s_playing[0];
+    slot->clip = &c;
+    slot->pos = 0;
+    slot->owner = &s_owner;
+    slot->gainL = slot->gainR = gain * 0.7071f;
 }
 
 // r99 (Lance: "a victorious ass song that plays while they evolve (search for actual songs do notttt create
@@ -452,6 +512,12 @@ void PortEvoMusic(int which)
         return;
     s_evoPlaying = which;
     s_evoPos = 0;
+}
+
+// r147 (port/menu_music.h): the evolution's music is playing, so the lofi menu music fades out under it.
+extern "C" int PortEvoMusicPlaying(void)
+{
+    return s_evoPlaying >= 0 ? 1 : 0;
 }
 
 extern "C" void PortGuestVoiceMix(int* left, int* right, int frames)

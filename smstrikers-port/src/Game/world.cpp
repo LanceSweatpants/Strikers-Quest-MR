@@ -1410,6 +1410,21 @@ static inline u8 World_IsSphereInFrustumInline(World* pWorld, const nlMatrix4& m
     return true;
 }
 
+// strikers-quest r148: the game camera's own frustum test whatever the mode (World_IsSphereInFrustumInline lets
+// everything through in the headset's 3D modes, where the eyes look all around): the broadcast (big-screen) send leaves
+// out what fails it, as the Living Room does (port/xr_layers.h PortXrNoteBroadcastCulled).
+static inline bool World_SphereInGameCamera(World* pWorld, const nlMatrix4& mat, f32 radius)
+{
+    const nlVector3 p = mat.GetTranslation();
+    const nlVector4* pl = pWorld->m_frustumPlane;
+    for (int i = 0; i < 6; i++)
+    {
+        if (p.x * pl[i].x + p.y * pl[i].y + p.z * pl[i].z + pl[i].w < -radius)
+            return false;
+    }
+    return true;
+}
+
 static void RenderBoundingSphere(const nlMatrix4& matWorld, f32 fRadius);
 
 /**
@@ -1526,6 +1541,11 @@ void World::Render()
                         if (bNoCull) bPassed = true;
                         if (bPassed)
                         {
+                            // strikers-quest r148: in the 3D modes drawn for the eyes anyway; noted (before it draws and
+                            // gets its matrix handle) for the broadcast send when the game camera can't see it
+                            if (!(objectFlags & 0x10) && !bNoCull && PortXrStereoWorld())
+                                PortXrNoteBroadcastCulled(pObject, !World_SphereInGameCamera(pWorld, pObject->GetWorldMatrix(),
+                                                                                            pObject->m_fBoundingRadius));
                             if (pObject->m_uObjectCreationFlags & 0xF000)
                                 DoTranslucency(pObject);
                             pObject->Draw();

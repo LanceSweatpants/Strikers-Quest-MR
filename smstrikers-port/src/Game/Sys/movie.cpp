@@ -341,3 +341,9 @@ bool IsMoviePlayingInStrikers101()
     }
     return false;
 }
+
+// strikers-quest r147 (port/menu_music.h): a movie is playing, so the lofi menu music fades out under its sound.
+extern "C" int PortMovieActive(void)
+{
+    return g_bActive ? 1 : 0;
+}

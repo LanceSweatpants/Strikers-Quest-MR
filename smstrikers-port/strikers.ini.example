@@ -136,6 +136,21 @@
 # Every stadium, team and cup mode available.
 # unlock_all = 1
 
+# Quest 3 Strikers: the weather of quick matches, looks only (the game plays the same): random
+# (60% clear, 15% rain, 10% snow, 15% night), clear, rain, snow, night, or off (off also turns
+# the franchise calendar's weather off). The pause menu's WEATHER row replaces this once used.
+# weather = random
+
+# Quest 3 Strikers: the music outside matches (the launcher panel, the game's menus, the franchise
+# hub): both (the CC0 lofi playlist + your own songs in Strikers/music), lofi, mine (only your
+# songs; the lofi while that folder is empty) or off (the game's own menu music). Franchise mode
+# starts its theme first (a song of yours named theme.* replaces it). The pause menu's MENU MUSIC
+# row and the launcher's Menu music button replace this once used.
+# menu_music = both
+# Its level, 0 to 1, times the game's own Music Volume (Options) and audio_volume above. 0.45
+# puts the lofi about as loud as the game's own menu music.
+# menu_music_volume = 0.45
+
 [debug]
 # The debug overlay and menu. `menu` opens the menu straight away, `1` draws only the compact
 # heads-up form.

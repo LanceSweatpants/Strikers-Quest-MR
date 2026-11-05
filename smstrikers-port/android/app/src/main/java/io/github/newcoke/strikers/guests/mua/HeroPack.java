@@ -113,21 +113,59 @@ public final class HeroPack {
         final double s = h.height / (zmax - zmin);
         final double fz = zmin;
 
-        final int nb = sk.names.length;
-        final double[][][] world = new double[nb][][];
-        for (int i = 0; i < nb; i++) {
-            final double[][] W = sk.world[i];
-            final double[][] rot = Np.mm(Np.rot(W), R3);
-            final double[] t = toS(W[3], fz, s);
-            final double[][] wn = Np.eye4();
-            for (int a = 0; a < 3; a++) System.arraycopy(rot[a], 0, wn[a], 0, 3);
-            System.arraycopy(t, 0, wn[3], 0, 3);
-            world[i] = wn;
+        // r135 (the NPC guests, mua2gpk.py --bolton / --rest-bind / --unmap / --reparent; see Npc): a bolt-on's nodes
+        // after the skin's (Nightcrawler's tail), the binds at a rest pose with the modelled ones as the skin's inverse
+        // binds, Strikers bones left unfollowed, a bone hung on another parent. No hero has any of them.
+        final int n0 = sk.names.length;
+        final Npc.Bolt bolt = Npc.bolt(h, c);
+        final int nb = n0 + (bolt != null ? bolt.names.length : 0);
+        final String[] bnames = new String[nb];
+        final int[] parents = new int[nb];
+        final double[][][] worldsM = new double[nb][][], restsM = new double[nb][][];
+        final boolean restBind = h.more.containsKey("rest");
+        final double[][][] rest0 = restBind ? Npc.rest(h, c) : sk.world;
+        for (int i = 0; i < n0; i++) {
+            bnames[i] = sk.names[i];
+            parents[i] = sk.parents[i];
+            worldsM[i] = sk.world[i];
+            restsM[i] = rest0[i];
         }
+        final String reparent = h.more.get("reparent");
+        if (reparent != null) {
+            for (String pair : reparent.split(";")) {
+                final String[] cp = pair.split(":");
+                int ci = -1, ni = -1;
+                for (int i = 0; i < n0; i++) {
+                    final String lo = sk.names[i].toLowerCase(Locale.ROOT);
+                    if (ci < 0 && lo.equals(cp[0].toLowerCase(Locale.ROOT))) ci = i;
+                    if (ni < 0 && lo.equals(cp[1].toLowerCase(Locale.ROOT))) ni = i;
+                }
+                if (ci < 0 || ni < 0) throw new IOException(h.pack + ": reparent " + pair);
+                parents[ci] = ni;
+            }
+        }
+        final java.util.Set<IgbModel.Part> boltParts = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (bolt != null) {
+            for (int j = 0; j < bolt.names.length; j++) {
+                bnames[n0 + j] = bolt.names[j];
+                parents[n0 + j] = bolt.parents[j];
+                worldsM[n0 + j] = bolt.worlds[j];
+                restsM[n0 + j] = bolt.rests[j];
+            }
+            parts.addAll(bolt.parts);
+            boltParts.addAll(bolt.parts);
+        }
+        final double[][][] world = new double[nb][][], skinW = new double[nb][][];
+        for (int i = 0; i < nb; i++) {
+            skinW[i] = toStrikers(worldsM[i], fz, s);
+            world[i] = i >= n0 || restBind ? toStrikers(restsM[i], fz, s) : skinW[i];
+        }
+        final java.util.Set<String> unmap = new java.util.HashSet<>();
+        if (h.more.containsKey("unmap")) for (String u : h.more.get("unmap").toLowerCase(Locale.ROOT).split(",")) unmap.add(u);
         final Map<Integer, String> mapping = new LinkedHashMap<>();
         for (int i = 0; i < nb; i++) {
-            final String lo = sk.names[i].toLowerCase(Locale.ROOT);
-            if (STRIKERS.contains(lo)) mapping.put(i, lo);
+            final String lo = bnames[i].toLowerCase(Locale.ROOT);
+            if (STRIKERS.contains(lo) && !unmap.contains(lo)) mapping.put(i, lo);
         }
 
         // textures
@@ -139,9 +177,10 @@ public final class HeroPack {
                 texOfPart.add(null);
                 continue;
             }
-            final String key = "t" + ta.index;
+            final Igb src = boltParts.contains(p) ? bolt.model : g;  // (r135: a bolt-on's pictures are in its own IGB)
+            final String key = (src == g ? "t" : "b") + ta.index;
             if (!textures.containsKey(key)) {
-                final IgbModel.Pic pic = IgbModel.image(g, ta);
+                final IgbModel.Pic pic = IgbModel.image(src, ta);
                 textures.put(key, Tex.record(pic.rgba, pic.w, pic.h));
             }
             texOfPart.add(key);
@@ -277,8 +316,8 @@ public final class HeroPack {
                 for (int k = 0; k < nk; k++) {
                     final double t = k < nk - 1 ? dur * k / (nk - 1) : 0.0;
                     final double[][][] wp = IgbAnim.poseWorld(sk, cl.tracks, t);
-                    for (int i = 0; i < nb; i++) {
-                        final int par = sk.parents[i];
+                    for (int i = 0; i < n0; i++) {
+                        final int par = parents[i];  // (r135: the pack's parents, --reparent)
                         double[] q;
                         double[] tr;
                         if (par < 0) {
@@ -286,12 +325,25 @@ public final class HeroPack {
                             tr = new double[] {0.0, 0.0, 0.0};
                         } else {
                             final double[][] L = Np.mm(wp[i], Np.inv(wp[par]));
-                            if (sk.parents[par] < 0) L[3][2] -= fz;
+                            if (parents[par] < 0) L[3][2] -= fz;
                             q = rotToQuatPow(Np.rot(L));
                             tr = new double[] {L[3][0] * s, L[3][1] * s, L[3][2] * s};
                         }
                         for (int j = 0; j < 4; j++) o = putF(keys, o, q[j]);
                         for (int j = 0; j < 3; j++) o = putF(keys, o, tr[j]);
+                    }
+                    if (bolt != null) {
+                        // r135 (mua2gpk.bolton_keys): the bolt-on's nodes from its own set's clip of this name, at the
+                        // same fraction of its length, else its bind
+                        final IgbAnim.Clip bc = IgbAnim.clip(bolt.anims, an2);
+                        final double[][][] bw = bc != null ? IgbAnim.poseWorld(bolt.sk, bc.tracks, t / dur * bc.dur) : bolt.sk.world;
+                        for (int j = 0; j < bolt.sk.names.length; j++) {
+                            final int par = bolt.sk.parents[j];
+                            final double[][] L = par < 0 ? bw[j] : Np.mm(bw[j], Np.inv(bw[par]));
+                            final double[] q = rotToQuatPow(Np.rot(L));
+                            for (int x = 0; x < 4; x++) o = putF(keys, o, q[x]);
+                            for (int x = 0; x < 3; x++) o = putF(keys, o, L[3][x] * s);
+                        }
                     }
                 }
                 clips.add(new Object[] {an2.equals("idle") ? "own_idle" : "own_run", nk, keys});
@@ -302,7 +354,7 @@ public final class HeroPack {
         final Out nodes = new Out();
         for (int k = 0; k < nb; k++) {
             final double[][] bw = world[k];
-            final int par = sk.parents[k];
+            final int par = parents[k];
             final double[] trans;
             if (par >= 0) {
                 final double[][] local = Np.mm(bw, Np.inv(world[par]));
@@ -310,8 +362,8 @@ public final class HeroPack {
             } else {
                 trans = new double[] {bw[3][0], bw[3][1], bw[3][2]};
             }
-            final double[][] ib = Np.inv(bw);
-            nodes.le32(Tex.lowerHash("mua/" + name + "/" + sk.names[k])).le32(par);
+            final double[][] ib = Np.inv(skinW[k]);
+            nodes.le32(Tex.lowerHash("mua/" + name + "/" + bnames[k])).le32(par);
             for (double x : trans) nodes.lef32((float) x);
             nodes.le32(1);
             for (double[] r : ib) for (double x : r) nodes.lef32((float) x);
@@ -332,7 +384,7 @@ public final class HeroPack {
         final Out f = new Out();
         f.bytes("GPK2".getBytes(StandardCharsets.ISO_8859_1)).le32(2).le32(nb).le32(npk).le32(textures.size())
                 .le32(clips.size()).lef32((float) h.height);
-        f.fixed(truncate(name, 31), 32).le32(1);
+        f.fixed(truncate(name, 31), 32).le32(h.more.containsKey("float") ? 5 : 1);  // (r135 --float: Professor X)
         f.bytes(nodes.toBytes()).bytes(texs.toBytes()).bytes(pk.toBytes()).bytes(anims.toBytes());
         return f.toBytes();
     }
@@ -340,6 +392,16 @@ public final class HeroPack {
     private static String truncate(String s, int n) {
         final byte[] b = s.getBytes(StandardCharsets.UTF_8);
         return b.length <= n ? s : new String(b, 0, n, StandardCharsets.ISO_8859_1);
+    }
+
+    /** A MUA model-space bone matrix in the pack's space: its turn @ R3, its place toS (mua2gpk's bones). */
+    static double[][] toStrikers(double[][] W, double zmin, double s) {
+        final double[][] rot = Np.mm(Np.rot(W), R3);
+        final double[] t = toS(W[3], zmin, s);
+        final double[][] wn = Np.eye4();
+        for (int a = 0; a < 3; a++) System.arraycopy(rot[a], 0, wn[a], 0, 3);
+        System.arraycopy(t, 0, wn[3], 0, 3);
+        return wn;
     }
 
     /** MUA model point -> Strikers model point: ((p - (0, 0, zmin)) @ R3) * s. */

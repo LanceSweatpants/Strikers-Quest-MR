@@ -37,7 +37,8 @@ namespace GCAudioStreaming
 inline void AudioStreamBuffer::SetVolume(
     unsigned long volume)
 {
-    m_Volume = (unsigned char)volume;
+    // strikers-quest r147: what is heard (the menu music crossfade), see PortStreamHeardVolume
+    m_Volume = (unsigned char)PortStreamHeardVolume(m_pStream, volume);
     sndStreamMixParameterEx(
         m_StreamId, m_Volume, m_Pan, m_SurroundPan, 0, 0);
 }

@@ -25,7 +25,16 @@ namespace xrfx {
 // the character select menu's figure, and the home corner's
 // r131: + 18 for the franchise's characters (the hub's pages, trades, awards night: xr_quest.cpp fr_figs_frame), slots 3-20
 // r131: + 1, the last: STRIKERS ILLUSTRATED's pages as bending paper (xr_quest.cpp; ModelDraw::under < 0 = paper)
-constexpr int kModelSlots = 3 + 18 + 1;
+// r137: + 2 before it (21, 22): a STRIKERS trading-card pack and its cards in your hands (xr_cards.h kPackSlot /
+// kCardSlot; ModelDraw::under < -1.5 = a card: paper with its foil)
+// r138: + 3 more before the magazine's (23-25): two special cards' insides (a window's room, a pop-out, obsidian: under
+// -3 / -3.5, in their card's frame: ModelDraw::local) and the cards' light (auras, the spotlight, the dimming: -4)
+// r141: + 1 more before the trading cards' (21): a BLACK 1/1's world round you and on its card (under -4.5: tinted light;
+// xr_cards.h kFxSlot) - the franchise's 18 stay 3-20 (xr_quest.cpp kFrFigs), the cards 22-26, the magazine 27
+constexpr int kModelSlots = 3 + 18 + 1 + 2 + 3 + 1;
+// r135: the guests' outline cells in guests/etch.r8 (make_etch, xr_fx_mesh.frag sdGuest): 16 x 32 (r121-r134: 16 x 16),
+// one per pickable roster place; a theme of 100 + a cell from 0 to kEtchCells - 1
+constexpr int kEtchCells = 512;
 
 struct DeviceInfo {
   XrInstance instance = XR_NULL_HANDLE;
@@ -60,13 +69,19 @@ struct Scene {
   // The life-size stadium: same mapping with this scale and origin.
   float stadiumScale = 1.0f;
   XrVector3f stadiumOrigin{0.0f, 0.0f, 0.0f};
-  // r42: the life-size goal scorer, a solid the pieces fall onto: an upright cylinder from its feet
-  // (LOCAL), radius and height in meters. Pieces bounce off its sides and, while it stands
-  // (scorerStill), come to rest on its head and ride there until it runs.
+  // r42: the life-size goal scorer: where its feet are (LOCAL) and how tall it is (meters; where hats and themed
+  // pieces start over its head). scorerStill: it stands (pieces that land on it ride there until it runs).
+  // r143 (Lance: Arbok's "see through invisible pole in the back of him", the characters see-through to what falls
+  // behind them): no more upright cylinder (r42's collision, r44e's ten-sided depth column). The body itself
+  // (port/xr_body.h: its posed vertices every game frame, the copy's game space) is drawn depth-only and voxelized
+  // for the pieces to bounce off and land on; scorerModel puts that space in the room (column-major, xr_quest.cpp's
+  // scorer_model(), the matrix the scorer's own layer is drawn with).
   bool scorerValid = false;
   bool scorerStill = false;
   XrVector3f scorerFeet{0.0f, 0.0f, 0.0f};
-  float scorerRadius = 0.28f, scorerHeight = 1.52f;
+  float scorerHeight = 1.52f;
+  bool scorerModelValid = false;
+  float scorerModel[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
   // The screen quad, for occlusion.
   bool screenValid = false;
   XrPosef screenPose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
@@ -197,8 +212,23 @@ struct Scene {
     int frame = -1;
     XrVector3f at{0.0f, 0.0f, 0.0f};
     float yaw = 0.0f, scale = 1.0f;
+    // r138: a model in its own frame (a trading card's: xr_cards.cpp; posNrm in that frame): `toWorld` (column-major: a
+    // turn, a uniform scale, a place) puts it in the room, and your eye goes into that frame for its light
+    bool local = false;
+    float toWorld[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    // r147: a BLACK 1/1's kaleidoscope (xr_fx_model.frag, its slab's back wall): its card's colour 0xRRGGBB (0 none; a
+    // local model only)
+    uint32_t kaleido = 0;
   };
   ModelDraw models[kModelSlots];  // r117: 0-1 the 3D evolution / the menu's figure, 2 the home corner's; r131: 3- franchise
+  // r137: the match's weather (xr_weather.h PORT_WX_* bits: 1 rain, 2 snow, 4 night; 0 none here), how far it has come
+  // in (0..1), how much snow lies (0..1), and the stadium's floodlight banks (GAME world: metres, Z up) for night.
+  // Rain / snow fall over the Tabletop field and onto your table when `tabletop && mr`, round you in the life-size
+  // stadium when !mr.
+  uint8_t weather = 0;
+  float weatherAmt = 0.0f, snowCover = 0.0f;
+  XrVector3f wxLights[8] = {};
+  int wxLightCount = 0;
 };
 
 // r96: a character model for Scene::models (xr_evo.cpp builds it from a guest pack): its pictures (RGBA,
@@ -242,6 +272,8 @@ void evo_end();
 // r96: a shiny one's twinkle round a standing model: stars popping round `at` (its feet), `height` tall,
 // for this frame's `dt` seconds.
 void evo_sparkle(const XrVector3f& at, float radius, float height, float dt);
+// r138: the same in colours of your own (a trading card's: gold, a rainbow's), `rate` a second
+void card_sparkle(const XrVector3f& at, float radius, float height, float rate, float dt, uint32_t rgb1, uint32_t rgb2);
 
 // r61: the cup suite's room, baked in Blender (tools/suites): one mesh with its light in one picture,
 // and the world outside as a 360 picture all round, infinitely far.

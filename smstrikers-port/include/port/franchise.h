@@ -434,4 +434,28 @@ int PortFranchiseMatchSeconds();         // r86: its length (240) while one is s
 // A sidekick's name in a franchise match (side 0 home / 1 away, cPlayer m_ID 1-3); null otherwise.
 const char* PortFranchiseSidekickName(int side, int playerId);
 
+// r137: STRIKERS TRADING CARDS: the packs your franchise matches earned since the last call (1 a match played, 2 for a
+// win, +1 a playoff series won, +1 a trophy), and what earned them (*flags: 1 a win, 2 a series won, 4 a trophy).
+// The headset takes them every frame (src/platform/xr_cards.cpp rolls and keeps them).
+int PortFranchiseTakeCardPacks(unsigned* flags);
+// r140: TIZM COINS your played franchise matches earned since the last call (your side's goals, Super Strikes, assists,
+// tackles, steals, item hits, a win, a shutout; simmed games none), and the last match's breakdown into why ("3 goals 18,
+// 2 assists 8, 14 tackles 7, win 10"). The headset takes them every frame (xr_cards.cpp keeps them, for its shop).
+int PortFranchiseTakeCardCoins(char* why, int cap);
+// r146 (Lance: "bonuses for duplicates should you not trade em in as well as in game multipliers due to set bonuses"):
+// LANCINI TIZM card bonuses, worked out by xr_cards.cpp from your collection and set again whenever it changes. Franchise
+// careers on this headset only (never co-op, an online league, or a quick match), your club's players only: a
+// character's XP (its card's level - copies you keep: x2 LV2 .. x10 LV5, +10% a level over 1 -, its evolution line complete
+// +15%, each of its Pokemon types complete +10%; all together at most +60%: more XP, so it evolves sooner), its
+// evolutions' shiny odds (its line complete: 1 in 96, not 128), and the TIZM COINS your played matches pay (+2% a full
+// binder page, at most +20%). key: a card key ("pk_charizard", "strikers_toad" - a sidekick kind's card).
+struct PortFranchiseCardBonus
+{
+    char key[48];
+    int xpPct;      // more XP, percent (0 - 60)
+    int shinyOdds;  // its evolutions shiny 1 in this (0: the usual 128)
+    char why[64];   // "LV3 +20%, LINE +15%, FIRE +10%"
+};
+void PortFranchiseSetCardBonuses(const PortFranchiseCardBonus* list, int count, int coinPct, const char* coinWhy);
+
 #endif // PORT_FRANCHISE_H

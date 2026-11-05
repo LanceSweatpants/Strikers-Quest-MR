@@ -22,6 +22,9 @@ public final class Portrait {
         public int skyRays = 16, lightRays = 9, vertexSkyRays = 12, vertexLightRays = 4, denoise = 2;
         public double exposure = 1.0;
         public boolean flames = false;
+        // r137 (Big: the big pictures): the pixels' rays on a grid of lightDiv x lightDiv picture pixels a cell (1: every
+        // pixel, as the portraits), on this many threads (the same numbers whatever the count)
+        public int lightDiv = 1, threads = 1;
 
         public static Look from(Map<String, double[]> v) {
             final Look l = new Look();
@@ -50,6 +53,8 @@ public final class Portrait {
             if (v.containsKey("denoise")) l.denoise = (int) v.get("denoise")[0];
             if (v.containsKey("exposure")) l.exposure = v.get("exposure")[0];
             if (v.containsKey("flames")) l.flames = v.get("flames")[0] != 0;
+            if (v.containsKey("light_div")) l.lightDiv = Math.max(1, (int) v.get("light_div")[0]);
+            if (v.containsKey("threads")) l.threads = Math.max(1, (int) v.get("threads")[0]);
             return l;
         }
     }
@@ -57,6 +62,7 @@ public final class Portrait {
     /** The posed model in front of the camera with its lights: what the normal and shiny pictures share. */
     public static final class Scene {
         public final int w, h, sw, sh, ss;
+        final int lw, lh, ld;  // r137: the light's grid (lightDiv x lightDiv picture pixels a cell; 1: the picture's)
         final int nv, nt;
         final float[] p, n, uv;
         final int[] tri;
@@ -85,6 +91,9 @@ public final class Portrait {
             ss = look.ss;
             sw = w * ss;
             sh = h * ss;
+            ld = Math.max(1, look.lightDiv);
+            lw = (w + ld - 1) / ld;
+            lh = (h + ld - 1) / ld;
             nv = m.nv;
             nt = m.nt;
             tri = m.tri;
@@ -302,15 +311,19 @@ public final class Portrait {
             if (norm(out) < 1e-12) faceNormal(k, out);
         }
 
-        /** The light per picture pixel: the opaque surface at each pixel's centre, its rays, smoothed edge-aware. */
+        /**
+         * The light per picture pixel: the opaque surface at each pixel's centre, its rays, smoothed edge-aware. r137: per
+         * cell of the light's grid (lightDiv 1: per picture pixel, as before), the rays on look.threads threads.
+         */
         void pixelLight(Tex[] tex, int[] triMat) {
+            final int w = lw, h = lh;  // (the grid: the picture's at lightDiv 1)
             final int np = w * h;
             gTri = new int[np];
             gDepth = new float[np];
             final float[] gb1 = new float[np], gb2 = new float[np];
             Arrays.fill(gTri, -1);
             Arrays.fill(gDepth, Float.POSITIVE_INFINITY);
-            final float inv = 1f / ss;
+            final float inv = 1f / (ss * ld);
             for (int k = 0; k < nt; k++) {
                 final Tex tx = tex[triMat[k]];
                 final int a = tri[k * 3], b = tri[k * 3 + 1], c = tri[k * 3 + 2];
@@ -347,23 +360,36 @@ public final class Portrait {
             }
             final float[] raw = new float[np * 3];
             gNrm = new float[np * 3];
-            final int[] stack = new int[128];
-            final double[] ng = new double[3], nn = new double[3], vis = new double[3];
-            for (int i = 0; i < np; i++) {
-                final int k = gTri[i];
-                if (k < 0) continue;
-                final int a = tri[k * 3], b = tri[k * 3 + 1], c = tri[k * 3 + 2];
-                final float w1 = gb1[i], w2 = gb2[i], w0 = 1f - w1 - w2;
-                final double px = w0 * p[a * 3] + w1 * p[b * 3] + w2 * p[c * 3];
-                final double py = w0 * p[a * 3 + 1] + w1 * p[b * 3 + 1] + w2 * p[c * 3 + 1];
-                final double pz = w0 * p[a * 3 + 2] + w1 * p[b * 3 + 2] + w2 * p[c * 3 + 2];
-                faceNormal(k, ng);
-                shadingNormal(k, w1, w2, nn);
-                visibility(px, py, pz, ng, nn, look.skyRays, look.lightRays, i, stack, vis);
-                for (int ch = 0; ch < 3; ch++) {
-                    raw[i * 3 + ch] = (float) vis[ch];
-                    gNrm[i * 3 + ch] = (float) nn[ch];
+            // r137: rows shared out round the threads (each pixel's rays its own: the same numbers on any count)
+            final int nth = Math.max(1, Math.min(8, look.threads));
+            if (nth == 1) {
+                pixelRays(0, 1, gb1, gb2, raw);
+            } else {
+                final Throwable[] failed = new Throwable[1];
+                final Thread[] ts = new Thread[nth];
+                for (int t = 0; t < nth; t++) {
+                    final int first = t;
+                    ts[t] = new Thread(() -> {
+                        try {
+                            pixelRays(first, nth, gb1, gb2, raw);
+                        } catch (Throwable e) {
+                            synchronized (failed) {
+                                failed[0] = e;
+                            }
+                        }
+                    }, "portrait-rays");
+                    ts[t].setPriority(Thread.MIN_PRIORITY);  // (the game's own threads first)
+                    ts[t].start();
                 }
+                for (Thread t : ts) {
+                    try {
+                        t.join();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                }
+                if (failed[0] != null) throw new RuntimeException(failed[0]);
             }
             // smoothed: nearby pixels of the same surface (depth within a few pixels, normals alike)
             gVis = new float[np * 3];
@@ -400,6 +426,31 @@ public final class Portrait {
             }
         }
 
+        /** r137: pixelLight's rays for the grid's rows first, first + step, ... (scratch of its own: one per thread). */
+        private void pixelRays(int first, int step, float[] gb1, float[] gb2, float[] raw) {
+            final int[] stack = new int[128];
+            final double[] ng = new double[3], nn = new double[3], vis = new double[3];
+            for (int yy = first; yy < lh; yy += step) {
+                for (int xx = 0; xx < lw; xx++) {
+                    final int i = yy * lw + xx;
+                    final int k = gTri[i];
+                    if (k < 0) continue;
+                    final int a = tri[k * 3], b = tri[k * 3 + 1], c = tri[k * 3 + 2];
+                    final float w1 = gb1[i], w2 = gb2[i], w0 = 1f - w1 - w2;
+                    final double px = w0 * p[a * 3] + w1 * p[b * 3] + w2 * p[c * 3];
+                    final double py = w0 * p[a * 3 + 1] + w1 * p[b * 3 + 1] + w2 * p[c * 3 + 1];
+                    final double pz = w0 * p[a * 3 + 2] + w1 * p[b * 3 + 2] + w2 * p[c * 3 + 2];
+                    faceNormal(k, ng);
+                    shadingNormal(k, w1, w2, nn);
+                    visibility(px, py, pz, ng, nn, look.skyRays, look.lightRays, i, stack, vis);
+                    for (int ch = 0; ch < 3; ch++) {
+                        raw[i * 3 + ch] = (float) vis[ch];
+                        gNrm[i * 3 + ch] = (float) nn[ch];
+                    }
+                }
+            }
+        }
+
         /** Tests: the per-pixel sky / key / rim seen (w x h x 3; NaN-free, 0 where nothing opaque). */
         public float[] pixelVisibility() {
             return gVis;
@@ -407,7 +458,8 @@ public final class Portrait {
 
         /** The light at a sample of the big render (x, y: sample grid; z: its depth; nrm: its normal): from the pixels near it. */
         boolean pixelVis(float fx, float fy, float z, double[] nrm, float[] out) {
-            final float cx = fx / ss - 0.5f, cy = fy / ss - 0.5f;
+            final int w = lw, h = lh;  // r137: the light's grid
+            final float cx = fx / (ss * ld) - 0.5f, cy = fy / (ss * ld) - 0.5f;
             final int x0 = (int) Math.floor(cx), y0 = (int) Math.floor(cy);
             final float ax = cx - x0, ay = cy - y0;
             final float tz = (float) (3 * viewW / w);
@@ -670,7 +722,7 @@ public final class Portrait {
         }
 
         float[] light(Scene s, int k, float w1, float w2, int sx, int sy) {
-            final float blk = 2f * s.ss;
+            final float blk = 2f * s.ss * s.ld;  // r137: blocks of the light's grid's cells (lightDiv 1: picture pixels)
             final float bx = (sx + 0.5f) / blk - 0.5f, by = (sy + 0.5f) / blk - 0.5f;
             final int x0 = (int) Math.floor(bx), y0 = (int) Math.floor(by);
             final float fx = bx - x0, fy = by - y0;

@@ -53,6 +53,13 @@ public final class Home {
         public final String name, pack;
         public final double height;
         final Set<Integer> hide;
+        /** r141: more big moves from its in-game clips (home.txt "moves": a Charged sidekick's menu action, its deke). */
+        final List<String> moves = new ArrayList<>();
+        /** r141: its standing loop's clip when not its menu idle (home.txt "idle": Dry Bones' in-game idle). */
+        String idleClip = null;
+        /** r141: no cheer from its goal-celebration cut-scenes, their shots after its own moves (home.txt "nocel": they tumble
+         * Monty Mole into a jumbled ball - a BLACK 1/1's throne loops its first big move: its power-up). */
+        boolean noCel = false;
 
         Cast(String name, String pack, double height, Set<Integer> hide) {
             this.name = name;
@@ -148,6 +155,16 @@ public final class Home {
                 keep.add(c[1]);
             } else if (c[0].equals("tries") && c.length >= 2) {
                 tries = Integer.parseInt(c[1]);
+            } else if (c[0].equals("idle") && c.length >= 3) {  // r141
+                for (Cast k : cast)
+                    if (k.name.equals(c[1])) k.idleClip = c[2].trim();
+            } else if (c[0].equals("moves") && c.length >= 3) {  // r141
+                for (Cast k : cast)
+                    if (k.name.equals(c[1]))
+                        for (String m : c[2].split(",")) k.moves.add(m.trim());
+            } else if (c[0].equals("nocel") && c.length >= 2) {  // r141
+                for (Cast k : cast)
+                    if (k.name.equals(c[1].trim())) k.noCel = true;
             } else {
                 throw new IOException(DATA + ": can't read \"" + line + "\"");
             }
@@ -752,7 +769,8 @@ public final class Home {
         locals(p, clips.get("idle"), 0, Q0, T0);
         final double[] H = worlds(p, Q0, T0)[hips];
         final double[] ref = {H[0], H[1], H[2], H[4], H[5], H[6], H[8], H[9], H[10]};
-        final String idle = clips.containsKey("fe_idle") ? "fe_idle" : "idle";
+        final String idle = cast.idleClip != null && clips.containsKey(cast.idleClip) ? cast.idleClip  // r141
+                : (clips.containsKey("fe_idle") ? "fe_idle" : "idle");
         final Track trIdle = track(p, sk, clips.get(idle), hips, ref);
         if (trIdle.size() == 0) throw new IOException("empty idle");
         final double stand = trIdle.top[0] - trIdle.low[0];
@@ -773,11 +791,18 @@ public final class Home {
                 final Track t = trackOf(trk, p, sk, clips, c, hips, ref);
                 segs.add(new Seg(1, c, t, 0, t.size()));
             }
-        for (int i = 0; i < Math.min(10, cel.size()); i++) segs.add(cel.get(i));
+        // r141 (home.txt "nocel"): its cut-scene shots after its own moves (its first big move: a BLACK 1/1's throne loop)
+        if (!cast.noCel) for (int i = 0; i < Math.min(10, cel.size()); i++) segs.add(cel.get(i));
         if (clips.containsKey("arm_powerup")) {
             final Track t = trackOf(trk, p, sk, clips, "arm_powerup", hips, ref);
             segs.add(new Seg(2, "arm_powerup", t, 0, t.size()));
         }
+        for (String m : cast.moves)  // r141: a Charged sidekick's showy moves (its cards' action pose too)
+            if (clips.containsKey(m)) {
+                final Track t = trackOf(trk, p, sk, clips, m, hips, ref);
+                segs.add(new Seg(2, m, t, 0, t.size()));
+            }
+        if (cast.noCel) for (int i = 0; i < Math.min(10, cel.size()); i++) segs.add(cel.get(i));  // (its big picture's still)
         String react = null;
         for (String c : new String[] {"hit_react_1_300", "hit_react_1_600", "hit_react_1_1200"})
             if (react == null && clips.containsKey(c)) react = c;
@@ -793,6 +818,7 @@ public final class Home {
         ArrayList<Seg> cheer = new ArrayList<>();
         for (Seg s : cel) if (s.label.contains("goal_winner") && cheer.size() < 3) cheer.add(s);
         if (cheer.isEmpty()) for (Seg s : cel) if (s.label.contains("cup_win") && cheer.size() < 3) cheer.add(s);
+        if (cast.noCel) cheer.clear();  // r141
         for (Seg s : cheer) segs.add(new Seg(5, s.label, s.tr, s.a, s.b));
         final ArrayList<Seg> upset = new ArrayList<>();
         for (String cn : sortedNis(clips, "defeated", "outraged")) {

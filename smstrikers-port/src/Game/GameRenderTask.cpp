@@ -35,6 +35,7 @@
 #include "NL/gl/glTexture.h"
 #include "port/xr_scorer.h" // strikers-quest r42
 #include "port/franchise.h" // strikers-quest r70b
+extern "C" void PortWeatherRenderGame(float dt); // strikers-quest r137 (src/platform/xr_weather.h)
 
 class PhotoFlash
 {
@@ -290,6 +291,7 @@ void GameRenderTask::Run(float fDeltaT)
     gl_ModifyClearMappings();
 
     PortFranchiseRenderPitch(); // strikers-quest r70b: the playoff round's logo + banners (franchise_show.cpp)
+    PortWeatherRenderGame(dt);  // strikers-quest r137: rain / snow / night, looks only (src/platform/xr_weather.cpp)
 
     nlTaskManager* taskMgr = nlTaskManager::m_pInstance;
     if (taskMgr->m_CurrState == 2 || (taskMgr->m_CurrState == 1 && taskMgr->m_PrevState == 2))

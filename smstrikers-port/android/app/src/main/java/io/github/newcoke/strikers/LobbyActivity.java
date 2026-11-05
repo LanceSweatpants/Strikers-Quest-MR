@@ -113,6 +113,11 @@ public class LobbyActivity extends Activity {
     private int chooserToken;     // r41: the game file list being filled (a newer one wins)
     private Updater.Release update;  // r41: a newer release on GitHub, null when there is none
     private boolean onHome;          // r41: the home page is showing (the update check redraws it)
+    // r147: the menu music on this panel (MenuMusic: the lofi + his songs while the panel is in sight) and its NOW
+    // PLAYING card in the top right corner
+    private MenuMusic music;
+    private TextView nowPlaying;
+    private int nowPlayingToken;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -130,7 +135,30 @@ public class LobbyActivity extends Activity {
         scroll.setFillViewport(true);
         scroll.addView(page, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scroll);
+        // r147: the page under the NOW PLAYING card
+        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+        root.setBackgroundColor(BG);
+        root.addView(scroll, new android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        nowPlaying = new TextView(this);
+        nowPlaying.setTextColor(Color.WHITE);
+        nowPlaying.setTextSize(14);
+        nowPlaying.setMaxWidth(dp(300));
+        nowPlaying.setPadding(dp(14), dp(8), dp(16), dp(10));
+        GradientDrawable card = new GradientDrawable();
+        card.setCornerRadius(dp(14));
+        card.setColor(Color.argb(235, 22, 30, 48));
+        card.setStroke(dp(2), ACCENT);
+        nowPlaying.setBackground(card);
+        nowPlaying.setAlpha(0f);
+        nowPlaying.setVisibility(View.GONE);
+        android.widget.FrameLayout.LayoutParams npLp = new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
+        npLp.topMargin = dp(12);
+        npLp.rightMargin = dp(12);
+        root.addView(nowPlaying, npLp);
+        setContentView(root);
+        music = MenuMusic.forPanel(this, this::showNowPlaying);
         if (SHOW_TOURNEY.equals(getIntent().getStringExtra(EXTRA_SHOW))) {
             showTourneys();  // r45: back from a tournament match
         } else {
@@ -179,6 +207,7 @@ public class LobbyActivity extends Activity {
         page.addView(button("Host an online match", false, v -> showHost(newCode())));
         page.addView(button("Join with a code", false, v -> showJoin()));
         page.addView(button("Voice chat: " + (voiceOn() ? "On" : "Off"), false, v -> toggleVoice()));  // r44
+        page.addView(button(menuMusicText(), false, v -> cycleMenuMusic()));  // r147
         page.addView(button("Home ground", false, v -> showHomeGround()));  // r61
         // strikers-quest 1.14: guests made on this headset from the player's own game files
         page.addView(button("Guest characters", !io.github.newcoke.strikers.guests.GuestSetup.made(StrikersHome.homeDir(this)),
@@ -1324,6 +1353,72 @@ public class LobbyActivity extends Activity {
                 }
             });
         }, "strikers-ra-set").start();
+    }
+
+    // --- strikers-quest r147: the menu music (MenuMusic). The button steps round Lofi, My music, Both, Off (the game's
+    // own), written where the game's pause row keeps it (xr_room_options.txt "music N"); his own songs go in
+    // Strikers/music (its README says so).
+
+    private String menuMusicText() {
+        final File home = StrikersHome.homeDir(this);
+        final int mode = MenuMusic.readMode(home);
+        final int mine = MenuMusic.mySongCount(home);
+        String s = "Menu music: " + MenuPlaylist.MODE_NAMES[mode];
+        if (mode == MenuPlaylist.MINE) s += mine == 0 ? " (folder empty)" : " (" + mine + ")";
+        else if (mode == MenuPlaylist.BOTH && mine > 0) s += " (+" + mine + ")";
+        return s;
+    }
+
+    private void cycleMenuMusic() {
+        final File home = StrikersHome.homeDir(this);
+        final int next = (MenuMusic.readMode(home) + 1) % MenuPlaylist.MODES;
+        MenuMusic.writeMode(home, next);
+        if (music != null) music.reloadSetting();
+        showHome();
+        if (next == MenuPlaylist.MINE || next == MenuPlaylist.BOTH) {
+            note("Your own songs: put .mp3 / .ogg / .m4a files in " + MenuMusic.myFolder(home).getAbsolutePath()
+                    + " (a song named theme.mp3 is your franchise theme).").setTextSize(13);
+        }
+    }
+
+    /** r147: the NOW PLAYING card: in over a quarter second, 4 s up, out over 0.6 s. */
+    private void showNowPlaying(String title, String artist) {
+        if (nowPlaying == null || isFinishing()) return;
+        final String line = artist == null || artist.isEmpty() ? title : title + "  -  " + artist;
+        SpannableString s = new SpannableString("NOW PLAYING\n" + line);
+        s.setSpan(new RelativeSizeSpan(0.8f), 0, 11, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new StyleSpan(Typeface.BOLD), 0, 11, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new android.text.style.ForegroundColorSpan(ACCENT), 0, 11, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        nowPlaying.setText(s);
+        final int token = ++nowPlayingToken;
+        nowPlaying.animate().cancel();
+        nowPlaying.setVisibility(View.VISIBLE);
+        nowPlaying.animate().alpha(1f).setDuration(250).start();
+        nowPlaying.postDelayed(() -> {
+            if (token != nowPlayingToken) return;
+            nowPlaying.animate().alpha(0f).setDuration(600).withEndAction(() -> {
+                if (token == nowPlayingToken) nowPlaying.setVisibility(View.GONE);
+            }).start();
+        }, 4000);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (music != null) music.setForeground(true);  // r147
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (music != null) music.setForeground(false);  // r147
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (music != null) music.release();  // r147
+        music = null;
+        super.onDestroy();
     }
 
     // --- strikers-quest r44: Voice chat, voice.txt in the game's folder (src/platform/xr_voice.cpp reads

@@ -1,0 +1,268 @@
+# Marvel: Ultimate Alliance NON-PLAYABLE characters (r135) - our own tuning (tools/outside/mua/npcs.json):
+# names and numbers only, nothing of the game. Hero blocks (guests/mua/Hero.java) + the keys guests/mua/Npc.java
+# reads; what to take from the disc comes from its own data/npcstat.engb.
+
+hero nightcrawler
+pack mua_nightcrawler
+name Nightcrawler
+costumes 4701
+slot luigi
+colors 2A3A78 D8B040 1A1A2A
+height 1.5
+keep -
+run own
+cel power_1
+cel attack_popup1
+cel power_4 power_4_end
+cel attack_light1 attack_light2 attack_light3 attack_heavy1
+home 0 idle
+home 1 power_4 power_4_end
+home 2 power_1
+home 2 attack_popup1
+home 2 attack_light1 attack_light2 attack_light3 attack_heavy1
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc Mephisto_Nightcrawler
+package packages/generated/maps/act2/mephisto/mephisto4.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+bolton actors/4710.igb,actors/47_nightcrawler_tail.igb,Bip01 Pelvis
+portrait_stand own_idle
+card Speed=0.83 Acceleration=0.87 Turning_Radius=0.82 Slide_Tackle=0.57 Size=0.37 Hitting_Distance=0.52 Shooting=0.63 Passing=0.71 Aggression=0.62 Dekeing=0.92
+
+hero jeangrey
+pack mua_jeangrey
+name Jean Grey
+costumes 12301
+slot peach
+colors C81E28 F2C230 7A1418
+height 1.54
+keep -
+run own
+cel power_3
+cel power_1
+cel attack_popup1
+cel levelup
+home 0 idle
+home 1 power_1
+home 2 power_3
+home 2 attack_popup1
+home 2 attack_light1 attack_light2 attack_light3 attack_heavy1
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc Mephisto_Phoenix
+package packages/generated/maps/act2/strange/strange1.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+portrait_stand own_idle
+card Speed=0.74 Acceleration=0.72 Turning_Radius=0.72 Slide_Tackle=0.5 Size=0.4 Hitting_Distance=0.78 Shooting=0.86 Passing=0.8 Aggression=0.6 Dekeing=0.7
+
+hero professorx
+pack mua_professorx
+name Professor X
+costumes 3901
+slot luigi
+colors 4A4C54 C8B478 E0C040
+height 1.64
+keep 1101_chair
+run own
+cel talking_01
+cel levelup@upper
+cel attack_popup1@upper
+cel talking_02
+home 0 idle
+home 1 talking_03@upper:1.0:4.0
+home 2 talking_01
+home 2 attack_popup1@upper
+home 3 pain_high@upper
+home 4 talking_02@upper:0.8:3.0
+home 5 levelup@upper
+home 6 stun@upper
+extra -
+npc ProfessorX
+package packages/generated/maps/act2/strange/strange1.fb
+sets actors/common_combat.igb=packages/generated/maps/package/combat.fb
+rest idle
+unmap bip01,bip01 pelvis,bip01 spine,bip01 l thigh,bip01 r thigh,bip01 l calf,bip01 r calf,bip01 l foot,bip01 r foot,bip01 l toe0,bip01 r toe0
+float 1
+portrait_stand own_idle
+card Speed=0.56 Acceleration=0.58 Turning_Radius=0.56 Slide_Tackle=0.38 Size=0.56 Hitting_Distance=0.76 Shooting=0.7 Passing=0.88 Aggression=0.4 Dekeing=0.62
+
+hero vision
+pack mua_vision
+name The Vision
+costumes 14401
+slot luigi
+colors 2E8A3A F2C230 C81E28
+height 1.7
+keep -
+run own
+cel levelup
+cel attack_popup1
+cel attack_light1 attack_light2
+cel idle_to_bored
+home 0 idle
+home 1 talking_03:1.0:4.0
+home 2 attack_popup1
+home 2 attack_light1 attack_light2
+home 2 idle_to_bored
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc Vision
+package packages/generated/maps/act2/strange/strange1.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+portrait_stand own_idle
+card Speed=0.75 Acceleration=0.71 Turning_Radius=0.69 Slide_Tackle=0.63 Size=0.63 Hitting_Distance=0.63 Shooting=0.77 Passing=0.67 Aggression=0.6 Dekeing=0.74
+
+hero drdoom
+pack mua_drdoom
+name Dr. Doom
+costumes 1901
+slot luigi
+colors 2A5A34 A8ACB4 6A6E78
+height 1.72
+keep -
+run own
+cel power_2 power_2_loop*2 power_2_end
+cel power_4
+cel power_7
+cel power_3
+home 0 idle
+home 1 power_1_start power_1_end
+home 2 power_2 power_2_loop power_2_loop power_2_end
+home 2 power_4
+home 2 power_7
+home 3 blocking
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc DrDoom
+package packages/generated/maps/act5/doom/doom5.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+portrait_stand own_idle
+card Speed=0.66 Acceleration=0.62 Turning_Radius=0.62 Slide_Tackle=0.72 Size=0.74 Hitting_Distance=0.74 Shooting=0.92 Passing=0.66 Aggression=0.86 Dekeing=0.56
+
+hero mysterio
+pack mua_mysterio
+name Mysterio
+costumes 6001
+slot luigi
+colors 3A7A3A 7A1E3A B8D8E8
+height 1.74
+keep 1001_segment
+run own
+cel power_2
+cel power_1 power_1_end
+cel levelup
+cel attack_popup1
+home 0 idle
+home 1 power_2
+home 2 power_1 power_1_end
+home 2 attack_popup1
+home 2 attack_light1 attack_light2 attack_light3 attack_heavy1
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc Mysterio
+package packages/generated/simulations/cmmysterio.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+portrait_stand own_idle
+card Speed=0.63 Acceleration=0.63 Turning_Radius=0.67 Slide_Tackle=0.49 Size=0.49 Hitting_Distance=0.63 Shooting=0.67 Passing=0.69 Aggression=0.62 Dekeing=0.88
+
+hero lizard
+pack mua_lizard
+name Lizard
+costumes 6101
+slot luigi
+colors 3E8A40 E8E0C8 B82020
+height 1.82
+keep -
+run own
+cel power_1
+cel attack_popup1
+cel power_2
+cel attack_heavy1
+home 0 idle
+home 1 talking_03:1.0:4.0
+home 2 power_1
+home 2 power_2
+home 2 attack_heavy1
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc Lizard
+package packages/generated/simulations/cmlizard.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+reparent Bip01 Tail:Bip01 Pelvis
+portrait_stand own_idle
+card Speed=0.75 Acceleration=0.73 Turning_Radius=0.67 Slide_Tackle=0.77 Size=0.67 Hitting_Distance=0.57 Shooting=0.67 Passing=0.47 Aggression=0.88 Dekeing=0.62
+
+hero rhino
+pack mua_rhino
+name Rhino
+costumes 3701
+slot donkeykong
+colors 6E7078 B0B4BC E8E8E8
+height 1.95
+keep -
+run own
+cel power_1
+cel attack_popup1
+cel power_2
+cel levelup
+home 0 idle
+home 1 attack_popup1
+home 2 power_1
+home 2 power_2
+home 2 attack_light1 attack_light2 attack_light3 attack_heavy1
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc Rhino
+package packages/generated/simulations/cmthing.fb
+sets actors/fightstyle_villain_big.igb=packages/generated/simulations/cmthing.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+portrait_stand own_idle
+card Speed=0.56 Acceleration=0.5 Turning_Radius=0.46 Slide_Tackle=0.9 Size=0.95 Hitting_Distance=0.58 Shooting=0.82 Passing=0.5 Aggression=0.95 Dekeing=0.4
+
+hero wintersoldier
+pack mua_wintersoldier
+name Winter Soldier
+costumes 11901
+slot luigi
+colors 2A2C34 A8B0BC C81E28
+height 1.64
+keep -
+run shared
+cel jump_ambush_nogun
+cel power_2
+cel attack_light1 attack_light2 attack_heavy1
+cel attack_popup1
+home 0 idle
+home 1 talking_03:1.0:4.0
+home 2 jump_ambush_nogun
+home 2 power_2
+home 2 attack_light1 attack_light2 attack_heavy1
+home 3 pain_high
+home 4 talking_02:0.8:3.0
+home 5 levelup
+home 6 stun
+extra -
+npc WinterSoldier
+package packages/generated/simulations/cmcaptainamerica.fb
+sets actors/fightstyle_villain.igb=packages/generated/simulations/cmmysterio.fb actors/common_combat.igb=packages/generated/maps/package/combat.fb
+portrait_stand own_idle
+card Speed=0.71 Acceleration=0.69 Turning_Radius=0.65 Slide_Tackle=0.69 Size=0.53 Hitting_Distance=0.61 Shooting=0.73 Passing=0.59 Aggression=0.78 Dekeing=0.7

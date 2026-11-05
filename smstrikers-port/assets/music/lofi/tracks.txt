@@ -1,0 +1,22 @@
+# strikers-quest r147: the menu music (MenuMusic.java). file<TAB>title<TAB>artist<TAB>album<TAB>theme
+# All CC0 1.0 (public domain dedication): see ../CREDITS.txt. Loudness-matched to -16 LUFS (EBU R128),
+# 48 kHz stereo Ogg Vorbis ~85 kbps.
+theme_lofi_hip_hop_loop.ogg	Lofi Hip Hop Loop	omfgdude	OpenGameArt.org	theme
+spring_01_kids.ogg	Kids	HoliznaCC0	Spring At Last (LOFI TAPE)
+spring_02_spring_at_last.ogg	Spring At Last	HoliznaCC0	Spring At Last (LOFI TAPE)
+spring_03_sense_of_purpose.ogg	Sense Of Purpose	HoliznaCC0	Spring At Last (LOFI TAPE)
+spring_04_april_showers.ogg	April Showers	HoliznaCC0	Spring At Last (LOFI TAPE)
+milky1_01_deja_vu.ogg	Deja Vu	HoliznaCC0	Only In The Milky Way Part 1
+milky1_02_boredom.ogg	Boredom	HoliznaCC0	Only In The Milky Way Part 1
+milky1_03_anxiety.ogg	Anxiety	HoliznaCC0	Only In The Milky Way Part 1
+milky1_04_love.ogg	Love	HoliznaCC0	Only In The Milky Way Part 1
+milky1_05_old_age.ogg	Old Age	HoliznaCC0	Only In The Milky Way Part 1
+milky1_06_dreams.ogg	Dreams	HoliznaCC0	Only In The Milky Way Part 1
+milky1_07_agoraphobia.ogg	Agoraphobia	HoliznaCC0	Only In The Milky Way Part 1
+milky2_01_day_jobs.ogg	Day Jobs	HoliznaCC0	Only In The Milky Way Part 2
+milky2_02_childhood.ogg	Childhood	HoliznaCC0	Only In The Milky Way Part 2
+milky2_03_dancing.ogg	Dancing	HoliznaCC0	Only In The Milky Way Part 2
+milky2_04_video_games.ogg	Video Games	HoliznaCC0	Only In The Milky Way Part 2
+milky2_05_advertisements.ogg	Advertisements	HoliznaCC0	Only In The Milky Way Part 2
+milky2_06_street_names.ogg	Street Names	HoliznaCC0	Only In The Milky Way Part 2
+milky2_07_big_ass_robots.ogg	Big Ass Robots	HoliznaCC0	Only In The Milky Way Part 2

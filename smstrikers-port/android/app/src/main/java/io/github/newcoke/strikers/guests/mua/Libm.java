@@ -29,6 +29,18 @@ public final class Libm {
         }
     }
 
+    /** r135: more lines on top of the loaded table (guestdata/mua/libm_npc.txt, the NPC guests'; load() clears it). */
+    public static synchronized void add(String text) {
+        if (text == null) return;
+        for (String line : text.split("\n")) {
+            final String l = line.trim();
+            if (l.isEmpty() || l.startsWith("#")) continue;
+            final String[] f = l.split("\\s+");
+            final String key = f.length == 4 ? f[0] + " " + f[1] + " " + f[2] : f[0] + " " + f[1];
+            FIX.put(key, Long.parseUnsignedLong(f[f.length - 1], 16));
+        }
+    }
+
     private static double fixed(String key, double v) {
         final Set<String> rec = record;
         if (rec != null) synchronized (rec) {

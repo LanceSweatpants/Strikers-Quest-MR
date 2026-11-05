@@ -1,0 +1,43 @@
+QUEST 3 STRIKERS - MENU MUSIC CREDITS
+
+The menu music (the launcher panel, the game's menus and the franchise hub; never in a match) is all
+released under CC0 1.0 Universal (public domain dedication) by its authors:
+https://creativecommons.org/publicdomain/zero/1.0/
+No attribution is required by CC0; it is given here with thanks.
+
+FRANCHISE THEME (plays first every time you go into franchise mode)
+  "lofi hip hop loop" by omfgdude (file tag: Taylor Harris) - OpenGameArt.org, CC0
+  https://opengameart.org/content/lofi-hip-hop-loop
+
+HoliznaCC0 - "Spring At Last (LOFI TAPE)" - Free Music Archive, CC0
+  https://freemusicarchive.org/music/holiznacc0/spring-at-last-lofi-tape/
+  Kids               3:15  https://freemusicarchive.org/music/holiznacc0/spring-at-last-lofi-tape/kids/
+  Spring At Last     2:17  https://freemusicarchive.org/music/holiznacc0/spring-at-last-lofi-tape/spring-at-last/
+  Sense Of Purpose   2:02  https://freemusicarchive.org/music/holiznacc0/spring-at-last-lofi-tape/sense-of-purpose/
+  April Showers      2:08  https://freemusicarchive.org/music/holiznacc0/spring-at-last-lofi-tape/april-showers/
+
+HoliznaCC0 - "Only In The Milky Way Part 1" - Free Music Archive, CC0
+  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/
+  Deja Vu            2:05  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/deja-vu/
+  Boredom            2:51  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/boredom/
+  Anxiety            2:22  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/anxiety/
+  Love               3:08  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/love-1/
+  Old Age            3:34  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/old-age/
+  Dreams             5:07  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/dreams-3/
+  Agoraphobia        2:56  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-1/agoraphobia-1/
+
+HoliznaCC0 - "Only In The Milky Way Part 2" - Free Music Archive, CC0
+  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/
+  Day Jobs           2:19  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/day-jobs/
+  Childhood          2:13  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/childhood/
+  Dancing            2:16  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/dancing/
+  Video Games        2:11  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/video-games/
+  Advertisements     3:03  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/advertisements/
+  Street Names       3:36  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/street-names/
+  Big Ass Robots     4:24  https://freemusicarchive.org/music/holiznacc0/only-in-the-milky-way-part-2/big-ass-robots/
+
+Encoded for the game: loudness-matched to -16 LUFS integrated (EBU R128, two-pass loudnorm),
+48 kHz stereo Ogg Vorbis (q2, ~85 kbps). 19 files, 34.2 MB, 53.9 minutes.
+
+YOUR OWN SONGS: put .mp3 / .ogg / .m4a (also .aac .wav .flac .opus) in Strikers/music on the headset.
+They are yours and stay on your headset; nothing of them is in this app.
