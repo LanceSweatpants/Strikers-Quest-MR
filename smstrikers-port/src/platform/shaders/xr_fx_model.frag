@@ -81,7 +81,522 @@ vec3 kaleido(vec3 p, vec3 cam, vec2 mid, float hw, float hh, float t, float spot
     col += warm * exp(-q.x * q.x / 0.03) * smoothstep(-0.3, 1.0, q.y) * (0.1 + 0.18 * spot);  // (a shaft from above)
     return col;
 }
+// r160 (Lance: binder skins - "literal different skins from aligator, to leather, to furry, and everything in between"):
+// the sRGB sampler hands back linear values; the skin atlas's lower half holds plain bytes (normal XY, roughness) - back to
+// what was stored
+vec3 to_stored(vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+vec3 rainbow6(float h) {
+    h = fract(h) * 6.0;
+    return clamp(vec3(abs(h - 3.0) - 1.0, 2.0 - abs(h - 2.0), 2.0 - abs(h - 4.0)), 0.0, 1.0);
+}
+// the room round it as a soft environment (for metal / gloss): a bright ceiling, warm walls, a darker floor
+vec3 env_of(vec3 r, vec3 U, float rough) {
+    float y = dot(r, U);
+    vec3 sky = vec3(0.92, 0.94, 1.0), wall = vec3(0.46, 0.40, 0.34), flr = vec3(0.10, 0.09, 0.08);
+    vec3 sharp = y > 0.0 ? mix(wall, sky, smoothstep(0.05, 0.6, y)) : mix(wall, flr, smoothstep(0.0, 0.45, -y));
+    sharp += vec3(1.6, 1.5, 1.35) * smoothstep(0.86, 0.97, y) * (1.0 - rough);  // (a ceiling light's window)
+    vec3 blur = vec3(0.42, 0.40, 0.38);
+    return mix(sharp, blur, clamp(rough * rough * 1.2, 0.0, 1.0));
+}
+// ====================================================================================================================
+// r163 (Lance: "heavyyyyy on every special skin is moving and alive"; "the lava binder ... should be glowing almost where
+// the cracks in the book are and where the lava is"; the slime "constantly dripping from it ... just a state of
+// animation"): the binder's living skins. Per skin (pc.up.w = its catalogue index + 1: xr_cards.cpp kSkins / skins.py
+// SKINS) its own motion over its pictures - lava flowing along its cracks, slime's wet sheen sliding down it, frost
+// crawling in from its edges, the galaxy swirling and stars twinkling deep in it, neon pulsing, light sweeping over
+// metal, 8-bit sprites playing on its cover, a light circling slowly round every one. Its halos, its light on the floor,
+// its drips / embers / mist / smoke / stars: xr_binderfx.cpp (bfx_main below). tools/outside/binders163/shade163.py ports
+// this line for line (the PC proof videos, living163.py).
+float bh(vec2 p) {  // a hash (no sine: the same on every GPU)
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+float bn(vec2 p) {  // value noise
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(bh(i), bh(i + vec2(1.0, 0.0)), f.x), mix(bh(i + vec2(0.0, 1.0)), bh(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+// a band of light sweeping across it on the slant every `period` s (sp: its surface in metres)
+float bsweep(vec2 sp, float t, float period, float width) {
+    float x = dot(sp, vec2(0.83, 0.56)) - (fract(t / period) * 1.3 - 0.3);
+    return exp(-x * x / (width * width));
+}
+vec3 lava_rgb(float h) {  // molten rock's light by its heat: dark red, orange, yellow, white-hot
+    return vec3(1.0, 0.22, 0.02) * smoothstep(0.0, 0.45, h) + vec3(0.0, 0.40, 0.05) * smoothstep(0.3, 0.95, h) +
+           vec3(0.0, 0.28, 0.42) * smoothstep(0.85, 1.5, h);
+}
+vec3 s2l(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
+// the 8-bit cover's sprites (tools/outside/binders163/pixel_sprites.py: 4 bits a cell, cell 0 lowest; its palette sRGB)
+const uint kPxCoin[16] = uint[](0x330u, 0x3223u, 0x3223u, 0x330u, 0x330u, 0x320u, 0x320u, 0x330u, 0x30u, 0x20u, 0x20u, 0x30u, 0x330u, 0x230u, 0x230u, 0x330u);
+const uint kPxStar[15] = uint[](0x200u, 0x2220u, 0x22222u, 0x2220u, 0x20002u, 0x0u, 0x200u, 0x2220u, 0x200u, 0x0u, 0x0u, 0x0u, 0x400u, 0x0u, 0x0u);
+const uint kPxQblock[7] = uint[](0x111111u, 0x1b44b1u, 0x14bbb1u, 0x1b4bb1u, 0x1bbbb1u, 0x1b4bb1u, 0x111111u);
+const uint kPxRunner[16] = uint[](0x11100u, 0x66610u, 0x61600u, 0x66600u, 0x55550u, 0x55550u, 0x40040u, 0x110011u, 0x11100u, 0x66610u, 0x61600u, 0x66600u, 0x55550u, 0x55500u, 0x4400u, 0x1110u);
+const vec3 kPxPal[12] = vec3[](vec3(0.0), vec3(0.0500, 0.0500, 0.0800), vec3(1.0000, 0.8200, 0.1000), vec3(0.8500, 0.4500, 0.0500), vec3(0.9700, 0.9700, 0.9700), vec3(0.9200, 0.1200, 0.2000), vec3(0.9800, 0.7600, 0.5600), vec3(0.1800, 0.2800, 0.8500), vec3(0.3600, 0.1600, 0.0500), vec3(0.3600, 0.5800, 0.9800), vec3(0.3000, 0.5000, 0.9200), vec3(0.9800, 0.6600, 0.1200));
+int px_cell(uint row, int x) { return int((row >> uint(4 * x)) & 15u); }
+// which palette colour a sprite puts in this 16 px cell of the strip (64 x 32 cells), -1 none (the picture as it is): the
+// four coins spinning (8 frames a second), its two stars twinkling, a ? block bumped up every 1.6 s, a little footballer
+// running across the front (a cell a step, 10 steps a second, his legs every step)
+int pixel_sprite(vec2 uv, float t) {
+    int cx = int(floor(uv.x * 64.0)), cy = int(floor(uv.y * 32.0));
+    int c = -1;
+    const ivec2 kCoins[4] = ivec2[](ivec2(4, 21), ivec2(22, 21), ivec2(38, 21), ivec2(58, 21));
+    for (int i = 0; i < 4; i++) {
+        int dx = cx - kCoins[i].x;
+        if (cy >= 21 && cy < 25 && dx >= 0 && dx < 4) {
+            int f = int(mod(floor(t * 8.0) + float(i), 4.0));
+            int v = px_cell(kPxCoin[f * 4 + cy - 21], dx);
+            c = v == 0 ? 10 : v;
+        }
+    }
+    for (int i = 0; i < 2; i++) {
+        ivec2 o = i == 0 ? ivec2(37, 3) : ivec2(57, 4);
+        int dx = cx - o.x, dy = cy - o.y;
+        if (dx >= 0 && dx < 5 && dy >= 0 && dy < 5) {
+            int ph = int(mod(floor(t * 6.0) + float(i) * 3.0, 6.0));
+            int f = ph < 3 ? 0 : (ph == 4 ? 2 : 1);
+            int v = px_cell(kPxStar[f * 5 + dy], dx);
+            c = v == 0 ? 9 : v;
+        }
+    }
+    {
+        int up = fract(t / 1.6) < 0.12 ? 1 : 0;
+        int dx = cx - 57, dy = cy - (11 - up);
+        if (dx >= 0 && dx < 6 && cy >= 10 && cy < 18) {
+            int v = (dy >= 0 && dy < 7) ? px_cell(kPxQblock[dy], dx) : 0;
+            c = v == 0 ? 9 : v;
+        }
+    }
+    {
+        float st = floor(t * 10.0);
+        int x0 = 29 + int(mod(st, 54.0));
+        int dx = cx - x0, dy = cy - 20;
+        if (cx >= 35 && dx >= 0 && dx < 6 && dy >= 0 && dy < 8) {
+            int v = px_cell(kPxRunner[int(mod(st, 2.0)) * 8 + dy], dx);
+            if (v != 0) c = v;
+        }
+    }
+    return c;
+}
+// r160: the 3D binder (glowRgb.w -5.5, xr_cards.cpp room_binder; a local model, `up` = the room's up in its frame). Its
+// parts by their normals' length: 1 the skin (the atlas: rows 8..503 its colour, A metal; rows 520..1015 normal XY,
+// roughness, A emissive / fur strand height), 2 its pages (a picture, glossy pocket plastic), 3 chrome (rings), 4..5 a fur
+// shell (4 + its height 0..1). look.x: 1 holo, 2 sparkle, 4 pulse (bits); look.z: the emissive's boost; glowRgb.rgb its
+// emissive colour. r163: up.w its skin's catalogue index + 1 (its living touch, above).
+void binder_main(float nl) {
+    vec3 v = normalize(pc.camPos.xyz - vPos);
+    vec3 N = vNrm / max(nl, 1e-5);
+    vec3 U = normalize(pc.up.xyz);
+    vec3 F = vec3(0.0, 0.0, 1.0) - U * U.z;
+    F = dot(F, F) > 1e-4 ? normalize(F) : vec3(0.0, 0.0, 1.0);
+    vec3 key = normalize(0.35 * cross(U, F) + 0.85 * U + 0.4 * F);
+    vec3 fill = normalize(-0.5 * cross(U, F) + 0.2 * U + 0.8 * F);
+    float tsec = pc.camPos.w;
+    int si = int(pc.up.w + 0.5) - 1;  // r163: which skin
+    // r163: a light circling slowly round it (its highlights glide over it even held still)
+    float oa = tsec * 0.45;
+    vec3 key2 = normalize(cross(U, F) * cos(oa) * 0.9 + U * 0.55 + F * (0.55 + 0.35 * sin(oa)));
+    if (nl > 1.5 && nl < 2.5) {  // its pages: the picture, a glossy pocket over it
+        vec4 t = texture(uTex, vUv);
+        if (dot(N, v) < 0.0) N = -N;
+        vec3 r = reflect(-v, N);
+        float diff = max(dot(N, key), 0.0);
+        vec3 col = t.rgb * (0.66 + 0.30 * diff + 0.08 * max(dot(N, fill), 0.0));
+        float fres = 0.04 + 0.5 * pow(1.0 - max(dot(N, v), 0.0), 5.0);
+        col += env_of(r, U, 0.25) * fres * 0.5 + vec3(pow(max(dot(r, key), 0.0), 70.0) * 0.45);
+        outColor = vec4(col * pc.look.y, pc.look.y);
+        return;
+    }
+    if (nl > 2.5 && nl < 3.5) {  // chrome (r163: the circling light glinting along its rings)
+        if (dot(N, v) < 0.0) N = -N;
+        vec3 r = reflect(-v, N);
+        vec3 col = env_of(r, U, 0.12) * vec3(0.86, 0.88, 0.92) + vec3(pow(max(dot(r, key), 0.0), 120.0) * 1.4) +
+                   vec3(pow(max(dot(r, key2), 0.0), 120.0) * 0.8);
+        outColor = vec4(col * pc.look.y, pc.look.y);
+        return;
+    }
+    // the skin
+    float shell = nl > 3.5 ? clamp(nl - 4.0, 0.0, 1.0) : -1.0;
+    vec2 uvL = clamp(vUv, 0.0, 1.0);
+    if (si == 26) {
+        // r163 galaxy: its spiral sloshing round (the inner arms more: they wind and unwind), the nebula drifting
+        vec2 d = (uvL - vec2(0.77002, 0.5)) * vec2(1024.0, 512.0);
+        vec2 e = vec2(d.x, d.y / 0.62);
+        float rr = length(e);
+        float a = 0.55 * sin(tsec * 0.13) * exp(-rr / 85.0) * smoothstep(230.0, 120.0, rr);
+        float ca = cos(a), sa = sin(a);
+        e = vec2(e.x * ca - e.y * sa, e.x * sa + e.y * ca);
+        uvL = vec2(0.77002, 0.5) + vec2(e.x, e.y * 0.62) / vec2(1024.0, 512.0);
+        vec2 spw = uvL * vec2(0.598, 0.31);
+        uvL += (vec2(bn(spw * 9.0 + tsec * 0.05), bn(spw * 9.0 + 5.3 - tsec * 0.04)) - 0.5) * vec2(0.006, 0.012);
+        uvL = clamp(uvL, 0.0, 1.0);
+    }
+    vec2 ua = vec2(uvL.x, (8.0 + uvL.y * 496.0) / 1024.0);
+    vec2 ub = vec2(uvL.x, (520.0 + uvL.y * 496.0) / 1024.0);
+    vec4 A = texture(uTex, ua);
+    vec4 B = texture(uTex, ub);
+    vec3 nb = to_stored(B.rgb);
+    if (shell >= 0.0 && B.a < shell + 0.02) discard;  // (a fur shell: only the strands that reach this high)
+    vec2 nxy = nb.xy * 2.0 - 1.0;
+    float rough = clamp(nb.z, 0.03, 1.0);
+    float metal = A.a;
+    vec3 alb = A.rgb;
+    vec2 sp = vUv * vec2(0.598, 0.31);  // r163: its surface in metres (u across the strip, v down it)
+    if (si == 29) {  // r163 8-bit: its sprites playing (their cells over its picture, lit as its own)
+        int c8 = pixel_sprite(clamp(vUv, 0.0, 0.9999), tsec);
+        if (c8 > 0) {
+            vec2 lp = fract(vUv * vec2(64.0, 32.0)) * 16.0;
+            float lit = (lp.x < 3.0 || lp.y < 3.0) ? 1.12 : ((lp.x > 12.0 || lp.y > 12.0) ? 0.78 : 1.0);
+            alb = s2l(min(kPxPal[c8] * lit, vec3(1.0)));
+            metal = 0.0;
+        }
+    }
+    if (si == 32) {  // r163 slime: its surface wobbling slowly (two waves' slopes tilt its light: the highlights swim)
+        float w1 = sp.x * 31.0 + sp.y * 17.0 + tsec * 1.3, w2 = -sp.x * 13.0 + sp.y * 37.0 - tsec * 0.9;
+        nxy += 0.11 * vec2(cos(w1) * 0.9 - cos(w2) * 0.4, cos(w1) * 0.5 + cos(w2) * 0.9);
+    }
+    // its tangent frame from the screen's derivatives (u right, v down the picture: +Y of the normal = up the picture)
+    vec3 dpx = dFdx(vPos), dpy = dFdy(vPos);
+    vec2 dux = dFdx(vUv), duy = dFdy(vUv);
+    vec3 r1 = cross(dpy, N), r2 = cross(N, dpx);
+    vec3 T = r1 * dux.x + r2 * duy.x;
+    vec3 Bt = -(r1 * dux.y + r2 * duy.y);
+    float tl = max(dot(T, T), dot(Bt, Bt));
+    vec3 n = N;
+    vec3 Tn = vec3(1.0, 0.0, 0.0), Bn = vec3(0.0, 1.0, 0.0);  // r163: the frame's unit axes (in-surface motion)
+    if (tl > 1e-20) {
+        float inv = inversesqrt(tl);
+        float zz = sqrt(max(0.0, 1.0 - dot(nxy, nxy)));
+        float k = shell >= 0.0 ? 0.6 : 1.0;  // (fur: the strands' tilt, softened)
+        n = normalize(T * inv * nxy.x * k + Bt * inv * nxy.y * k + N * zz);
+        Tn = normalize(T);
+        Bn = normalize(Bt);
+    }
+    if (dot(N, v) < 0.0) { n = -n; N = -N; }
+    // r163: "down" along its surface (sp's axes), for what runs and flows (lying flat: down its picture)
+    vec2 gd = vec2(dot(-U, Tn), -dot(-U, Bn));
+    float gl = length(gd);
+    vec2 fd = normalize(gd + vec2(0.0, 0.25) * (1.0 - smoothstep(0.15, 0.45, gl)) + vec2(1e-4, 0.0));
+    vec3 r = reflect(-v, n);
+    float ndv = max(dot(n, v), 0.0);
+    float diff = max(dot(n, key), 0.0), diff2 = max(dot(n, fill), 0.0);
+    float ao = shell >= 0.0 ? mix(0.38, 1.0, shell) : 1.0;  // (fur: dark at the roots)
+    vec3 f0 = mix(vec3(0.04), alb, metal);
+    vec3 fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0) * (1.0 - rough * 0.85);
+    float sp1 = pow(max(dot(r, key), 0.0), mix(400.0, 6.0, rough)) * mix(3.0, 0.25, rough);
+    vec3 col = alb * (1.0 - metal) * (0.30 + 0.78 * diff + 0.18 * diff2) * ao;
+    col += env_of(r, U, rough) * fres * mix(0.55, 1.0, metal) * ao;
+    col += sp1 * mix(vec3(1.0), alb, metal) * ao;
+    if (shell >= 0.0) col += alb * pow(1.0 - ndv, 2.0) * 0.25 * shell;  // (the fur's sheen at its edges)
+    // r163: the circling light's highlight (how much: by skin, below)
+    float sp2 = pow(max(dot(r, key2), 0.0), mix(500.0, 10.0, rough)) * mix(1.6, 0.10, rough);
+    float k2 = 0.35;
+    int flags = int(pc.look.x + 0.5);
+    bool customEm = false;
+    float em = B.a;
+    if (si == 30) {
+        // molten lava: lava FLOWING along its cracks (a noise carried downhill, two phases crossfaded so it never
+        // stretches), white-hot where it runs thickest, its glow spilling onto the rock round them (its cracks' mask
+        // blurred: a coarse mip), all of it breathing
+        float ph = fract(tsec * 0.2), wA = 1.0 - abs(2.0 * ph - 1.0), ph2 = fract(ph + 0.5);
+        vec2 q = sp * 36.0;
+        float f1 = bn(q - fd * ph * 2.6) * 0.65 + bn(q * 2.3 - fd * ph * 5.2 + 3.1) * 0.35;
+        float f2 = bn(q - fd * ph2 * 2.6 + 7.7) * 0.65 + bn(q * 2.3 - fd * ph2 * 5.2 + 9.4) * 0.35;
+        float flow = mix(f2, f1, wA);
+        float breathe = 0.86 + 0.14 * sin(tsec * 1.25 + sp.x * 9.0 - sp.y * 6.0);
+        float heat = em * (0.30 + 1.9 * flow * flow) * breathe;
+        float spill = textureLod(uTex, ub, 4.0).a;
+        col = col * (1.0 - 0.6 * em) + lava_rgb(heat) * heat * 1.5 + vec3(1.0, 0.26, 0.04) * spill * spill * (0.9 + 0.5 * flow) * breathe;
+        customEm = true;
+        k2 = 0.15;
+    } else if (si == 32) {
+        // slime: wet light sliding down it in streaks, lit through (brighter at its edges as you look across it), tiny
+        // bubbles rising in it (deeper than its surface: they shift as it tilts), its soft inner glow
+        vec2 fs = vec2(-fd.y, fd.x);
+        float s = bn(vec2(dot(sp, fs) * 70.0, dot(sp, fd) * 7.0 - tsec * 0.8));
+        float sheen = smoothstep(0.58, 0.88, s);
+        col += env_of(r, U, 0.04) * sheen * 0.28 + vec3(0.85, 1.0, 0.65) * sheen * pow(max(dot(r, key), 0.0), 10.0) * 0.5;
+        float lt = 0.85 + 0.15 * sin(tsec * 1.4 + dot(sp, fd) * 25.0);
+        col += vec3(0.16, 0.55, 0.05) * (0.10 + 0.35 * pow(1.0 - ndv, 2.0)) * lt;
+        vec2 vo = vec2(dot(v, Tn), -dot(v, Bn)) / max(ndv, 0.3) * 0.004;
+        vec2 bq = (sp - vo) * 55.0 + fd * tsec * 0.6;
+        vec2 bc = floor(bq), bf = fract(bq) - 0.5;
+        float bhh = bh(bc + 17.0);
+        vec2 off = (vec2(fract(bhh * 3.1), fract(bhh * 5.3)) - 0.5) * 0.4;
+        float ring = smoothstep(0.07, 0.0, abs(length(bf - off) - (0.08 + 0.12 * fract(bhh * 13.7)))) * step(0.9, bhh);
+        col += vec3(0.75, 1.0, 0.5) * ring * 0.1;
+        col += pc.glowRgb.rgb * em * pc.look.z * 0.2 * lt;
+        customEm = true;
+        k2 = 0.6;
+    } else if (si == 31) {
+        // frozen ice: frost crawling in from its edges and back (feathery fingers, a bright crystallising rim), crystals
+        // catching the light (facets of their own glinting as it turns); its glints twinkle (its mask: the emissive below)
+        float pu = vUv.x < 0.46 ? vUv.x / 0.46 : (vUv.x > 0.54 ? (vUv.x - 0.54) / 0.46 : 0.5);
+        float de = min(min(pu, 1.0 - pu) * 0.275, min(vUv.y, 1.0 - vUv.y) * 0.31);
+        float fing = bn(sp * 60.0) * 0.6 + bn(sp * 160.0 + 3.0) * 0.4;
+        float front = 0.012 + 0.03 * (0.5 + 0.5 * sin(tsec * 0.9 + bn(sp * 8.0) * 3.0)) + (fing - 0.5) * 0.028;
+        float frost = smoothstep(front + 0.004, front - 0.004, de);
+        float cr = 1.0 - abs(2.0 * bn(sp * 220.0 + 1.7) - 1.0);
+        vec3 fcol = vec3(0.86, 0.94, 1.0) * (0.55 + 0.5 * cr) * (0.45 + 0.65 * diff) + env_of(r, U, 0.3) * 0.12;
+        col = mix(col, fcol, frost * 0.8);
+        col += vec3(0.7, 0.9, 1.0) * smoothstep(0.004, 0.0, abs(de - front)) * 0.45;
+        float gh = bh(floor(sp * 650.0));
+        vec3 nf = normalize(n + (Tn * (gh - 0.5) + Bn * (fract(gh * 7.13) - 0.5)) * 0.6);
+        float g2 = pow(max(dot(reflect(-v, nf), key2), 0.0), 260.0) * step(0.86, gh) * (0.6 + 0.4 * sin(tsec * 3.0 + gh * 50.0));
+        col += vec3(0.9, 0.97, 1.0) * g2 * 3.0;
+        k2 = 0.6;
+    } else if (si == 26) {
+        // galaxy: stars deep in it (two layers further in: they slide past each other as it tilts), drifting and
+        // twinkling; its arms' light turning slowly round its core; a shooting star across it every few seconds
+        vec2 vt = vec2(dot(v, Tn), -dot(v, Bn)) / max(ndv, 0.25);
+        for (int L = 0; L < 2; L++) {
+            float dep = L == 0 ? 0.012 : 0.035, sc = L == 0 ? 260.0 : 150.0;
+            vec2 q = (sp - vt * dep + vec2(0.0016, 0.0007) * tsec * (1.0 + float(L))) * sc;
+            float hs = bh(floor(q) + 31.0 * float(L));
+            vec2 o = fract(q) - 0.5 - (vec2(fract(hs * 7.3), fract(hs * 3.9)) - 0.5) * 0.6;
+            float st = exp(-dot(o, o) * (L == 0 ? 160.0 : 110.0)) * step(0.86, hs) *
+                       (0.45 + 0.55 * sin(tsec * (1.3 + 3.0 * fract(hs * 11.0)) + hs * 40.0));
+            col += mix(vec3(0.75, 0.82, 1.0), vec3(1.0, 0.85, 0.7), fract(hs * 5.0)) * max(st, 0.0) * (L == 0 ? 1.3 : 0.9);
+        }
+        vec2 gc = (vUv - vec2(0.77002, 0.5)) * vec2(1024.0, 512.0);
+        vec2 ge = vec2(gc.x, gc.y / 0.62);
+        float gr = length(ge) + 1.0, ga = atan(ge.y, ge.x);
+        float arm = pow(0.5 + 0.5 * cos(2.0 * (ga - tsec * 0.07) - 4.4 * log(gr / 12.0)), 3.0) * smoothstep(190.0, 50.0, gr) *
+                    smoothstep(4.0, 30.0, gr);
+        col += vec3(0.45, 0.35, 0.9) * arm * 0.22 * (vUv.x > 0.54 ? 1.0 : 0.0);
+        float per = 4.2, kk = floor(tsec / per), ft = fract(tsec / per) * per;
+        float hk = bh(vec2(kk, 7.1));
+        if (ft < 0.8) {
+            vec2 p0 = vec2(0.04 + 0.5 * fract(hk * 5.1), 0.03 + 0.1 * fract(hk * 9.7));
+            vec2 dr = normalize(vec2(fract(hk * 3.3) > 0.5 ? 1.0 : -1.0, 0.5 + 0.4 * fract(hk * 2.1)));
+            vec2 dd = sp - (p0 + dr * ft * 0.32);
+            float al = -dot(dd, dr), pe = length(dd + dr * al);
+            float s = step(0.0, al) * (1.0 - smoothstep(0.0, 0.08, al)) * exp(-pe * pe / 4e-7) + exp(-dot(dd, dd) / 5e-6);
+            col += vec3(0.9, 0.95, 1.0) * s * 2.2 * sin(ft / 0.8 * 3.14159);
+        }
+        k2 = 0.4;
+    } else if (si == 28) {
+        // neon grid: a pulse travelling through its lines, CRT scanlines rolling down, a flicker now and then (its halos
+        // flicker with it: xr_binderfx.cpp, the same hash), the front's floor lines rolling toward you, its sun's bands
+        float fl = bh(vec2(floor(tsec * 14.0), 3.7));
+        float flick = fl > 0.96 ? 0.3 : (fl > 0.92 ? 0.7 : 1.0);
+        float pz = fract(vUv.y * 1.2 + vUv.x * 0.35 - tsec * 0.45) - 0.5;
+        float pulse = 0.55 + 1.1 * exp(-pz * pz / 0.004);
+        float scan = 0.86 + 0.14 * sin(vUv.y * 1400.0 - tsec * 24.0);
+        bool flr = vUv.x > 0.54 && vUv.y > 0.5195;
+        vec3 neon = pc.glowRgb.rgb * em * pc.look.z * pulse * scan * (flr ? 0.55 : 1.0);
+        if (flr) {
+            float zz2 = vUv.y * 512.0 - 266.0;
+            float f = fract(90.0 / zz2 * 2.0 - tsec * 1.1);
+            float dpx = min(f, 1.0 - f) * 0.5 * zz2 * zz2 / 90.0;
+            neon += vec3(0.35, 1.0, 1.0) * exp(-dpx * dpx / 1.2) * smoothstep(0.0, 10.0, zz2) * 1.6;
+        }
+        vec2 sd = (vUv - vec2(0.77002, 0.5)) * vec2(1024.0, 512.0) - vec2(0.0, 5.0);
+        if (vUv.x > 0.54 && sd.y < 5.0 && length(sd) < 120.0) col += alb * (0.25 + 0.2 * sin(tsec * 2.0 - sd.y * 0.25));
+        col += neon * flick;
+        customEm = true;
+        k2 = 0.2;
+    } else if (si == 27) {
+        // holographic: its rainbow shifting with time AND as it tilts, a bright band sweeping over it, its facets glinting
+        float h = dot(r, vec3(0.62, 0.48, 0.62)) * 2.4 + vUv.x * 2.2 + vUv.y * 1.3 + tsec * 0.11 +
+                  0.18 * sin(tsec * 0.6 + vUv.y * 7.0 + vUv.x * 4.0);
+        col = mix(col, col * 0.35 + rainbow6(h) * (0.55 + 0.6 * metal), 0.62);
+        float sw = bsweep(sp, tsec, 3.4, 0.035);
+        col += (rainbow6(h + 0.5) * 0.4 + vec3(0.15)) * sw;
+        float fh = bh(floor(sp * 180.0));
+        col += vec3(1.0) * pow(max(0.0, sin(dot(r, vec3(9.0, 7.0, 5.0)) + fh * 30.0 + tsec * 2.0)), 24.0) * step(0.9, fh) * 1.2;
+        k2 = 0.5;
+    } else if (si == 33 || si == 21 || si == 22) {
+        // gold plated / brushed chrome / diamond plate: a band of light travelling over it (xr_binderfx.cpp's glints ride
+        // it); chrome's circling highlight drawn out across its brushing; the plate's treads twinkling
+        float sw = bsweep(sp, tsec + float(si) * 0.7, si == 33 ? 3.2 : 4.0, si == 22 ? 0.05 : 0.035);
+        col += sw * (env_of(r, U, rough * 0.5) * alb * 1.6 + alb * 0.35) * ao;
+        if (si == 21) {
+            vec3 h2 = normalize(key2 + v);
+            float th = dot(Tn, h2);
+            col += alb * pow(sqrt(max(0.0, 1.0 - th * th)), 80.0) * 0.7;
+        }
+        if (si == 22) {
+            float gh = bh(floor(sp * 300.0));
+            col += vec3(1.0) * step(0.93, gh) * (1.0 - smoothstep(0.25, 0.35, rough)) * pow(max(0.0, sin(tsec * 2.5 + gh * 60.0)), 16.0) * 1.5;
+        }
+        k2 = si == 21 ? 0.3 : 0.8;
+    } else if (si == 24) {
+        // dragon scales: an iridescent shimmer travelling over them, embers glowing between them (its mask), breathing
+        float th = 1.0 - ndv;
+        float hue = th * 1.3 + sp.x * 2.0 + sp.y * 1.5 + tsec * 0.05 + 0.15 * sin(tsec * 0.8 + sp.x * 25.0);
+        float wave = 0.5 + 0.5 * sin(sp.x * 30.0 - sp.y * 12.0 - tsec * 1.6);
+        col += rainbow6(hue) * (0.03 + 0.2 * th * th) * (0.4 + 0.6 * wave) * metal * 1.2;  // (on its rims: the scales stay crimson)
+        float fl2 = bn(sp * 40.0 + vec2(0.0, -tsec * 0.5));
+        col += pc.glowRgb.rgb * em * pc.look.z * 0.55 * (0.35 + 0.9 * fl2) * (0.75 + 0.25 * sin(tsec * 1.3));
+        customEm = true;
+        k2 = 0.5;
+    } else if (si == 25) {
+        // shark skin: water's light rippling over it (caustics), a wet sheen sliding down it
+        vec2 q = sp * 45.0;
+        float c1 = bn(q + vec2(tsec * 0.25, -tsec * 0.4)), c2 = bn(q * 1.3 - vec2(tsec * 0.2, tsec * 0.3) + 4.0);
+        float caust = pow(1.0 - abs(c1 - c2), 14.0);
+        vec2 fs = vec2(-fd.y, fd.x);
+        float wet = smoothstep(0.55, 0.85, bn(vec2(dot(sp, fs) * 40.0, dot(sp, fd) * 6.0 - tsec * 0.55)));
+        col += vec3(0.55, 0.8, 1.0) * caust * 0.06 + env_of(r, U, 0.06) * (wet * 0.22 + caust * 0.05);
+        k2 = 0.6;
+    } else if (si == 23) {  // marble: a soft polished reflection gliding over it
+        col += env_of(r, U, 0.1) * bsweep(sp, tsec, 7.0, 0.06) * 0.22;
+        k2 = 0.7;
+    } else if (si == 34) {  // stone tablet: a slow wave of ember light along its carved runes (its mask)
+        float wv = 0.5 + 0.5 * sin(tsec * 0.8 - sp.x * 9.0 + sp.y * 3.0);
+        col += pc.glowRgb.rgb * em * pc.look.z * 0.45 * (0.15 + 0.85 * wv * wv) * (0.85 + 0.3 * bn(sp * 80.0 + tsec * 0.7));
+        customEm = true;
+        k2 = 0.15;
+    } else if (si == 20) {  // carbon fiber: the circling light's sheen flipping between its weave's tows
+        vec2 cp = vUv * vec2(1024.0, 512.0) / 14.0;
+        bool warp = mod(floor(cp.x) - floor(cp.y), 4.0) < 2.0;
+        vec3 h2 = normalize(key2 + v);
+        float th = dot(warp ? Bn : Tn, h2);
+        col += vec3(0.9, 0.92, 1.0) * pow(sqrt(max(0.0, 1.0 - th * th)), 60.0) * 0.35;
+        k2 = 0.4;
+    } else if (si == 29 || si == 10 || si == 11 || si == 16 || si == 17 || si == 18 || si == 19) {
+        k2 = 0.2;  // (8-bit: its sprites, above; the furs move: xr_binderfx.cpp)
+    } else if (si == 9) {  // snakeskin: a faint iridescence travelling over its scales
+        float th = 1.0 - ndv;
+        col += rainbow6(th * 1.5 + sp.x * 3.0 + tsec * 0.07) * (0.05 + 0.12 * th * th) * (0.5 + 0.5 * sin(sp.x * 40.0 - tsec * 1.2));
+        k2 = 0.4;
+    } else if (si == 14) {  // velvet: its sheen rolling across it
+        col += alb * pow(1.0 - ndv, 2.0) * 0.4 * (0.5 + 0.5 * sin(sp.x * 20.0 - tsec * 1.2));
+        k2 = 0.2;
+    } else {  // the rest: a slow faint sweep where it's glossy
+        col += env_of(r, U, rough) * bsweep(sp, tsec + float(si), 8.0, 0.05) * 0.12 * (1.0 - rough);
+        k2 = 0.35;
+    }
+    col += sp2 * k2 * mix(vec3(1.0), alb, metal) * ao;
+    if ((flags & 1) != 0 && si != 27) {  // holographic: a rainbow that slides as it tilts
+        float h = dot(r, vec3(0.62, 0.48, 0.62)) * 1.6 + vUv.x * 2.2 + vUv.y * 1.3 + tsec * 0.03;
+        col = mix(col, col * 0.4 + rainbow6(h) * (0.55 + 0.6 * metal), 0.6);
+    }
+    if (!customEm && shell < 0.0 && em > 0.004 && pc.look.z > 0.0) {
+        float k = pc.look.z;
+        if ((flags & 4) != 0) k *= 0.75 + 0.25 * sin(tsec * 1.7 + vUv.x * 9.0 + vUv.y * 5.0);
+        if ((flags & 2) != 0) {
+            float h = fract(sin(dot(floor(vUv * vec2(512.0, 256.0)), vec2(12.9898, 78.233))) * 43758.5453);
+            k *= 0.55 + 0.45 * pow(max(0.0, sin(tsec * 2.3 + h * 40.0)), 4.0);
+        }
+        col += pc.glowRgb.rgb * em * k;
+    }
+    outColor = vec4(col * pc.look.y, pc.look.y);
+}
+// r163: the binder's halos, its light on the floor and its particles (glowRgb.w -7.5: xr_binderfx.cpp builds the quads in
+// LOCAL space each frame). vUv.x = the sprite's kind x 2 + its own u, vUv.y its own v (0 its top); vNrm its colour (light:
+// added) or, for a drop / a splat / a puff / heat shimmer, its parameters. Light is added (alpha 0); a drop, a splat and
+// smoke cover what's behind them (premultiplied).
+float bsmin(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+void bfx_main() {
+    float kind = floor(vUv.x * 0.5);
+    vec2 q = vec2(vUv.x - kind * 2.0, vUv.y) * 2.0 - 1.0;
+    int k = int(kind + 0.5);
+    float r2 = dot(q, q), vy = vUv.y, t = pc.camPos.w;
+    vec3 nr = vNrm;
+    vec4 o = vec4(0.0);
+    if (k == 0 || k == 8) {  // a soft dot of light (halo glows) / its pool on the floor (flatter, wider)
+        float a = k == 0 ? exp(-r2 * 3.5) * max(0.0, 1.0 - r2) : max(0.0, 1.0 - r2) * max(0.0, 1.0 - r2) * exp(-r2 * 1.2);
+        o = vec4(nr * a, 0.0);
+    } else if (k == 1) {  // a star: a hot core and four rays
+        float ax = abs(q.x), ay = abs(q.y);
+        float a = exp(-r2 * 30.0) * 1.5 + (exp(-ax * 22.0) * exp(-ay * 3.0) + exp(-ay * 22.0) * exp(-ax * 3.0)) * 0.9 + exp(-r2 * 5.0) * 0.25;
+        o = vec4(nr * a * max(0.0, 1.0 - r2), 0.0);
+    } else if (k == 2) {  // a halo strip along an edge: soft across it, faded at its ends
+        float a = exp(-q.y * q.y * 5.0) * (1.0 - q.y * q.y) * smoothstep(1.0, 0.6, abs(q.x));
+        o = vec4(nr * a, 0.0);
+    } else if (k == 7) {  // a streak (an ember, a shooting star): its head (v 1) bright, its tail fading behind
+        float a = exp(-q.x * q.x * 7.0) * (1.0 - q.x * q.x) * pow(vy, 2.2) + exp(-(q.x * q.x * 6.0 + (vy - 0.9) * (vy - 0.9) * 120.0)) * 1.2;
+        o = vec4(nr * a, 0.0);
+    } else if (k == 6) {  // heat shimmer: faint wavy streaks of warm light rising off it, in patches
+        float sd = floor(nr.x * 0.25) / 64.0;
+        float w = 0.5 + 0.5 * sin(q.x * 8.0 + sin(vy * 9.0 + t * 3.3 + sd * 40.0) * 1.8 + sd * 17.0);
+        float a = w * w * w * smoothstep(1.0, 0.5, abs(q.x)) * smoothstep(0.0, 0.6, vy) * smoothstep(1.0, 0.9, vy);
+        a *= smoothstep(0.3, 0.8, bn(vec2(q.x * 3.0, vy * 4.0 + t * 1.6) + sd * 50.0));
+        o = vec4(vec3(1.0, 0.45, 0.12) * a * nr.y, 0.0);
+    } else if (k == 5) {  // a puff: mist (light) or smoke (a shade), lumpy, churning
+        float mode = mod(nr.x, 4.0), sd = floor(nr.x * 0.25) / 64.0;
+        float lump = bn(q * 2.2 + sd * 37.0 + vec2(0.0, t * 0.35)) * 0.6 + bn(q * 4.7 - sd * 11.0 - vec2(t * 0.2, 0.0)) * 0.4;
+        float a = max(0.0, 1.0 - r2);
+        if (mode > 0.5 && mode < 1.5) {  // (smoke: lumpier)
+            lump = lump * 0.6 + bn(q * 7.0 + sd * 23.0 + vec2(0.0, t * 0.6)) * 0.4;
+            a = a * a * smoothstep(0.38, 0.72, lump + 0.3 * (1.0 - r2)) * nr.y;
+        } else {
+            a = a * a * smoothstep(0.25, 0.75, lump + 0.35 * (1.0 - r2)) * nr.y;
+        }
+        if (mode > 0.5 && mode < 1.5) {  // (r163 fixes: lit smoke - grey, its underside lit by the embers below)
+            float under = smoothstep(-0.2, 0.9, q.y);
+            o = vec4((vec3(0.17, 0.16, 0.15) * (0.5 + 0.5 * (1.0 - under)) + vec3(1.0, 0.36, 0.08) * under * 0.9) * a, a * 0.55);
+        }
+        else o = vec4((mode < 0.5 ? vec3(0.62, 0.80, 1.0) : vec3(1.0, 0.5, 0.15)) * a, 0.0);
+    } else if (k == 3) {
+        // a drop: hanging from its edge (v 0) by a neck down to its bead, or falling (a teardrop). nr: x its stuff
+        // (0 slime, 1 water, 2 lava) + its neck's width (of the bead's radius), y its length in bead radii, z its fade
+        float mat = floor(nr.x), neck = nr.x - mat, A2 = max(nr.y, 1.0);
+        const float M = 1.4;  // (the quad: 1.4 x the bead's width, for its edge and glow)
+        float X = q.x * M, Y = vy * A2, Yc = A2 - M;
+        float hw = mix(neck, neck * 0.6 + 0.14, smoothstep(0.0, max(Yc, 1e-3), Y));
+        float db = length(vec2(X, Y - Yc)) - 1.0;
+        float dn = Y < Yc ? max(abs(X) - hw, -Y) : 1e3;
+        float d = bsmin(db, dn, 0.5);
+        float cov = smoothstep(0.08, -0.08, d);
+        float wb = smoothstep(Yc - 1.2, Yc - 0.4, Y);
+        vec2 n2 = mix(vec2(clamp(X / max(hw, 0.05), -1.0, 1.0), 0.0), vec2(X, Y - Yc), wb);
+        vec3 n3 = normalize(vec3(n2, sqrt(max(0.0, 1.0 - dot(n2, n2)))));
+        vec3 L = normalize(vec3(-0.45, -0.55, 0.7));
+        float df = max(dot(n3, L), 0.0), spec = pow(max(dot(n3, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0), 60.0);
+        float fade = nr.z;
+        if (mat < 0.5) {
+            vec3 c = vec3(0.24, 0.78, 0.10) * (0.30 + 0.75 * df) + vec3(0.25, 0.6, 0.05) * pow(1.0 - n3.z, 2.0) * 0.6;
+            float al = cov * (0.82 + 0.13 * n3.z) * fade;
+            o = vec4(c * al + vec3(spec * cov * 0.9 * fade), al);
+        } else if (mat < 1.5) {
+            vec3 c = vec3(0.75, 0.88, 1.0) * (0.2 + 0.5 * pow(1.0 - n3.z, 1.5));
+            float al = cov * (0.18 + 0.55 * pow(1.0 - n3.z, 2.0)) * fade;
+            o = vec4(c * al + vec3(spec * cov * 1.2 * fade), al);
+        } else {
+            float hot = 0.6 + 0.9 * n3.z;
+            o = vec4((lava_rgb(hot) * hot * 1.5 * cov + vec3(1.0, 0.3, 0.04) * exp(-max(d, 0.0) * 2.5) * 0.35 * (1.0 - cov)) * fade, 0.0);
+        }
+    } else if (k == 4) {
+        // a splat on the floor (lying flat): an uneven puddle and a few droplets thrown round it, glossy. nr: x its stuff
+        // + 4 x its seed (0..63), y how far it has spread (0..1), z its fade
+        float mat = mod(nr.x, 4.0), sd = floor(nr.x * 0.25) / 64.0, spread = nr.y, fade = nr.z;
+        float rr = sqrt(r2), ang = atan(q.y, q.x);
+        float edge = spread * (0.74 + 0.07 * sin(ang * 3.0 + sd * 40.0) + 0.06 * sin(ang * 5.0 + sd * 70.0) + 0.04 * sin(ang * 9.0 + sd * 90.0));
+        float cov = smoothstep(edge + 0.03, edge - 0.03, rr);
+        for (int i = 0; i < 4; i++) {
+            float an = sd * 50.0 + float(i) * 1.7;
+            float dist = spread * (1.02 + 0.2 * fract(sd * 13.0 + float(i) * 0.37));
+            float rd = spread * (0.05 + 0.04 * fract(sd * 7.0 + float(i) * 0.61));
+            cov = max(cov, smoothstep(rd + 0.02, rd - 0.02, length(q - vec2(cos(an), sin(an)) * dist)));
+        }
+        float dome = sqrt(max(0.0, 1.0 - rr / max(edge, 1e-3)));
+        float hl = smoothstep(0.35, 0.0, length(q / max(spread, 0.05) - vec2(-0.3, -0.25)));
+        if (mat < 0.5) {
+            float al = cov * 0.85 * fade;
+            o = vec4(vec3(0.20, 0.70, 0.08) * (0.55 + 0.35 * dome) * al + vec3(0.9, 1.0, 0.8) * hl * cov * 0.5 * fade, al);
+        } else if (mat < 1.5) {
+            float al = cov * (0.12 + 0.15 * (1.0 - dome)) * fade;
+            o = vec4(vec3(0.7, 0.85, 1.0) * al + vec3(hl * cov * 0.4 * fade), al);
+        } else {
+            o = vec4(vec3(1.0, 0.3, 0.04) * cov * (0.5 + 0.8 * dome) * fade, 0.0);
+        }
+    }
+    outColor = o * pc.look.y;
+}
 void main() {
+    if (pc.glowRgb.w < -5.0) {  // r160: the binder (its own mode, before anything else); r163: sleeves gone, its effects -7.5
+        if (pc.glowRgb.w < -7.0) bfx_main();
+        else binder_main(length(vNrm));
+        return;
+    }
     // r135 (Lance: "make the strikers illustrated more clear. its kinda blurry text/image wise"): STRIKERS ILLUSTRATED's
     // paper (glowRgb.w < 0) sampled half a mip level sharper: its page is minified 1.7-2.4x at a hand's length and plain
     // trilinear blurs its words to 0.64-0.80 of a perfect render's edges. tools/outside/mag_clarity_sim.py: -0.5 gives
@@ -143,6 +658,25 @@ void main() {
         // its picture R its glow, G its ink, B when it's written there (0..1); gold ink glowing, white-hot at the pen
         if (nl > 2.9) {
             float prog = vNrm.x;
+            // r179 (Lance: "the autograph be signed in the air in like a neon or just LED fashion" - "no pen involved just a
+            // floating signature"): its copy in the air (x = 10 + how far it's written): a neon tube in its ink - a hot
+            // near-white core where its ink is, its colour glowing round it, a faint flicker / hum; the line simply grows,
+            // no bright writing tip
+            if (prog > 9.5) {
+                float ap = prog - 10.0;
+                if (t.b > ap || t.a < 0.01) discard;
+                float rg2 = floor(vNrm.y * 256.0 + 0.5), bl2 = floor((vNrm.z - 3.0) * 256.0 + 0.5);
+                vec3 inkN = rg2 + bl2 < 0.5 ? vec3(1.0, 0.74, 0.30) : vec3(floor(rg2 / 256.0), mod(rg2, 256.0), bl2) / 255.0;
+                float tm = pc.camPos.w;
+                float hum = 0.93 + 0.05 * sin(tm * 37.0) + 0.02 * sin(tm * 113.0) + (fract(sin(floor(tm * 9.0) * 12.9898) * 43758.5) > 0.97 ? -0.25 : 0.0);
+                // (its HUE held: the ink at its brightest (its largest channel 1) - core and glow one colour, only how bright
+                // differs, never past 1 - so burnt orange stays burnt orange, never washing to yellow / white)
+                vec3 hueC = inkN / max(max(inkN.r, inkN.g), max(inkN.b, 0.001));
+                float inten = clamp(t.g * 1.0 + t.r * 0.85, 0.0, 1.0);
+                float a2 = clamp(max(t.r * 0.75, t.g), 0.0, 1.0) * pc.look.y * hum;
+                outColor = vec4(hueC * inten * pc.look.y * hum, a2);
+                return;
+            }
             if (t.b > prog || t.a < 0.01) discard;
             float pen = smoothstep(prog - 0.05, prog, t.b) * step(prog, 1.0);
             // its ink's colour (xr_cards.cpp sign_ink): y = red + green / 256, z = 3 + blue / 256; none = gold

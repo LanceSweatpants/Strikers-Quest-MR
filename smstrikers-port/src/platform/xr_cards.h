@@ -11,7 +11,7 @@
 // (Lance: "i want the pack opening experience to be that of ripping a pack in real life"): the trigger of the hand not
 // holding it rips it (A too), its 5 cards file out one by one into a stack in that hand, backs to you, and each pull of
 // that trigger turns the front card over (its moment) / puts it round to the back, the next card's back (and its tell)
-// to the front - one at a time, the biggest pull last. Your collection is kept across careers in STRIKERS_HOME/cards/collection.txt (each card its key +
+// to the front - one at a time, the biggest pull last. r153: each career has its own collection (binder, packs, coins, slabs, its own salt) in STRIKERS_HOME/cards/career-<seed>.txt (each card its key +
 // finish + shiny + count, a GOLD's numbers: ready for online trading, next round).
 //
 // The pack is a bending foil pouch and (r138, Lance: "the cards, you made flimsy") each card stiff card stock - flat,
@@ -42,6 +42,10 @@ constexpr int kSpecialSlot1 = xrfx::kModelSlots - 3;
 constexpr int kLightSlot = xrfx::kModelSlots - 2;
 // r141: a BLACK 1/1's world - its type's effects round you and on its card, its throne's aura (tinted light)
 constexpr int kFxSlot = xrfx::kModelSlots - 7;
+// r160 (Lance: binder skins + card sleeves): the 3D binder in your room (its skin cover, spine, rings, its pages) and the
+// r163: its pages' own slot (the binder's model built once a skin)
+constexpr int kBinderSlot = xrfx::kModelSlots - 9;
+constexpr int kBinderPagesSlot = xrfx::kModelSlots - 8;  // r163: its pages (the sleeves' slot was; sleeves are gone): a page turn no longer rebuilds the binder
 
 // r138: how the game picks an evolution's setting by kind (xr_quest.cpp evo_backdrop: "fire", "water" ...): a shiny
 // Pokemon card's window shows its evolution room. Set once before frame().
@@ -67,22 +71,42 @@ struct Hint {
   std::string glyph, words;
   uint32_t rgb = 0x3A4A70;
 };
+// r157 (menu overhaul): `hints` = the page's own A word (glyph "A") and its extras (X / Y) for the hub's one hint bar
+// (MOVE, A, B BACK, LT RT SECTIONS, extras); `aDim`: A does nothing here (its slot faded). `popup`: a pack open / a card
+// out / a trade-in's show / a slab back - its own hint bar, the hub's hidden. `confirm`: a send / buy asking (the
+// hub's confirm pop-up: A YES, B NO), `confirmLine` under it.
 struct HubPage {
   std::vector<xrtext::BoardPiece> pieces;
   std::vector<Hint> hints;
   std::shared_ptr<void> keep;
+  bool popup = false, aDim = false;
+  std::string confirm, confirmLine;
 };
 HubPage hub_page(float w, float h, float top, float bottom);
+// r157: the CARDS section's rail: BINDER, SHOP, EXPLOSIONS, TRADE-INS, SETS, GRADING (the page showing; set: another,
+// its cursor kept). Any thread. r160: + LOOKS after EXPLOSIONS (binder skins, card sleeves).
+constexpr int kRailPages = 7;
+int rail_page();
+void set_rail_page(int i);
+const char* rail_name(int i);
+// r157: the hub draws the cards' pieces into its page area, x' = ox + x * k, y' = oy + y * k (and the pockets' grab test
+// maps the same way). Set before hub_page (any thread).
+void set_hub_fit(float ox, float oy, float k);
 
 // The hub's buttons while the CARDS page is up (game thread). dir 1 left, 2 right, 3 up, 4 down (step: it moved
 // this frame); a / b / x: pressed now; lt / rt: held. True: the cards used a button (the hub does nothing more with
-// it); *stick: they used the stick (a stick left / right at the binder's edge is the hub's: its pages); *redraw: the
-// page changed.
+// it); *stick: they used the stick; *redraw: the page changed. r157: the stick never leaves the page (the binder turns
+// its pages at its edges); LT / RT are the hub's sections except in a pack / card / slab scene; B is the cards' only
+// in a scene or while a send / buy asks (else the hub's: back to the rail); Y opens a pack (the binder).
 struct Input {
   int dir = 0;
   bool step = false, a = false, b = false, x = false, lt = false, rt = false;
+  bool y = false;  // r153: Y (the EXPLOSIONS page's equip: wants_y)
+  int turn = 0;    // r171: the right stick's flick left (-1) / right (+1): the BINDER page turns a spread
 };
 bool hub_input(const Input& in, bool* redraw, bool* stick);
+// r153: the CARDS page wants Y itself (its GOAL EXPLOSIONS page: Y equips) - the hub's Y (trades) leaves it be there
+bool wants_y();
 // A pack open or a card out of the binder: the hub stays on the CARDS page, its own buttons wait.
 bool busy();
 // Its redraw counter (the hub's picture is drawn again when it moves: a pack earned, cards added, a page turned).
@@ -106,6 +130,31 @@ void triggers(const float pull[2], uint64_t now);
 bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, const XrCompositionLayerQuad* hub, uint64_t now);
 // The hub closed (or a match started): everything put away at once.
 void close(bool fxReady);
+// r152: TIZM GRADING's slab shelf in your room - up to 6 of your slabs (the ones you put on it on the GRADING page, else
+// your best) standing on a lit two-step stand, first beside the trophy shelf (`shelf` its place on its floor / table,
+// `shelfYaw` its turn), then where you leave it (STRIKERS_HOME/cards/slab_shelf.txt); a grip on it moves it, both grips
+// turn and size it (hand_busy while held). Every frame after frame() (game thread); `show` false (no home ground, a
+// cards scene up, not your room): put away. Its model is the pack's slot's while no pack / card / slab is out.
+void room_display(xrfx::Scene& scene, const XrVector3f& shelf, float shelfYaw, bool show, bool fxReady, uint64_t now);
+// r160 (Lance: "a REAL 3D binder you pick up", its skin its whole cover): your binder in the room - taken out from CARDS >
+// BINDER (X TAKE IT OUT / PUT IT BACK), first in front of you, then where you leave it (STRIKERS_HOME/cards/binder_room.txt,
+// headset-wide); one grip moves it, both grips turn and size it (hand_busy while held); a trigger on it opens it / turns
+// its pages (right page: on, left page: back, left on the first pages: shut) - the same spreads as the CARDS page. Also the
+// LOOKS page's preview of a skin (in front of you). Every frame after frame() (game thread); `show` false (not your room):
+// put away. Its model is kBinderSlot's.
+void room_binder(xrfx::Scene& scene, const XrPosef& head, bool show, bool fxReady, uint64_t now);
+// r160 round 2 (Lance: it flips EXACTLY like STRIKERS ILLUSTRATED - xr_pageturn.h's rules): while a hand holds the binder
+// its right trigger turns a page on, its left back (0.9 s after the grab), a sweep of the free hand across it turns one,
+// and the hub's buttons are its (binder_turn: +1 / -1 the stick, 2 A - the next, shut on its last pages -, -2 B shut it),
+// its hint bar the magazine's. Game thread; binder_held any thread.
+bool binder_held();
+void binder_turn(int how);
+// r163 (his r162 video: X never put it away once open / held): put it away now (leaving CARDS, the hub closing) / X: out or
+// away from any state; what it's doing (0 away, 1 out shut, 2 out open, 3 held open, 4 a card of it out in your hand, 5
+// held shut) - the hub's hint bar says only what its buttons do then.
+void binder_put_away();
+void binder_toggle();
+int binder_state();
 // A buzz for the controllers asked for since the last call: its strength (0 none) and length.
 float take_buzz(float* seconds);
 

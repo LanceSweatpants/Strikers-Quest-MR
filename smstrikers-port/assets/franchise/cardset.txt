@@ -471,3 +471,33 @@
 470	mua_lizard	C	MARVEL	mua_lizard	Lizard
 471	mua_rhino	C	MARVEL	mua_rhino	Rhino
 472	mua_wintersoldier	C	MARVEL	mua_wintersoldier	Winter Soldier
+473	orig_quarterbyte	C	ORIGINALS	orig_quarterbyte	QUARTERBYTE
+474	orig_highscore	R	ORIGINALS	orig_highscore	HIGHSCORE
+475	orig_gameover	SR	ORIGINALS	orig_gameover	GAME OVER
+476	orig_rookie	C	ORIGINALS	orig_rookie	ROOKIE
+477	orig_gambit	R	ORIGINALS	orig_gambit	GAMBIT
+478	orig_checkmate	SR	ORIGINALS	orig_checkmate	CHECKMATE
+479	orig_tatami	C	ORIGINALS	orig_tatami	TATAMI
+480	orig_nightstep	R	ORIGINALS	orig_nightstep	NIGHTSTEP
+481	orig_overclock	SR	ORIGINALS	orig_overclock	OVERCLOCK
+482	orig_tincan	C	ORIGINALS	orig_tincan	TIN CAN
+483	orig_ironclad	R	ORIGINALS	orig_ironclad	IRONCLAD
+484	orig_wyrmguard	SR	ORIGINALS	orig_wyrmguard	WYRMGUARD
+485	orig_graves	C	ORIGINALS	orig_graves	GRAVES
+486	orig_halfmoon	R	ORIGINALS	orig_halfmoon	HALF MOON
+487	orig_fullmoon	SR	ORIGINALS	orig_fullmoon	FULL MOON
+488	orig_luchador	C	ORIGINALS	orig_luchador	LUCHADOR
+489	orig_luchador_b	R	ORIGINALS	orig_luchador_b	RIVAL LUCHADOR
+490	orig_luchador_c	SR	ORIGINALS	orig_luchador_c	CHAMPION LUCHADOR
+491	orig_racedriver	C	ORIGINALS	orig_racedriver	RACE DRIVER
+492	orig_racedriver_b	R	ORIGINALS	orig_racedriver_b	ORANGE RACE DRIVER
+493	orig_racedriver_c	SR	ORIGINALS	orig_racedriver_c	VINTAGE RACE DRIVER
+494	orig_goalie	C	ORIGINALS	orig_goalie	GOALIE
+495	orig_goalie_b	R	ORIGINALS	orig_goalie_b	SHARK GOALIE
+496	orig_goalie_c	SR	ORIGINALS	orig_goalie_c	DOLL GOALIE
+497	orig_mascot	C	ORIGINALS	orig_mascot	MASCOT
+498	orig_mascot_b	R	ORIGINALS	orig_mascot_b	HOT DOG MASCOT
+499	orig_mascot_c	SR	ORIGINALS	orig_mascot_c	EAGLE MASCOT
+500	orig_redline	C	ORIGINALS	orig_redline	REDLINE
+501	orig_redline_b	R	ORIGINALS	orig_redline_b	CHROME REDLINE
+502	orig_redline_c	SR	ORIGINALS	orig_redline_c	BLACK GOLD REDLINE

@@ -367,6 +367,34 @@ void main() {
                 }
             }
         }
+    } else if (shape == 134) {
+        // r185: LUCHADOR's championship belt (xr_fx_mesh.h kTitleBelt): the plates polished metal in colour 1 (gold or
+        // silver) catching the light, their edges a shade darker; ruby inlays on gold, sapphire on silver; snaps; the strap
+        // leather in colour 2 with a fine grain, the seam's thread in the plates' metal
+        bool silver = abs(c1.r - c1.b) < 0.15;
+        if (aux > 19.5 && aux < 20.5) {          // a gem: deep, glinting, a little light of its own
+            base = silver ? vec3(0.03, 0.12, 0.75) : vec3(0.62, 0.015, 0.05);
+            spec = 1.4;
+            shine = 110.0;
+            glow = 0.14;
+        } else if (aux > 20.5) {                 // the seam's thread
+            base = c1 * 0.85;
+            metal = true;
+        } else if (aux > 14.5) {                 // the sunburst rays engraved across the face: polished brighter
+            base = c1 * 1.18;
+            metal = true;
+        } else if (aux > 13.5) {                 // the strap: leather
+            float grain = sin(p.x * 310.0 + sin(p.y * 170.0) * 2.0) * sin(p.y * 260.0 + p.x * 40.0);
+            base = c2 * (0.9 + 0.08 * grain);
+            if (abs(p.y) > 0.078) base *= 0.75;  // its rolled edges
+            spec = 0.28;
+            shine = 26.0;
+        } else {                                  // the plates, their edges, the snaps
+            metal = true;
+            base = c1;
+            if (aux > 12.5) base = silver ? c1 : mix(c1, vec3(0.86), 0.55);  // the snaps: nickel
+            else if (aux < 10.5 && abs(p.z - 0.032) < 0.0015 && length(p.xy) > 0.13) base *= 0.82;  // the field, satin
+        }
     } else if ((shape >= 40 && shape <= 60) || (shape >= 80 && shape <= 133)) {  // r124: 80-89 the Marvel heroes' pieces (r127: 90-92; r130: 93-118; r135: 119-133)
         // r82: the themed celebrations' pieces (xr_fx_mesh.h): the surface from aux: 0 glossy, 1 metal,
         // 2 rough stone, 3 gem / ice (shining, a little glow), 4 wood.

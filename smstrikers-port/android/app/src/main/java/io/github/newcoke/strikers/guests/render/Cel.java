@@ -74,7 +74,10 @@ public final class Cel {
             String base = new File(gpkPath).getName();
             if (base.endsWith(".gpk")) base = base.substring(0, base.length() - 4);
             if (base.endsWith("_shiny")) base = base.substring(0, base.length() - 6);
-            final byte[] g = make(base, new Gpk(Files.readAllBytes(new File(gpkPath).toPath())));
+            // r183: asked for guests/evo/<pack>.gev (an ORIGINAL's standing loop, xr_cards.cpp / Originals.prebake): its
+            // class's idle through the retarget, as the converter's Evo makes a guest's
+            final Gpk gp = new Gpk(Files.readAllBytes(new File(gpkPath).toPath()));
+            final byte[] g = out.replace('\\', '/').contains("/evo/") ? makeEvo(base, gp) : make(base, gp);
             if (g == null) return 0;
             final File f = new File(out), tmp = new File(out + ".tmp");
             final File dir = f.getParentFile();
@@ -90,6 +93,21 @@ public final class Cel {
             System.out.println("Cel: " + lastNote);
             return -1;
         }
+    }
+
+    /** r183: the pack's standing idle (GEV1, Evo.gev), null when it has no class / no Strikers files here. */
+    public static byte[] makeEvo(String base, Gpk pack) {
+        final String cls = BigPose.classOf(base);
+        if (cls == null || (pack.mode & 1) == 0) {
+            lastNote = base + ": no class here / not a retarget pack";
+            return null;
+        }
+        final Nl.Host host = BigPose.hostOf(cls);
+        if (host == null) {
+            lastNote = base + ": no Strikers files for " + cls;
+            return null;
+        }
+        return Evo.gev(host, pack, BigPose.refOf(cls), BigPose.armsOf(base));
     }
 
     /** The file's bytes for this pack (its base name: the roster's), null when it has no class / no Strikers files here. */

@@ -123,7 +123,15 @@
             android:exported="true"
             android:label="@string/app_name"
             android:launchMode="singleTask"
+            android:theme="@style/Theme.Strikers.Lobby"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode">
+            <!-- r157 (menu overhaul): a fixed landscape 16:10 panel (Horizon OS's default size, now set rather than
+                 left to the system), the size the menu mockups are drawn for (1920x1200). -->
+            <layout
+                android:defaultWidth="1024dp"
+                android:defaultHeight="640dp"
+                android:minWidth="896dp"
+                android:minHeight="560dp" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -57,6 +57,8 @@
 #include <strings.h>
 #include <mutex>
 #include <time.h>  // r73: the flame flipbook's clock
+#include <dlfcn.h>     // r158: the install's time (guests.lock)
+#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
 
@@ -388,6 +390,25 @@ std::string home_dir()
 }
 
 // Recovery applies to roster picks as well as legacy class replacements.
+// r158 (Lance: "its all mario characters plus sidekicks"): r157's first run had guests off - the r157 install had killed
+// r156 within its first 900 guest frames, so the lock it left looked like a crash. The lock now holds this build's stamp
+// (a lock older than this install = an update killed it: ignored) and the session's stop clears it (PortGuestClearLock).
+static const char kLockStamp[] = __DATE__ " " __TIME__;
+
+// When this app was installed: the APK (or the extracted .so) holding this code, its file time; 0 unknown
+static time_t install_time()
+{
+    Dl_info info;
+    if (dladdr((const void*)&install_time, &info) == 0 || info.dli_fname == NULL)
+        return 0;
+    std::string p = info.dli_fname;
+    const size_t bang = p.find("!/");  // (a library inside the APK: the APK itself)
+    if (bang != std::string::npos)
+        p = p.substr(0, bang);
+    struct stat st;
+    return stat(p.c_str(), &st) == 0 ? st.st_mtime : 0;
+}
+
 bool guests_enabled()
 {
     static bool checked = false;
@@ -396,12 +417,25 @@ bool guests_enabled()
     {
         checked = true;
         const std::string path = home_dir() + "/guests.lock";
+        struct stat lst;
+        const bool haveTime = stat(path.c_str(), &lst) == 0;
         if (FILE* f = fopen(path.c_str(), "r"))
         {
+            char stamp[64] = {};
+            const size_t got = fread(stamp, 1, sizeof stamp - 1, f);
             fclose(f);
             remove(path.c_str());
-            enabled = false;
-            fprintf(stderr, "[guest] guests disabled for this run after an interrupted guest load/draw\n");
+            const time_t installed = install_time();
+            const bool beforeInstall = haveTime && installed != 0 && lst.st_mtime < installed;
+            if (got > 0 && strcmp(stamp, kLockStamp) == 0 && !beforeInstall)
+            {
+                enabled = false;
+                fprintf(stderr, "[guest] guests disabled for this run after an interrupted guest load/draw\n");
+            }
+            else
+            {
+                fprintf(stderr, "[guest] an old guests.lock from another build (an update closed it): guests stay on\n");
+            }
         }
     }
     return enabled;
@@ -410,10 +444,28 @@ bool guests_enabled()
 void mark_guest_load()
 {
     if (FILE* f = fopen((home_dir() + "/guests.lock").c_str(), "w"))
+    {
+        fputs(kLockStamp, f);
         fclose(f);
+    }
     s_recoveryFrames = 0;
     s_recoveryPending = true;
 }
+
+}  // namespace
+
+// r158: the XR session stopping (the app closed or put away): not a crash - the guests' lock goes
+void PortGuestClearLock()
+{
+    if (s_recoveryPending)
+    {
+        remove((home_dir() + "/guests.lock").c_str());
+        s_recoveryPending = false;
+    }
+}
+
+namespace
+{
 
 u32 rd32(const u8*& p)
 {
@@ -509,7 +561,10 @@ float limb_value(const std::string& pack, const char* what)
     if (!s_read)
     {
         s_read = true;
-        if (FILE* f = fopen((home_dir() + "/guests/limbs.txt").c_str(), "r"))
+        // r188: then the ORIGINALS' own sizes (guests/originals_sizes.txt, staged from the APK's assets/originals by
+        // StrikersHome.stageOriginals, never written by the converter), same line format
+        for (const char* file : {"/guests/limbs.txt", "/guests/originals_sizes.txt"})
+        if (FILE* f = fopen((home_dir() + file).c_str(), "r"))
         {
             char line[160];
             while (fgets(line, sizeof line, f) != NULL)
@@ -528,7 +583,7 @@ float limb_value(const std::string& pack, const char* what)
                     s_limbs[3][key] = v;
             }
             fclose(f);
-            fprintf(stderr, "[guest] limbs.txt: %d guests with their own arm size, %d with their own size, %d slither\n",
+            fprintf(stderr, "[guest] %s: %d guests with their own arm size, %d with their own size, %d slither\n", file + 8,
                     (int)s_limbs[0].size(), (int)s_limbs[1].size(), (int)s_limbs[2].size());
             fflush(stderr);
         }
@@ -905,12 +960,23 @@ int sidekick_of(const char* n)
     return -1;
 }
 
+void read_roster_file(const std::string& path);
 void read_roster()
 {
     if (s_rosterRead)
         return;
     s_rosterRead = true;
-    FILE* f = fopen((home_dir() + "/guests/roster.txt").c_str(), "r");
+    // r183: the guests made on this headset (roster.txt, the converter's), then the ORIGINALS shipped in the APK
+    // (originals.txt, StrikersHome.java stages it with every update) - after them, so a guest's place never moves
+    read_roster_file(home_dir() + "/guests/roster.txt");
+    read_roster_file(home_dir() + "/guests/originals.txt");
+    fprintf(stderr, "[guest] roster: %zu captains, %zu sidekicks\n", s_byRole[0].size(), s_byRole[1].size());
+    fflush(stderr);
+}
+
+void read_roster_file(const std::string& path)
+{
+    FILE* f = fopen(path.c_str(), "r");
     if (f == NULL)
         return;
     char line[512];
@@ -948,12 +1014,15 @@ void read_roster()
         r.evolvesFrom = nf >= 7 ? fields[6] : "";
         if (r.base < 0 || r.pack.empty())
             continue;
+        bool dup = false;  // (an original also in roster.txt: once)
+        for (const RosterEntry& o : s_roster)
+            dup = dup || (o.pack == r.pack && o.role == r.role);
+        if (dup)
+            continue;
         s_byRole[r.role].push_back((int)s_roster.size());
         s_roster.push_back(r);
     }
     fclose(f);
-    fprintf(stderr, "[guest] roster: %zu captains, %zu sidekicks\n", s_byRole[0].size(), s_byRole[1].size());
-    fflush(stderr);
 }
 
 Guest* roster_guest(int index)
@@ -5160,6 +5229,7 @@ void PortGuestLocInject(nlLocalization* loc)
                            : game == "Melee Pokemon" ? "A Pokemon from Super Smash Bros. Melee"
                            : game == "Colosseum" ? "A Pokemon from Pokemon Colosseum"
                            : game == "Ultimate Alliance" ? "From Marvel: Ultimate Alliance"  // r107
+                           : game == "Originals" ? "A Quest 3 Strikers Original"           // r183
                                                      : "A guest from another game";
         texts.push_back(std::make_pair((u32)s_roster[r].descKey, std::string(from)));
     }

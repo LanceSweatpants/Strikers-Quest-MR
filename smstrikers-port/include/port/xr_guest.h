@@ -75,6 +75,37 @@ bool PortGuestRosterEvolved(int index);
 const char* PortGuestRosterEvolvesFrom(int index);  // its previous form's pack, "" none
 bool PortGuestRosterLocked(int index);               // evolved and not unlocked yet
 bool PortGuestUnlock(const char* pack);              // true when newly unlocked
+// r183: the ORIGINALS - Quest 3 Strikers' own characters (orig_<name>), shipped inside the APK (assets/originals ->
+// STRIKERS_HOME/guests/, their rows in guests/originals.txt, read after roster.txt; no game file needed). Five 3-form
+// lines evolve like a Pokemon; the five singles' alternate uniforms (<single>_b / _c) are costumes like a Marvel hero's
+// (no shiny, "suit up", unlocked by level, LT / RT "UNIFORMS").
+inline bool PortOriginalKey(const char* k) { return k != nullptr && k[0] == 'o' && __builtin_strncmp(k, "orig_", 5) == 0; }
+inline bool PortOriginalUniformLine(const char* k)
+{
+    if (!PortOriginalKey(k))
+        return false;
+    static const char* const kSingles[5] = {"luchador", "racedriver", "goalie", "mascot", "redline"};
+    for (const char* s : kSingles)
+    {
+        const unsigned long n = __builtin_strlen(s);
+        if (__builtin_strncmp(k + 5, s, n) == 0 && (k[5 + n] == '\0' || k[5 + n] == '_'))
+            return true;
+    }
+    return false;
+}
+// a Marvel hero's costume line or an original single's uniforms (the base look counts, as mua_<hero> does)
+inline bool PortCostumeKey(const char* k)
+{
+    return k != nullptr && (__builtin_strncmp(k, "mua_", 4) == 0 || PortOriginalUniformLine(k));
+}
+// an alternate uniform itself (orig_<single>_b / _c): its card / name from franchise/costume_names.txt
+inline bool PortOriginalUniform(const char* k)
+{
+    if (!PortOriginalUniformLine(k))
+        return false;
+    const unsigned long n = __builtin_strlen(k);
+    return n > 2 && k[n - 2] == '_' && (k[n - 1] == 'b' || k[n - 1] == 'c');
+}
 // r70c: this match's side (0/1) has a shiny Pokemon captain (franchise): its <pack>_shiny.gpk if there.
 void PortGuestSetShiny(int side, bool shiny);
 // r78: this match's side's co-captain (include/port/lineup.h) as a guest: its roster index (-1: none,
@@ -94,6 +125,7 @@ int PortGuestSlotForBase(int base, const bool freeCaptains[8]);
 int PortGuestGetPick(int captainTeam, int role);
 void PortGuestSetPick(int captainTeam, int role, int index);  // -1 = original, -2 = inherit guests.txt
 void PortGuestClearPicks();                                     // every team of the current mode
+void PortGuestClearLock();  // r158: the app closing cleanly (XR session stopping): guests.lock is not a crash's
 // Text keys of guest names (the localization table carries them, see PortGuestLocInject); 0 = no guest.
 unsigned long PortGuestLocTeamName(int captainTeam);
 unsigned long PortGuestLocSidekickName(int captainTeam, int sidekick);

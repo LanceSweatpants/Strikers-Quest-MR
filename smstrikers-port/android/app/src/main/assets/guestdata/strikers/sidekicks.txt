@@ -1,0 +1,7 @@
+# r178: the Strikers sidekicks' 3D figures (models/SideFig.java, tools/outside/sidefig173.py): the class (its disc folder),
+# its pack name (guests/home/strikers_<name>), the team kit it wears (art/characters/<Class>/<kit>.glt; - its default)
+# Koopa wears the Luigi kit: green shell, yellow skin (its default is Mario's red kit)
+Toad toad -
+Koopa koopa koopa_luigi.glt
+Birdo birdo -
+HammerBro hammerbro -

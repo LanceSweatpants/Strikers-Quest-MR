@@ -8,4 +8,12 @@
         <item name="android:colorAccent">@color/accent</item>
         <item name="android:windowNoTitle">true</item>
     </style>
+
+    <!-- r157 (menu overhaul): the launcher panel (LobbyActivity) only, navy + gold; the game and the old setup screen
+         keep the pitch green above. -->
+    <style name="Theme.Strikers.Lobby" parent="Theme.Strikers">
+        <item name="android:colorBackground">@color/lobby_navy</item>
+        <item name="android:windowBackground">@color/lobby_navy</item>
+        <item name="android:colorAccent">@color/lobby_gold</item>
+    </style>
 </resources>

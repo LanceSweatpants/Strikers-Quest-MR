@@ -1,0 +1,72 @@
+# Quest 3 Strikers r160 binder skins (written by tools/outside/binders160/make_textures.py)
+# id	furLen_mm	emitR	emitG	emitB	holo	sparkle	pulse
+# Classic Blue (Free)
+classic_blue	0	0.00	0.00	0.00	0	0	0
+# Brown Leather (Common)
+brown_leather	0	0.00	0.00	0.00	0	0	0
+# Black Leather Gold (Common)
+black_leather_gold	0	0.00	0.00	0.00	0	0	0
+# Denim (Common)
+denim	0	0.00	0.00	0.00	0	0	0
+# Suede (Common)
+suede	0	0.00	0.00	0.00	0	0	0
+# Cardboard Box (Common)
+cardboard	0	0.00	0.00	0.00	0	0	0
+# Old Oak (Common)
+old_oak	0	0.00	0.00	0.00	0	0	0
+# Alligator (Rare)
+alligator	0	0.00	0.00	0.00	0	0	0
+# Crocodile (Rare)
+crocodile	0	0.00	0.00	0.00	0	0	0
+# Snakeskin (Rare)
+snakeskin	0	0.00	0.00	0.00	0	0	0
+# Zebra (Rare)
+zebra	3.5	0.00	0.00	0.00	0	0	0
+# Leopard (Rare)
+leopard	3.5	0.00	0.00	0.00	0	0	0
+# Varsity (Rare)
+varsity	0	0.00	0.00	0.00	0	0	0
+# Baseball Glove (Rare)
+baseball_glove	0	0.00	0.00	0.00	0	0	0
+# Velvet (Rare)
+velvet	0	0.00	0.00	0.00	0	0	0
+# Puffer (Rare)
+puffer	0	0.00	0.00	0.00	0	0	0
+# Pink Fur (Epic)
+pink_fur	10	0.00	0.00	0.00	0	0	0
+# Yeti Fur (Epic)
+yeti_fur	11	0.00	0.00	0.00	0	0	0
+# Plush Teddy (Epic)
+plush_teddy	5	0.00	0.00	0.00	0	0	0
+# Shag Rug (Epic)
+shag_rug	14	0.00	0.00	0.00	0	0	0
+# Carbon Fiber (Epic)
+carbon_fiber	0	0.00	0.00	0.00	0	0	0
+# Brushed Chrome (Epic)
+brushed_chrome	0	0.00	0.00	0.00	0	0	0
+# Diamond Plate (Epic)
+diamond_plate	0	0.00	0.00	0.00	0	0	0
+# Marble (Epic)
+marble	0	0.00	0.00	0.00	0	0	0
+# Dragon Scales (Legendary)
+dragon_scales	0	1.00	0.36	0.08	0	0	1
+# Shark Skin (Legendary)
+shark_skin	0	0.00	0.00	0.00	0	0	0
+# Galaxy (Legendary)
+galaxy	0	0.85	0.90	1.00	0	1	0
+# Holographic (Legendary)
+holographic	0	0.00	0.00	0.00	1	0	0
+# Neon Grid (Legendary)
+neon_grid	0	0.15	0.90	1.00	0	0	1
+# 8-Bit Pixel (Legendary)
+pixel_8bit	0	0.00	0.00	0.00	0	0	0
+# Molten Lava (Mythic)
+molten_lava	0	1.00	0.45	0.08	0	0	1
+# Frozen Ice (Mythic)
+frozen_ice	0	0.70	0.90	1.00	0	1	0
+# Slime (Mythic)
+slime	0	0.45	1.00	0.20	0	0	1
+# Gold Plated (Mythic)
+gold_plated	0	0.00	0.00	0.00	0	0	0
+# Stone Tablet (Mythic)
+stone_tablet	0	1.00	0.58	0.22	0	0	1

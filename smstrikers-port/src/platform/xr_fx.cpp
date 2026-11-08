@@ -22,6 +22,8 @@
 #include <vector>
 
 #include "xr_fx_mesh.h"
+#include "xr_goalfx.h"      // r153: the goal explosions' pieces, drawn here
+#include "xr_balls.h"       // r168: the ball skins' aura, trail and hits (and the shop's preview ball), drawn here
 #include "xr_ctrl_model.h"  // r54: the controllers in your hands
 #include "xr_fx_shaders.h"
 #include "../../include/port/xr_body.h"  // r143: the life-size scorer's posed body
@@ -84,7 +86,17 @@ enum Shape : uint8_t {
   // 119-133; the brick is its own mesh too)
   kMapleLeafPiece = 119, kBladeLeafPiece = 120, kFeatherPiece = 121, kFishPiece = 122, kScrewPiece = 123,
   kMagnetPiece = 124, kPincerPiece = 125, kScallopPiece = 126, kWavePiece = 127, kCubePiece = 128, kEggLitePiece = 129,
-  kShurikenPiece = 130, kFlaskPiece = 131, kBulletPiece = 132, kBrickPiece = 133
+  kShurikenPiece = 130, kFlaskPiece = 131, kBulletPiece = 132, kBrickPiece = 133,
+  // r184: the ORIGINALS' themed celebrations (ORIGINALS-CELEBRATIONS.md). Quads (xr_fx.frag): goalfx's 8-bit block /
+  // burst / ring (147, colour 2's alpha), its pixel aliens (151) and light cone (158); then r184's own: an arcade
+  // marquee's pixel words (164: which words by its aspect), a moon (165: its phase in colour 2's alpha), a heraldic
+  // banner on its rod (166: waving, colour 2's alpha), a marble chess square (167: ivory one side, ebony the other), a
+  // foam finger (168), a t-shirt (169), a title belt (170: its glint in colour 2's alpha), a chess piece (171: which in
+  // colour 2's alpha), a luchador mask (172).
+  kPixel8 = 147, kAlienQuad = 151, kConeQuad = 158,
+  kSignQuad = 164, kMoonQuad = 165, kBannerQuad = 166, kTileQuad = 167, kFingerQuad = 168, kShirtQuad = 169,
+  kBeltQuad = 170, kChessQuad = 171, kMaskQuad = 172,
+  kBeltPiece = 134  // r185: LUCHADOR's championship belt (3D: xr_fx_mesh.h kTitleBelt; xr_fx_mesh.frag 134)
 };
 
 // The 3D mesh each piece is drawn with (xr_fx_mesh.h); sparks, flashes and the marker stay quads.
@@ -183,6 +195,7 @@ uint8_t mesh_for(Shape shape) {
   case kFlaskPiece: return mesh::kFlask;
   case kBulletPiece: return mesh::kBullet;
   case kBrickPiece: return mesh::kBrick;
+  case kBeltPiece: return mesh::kTitleBelt;  // r185
   default: return kNoMesh;
   }
 }
@@ -288,6 +301,7 @@ Rest rest_for(uint8_t shape) {
   case kFlaskPiece: return {1, 0.5f};
   case kBulletPiece: return {0, 0.12f};
   case kBrickPiece: return {1, 0.14f};
+  case kBeltPiece: return {2, 0.1f};  // r185: a title belt lies face up (its strap curves down to the floor)
   default: return {2, 0.02f};         // paper, foil, flat quads
   }
 }
@@ -366,22 +380,33 @@ enum RoomFx : uint8_t {
   kRoomNone, kRoomFog, kRoomRain, kRoomLightning, kRoomEmbers, kRoomSnow, kRoomLeaves, kRoomDust, kRoomSparks,
   kRoomFloorRings, kRoomPsyRings, kRoomSpiral, kRoomBubbles, kRoomNotes, kRoomZzz, kRoomWisps, kRoomBarrier,
   kRoomLasers, kRoomHex, kRoomSlashes, kRoomLevitate, kRoomOrbs, kRoomEyes, kRoomMotes, kRoomFlashes,
-  kRoomMeteors, kRoomSmoke
+  kRoomMeteors, kRoomSmoke,
+  // r184 (the ORIGINALS): an arcade sign over the scorer (v: 0 "1UP", 1 "NEW HIGH SCORE", 2 "GAME OVER"), pixel
+  // invaders drifting, the floor a chess board whose squares flip in waves (v: its squares a side), heraldic banners
+  // round you (v: how many), a moon rising (v: 0 crescent, 1 half, 2 full), wrestling-ring ropes flashing, a title belt
+  // hoisted over the scorer, a goal horn's light sweeping, hockey-stop ice spray, speed lines rushing past, camera
+  // flashbulbs
+  kRoomSign, kRoomInvaders, kRoomBoard, kRoomBanners, kRoomMoon, kRoomRopes, kRoomBelt, kRoomHorn, kRoomIceSpray,
+  kRoomSpeed, kRoomCameras
 };
 enum PyroFx : uint8_t {
   kPyroFireworks,  // the usual fireworks (in the theme's own colours when p1 / p2 are set)
   kPyroNone, kPyroWater, kPyroFlame, kPyroBreath, kPyroBlast, kPyroSpout, kPyroSlash, kPyroMeteor,
-  kPyroPuffs, kPyroHearts, kPyroThrow, kPyroRings, kPyroLava
+  kPyroPuffs, kPyroHearts, kPyroThrow, kPyroRings, kPyroLava,
+  kPyroCoins,  // r184: arcade coin bursts (an 8-bit burst, coins popping out, sparks)
+  kPyroShirts  // r184: a t-shirt cannon firing shirts at you
 };
 struct FallFx {
   uint8_t shape;
   uint32_t c1, c2;
   float size;  // times the usual piece size
   float glow;
+  uint8_t var = 255;  // r184: a quad's picture (a chess piece: 0 pawn .. 5 king; 254 queen or king), 255 = any
 };
 struct RoomEntry {
   RoomFx kind;
   uint32_t c1, c2;
+  uint8_t v = 0;  // r184: the effect's variant (kRoomSign's words, kRoomBoard's size ...)
 };
 struct Special {
   FallFx fall[3] = {};
@@ -392,12 +417,22 @@ struct Special {
   uint32_t p1 = 0, p2 = 0;
   float stage = 1.0f;  // 1 first form .. 3 last
   const char* name = "";
-  Special& f(uint8_t shape, uint32_t c1, uint32_t c2, float size = 1.0f, float glow = 0.0f) {
-    if (nFall < 3) fall[nFall++] = FallFx{shape, c1, c2, size, glow};
+  // r184: its own paper confetti colours (an original's uniform), else the scorer's team colours (theme_for)
+  bool hasPaper = false;
+  uint32_t paper[3] = {0, 0, 0};
+  Special& f(uint8_t shape, uint32_t c1, uint32_t c2, float size = 1.0f, float glow = 0.0f, uint8_t var = 255) {
+    if (nFall < 3) fall[nFall++] = FallFx{shape, c1, c2, size, glow, var};
     return *this;
   }
-  Special& r(RoomFx kind, uint32_t c1 = 0xFFFFFF, uint32_t c2 = 0xFFFFFF) {
-    if (nRoom < 3) room[nRoom++] = RoomEntry{kind, c1, c2};
+  Special& r(RoomFx kind, uint32_t c1 = 0xFFFFFF, uint32_t c2 = 0xFFFFFF, uint8_t v = 0) {
+    if (nRoom < 3) room[nRoom++] = RoomEntry{kind, c1, c2, v};
+    return *this;
+  }
+  Special& pap(uint32_t a, uint32_t b, uint32_t c) {
+    hasPaper = true;
+    paper[0] = a;
+    paper[1] = b;
+    paper[2] = c;
     return *this;
   }
   Special& py(PyroFx kind, uint32_t c1 = 0, uint32_t c2 = 0) {
@@ -1451,6 +1486,166 @@ Special special_for_pack(const char* pack) {
     if (st == 2) sp.r(kRoomFog, 0x203048, 0x080C14);
     if (st == 3) sp.r(kRoomMotes, 0xFFD0E8, 0xFF8AC0);
     sp.py(kPyroWater, 0xE6F7FF, 0x58A8FF);
+  // --- r184 (ORIGINALS-CELEBRATIONS.md): our own 30 originals. The five lines escalate (stage 1-3: a bigger board,
+  // more banners, a fuller moon, one more effect); the five singles' uniforms (_b, _c) recolour theirs, and every
+  // original throws paper confetti in its own colours (pap). ---
+  } else if (std::strncmp(pack, "orig_", 5) == 0) {
+    auto uni = [&](const char* base) {  // 0 the single's own look, 1 its _b uniform, 2 its _c (else -1)
+      const size_t n = std::strlen(base);
+      if (std::strncmp(pack, base, n) != 0) return -1;
+      if (pack[n] == '\0') return 0;
+      if (pack[n] == '_' && pack[n + 1] == 'b' && pack[n + 2] == '\0') return 1;
+      if (pack[n] == '_' && pack[n + 1] == 'c' && pack[n + 2] == '\0') return 2;
+      return -1;
+    };
+    int u = -1;
+    if ((st = stage_in(pack, {"orig_quarterbyte", "orig_highscore", "orig_gameover"})) != 0) {
+      // ARCADE: neon pixel confetti and gold coins, the marquee's words over him, coin bursts; GAME OVER in red
+      stage(st, 3);
+      if (st < 3) {
+        sp.f(kPixel8, 0, 0x101018, 0.75f, 0.5f).f(kCoin, 0xFFC21F, 0xFFE27A, 0.95f);
+        if (st == 2) sp.f(kPixel8, 0, 0x101018, 0.6f, 0.5f);
+        sp.r(kRoomSign, st == 1 ? 0x50FF6A : 0xFFE040, st == 1 ? 0x30E8FF : 0xFF3AC8, static_cast<uint8_t>(st - 1));
+        sp.r(st == 1 ? kRoomMotes : kRoomInvaders, 0x30E8FF, st == 1 ? 0xFF3AC8 : 0xFFFFFF);
+        if (st == 2) sp.r(kRoomMotes, 0xFFE040, 0xFF3AC8);
+        sp.py(kPyroCoins, 0xFFE040, 0x30E8FF);
+        sp.pap(0x30E8FF, 0xFF3AC8, 0xFFE040);
+      } else {
+        sp.f(kPixel8, 0xFF2A4A, 0x101018, 0.75f, 0.5f).f(kPixel8, 0xFF3AC8, 0x101018, 0.6f, 0.5f).f(kCoin, 0xFFC21F, 0xFFE27A, 0.95f);
+        sp.r(kRoomSign, 0xFF2A3A, 0xFFE040, 2).r(kRoomInvaders, 0xFF3AC8, 0xFFFFFF).r(kRoomSparks, 0xFFFFFF, 0xFF2A4A);
+        sp.py(kPyroCoins, 0xFF2A4A, 0xFFE040);
+        sp.pap(0xFF2A4A, 0x8A2AE0, 0x30E8FF);
+      }
+    } else if ((st = stage_in(pack, {"orig_rookie", "orig_gambit", "orig_checkmate"})) != 0) {
+      // CHESS: marble squares tumbling (ivory one side, ebony the other: they flip as they fall), the pieces, the floor
+      // round him a board whose squares flip in waves (3x3, 5x5, 7x7); CHECKMATE's crowns and "check!" blasts
+      stage(st, 3);
+      sp.f(kTileQuad, 0xF2EEE2, 0x16161C, 1.3f);
+      if (st == 1) sp.f(kChessQuad, 0x16161C, 0xF2C230, 1.5f, 0.0f, 0);
+      if (st == 2) sp.f(kChessQuad, 0x16161C, 0xF2C230, 1.6f, 0.0f, 1).f(kChessQuad, 0xF2EEE2, 0xC8A030, 1.4f, 0.0f, 0);
+      if (st == 3) sp.f(kChessQuad, 0x16161C, 0xF2C230, 1.8f, 0.0f, 254).f(kCrownPiece, 0xF2C230, 0xD8202A, 1.1f);
+      sp.r(kRoomBoard, 0xF2EEE2, 0x16161C, static_cast<uint8_t>(2 * st + 1));
+      if (st >= 2) sp.r(st == 2 ? kRoomMotes : kRoomSparks, 0xFFF0B0, 0xF2C230);
+      if (st == 3) sp.py(kPyroBlast, 0xFFF0B0, 0xF2C230);
+      else sp.py(kPyroFireworks, st == 1 ? 0xF2EEE2 : 0xF2C230, st == 1 ? 0xF2C230 : 0xF2EEE2);
+      sp.pap(0xF2EEE2, 0x16161C, 0xF2C230);
+    } else if ((st = stage_in(pack, {"orig_tatami", "orig_nightstep", "orig_overclock"})) != 0) {
+      // NINJA: shuriken; smoke bombs (a white flash, grey smoke); NIGHTSTEP's kunai and slashes; OVERCLOCK the robot:
+      // chrome stars, red laser lines across the room, red sparks
+      stage(st, 3);
+      if (st == 1) {
+        sp.f(kShurikenPiece, 0x3A3A44, 0xC8CCD4, 1.0f).f(kPetal, 0xFFB8D0, 0xFFE8F0, 0.9f);
+        sp.r(kRoomFlashes, 0xF4F4F8, 0x9A9AA4);
+        sp.py(kPyroSlash, 0xFFFFFF, 0x3A6AE8);
+        sp.pap(0x2A5AD8, 0xF08A24, 0xFFFFFF);
+      } else if (st == 2) {
+        sp.f(kShurikenPiece, 0x2A2A30, 0xC8CCD4, 1.05f).f(kNeedle, 0x1A1A20, 0xC8CCD4, 1.1f);
+        sp.r(kRoomFlashes, 0xD8D8E0, 0x2A2A30).r(kRoomSlashes, 0xFFFFFF, 0xE02A2A);
+        sp.py(kPyroSlash, 0xFFFFFF, 0xE02A2A);
+        sp.pap(0x1A1A20, 0xE02A2A, 0xC8CCD4);
+      } else {
+        sp.f(kShurikenPiece, 0xD8DEE8, 0x3A6AE8, 1.1f).f(kBoltPiece, 0xFF3A3A, 0xFFB8B8, 1.1f, 0.9f);
+        sp.r(kRoomLasers, 0xFFFFFF, 0xFF2020).r(kRoomFlashes, 0xE0E8FF, 0x303848).r(kRoomSparks, 0xFFE0E0, 0xFF2020);
+        sp.py(kPyroSlash, 0xFFFFFF, 0xFF2020);
+        sp.pap(0x1A2A8A, 0xE02A2A, 0xD8DEE8);
+      }
+    } else if ((st = stage_in(pack, {"orig_tincan", "orig_ironclad", "orig_wyrmguard"})) != 0) {
+      // KNIGHT: swords and shields, heraldic banners round you (4, 6, 8: waving), sparks off armour; WYRMGUARD's dragon
+      // scales and flames, dragon fire across the ceiling
+      stage(st, 3);
+      if (st == 1) {
+        sp.f(kSword, 0x8A5A30, 0xD8DEE8, 1.4f).f(kShield, 0x9A9EA6, 0xC82828, 1.3f);
+        sp.r(kRoomBanners, 0xC82828, 0xE8E0C8, 4).r(kRoomSparks, 0xFFF0C0, 0xFF9A30);
+        sp.py(kPyroFireworks, 0xE8ECF4, 0xC82828);
+        sp.pap(0xC8CCD4, 0xC82828, 0x8A5A30);
+      } else if (st == 2) {
+        sp.f(kSword, 0xF2C230, 0xE0E6F0, 1.5f).f(kShield, 0x2A5AC8, 0xF2C230, 1.35f);
+        sp.r(kRoomBanners, 0x2A5AC8, 0xF2C230, 6).r(kRoomSparks, 0xFFF0C0, 0xFF9A30);
+        sp.py(kPyroFireworks, 0x4A8AFF, 0xF2C230);
+        sp.pap(0x2A5AC8, 0xF2C230, 0xD8DEE8);
+      } else {
+        sp.f(kSword, 0x6A1A1A, 0xD8DEE8, 1.6f).f(kShard, 0x8A1A1A, 0xD84A2A, 1.0f).f(kFlame, 0xFFC830, 0xE8300A, 1.1f, 0.9f);
+        sp.r(kRoomBanners, 0x8A1A1A, 0xE8B040, 8).r(kRoomEmbers, 0xFFD060, 0xFF4010);
+        sp.py(kPyroBreath, 0xFFE9A0, 0xFF5A10);
+        sp.pap(0x8A1A1A, 0xE8B040, 0x3A1A10);
+      }
+    } else if ((st = stage_in(pack, {"orig_graves", "orig_halfmoon", "orig_fullmoon"})) != 0) {
+      // WEREWOLF: silver bullets, the moon rising over the room (crescent, half, FULL), the howl's rings, fur and claw
+      // marks, yellow eyes in the dark
+      stage(st, 3);
+      if (st == 1) {
+        sp.f(kBulletPiece, 0xE8ECF4, 0xA8B0BC, 1.0f).f(kCrescentPiece, 0xF4F0D8, 0xFFFFFF, 0.9f, 0.6f);
+        sp.r(kRoomMoon, 0xF4F0D8, 0x9AB0E0, 0).r(kRoomMotes, 0xE8F0FF, 0x7A8AC0);
+        sp.py(kPyroFireworks, 0xE8ECF4, 0x9AB0E0);
+        sp.pap(0x2A2A30, 0x8A5A30, 0xC8CCD4);
+      } else if (st == 2) {
+        sp.f(kBulletPiece, 0xE8ECF4, 0xA8B0BC, 1.0f).f(kFeatherPiece, 0x5A5A60, 0xA8A8B0, 1.1f);
+        sp.r(kRoomMoon, 0xF4F0D8, 0x9AB0E0, 1).r(kRoomMotes, 0xE8F0FF, 0x7A9AD8);  // (the howl: its rings, the show)
+        sp.py(kPyroRings, 0xE8F0FF, 0x7A9AD8);
+        sp.pap(0x2A2A30, 0x5A5A60, 0xC8CCD4);
+      } else {
+        sp.f(kFeatherPiece, 0x6A6268, 0xB0A8AC, 1.2f).f(kSlash, 0xFFFFFF, 0xC83030, 1.2f, 0.8f).f(kBulletPiece, 0xE8ECF4, 0xA8B0BC, 1.0f);
+        sp.r(kRoomMoon, 0xFFF4DC, 0xA8C0F0, 2).r(kRoomEyes, 0xFFD040, 0xFF8A20).r(kRoomMotes, 0xE8F0FF, 0x7A9AD8);
+        sp.py(kPyroRings, 0xE8F0FF, 0x7A9AD8);
+        sp.pap(0x6A6268, 0x3A3438, 0xC8CCD4);
+      }
+    } else if ((u = uni("orig_luchador")) >= 0) {
+      // LUCHADOR: masks and stars, the ring's ropes flashing round him, the TITLE BELT hoisted over his head, camera
+      // flashbulbs; HOME red / gold, RIVAL black / silver, CHAMPION gold / white
+      sp.stage = 2.5f;
+      static const uint32_t kMain[3] = {0xD8202A, 0x1A1A1E, 0xF2C230}, kTrim[3] = {0xF2C230, 0xC8CCD4, 0xFFFFFF};
+      const uint32_t mn = kMain[u], tr = kTrim[u];
+      // r185 (Lance: the ropes and the hoisted belt "corny"): championship belts raining from the sky - gold on red,
+      // silver on black, gold on white - with the uniform's confetti and the flashbulbs, nothing else
+      static const uint32_t kPlate[3] = {0xF2C230, 0xD8DEE8, 0xF2C230}, kStrap[3] = {0xA8141E, 0x141418, 0xF2EFE6};
+      sp.f(kBeltPiece, kPlate[u], kStrap[u], 5.5f);
+      sp.r(kRoomCameras, 0xFFFFFF, tr);
+      sp.py(kPyroNone);
+      sp.pap(mn, tr, 0xFFFFFF);
+    } else if ((u = uni("orig_racedriver")) >= 0) {
+      // RACE DRIVER: checkered flags and champagne bubbles, tyre smoke, speed lines rushing past, champagne sprayed at
+      // you; WHITE / BLUE, ORANGE / BLACK, VINTAGE
+      sp.stage = 2.5f;
+      static const uint32_t kA[3] = {0xF4F4F8, 0xFF8A1A, 0x8A4A2A}, kB[3] = {0x2A4AE0, 0x16161A, 0xF2E8C0},
+                            kC[3] = {0x101018, 0xFFFFFF, 0xC8282A}, kSpeed[3] = {0x4A7AFF, 0xFF9A30, 0xF2E8C0};
+      sp.f(kChecker, 0xFFFFFF, 0x101010, 1.3f).f(kBubble, 0xFFF0C0, 0xFFFFFF, 0.6f, 0.4f);
+      sp.r(kRoomSmoke, 0xE8E8EC, 0x9A9AA0).r(kRoomSpeed, kSpeed[u], 0xFFFFFF);
+      sp.py(kPyroWater, 0xFFF4C8, 0xF2C84A);  // champagne
+      sp.pap(kA[u], kB[u], kC[u]);
+    } else if ((u = uni("orig_goalie")) >= 0) {
+      // GOALIE: pucks and snowflakes, hockey-stop ice spray off the floor, the goal horn's red light sweeping, his
+      // mask's flash; SKULL black / orange, SHARK teal / navy, DOLL purple / white
+      sp.stage = 2.5f;
+      static const uint32_t kMain[3] = {0x2A2A2E, 0x2AB8B0, 0x8A2AE0}, kAcc[3] = {0xFF7A1A, 0x1A2A5A, 0xFFFFFF},
+                            kFire[3] = {0xFF7A1A, 0x2AD8D0, 0xB060FF};
+      sp.f(kCoin, 0x141416, 0x3A3A40, 1.0f).f(kSnowflakePiece, 0xE8FAFF, 0xFFFFFF, 1.0f, 0.3f);
+      sp.r(kRoomIceSpray, 0xFFFFFF, 0x9FD8FF).r(kRoomHorn, 0xFF2020, 0xFF9080).r(kRoomCameras, 0xFFFFFF, kFire[u]);
+      sp.py(kPyroFireworks, kFire[u], 0xFFFFFF);
+      sp.pap(kMain[u], kAcc[u], 0xFFFFFF);
+    } else if ((u = uni("orig_mascot")) >= 0) {
+      // MASCOT: foam fingers and t-shirts falling, the T-SHIRT CANNON firing shirts at you, flashbulbs; BEAR, HOT DOG,
+      // EAGLE
+      sp.stage = 2.5f;
+      static const uint32_t kMain[3] = {0x8A5A30, 0xD8302A, 0x6A4022}, kTrim[3] = {0x1A2A5A, 0xFFD030, 0xFFD030},
+                            kFinger[3] = {0x2A4AC8, 0xFFD030, 0xFFD030}, kText[3] = {0xFFFFFF, 0xD8302A, 0x6A4022},
+                            kShirt[3] = {0xFFFFFF, 0xE8A860, 0xFFFFFF};
+      sp.f(kFingerQuad, kFinger[u], kText[u], 2.2f).f(kShirtQuad, kShirt[u], kTrim[u], 1.8f);
+      sp.r(kRoomCameras, 0xFFFFFF, kTrim[u]).r(kRoomMotes, kFinger[u], kMain[u]);
+      sp.py(kPyroShirts, kShirt[u], kTrim[u]);
+      sp.pap(kMain[u], kTrim[u], 0xFFFFFF);
+    } else if ((u = uni("orig_redline")) >= 0) {
+      // REDLINE: bolts and twinkles, speed lines rushing past, electric streaks and lightning; RED, CHROME (electric
+      // blue), BLACK GOLD (gold)
+      sp.stage = 2.5f;
+      static const uint32_t kBolt[3] = {0xFF3A3A, 0x6AB0FF, 0xFFD040}, kGlow[3] = {0xFFB8B8, 0xD0E8FF, 0xFFF0B0},
+                            kMain[3] = {0xE8202A, 0x3A8AFF, 0xF2C230}, kDark[3] = {0x16161A, 0xC8D0DC, 0x16161A};
+      sp.f(kBoltPiece, kBolt[u], kGlow[u], 1.3f, 0.9f).f(kTwinkle, 0xFFFFFF, kMain[u], 0.9f, 0.8f);
+      sp.r(kRoomSpeed, kMain[u], kGlow[u]).r(kRoomSparks, 0xFFFFFF, kMain[u]).r(kRoomLightning, 0xFFFFFF, kMain[u]);
+      sp.py(kPyroNone);
+      sp.pap(kMain[u], kDark[u], kGlow[u]);
+    } else {
+      sp.name = "";
+    }
   // --- r123 (Lance: "creating things for each super hero to drop from the air during their celebration"): the Marvel
   // heroes (any costume: mua_<hero> / mua_<hero>_cN) ---
   } else if (std::strncmp(pack, "mua_", 4) == 0) {
@@ -1885,6 +2080,7 @@ struct State {
   // [0] full detail (pieces near you), [1] reduced (far away or lying on the floor).
   mesh::Range meshRanges[2][mesh::kCount];
   uint32_t statPeakParts = 0, statPeakIndices = 0;  // for the stats line (largest frame since)
+  float statPeakCoverage = 0.0f;  // r180: the soft sheets' overdraw (screens), largest frame since its log
   // r130: the last frame's particles and mesh indices per eye (the celebration's budget, piece_budget_full)
   uint32_t lastParts = 0, lastMeshIndices = 0;
   VkCommandPool pool = VK_NULL_HANDLE;
@@ -1916,6 +2112,9 @@ struct State {
   // r68c: each guest's own outline (guests/etch.r8, tools/outside/etchres.py), etched into your
   // controllers when a guest is your captain (xr_fx_mesh.frag, set 0 of `layout`).
   Tex etchTex;
+  Tex flameTex;  // r169: the ball skins' fire flipbook (binding 1)
+  Tex ballTex;   // r170: the shop's preview ball's frames (binding 2: set_ball_atlas)
+  VkSampler ballSampler = VK_NULL_HANDLE;
   VkDescriptorSetLayout etchSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool etchPool = VK_NULL_HANDLE;
   VkDescriptorSet etchSet = VK_NULL_HANDLE;
@@ -1969,6 +2168,7 @@ struct State {
   XrVector3f evoAt{0.0f, 0.0f, 0.0f};
   float evoRadius = 0.6f, evoHeight = 2.0f, evoAcc = 0.0f, evoSparkAcc = 0.0f;
   std::string evoPack;
+  float celebHold = 0.0f;  // r153: the goal's usual show waits this much longer (a goal explosion first: hold_celebration)
 };
 State s;
 
@@ -2112,6 +2312,7 @@ bool faces_you(uint8_t shape) {
   switch (shape) {
   case kFlame: case kBoltPiece: case kWisp:
   case kBubble: case kZzz: case kNoteQuad: case kRingFx: case kSpark: case kTwinkle: case kSlash:
+  case kChessQuad:  // r184: chess pieces stand upright
     return true;
   default:
     return false;
@@ -2195,10 +2396,18 @@ Shape storm_leaf(uint32_t c1) {
 }
 
 // r82: one of the scorer's themed pieces (Special::fall), falling with the confetti; `which` -1 = any.
+// r185: the title belts in the air or on the floor now (counted each frame by step_theme): a modest rain, so they stay
+// cheap (~5,400 mesh indices each close up)
+int g_beltsUp = 0;
+
 void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, const float v[3], int which = -1) {
   if (room_full() || s.sp.nFall == 0) return;
   const FallFx& f = s.sp.fall[which >= 0 && which < s.sp.nFall ? which : irand(s.sp.nFall)];
   if (piece_budget_full(mesh_for(static_cast<Shape>(f.shape)) != kNoMesh)) return;  // r130
+  if (f.shape == kBeltPiece) {
+    if (g_beltsUp >= (sc.mr ? 7 : 9) || irand(100) >= 25) return;
+    ++g_beltsUp;
+  }
   Particle q{};
   q.p[0] = p.x; q.p[1] = p.y; q.p[2] = p.z;
   std::memcpy(q.v, v, sizeof(q.v));
@@ -2214,6 +2423,17 @@ void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, cons
   if (f.shape == kRupee) c1 = irand(3) == 0 ? 0x3A7AFF : (irand(2) ? 0x30D050 : 0xE03030);  // green, blue, red
   if (f.shape == kLcd) a2 = static_cast<uint8_t>(irand(4) * 64 + 32);                        // which picture
   if (f.shape == kFlame) a2 = static_cast<uint8_t>(irand(256));                              // its tongues' sway
+  // r184: the originals' quads. Pixel confetti: an 8-bit block (colour 2's alpha < 0.3), in a neon colour when its own
+  // is 0 (one in six a pixel burst); a chess piece: which (0 pawn .. 5 king, 254 queen or king)
+  if (f.shape == kPixel8) {
+    static const uint32_t kNeon[5] = {0x30E8FF, 0xFF3AC8, 0xFFE040, 0x50FF6A, 0x8A5AFF};
+    if (c1 == 0) c1 = kNeon[irand(5)];
+    a2 = irand(6) == 0 ? 128 : static_cast<uint8_t>(irand(60));
+  }
+  if (f.shape == kChessQuad) {
+    const int v = f.var == 255 ? irand(6) : (f.var == 254 ? 4 + irand(2) : std::min<int>(5, f.var));
+    a2 = static_cast<uint8_t>((v + 0.5f) / 5.99f * 255.0f);
+  }
   q.c1 = pack(c1);
   q.c2 = pack(c2, a2);
   q.glow = f.glow;
@@ -2237,10 +2457,23 @@ void add_themed_piece(const Scene& sc, const Scale& k, const XrVector3f& p, cons
     // little later
     std::memset(q.q, 0, sizeof(q.q));
     q.spin = 0.0f;
-    q.aspect = f.shape == kNoteQuad ? 0.8f : 1.0f;
+    q.aspect = f.shape == kNoteQuad ? 0.8f : (f.shape == kChessQuad ? 0.62f : 1.0f);
     q.flutterAmp = k.flutter * 0.3f;
     q.fallSpeed *= 0.7f;
     q.maxAge = frand(1.8f, 3.2f);
+  }
+  if (f.shape == kBeltPiece) {  // r185: heavy gold - it falls a little slower than paper, tumbling slowly end over end
+    q.size = k.piece * f.size * 1.25f * frand(0.92f, 1.08f);
+    q.spin = frand(0.5f, 1.1f);
+    q.fallSpeed *= 0.6f;
+    q.flutterAmp = k.flutter * 0.15f;
+    q.life = 3.0f;  // (landed, it lies there a while before it fades)
+  }
+  if (f.shape == kFingerQuad) q.aspect = 0.75f;  // r184: tall foam fingers, masks a little narrow
+  if (f.shape == kMaskQuad) q.aspect = 0.8f;
+  if (f.shape == kFingerQuad || f.shape == kShirtQuad || f.shape == kMaskQuad) {
+    q.fallSpeed *= 0.8f;  // (light: foam, cloth)
+    q.spin = frand(1.0f, 2.4f);
   }
   if (f.shape == kWebPiece || f.shape == kSnowflakePiece || f.shape == kRunePiece) {
     // r124: light, wide ones float down slowly, turning lazily
@@ -2898,6 +3131,63 @@ void pyro_jets(const Scene& sc, const Scale& k, const Space& S, float rate, floa
   }
 }
 
+// r184: your view's forward and right, level (for things put in front of you: the speed lines, a moon on the horizon).
+void view_level_axes(const Scene& sc, float fwd[3], float right[3]) {
+  const XrQuaternionf& o = sc.views[0].pose.orientation;
+  fwd[0] = -(2 * (o.x * o.z + o.w * o.y));
+  fwd[1] = 0.0f;
+  fwd[2] = -(1 - 2 * (o.x * o.x + o.y * o.y));
+  if (fwd[0] * fwd[0] + fwd[2] * fwd[2] < 1e-4f) { fwd[0] = 0.0f; fwd[2] = -1.0f; }
+  normalize3(fwd);
+  right[0] = -fwd[2];
+  right[1] = 0.0f;
+  right[2] = fwd[0];
+}
+
+// r184: where a show over the scorer goes: over its head (the life-size scorer in your room / the stadium), else a
+// little in front of you at about head height.
+XrVector3f over_scorer(const Scene& sc, const Space& S, float above) {
+  if (sc.scorerValid) return XrVector3f{sc.scorerFeet.x, sc.scorerFeet.y + sc.scorerHeight + above, sc.scorerFeet.z};
+  float f[3], r[3];
+  view_level_axes(sc, f, r);
+  return XrVector3f{S.head.x + f[0] * 1.3f * S.u, S.head.y + above - 0.15f * S.u, S.head.z + f[2] * 1.3f * S.u};
+}
+
+// r188 (Lance on r187: QUARTERBYTE's "1UP" came up at the TOP of his view, he barely saw it): where an ORIGINAL's
+// marquee sign goes - beside the scorer (or, with no life-size scorer, beside the spot 1.3 room units ahead of you)
+// at about your eye height, never over it: on your right (on your left when the scorer stands right of where you
+// look), its near edge just clear of the scorer, its far edge no more than ~49 degrees out from the scorer's line, so
+// the whole sign is in view. The same in every view (Jumbotron / Stadium VR / Living Room / Tabletop: S.u scales it).
+// *h comes in as the sign's designed height and goes out smaller only when the words would not fit that angle.
+XrVector3f side_sign_spot(const Scene& sc, const Space& S, float aspect, float* h) {
+  float f[3], r[3];
+  view_level_axes(sc, f, r);
+  XrVector3f T = sc.scorerValid ? sc.scorerFeet
+                                : XrVector3f{S.head.x + f[0] * 1.3f * S.u, S.head.y, S.head.z + f[2] * 1.3f * S.u};
+  float dx = T.x - S.head.x, dz = T.z - S.head.z;
+  float D = std::sqrt(dx * dx + dz * dz);
+  float d[2] = {f[0], f[2]};
+  if (sc.scorerValid && D > 0.2f) { d[0] = dx / D; d[1] = dz / D; }
+  D = std::max(D, 0.6f * S.u);
+  const float rr[2] = {-d[1], d[0]};  // right of the scorer's line
+  const float lat = dx * r[0] + dz * r[2];
+  const float side = lat > 0.15f * D ? -1.0f : 1.0f;  // the scorer right of your view: the sign on its left
+  const float half = sc.scorerValid ? std::max(0.25f * S.u, 0.3f * sc.scorerHeight) : 0.0f;
+  const float a0 = std::atan2(half + 0.06f * S.u, D);
+  const float Ds = std::min(std::max(0.85f * D, 0.9f * S.u), 2.4f * S.u);
+  const float W0 = *h * aspect;
+  const float bMax = std::max(0.45f, 0.85f - a0);
+  float b = 2.0f * std::atan(0.5f * W0 / Ds);
+  if (b > bMax) {
+    *h *= std::tan(0.5f * bMax) / std::tan(0.5f * b);
+    b = bMax;
+  }
+  const float a = side * (a0 + 0.5f * b);
+  const float ca = std::cos(a), sa = std::sin(a);
+  const float dir[2] = {d[0] * ca + rr[0] * sa, d[1] * ca + rr[1] * sa};
+  return XrVector3f{S.head.x + dir[0] * Ds, S.head.y - 0.05f * S.u, S.head.z + dir[1] * Ds};
+}
+
 // One room effect of the scorer's theme, this frame (index i: its own timers).
 void room_effect(const Scene& sc, const Scale& k, const Space& S, int i, const RoomEntry& e, float m, float dt) {
   float& acc = s.spAcc[i];
@@ -2908,12 +3198,15 @@ void room_effect(const Scene& sc, const Scale& k, const Space& S, int i, const R
   switch (e.kind) {
   case kRoomFog: {
     if (done == 0.0f) add_veil(sc, e.c2, std::min(0.24f, 0.09f + 0.035f * st) * std::min(1.0f, m), 0.0f, 40.0f, 2.0f);
-    const float n = std::min(26.0f, (sc.mr ? 12.0f : 18.0f) * m);
+    // r180 (Lance: Koffing's purple smoke "filled the room" and the frame rate fell to ~32): fewer, larger, thinner
+    // layers, kept out round you (no puff within ~1 m of your eyes), gone sooner - the same fill for a fraction of the
+    // fill-rate (was up to 26 puffs of 1-1.7 room units, from 0.45 out, for 40 s)
+    const float n = std::min(16.0f, (sc.mr ? 12.0f : 15.0f) * m);  // (all round you: what is in view is held to the budget)
     for (int j = spawn_n(acc, n / 1.5f, dt); j > 0 && done < n; --j) {
       done += 1.0f;
-      const XrVector3f p = around(S, 0.45f * S.u, S.r, 0.15f * S.u, std::min(S.top - S.floor - 0.1f, H + 0.5f * S.u));
-      Particle* q = add_fx(kKindFog, kPuff, p, nullptr, S.u * frand(1.0f, 1.7f) * (0.85f + 0.12f * st), 1.0f, e.c1, e.c2,
-                           std::min(0.42f, frand(0.16f, 0.26f) * (0.8f + 0.15f * st)), 0.0f, 40.0f, 1.5f);
+      const XrVector3f p = around(S, 1.0f * S.u, std::max(S.r, 1.6f * S.u), 0.15f * S.u, std::min(S.top - S.floor - 0.1f, H + 0.5f * S.u));
+      Particle* q = add_fx(kKindFog, kPuff, p, nullptr, S.u * frand(1.5f, 2.3f) * (0.85f + 0.1f * st), 1.0f, e.c1, e.c2,
+                           std::min(0.32f, frand(0.16f, 0.24f) * (0.8f + 0.15f * st)), 0.0f, 14.0f, 1.5f);
       if (q != nullptr) {
         q->orbit = S.u * frand(0.12f, 0.3f);
         q->grow = 0.02f * S.u;
@@ -3199,6 +3492,274 @@ void room_effect(const Scene& sc, const Scale& k, const Space& S, int i, const R
       const float v[3] = {0.0f, 0.12f * S.u, 0.0f};
       Particle* q = add_fx(kKindFog, kPuff, p, v, 0.5f * S.u, 1.0f, e.c1, e.c2, 0.22f, 0.0f, 4.0f, 0.6f);
       if (q != nullptr) { q->grow = 0.3f * S.u; q->fallSpeed = 0.12f * S.u; }
+    }
+    break;
+  // ---- r184: the ORIGINALS' own (ORIGINALS-CELEBRATIONS.md). What stays put (the board's squares, banners, the horn's
+  // beams) is pinned (trail 4: no float drift) and animated in step_particles (anim_original). ----
+  case kRoomSign: {
+    // the arcade marquee's words ("1UP", "NEW HIGH SCORE", "GAME OVER"): up with an 8-bit burst every 3.4 s, its LED
+    // letters cycling colours and its border lights chasing. r188: beside the scorer at your eye height, facing you
+    // (side_sign_spot; r184 put it over the scorer's head = the top of your view), barely bobbing
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 3.4f;
+      static const int kChars[3] = {3, 14, 9};
+      const int n = kChars[std::min<int>(2, e.v)];
+      float h = (e.v == 0 ? 0.26f : 0.2f) * S.u;          // its height: 11 pixel rows (letters ~13 cm in your room)
+      const float aspect = (6.0f * n + 3.0f) / 11.0f;     // (the shader reads which words from this)
+      const XrVector3f p = side_sign_spot(sc, S, aspect, &h);
+      const float v[3] = {0.0f, 0.008f * S.u, 0.0f};
+      Particle* q = add_fx(kKindFloat, kSignQuad, p, v, h, aspect, e.c1, e.c2, 1.0f, 0.1f, 3.2f, 0.08f);
+      if (q != nullptr) q->c2 = pack(e.c2, 0);
+      Particle* b = add_fx(kKindRing, kPixel8, p, nullptr, 0.1f * S.u, 1.0f, e.c1, e.c2, 1.0f, 0.6f, 0.5f, 0.0f);
+      if (b != nullptr) {
+        b->c2 = pack(e.c2, 128);  // an 8-bit burst
+        b->grow = 1.1f * S.u;
+      }
+      for (int j = 0; j < 14; ++j) {
+        float d[3];
+        random_unit(d);
+        const float sp = frand(0.5f, 1.2f) * S.u;
+        const float sv[3] = {d[0] * sp, std::fabs(d[1]) * sp, d[2] * sp};
+        add_spark(p, sv, 0.012f * S.u, (j & 1) ? e.c1 : e.c2, 0xFFFFFF, frand(0.4f, 0.8f), 1.5f, 0.4f);
+      }
+    }
+    break;
+  }
+  case kRoomInvaders:
+    // pixel invaders marching round you over head height, two frames each (anim_original)
+    for (int j = spawn_n(acc, 1.3f * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 0.9f * S.u, std::max(1.2f * S.u, S.r * 0.85f), H + 0.15f * S.u,
+                                  std::max(H + 0.2f * S.u, std::min(S.top - S.floor - 0.12f * S.u, H + 0.8f * S.u)));
+      const float rx = p.x - S.head.x, rz = p.z - S.head.z;
+      const float rl = std::max(0.05f, std::sqrt(rx * rx + rz * rz));
+      const float dir = irand(2) ? 1.0f : -1.0f;
+      const float v[3] = {-rz / rl * 0.22f * S.u * dir, 0.0f, rx / rl * 0.22f * S.u * dir};
+      static const uint32_t kNeon[4] = {0x30E8FF, 0xFF3AC8, 0xFFE040, 0x50FF6A};
+      const uint32_t body = irand(3) == 0 ? e.c1 : kNeon[irand(4)];
+      const int base = 2 * irand(3);
+      Particle* q = add_fx(kKindFloat, kAlienQuad, p, v, 0.2f * S.u, 1.0f, body, 0x16161E, 1.0f, 0.5f, 4.0f, 0.3f);
+      if (q != nullptr) {
+        q->burstHeight = static_cast<float>(base);
+        q->c2 = pack(0x16161E, static_cast<uint8_t>((base + 0.5f) / 7.99f * 255.0f));
+      }
+    }
+    break;
+  case kRoomBoard: {
+    // the floor round the scorer a chess board (v squares a side) squared to your view; each square flips over in a
+    // hop, in waves going out from the middle (anim_original), ivory one side, ebony the other
+    if (done == 0.0f) {
+      done = 1.0f;
+      const int n = std::max(3, std::min(9, static_cast<int>(e.v)));
+      const float cell = (sc.mr ? 0.3f : 0.36f) * S.u;
+      XrVector3f c = sc.scorerValid ? sc.scorerFeet : over_scorer(sc, S, 0.0f);
+      c.y = S.floor + 0.012f;
+      float f[3], r[3];
+      view_level_axes(sc, f, r);
+      const float yaw = std::atan2(r[2], r[0]);  // (orient_flat's x = the board's across, your right)
+      for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+          const float a = (i - (n - 1) * 0.5f) * cell, b = (j - (n - 1) * 0.5f) * cell;
+          const XrVector3f p{c.x + r[0] * a + f[0] * b, c.y, c.z + r[2] * a + f[2] * b};
+          Particle* q = add_fx(kKindFloat, kTileQuad, p, nullptr, cell * 0.96f, 1.0f, e.c1, e.c2, 1.0f, 0.0f, 9.0f, 0.25f);
+          if (q == nullptr) continue;
+          q->trail = 4;
+          q->restOff[0] = p.y;
+          q->restOff[1] = yaw;
+          q->restOff[2] = ((i + j) & 1) ? 1.0f : 0.0f;  // (starts ebony side up)
+          q->flutterFreq = 0.45f + 0.16f * std::sqrt(a * a + b * b) / cell;  // its first flip: a wave from the middle
+          orient_flat(q->q, yaw);
+        }
+      }
+    }
+    break;
+  }
+  case kRoomBanners: {
+    // heraldic banners on gold rods round you (v of them, the first ones where you look), waving (anim_original)
+    if (done == 0.0f) {
+      done = 1.0f;
+      const int n = std::max(2, std::min(10, static_cast<int>(e.v)));
+      float f[3], r[3];
+      view_level_axes(sc, f, r);
+      const float base = std::atan2(f[2], f[0]);
+      const float R = (sc.mr ? 1.35f : 1.5f) * S.u;
+      const float h = 0.9f * S.u;
+      const float topY = std::min(S.top - 0.08f * S.u, S.head.y + 0.55f * S.u);
+      for (int j = 0; j < n; ++j) {
+        const float a = base + ((j & 1) ? 1.0f : -1.0f) * (0.45f + 0.62f * static_cast<float>(j / 2));
+        const XrVector3f p{S.head.x + std::cos(a) * R, topY - 0.5f * h, S.head.z + std::sin(a) * R};
+        Particle* q = add_fx(kKindFloat, kBannerQuad, p, nullptr, h, 0.42f, e.c1, e.c2, 1.0f, 0.0f, 12.0f, 0.6f);
+        if (q == nullptr) continue;
+        q->trail = 4;
+        const XrVector3f eyeLevel{S.head.x, p.y, S.head.z};
+        orient_facing(q->q, p, eyeLevel, 0.0f);  // hanging straight, its face to you
+        for (int k2 = 0; k2 < 6; ++k2) {          // gold sparks off its rod as it unfurls
+          const float sv[3] = {frand(-0.3f, 0.3f) * S.u, frand(0.1f, 0.5f) * S.u, frand(-0.3f, 0.3f) * S.u};
+          add_spark(XrVector3f{p.x, p.y + 0.46f * h, p.z}, sv, 0.01f * S.u, 0xFFF0B0, e.c2, frand(0.4f, 0.8f), 1.5f, 0.5f);
+        }
+      }
+    }
+    break;
+  }
+  case kRoomMoon: {
+    // the moon rising over the room, a little to one side of where you look (v: 0 a crescent, 1 half, 2 FULL with
+    // the room gone night-blue)
+    if (done == 0.0f) {
+      done = 1.0f;
+      float f[3], r[3];
+      view_level_axes(sc, f, r);
+      const float side = irand(2) ? 0.42f : -0.42f;
+      const float dir[3] = {f[0] * std::cos(side) + r[0] * std::sin(side), 0.0f, f[2] * std::cos(side) + r[2] * std::sin(side)};
+      const float D = std::max(1.8f * S.u, S.r * 0.95f);
+      const float size = (0.5f + 0.22f * e.v) * S.u;
+      const XrVector3f p{S.head.x + dir[0] * D, S.head.y - 0.05f * S.u, S.head.z + dir[2] * D};
+      const float v[3] = {0.0f, 0.055f * S.u, 0.0f};
+      Particle* q = add_fx(kKindFloat, kMoonQuad, p, v, size, 1.0f, e.c1, e.c2, 1.0f, 0.55f, 14.0f, 1.8f);
+      if (q != nullptr) {
+        q->trail = 4;
+        q->c2 = pack(e.c2, static_cast<uint8_t>(std::min<int>(2, e.v) * 127));
+      }
+    }
+    break;
+  }
+  case kRoomRopes: {
+    // a wrestling ring's ropes round the scorer (three heights, corner posts), flashing in turn: each flash a new set
+    // that holds half a second (thin glowing lines, not soft sheets)
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 0.55f;
+      done += 1.0f;
+      XrVector3f c = sc.scorerValid ? sc.scorerFeet : over_scorer(sc, S, 0.0f);
+      c.y = S.floor;
+      float f[3], r[3];
+      view_level_axes(sc, f, r);
+      const float R = 0.85f * S.u;
+      const float cx[4] = {1.0f, -1.0f, -1.0f, 1.0f}, cz[4] = {1.0f, 1.0f, -1.0f, -1.0f};
+      XrVector3f cn[4];
+      for (int k2 = 0; k2 < 4; ++k2) {
+        cn[k2] = XrVector3f{c.x + (r[0] * cx[k2] + f[0] * cz[k2]) * R, c.y, c.z + (r[2] * cx[k2] + f[2] * cz[k2]) * R};
+      }
+      const int flash = static_cast<int>(done);
+      for (int hh = 0; hh < 3; ++hh) {
+        const float y = c.y + (0.32f + 0.3f * hh) * S.u;
+        const uint32_t col = ((hh + flash) & 1) ? e.c1 : e.c2;
+        const float peak = hh == flash % 3 ? 1.0f : 0.6f;
+        for (int k2 = 0; k2 < 4; ++k2) {
+          const XrVector3f& a = cn[k2];
+          const XrVector3f& b = cn[(k2 + 1) % 4];
+          const XrVector3f mid{0.5f * (a.x + b.x), y, 0.5f * (a.z + b.z)};
+          const float d[3] = {b.x - a.x, 0.0f, b.z - a.z};
+          const float len = std::sqrt(d[0] * d[0] + d[2] * d[2]);
+          Particle* q = add_fx(kKindDrop, kBolt, mid, nullptr, len, 0.05f * S.u / std::max(0.05f, len), 0xFFFFFF, col, peak,
+                               1.0f, 0.5f, 0.0f);
+          if (q != nullptr) orient_along(q->q, mid, d, S.head);
+        }
+      }
+      for (int k2 = 0; k2 < 4; ++k2) {  // the corner posts
+        const XrVector3f mid{cn[k2].x, c.y + 0.5f * S.u, cn[k2].z};
+        const float d[3] = {0.0f, 1.0f, 0.0f};
+        Particle* q = add_fx(kKindDrop, kBolt, mid, nullptr, 1.0f * S.u, 0.07f, 0xFFFFFF, 0xA0A8B8, 0.7f, 1.0f, 0.5f, 0.0f);
+        if (q != nullptr) orient_along(q->q, mid, d, S.head);
+      }
+    }
+    break;
+  }
+  case kRoomBelt: {
+    // the TITLE BELT hoisted over the scorer's head (a gold plate on a strap, glinting), every 6.5 s, twinkling
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 6.5f;
+      const XrVector3f p = over_scorer(sc, S, -0.05f * S.u);
+      const float v[3] = {0.0f, 0.14f * S.u, 0.0f};
+      Particle* q = add_fx(kKindFloat, kBeltQuad, p, v, 0.28f * S.u, 2.6f, e.c1, e.c2, 1.0f, 0.15f, 5.0f, 0.25f);
+      if (q != nullptr) q->trail = 4;
+      add_ring(S, p, false, 0.1f * S.u, 1.2f * S.u, 0.5f, 0xFFF0B0, e.c1, 0.9f, 1.0f);
+    }
+    if (timer > 1.6f) {  // (while it is up)
+      const float up = (6.5f - timer) * 0.14f * S.u;
+      const XrVector3f b = over_scorer(sc, S, -0.05f * S.u + up);
+      for (int j = spawn_n(acc, 6.0f, dt); j > 0; --j) {
+        const XrVector3f p{b.x + frand(-0.3f, 0.3f) * S.u, b.y + frand(-0.1f, 0.12f) * S.u, b.z + frand(-0.08f, 0.08f) * S.u};
+        add_fx(kKindBolt, kTwinkle, p, nullptr, 0.09f * S.u, 1.0f, 0xFFFFFF, e.c1, 1.0f, 1.0f, 0.35f, 0.0f);
+      }
+    }
+    break;
+  }
+  case kRoomHorn: {
+    // the goal horn's red light: a lamp over the scorer, two beams sweeping round (anim_original), the room pulsing red
+    if (done == 0.0f) {
+      done = 1.0f;
+      const XrVector3f src = over_scorer(sc, S, 0.35f * S.u);
+      for (int j = 0; j < 2; ++j) {
+        Particle* q = add_fx(kKindFloat, kConeQuad, src, nullptr, 1.5f * S.u, 0.35f, e.c1, e.c2, 0.55f, 1.0f, 10.0f, 0.3f);
+        if (q == nullptr) continue;
+        q->trail = 4;
+        q->restOff[0] = src.x;
+        q->restOff[1] = src.y;
+        q->restOff[2] = src.z;
+        q->burstHeight = 3.14159265f * j;
+        q->spin = 4.2f;  // rad/s
+      }
+      Particle* lamp = add_fx(kKindFloat, kSpark, src, nullptr, 0.16f * S.u, 1.0f, 0xFFFFFF, e.c1, 1.0f, 1.0f, 10.0f, 0.2f);
+      if (lamp != nullptr) lamp->trail = 4;
+    }
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = 0.9f;
+      add_veil(sc, e.c1, 0.09f, 0.4f, 0.3f, 0.05f);
+    }
+    break;
+  }
+  case kRoomIceSpray: {
+    // a hockey stop: a fan of ice spraying off the floor beside the scorer, a puff of cold mist
+    timer -= dt;
+    if (timer <= 0.0f) {
+      timer = frand(0.6f, 1.0f) / std::max(0.3f, m);
+      XrVector3f p = sc.scorerValid ? XrVector3f{sc.scorerFeet.x + frand(-0.3f, 0.3f) * S.u, 0.0f,
+                                                 sc.scorerFeet.z + frand(-0.3f, 0.3f) * S.u}
+                                    : around(S, 0.6f * S.u, 1.5f * S.u, 0.0f, 0.0f);
+      p.y = S.floor + 0.02f;
+      const float a = frand(0.0f, 6.2831853f), dx = std::cos(a), dz = std::sin(a);
+      for (int j = 0; j < 36; ++j) {
+        const float sp = frand(1.0f, 2.2f) * S.u, side = frand(-0.5f, 0.5f) * S.u;
+        const float v[3] = {dx * sp - dz * side, frand(0.4f, 1.1f) * S.u, dz * sp + dx * side};
+        add_spark(p, v, S.u * frand(0.01f, 0.018f), e.c1, e.c2, frand(0.35f, 0.7f), 2.2f, 0.9f);
+      }
+      for (int j = 0; j < 2; ++j) {
+        const float v[3] = {dx * 0.5f * S.u, 0.12f * S.u, dz * 0.5f * S.u};
+        Particle* q = add_fx(kKindFog, kPuff, p, v, 0.22f * S.u, 1.0f, 0xFFFFFF, e.c2, 0.22f, 0.0f, 1.3f, 0.05f);
+        if (q != nullptr) { q->grow = 0.35f * S.u; q->fallSpeed = 0.05f * S.u; }
+      }
+    }
+    break;
+  }
+  case kRoomSpeed: {
+    // speed lines rushing past you from ahead (thin streaks, never through your eyes)
+    float f[3], r[3];
+    view_level_axes(sc, f, r);
+    for (int j = spawn_n(acc, (sc.mr ? 26.0f : 60.0f) * m, dt); j > 0; --j) {
+      const float a = frand(0.0f, 6.2831853f), rr = frand(0.5f, 1.5f) * S.u;
+      const float ahead = frand(2.2f, 3.0f) * S.u;
+      const float ox = std::cos(a) * rr, oy = std::sin(a) * rr * 0.6f;
+      XrVector3f p{S.head.x + f[0] * ahead + r[0] * ox, S.head.y + oy, S.head.z + f[2] * ahead + r[2] * ox};
+      p.y = std::max(S.floor + 0.1f * S.u, std::min(S.top - 0.05f * S.u, p.y));
+      const float speed = 8.0f * S.u;
+      const float v[3] = {-f[0] * speed, 0.0f, -f[2] * speed};
+      const float d[3] = {-f[0], 0.0f, -f[2]};
+      Particle* q = add_fx(kKindDrop, kStreak, p, v, frand(0.45f, 0.8f) * S.u, 0.035f, irand(3) ? e.c1 : e.c2, e.c2, 0.85f,
+                           1.0f, (ahead + 1.0f * S.u) / speed, 0.0f);
+      if (q != nullptr) orient_along(q->q, p, d, S.head);
+    }
+    break;
+  }
+  case kRoomCameras:
+    // camera flashbulbs going off round the room
+    for (int j = spawn_n(acc, (sc.mr ? 5.0f : 12.0f) * m, dt); j > 0; --j) {
+      const XrVector3f p = around(S, 1.1f * S.u, std::max(1.4f * S.u, S.r), 0.5f * S.u,
+                                  std::max(0.6f * S.u, std::min(S.top - S.floor - 0.1f, H + 0.6f * S.u)));
+      add_fx(kKindBolt, kTwinkle, p, nullptr, frand(0.1f, 0.16f) * S.u, 1.0f, e.c1, e.c2, 1.0f, 1.0f, frand(0.14f, 0.22f), 0.0f);
+      const float z[3] = {0.0f, 0.0f, 0.0f};
+      add_spark(p, z, 0.05f * S.u, 0xFFFFFF, e.c2, 0.25f, 0.0f, 0.0f);
     }
     break;
   default:
@@ -3539,13 +4100,14 @@ void pyro_tick(const Scene& sc, const Scale& k, const Space& S, float m, float d
       XrVector3f from[4], out[4];
       launch_points(sc, from, out);
       const XrVector3f p = from[irand(4)];
-      for (int j = 0; j < 8; ++j) {
+      for (int j = 0; j < 6; ++j) {  // (r180: 6, was 8)
         float d[3];
         random_unit(d);
         d[1] = std::fabs(d[1]) * 0.6f + 0.2f;
         const float v[3] = {d[0] * 0.6f * S.u, d[1] * 0.6f * S.u, d[2] * 0.6f * S.u};
-        Particle* q = add_fx(kKindFog, kPuff, p, v, 0.25f * S.u, 1.0f, irand(2) ? sp.p1 : sp.p2, sp.p2, 0.35f, 0.0f, 2.6f, 0.1f);
-        if (q != nullptr) q->grow = 0.6f * S.u;
+        // r180: they grew to ~1.8 m each (every 1.4 s, 8 of them): half that now, thinner, sooner gone
+        Particle* q = add_fx(kKindFog, kPuff, p, v, 0.25f * S.u, 1.0f, irand(2) ? sp.p1 : sp.p2, sp.p2, 0.28f, 0.0f, 2.0f, 0.1f);
+        if (q != nullptr) q->grow = 0.35f * S.u;
       }
     }
     break;
@@ -3580,14 +4142,126 @@ void pyro_tick(const Scene& sc, const Scale& k, const Space& S, float m, float d
     }
     break;
   }
+  case kPyroCoins: {
+    // r184 (arcade): coin bursts from the launch points - an 8-bit burst (and, at stage 3, a pixel ring), coins popping
+    // out and fluttering down, sparks
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 1.15f / std::max(0.3f, s.intensity);
+      XrVector3f from[4], out[4];
+      launch_points(sc, from, out);
+      XrVector3f p = from[irand(4)];
+      p.y += 0.25f * S.u;
+      Particle* b = add_fx(kKindRing, kPixel8, p, nullptr, 0.12f * S.u, 1.0f, sp.p1, sp.p2, 1.0f, 0.6f, 0.55f, 0.0f);
+      if (b != nullptr) {
+        b->c2 = pack(sp.p2, 128);
+        b->grow = 1.3f * S.u;
+      }
+      if (sp.stage >= 2.5f) {
+        Particle* rg = add_fx(kKindRing, kPixel8, p, nullptr, 0.2f * S.u, 1.0f, sp.p2, sp.p1, 1.0f, 0.6f, 0.7f, 0.0f);
+        if (rg != nullptr) {
+          rg->c2 = pack(sp.p1, 235);
+          rg->grow = 1.8f * S.u;
+        }
+      }
+      const int n = 6 + static_cast<int>(3.0f * sp.stage);
+      for (int j = 0; j < n && !piece_budget_full(true); ++j) {
+        const float a = frand(0.0f, 6.2831853f), o = frand(0.4f, 1.1f) * S.u;
+        const float v[3] = {std::cos(a) * o, frand(1.6f, 2.8f) * S.u, std::sin(a) * o};
+        add_drift_piece(p, v, kCoin, k.piece * 1.15f, 0xFFC21F, 0xFFE27A, 0.45f * S.u, 3.2f, 0.06f * S.u);
+      }
+      for (int j = 0; j < 10; ++j) {
+        float d[3];
+        random_unit(d);
+        const float sp2 = frand(0.6f, 1.4f) * S.u;
+        const float v[3] = {d[0] * sp2, std::fabs(d[1]) * sp2, d[2] * sp2};
+        add_spark(p, v, 0.012f * S.u, 0xFFF4B0, sp.p1, frand(0.35f, 0.7f), 1.5f, 0.5f);
+      }
+    }
+    break;
+  }
+  case kPyroShirts: {
+    // r184 (mascot): the t-shirt cannon - a shirt fired up out of a launch point toward you, tumbling down; a puff
+    // of white smoke and a pop at the muzzle
+    if (s.pyroTimer <= 0.0f) {
+      s.pyroTimer = 0.55f / std::max(0.3f, s.intensity);
+      XrVector3f from[4], out[4];
+      launch_points(sc, from, out);
+      const XrVector3f p = from[irand(4)];
+      float dx = S.head.x - p.x, dz = S.head.z - p.z;
+      const float dl = std::max(1e-3f, std::sqrt(dx * dx + dz * dz));
+      dx /= dl;
+      dz /= dl;
+      const float v[3] = {dx * 1.6f * S.u, 3.0f * S.u, dz * 1.6f * S.u};
+      const bool alt = irand(2) == 0;
+      if (!piece_budget_full(false)) {
+        add_drift_piece(p, v, kShirtQuad, k.piece * 3.6f, alt ? sp.p1 : sp.p2, alt ? sp.p2 : sp.p1, 0.32f * S.u, 5.0f, 0.12f * S.u);
+      }
+      for (int j = 0; j < 3; ++j) {
+        const float pv[3] = {dx * 0.4f * S.u + frand(-0.1f, 0.1f) * S.u, frand(0.3f, 0.6f) * S.u, dz * 0.4f * S.u + frand(-0.1f, 0.1f) * S.u};
+        Particle* q = add_fx(kKindFog, kPuff, p, pv, 0.16f * S.u, 1.0f, 0xFFFFFF, 0xC8C8D0, 0.3f, 0.0f, 0.9f, 0.03f);
+        if (q != nullptr) {
+          q->grow = 0.35f * S.u;
+          q->fallSpeed = 0.15f * S.u;
+        }
+      }
+      for (int j = 0; j < 8; ++j) {
+        const float sv[3] = {dx * frand(0.5f, 1.2f) * S.u, frand(0.8f, 1.8f) * S.u, dz * frand(0.5f, 1.2f) * S.u};
+        add_spark(p, sv, 0.01f * S.u, 0xFFFFFF, sp.p2, frand(0.2f, 0.4f), 2.0f, 0.4f);
+      }
+    }
+    break;
+  }
   default:
     break;
+  }
+}
+
+// r184: the originals' pinned things, this frame: a chess square flips over in a hop every 2.4 s (its first flip in the
+// board's wave from the middle: flutterFreq; where it lies and which face was up: restOff), a banner waves and a belt
+// glints (colour 2's alpha: the shader's phase), the horn's beams sweep round their lamp (restOff; burstHeight their
+// angle, spin how fast).
+void anim_original(Particle& q, const XrVector3f& head) {
+  if (q.shape == kTileQuad) {
+    constexpr float kPer = 2.4f, kDur = 0.42f;
+    const float t = q.age - q.flutterFreq;
+    int n = 0;
+    float frac = 0.0f;
+    if (t > 0.0f) {
+      n = static_cast<int>(t / kPer);
+      const float u = (t - static_cast<float>(n) * kPer) / kDur;
+      frac = u >= 1.0f ? 1.0f : u * u * (3.0f - 2.0f * u);
+    }
+    const float ang = 3.14159265f * (static_cast<float>(n) + frac + q.restOff[2]);
+    q.p[1] = q.restOff[0] + ((frac > 0.0f && frac < 1.0f) ? std::sin(3.14159265f * frac) * 0.45f * q.size : 0.0f);
+    float flat[4], flip[4];
+    orient_flat(flat, q.restOff[1]);
+    const float ax[3] = {1.0f, 0.0f, 0.0f};
+    quat_axis_angle(ax, ang, flip);
+    quat_mul(flat, flip, q.q);
+  } else if (q.shape == kBannerQuad) {
+    q.c2 = (q.c2 & 0x00FFFFFFu) | (static_cast<uint32_t>(static_cast<int>(q.age * 50.0f + q.flutterPhase * 40.0f) & 255) << 24);
+  } else if (q.shape == kBeltQuad) {
+    q.c2 = (q.c2 & 0x00FFFFFFu) | (static_cast<uint32_t>(static_cast<int>(q.age * 70.0f) & 255) << 24);
+  } else if (q.shape == kConeQuad) {
+    const float a = q.burstHeight + q.spin * q.age;
+    float d[3] = {std::cos(a), -0.12f, std::sin(a)};
+    normalize3(d);
+    const XrVector3f p{q.restOff[0] + d[0] * 0.5f * q.size, q.restOff[1] + d[1] * 0.5f * q.size,
+                       q.restOff[2] + d[2] * 0.5f * q.size};
+    q.p[0] = p.x;
+    q.p[1] = p.y;
+    q.p[2] = p.z;
+    orient_along(q.q, p, d, head);
   }
 }
 
 // r82: the scorer's theme this frame (while it rains, and a moment after).
 void step_theme(const Scene& sc, const Scale& k, float dt) {
   if (!s.spOn) return;
+  if (s.sp.nFall > 0 && s.sp.fall[0].shape == kBeltPiece) {  // r185: how many title belts are up
+    g_beltsUp = 0;
+    for (const Particle& q : s.parts) g_beltsUp += q.shape == kBeltPiece ? 1 : 0;
+  }
   const bool live = s.stage == Stage::Raining || (s.stage == Stage::Tapering && s.stageTime < 1.0f);
   if (!live) {
     // The party is over: what lingers (fog, the tint, floating things) fades out in 2.5 s.
@@ -4019,7 +4693,10 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       }
     } else if (q.kind == kKindFloat) {
       // r82: notes, bubbles, wisps, faces, spirals float; orbs (trail 2) zip about in curves.
-      if (q.trail == 2) {
+      // r184: the originals' pinned things (trail 4) stay where they were put; their animation (anim_original)
+      if (q.trail == 4) {
+        anim_original(q, head);  // (no drift; its velocity, if any, still moves it: the moon, the belt rise)
+      } else if (q.trail == 2) {
         const float c = std::cos(q.spin * dt), sn = std::sin(q.spin * dt);
         const float vx = q.v[0] * c - q.v[2] * sn, vz = q.v[0] * sn + q.v[2] * c;
         q.v[0] = vx;
@@ -4038,6 +4715,12 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
       q.size += q.grow * dt;
       if (q.shape == kSpiral) q.c2 = (q.c2 & 0x00FFFFFFu) | (static_cast<uint32_t>(static_cast<int>(q.age * 40.0f) & 255) << 24);
+      // r184: the marquee's colour cycle (its border lights chasing); the invaders' two frames
+      if (q.shape == kSignQuad) q.c2 = (q.c2 & 0x00FFFFFFu) | (static_cast<uint32_t>(static_cast<int>(q.age * 60.0f) & 255) << 24);
+      if (q.shape == kAlienQuad) {
+        const int fr = static_cast<int>(q.burstHeight) + (static_cast<int>(q.age * 2.2f) & 1);
+        q.c2 = (q.c2 & 0x00FFFFFFu) | (static_cast<uint32_t>((fr + 0.5f) / 7.99f * 255.0f) << 24);
+      }
       keep = q.age < q.life;
     } else if (q.kind == kKindFlash || q.kind == kKindVeil) {
       // Stays in front of you while it fades.
@@ -4383,11 +5066,14 @@ struct RoomPush {
 
 bool make_pipelines() {
   // r68c: one texture for the 3D pieces' shader (the guests' outlines, make_etch).
-  VkDescriptorSetLayoutBinding etchBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                           nullptr};
+  // r169: + binding 1, the ball skins' real-fire flipbook (xr_fx.frag shape 163: franchise/balls/flame169.r8g8)
+  VkDescriptorSetLayoutBinding etchBinding[3] = {
+      {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};  // r170: the preview ball's
   VkDescriptorSetLayoutCreateInfo etchInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  etchInfo.bindingCount = 1;
-  etchInfo.pBindings = &etchBinding;
+  etchInfo.bindingCount = 3;
+  etchInfo.pBindings = etchBinding;
   if (!vk_ok(vkCreateDescriptorSetLayout(s.dev.device, &etchInfo, nullptr, &s.etchSetLayout),
              "vkCreateDescriptorSetLayout(etch)")) {
     return false;
@@ -4954,7 +5640,8 @@ bool make_filled_buffer(const void* data, VkDeviceSize bytes, VkBufferUsageFlags
 // the one above), bound to `set`. Waits for the upload. r68c: or as plain values (`format`), one
 // level, with a sampler of its own (the etch outlines: distances, not colours).
 bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t w, uint32_t h,
-              VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, VkSampler sampler = VK_NULL_HANDLE, bool mips = true) {
+              VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, VkSampler sampler = VK_NULL_HANDLE, bool mips = true,
+              uint32_t binding = 0) {  // (r169: which binding of `set`)
   uint32_t levels = 1;
   while (mips && (std::max(w, h) >> levels) > 0) ++levels;
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -5057,7 +5744,7 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   VkDescriptorImageInfo di{sampler != VK_NULL_HANDLE ? sampler : s.sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
   wr.dstSet = set;
-  wr.dstBinding = 0;
+  wr.dstBinding = binding;
   wr.descriptorCount = 1;
   wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   wr.pImageInfo = &di;
@@ -5065,11 +5752,12 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   return true;
 }
 
+bool make_flame();  // r169 (below)
 // r68c: the guests' outlines for the etching (STRIKERS_HOME/guests/etch.r8: 8 x 8 cells of 64 x 64 then, r135 16 x 32
 // of 128 x 128, one per pickable guest at its roster place, 128 = the outline). Without the file a single "far outside" texel:
 // nothing is etched for a guest. The set is bound for every pass (the 3D pieces' shader reads it).
 bool make_etch() {
-  VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+  VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3};  // (r169: + the fire flipbook; r170: + the preview ball)
   VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pi.maxSets = 1;
   pi.poolSizeCount = 1;
@@ -5086,6 +5774,11 @@ bool make_etch() {
   si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
   si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   if (!vk_ok(vkCreateSampler(s.dev.device, &si, nullptr, &s.etchSampler), "vkCreateSampler(etch)")) return false;
+  {  // r170: the preview ball's: round its longitude (U repeats), clamped at its poles
+    VkSamplerCreateInfo bi = si;
+    bi.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (!vk_ok(vkCreateSampler(s.dev.device, &bi, nullptr, &s.ballSampler), "vkCreateSampler(ball)")) return false;
+  }
   // r121: 16 x 16 cells (1024 x 1024: room for the Marvel heroes, guests 95-104); an older 8 x 8 file (512 x 512)
   // laid out the new way (its cell i to i % 16, i / 16)
   // r124 (Lance on the home ground's banners: "still blurry as shit"): or 128 x 128 a cell (2048 x 2048, etchres.py
@@ -5131,7 +5824,58 @@ bool make_etch() {
     std::fclose(f);
   }
   FXLOG("fx: guest etch outlines %s (%ux%u)", w > 1 ? "loaded" : "not there (no guest etching)", w, h);
-  return make_tex(s.etchTex, s.etchSet, tex.data(), w, h, VK_FORMAT_R8_UNORM, s.etchSampler, false);
+  if (!make_tex(s.etchTex, s.etchSet, tex.data(), w, h, VK_FORMAT_R8_UNORM, s.etchSampler, false)) return false;
+  return make_flame();  // r169
+}
+
+// r169 (Lance on r168's FIREBALL: "looks fake as fuck i need more realistic flames like the ones charmander has"): the
+// ball skins' real-fire flipbook - 16 frames of a ray-marched turbulent flame (tools/outside/balls169/flame169.py, our
+// own), heat in R, smoke in G, a 4 x 4 atlas of 64 x 128 cells (STRIKERS_HOME/franchise/balls/flame169.r8g8: "FLM1", w,
+// h, cols, rows, then w*h heat bytes, w*h smoke bytes). xr_fx.frag shape 163 reads it (binding 1). Without the file: a
+// soft teardrop in every cell, so the binding is always valid.
+bool make_flame() {
+  uint32_t w = 256, h = 512;
+  std::vector<uint8_t> rgba;
+  const char* home = std::getenv("STRIKERS_HOME");
+  const std::string path = std::string(home != nullptr && *home ? home : "/storage/emulated/0/Strikers") + "/franchise/balls/flame169.r8g8";
+  bool loaded = false;
+  if (FILE* f = std::fopen(path.c_str(), "rb")) {
+    char magic[4] = {};
+    uint32_t hd[4] = {};
+    if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "FLM1", 4) == 0 && std::fread(hd, 4, 4, f) == 4 && hd[0] > 0 &&
+        hd[1] > 0 && hd[0] <= 2048 && hd[1] <= 2048) {
+      w = hd[0], h = hd[1];
+      std::vector<uint8_t> heat(size_t(w) * h), smoke(size_t(w) * h);
+      if (std::fread(heat.data(), 1, heat.size(), f) == heat.size() && std::fread(smoke.data(), 1, smoke.size(), f) == smoke.size()) {
+        rgba.resize(size_t(w) * h * 4);
+        for (size_t i = 0; i < heat.size(); ++i) {
+          rgba[i * 4] = heat[i];
+          rgba[i * 4 + 1] = smoke[i];
+          rgba[i * 4 + 2] = 0;
+          rgba[i * 4 + 3] = 255;
+        }
+        loaded = true;
+      }
+    }
+    std::fclose(f);
+  }
+  if (!loaded) {
+    w = 256, h = 512;
+    rgba.assign(size_t(w) * h * 4, 0);
+    for (uint32_t y = 0; y < h; ++y)
+      for (uint32_t x = 0; x < w; ++x) {
+        const float u = (x % 64 + 0.5f) / 64.0f * 2.0f - 1.0f, v = 1.0f - (y % 128 + 0.5f) / 128.0f;  // (v up)
+        const float wdt = 0.55f * std::max(0.0f, 1.0f - v / 0.8f) + 0.0001f;
+        const float a = std::exp(-u * u / (wdt * wdt)) * std::min(1.0f, v / 0.12f) * std::max(0.0f, 1.0f - v / 0.8f);
+        rgba[(size_t(y) * w + x) * 4] = static_cast<uint8_t>(std::min(1.0f, a) * 240.0f);
+        rgba[(size_t(y) * w + x) * 4 + 3] = 255;
+      }
+  }
+  FXLOG("fx: r169 fire flipbook %s (%ux%u)", loaded ? "loaded" : "not there (a soft stand-in)", w, h);
+  if (!make_tex(s.flameTex, s.etchSet, rgba.data(), w, h, VK_FORMAT_R8G8B8A8_UNORM, s.etchSampler, false, 1)) return false;
+  // r170: binding 2, the shop's preview ball's frames (set_ball_atlas); one grey texel until a preview asks
+  const uint8_t grey[4] = {128, 128, 128, 255};
+  return make_tex(s.ballTex, s.etchSet, grey, 1, 1, VK_FORMAT_R8G8B8A8_SRGB, s.ballSampler, false, 2);
 }
 
 // The room layer's own things, made the first time a suite shows: the textured pipeline, the sky
@@ -5557,7 +6301,9 @@ void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const 
       pc.camPos[2] = eye.z;
       pc.up[1] = 1.0f;  // r142 (a baked one turns about the room's up only)
       VkDeviceSize vertOffset = 0;
-      if (c.bakedFrames > 0) {
+      // r163: a baked model placed by its own frame (the 3D binder: its open / shut poses baked, nothing uploaded a frame)
+      if (c.bakedFrames > 0 && md.local) vertOffset = VkDeviceSize(static_cast<uint32_t>(md.frame) % c.bakedFrames) * c.vertexCount * 6 * sizeof(float);
+      if (c.bakedFrames > 0 && !md.local) {
         // r131: a baked one: its own space placed in the room (as room_model: turned about +Y, here scaled too), the
         // eye taken into that space for its light; the frame's vertices from the GPU buffer
         const float cs = std::cos(md.yaw), sn = std::sin(md.yaw), k = std::max(1e-4f, md.scale);
@@ -5707,6 +6453,10 @@ void shutdown() {
   destroy_tex(s.roomTex);
   destroy_tex(s.outsideTex);
   destroy_tex(s.etchTex);  // r68c
+  destroy_tex(s.flameTex);  // r169
+  destroy_tex(s.ballTex);   // r170
+  if (s.ballSampler) vkDestroySampler(s.dev.device, s.ballSampler, nullptr);
+  s.ballSampler = VK_NULL_HANDLE;
   if (s.etchSampler) vkDestroySampler(s.dev.device, s.etchSampler, nullptr);
   if (s.etchPool) vkDestroyDescriptorPool(s.dev.device, s.etchPool, nullptr);
   if (s.etchSetLayout) vkDestroyDescriptorSetLayout(s.dev.device, s.etchSetLayout, nullptr);
@@ -5754,6 +6504,9 @@ void goal(int team, int character, bool superStrike, bool hyper, bool ownGoal) {
   // r82: a Pokemon / Melee scorer's own celebration (CELEBRATION-THEMES.md), with the confetti
   s.sp = character >= 100 ? special_for_pack(PortGuestRosterPack(character - 100)) : Special{};
   s.spOn = s.sp.nFall > 0 || s.sp.nRoom > 0 || s.sp.pyro != kPyroFireworks || s.sp.p1 != 0;
+  if (s.sp.hasPaper) {  // r184: an original's paper confetti in its own (uniform's) colours
+    for (int i = 0; i < 3; ++i) s.theme.paper[i] = s.sp.paper[i];
+  }
   for (int i = 0; i < 3; ++i) s.spAcc[i] = s.spTimer[i] = s.spDone[i] = 0.0f;
   s.pyroTimer = s.pyroBurst = s.pyroAcc = s.pyroPhase = 0.0f;
   s.spEnded = false;
@@ -6793,6 +7546,8 @@ static uint32_t write_leds(const Scene& sc, Instance* inst) {
 // premultiplied). Spawn rates and caps follow the load scale; the existing quad looks only (30 streak, 32 ring,
 // 39 flake, 29 puff, 13 soft dot), so no shader change.
 constexpr uint32_t kWeatherParts = 1200;
+constexpr uint32_t kGoalFxParts = 1500;  // r153: a goal explosion's pieces (xr_goalfx.cpp kMaxParts), after the weather's
+constexpr uint32_t kBallFxParts = 400;   // r168: the ball skins' pieces (xr_balls.cpp kMaxParts), after the goal explosion's
 extern "C" void PortWeatherSetLoad(float load);  // xr_weather.h (r148)
 struct WxPiece {
   float p[3], v[3];
@@ -7306,13 +8061,24 @@ bool update(const Scene& sc) {
   suite_live(sc, dt);
   corner_ambient(sc, dt);  // r89: the home corner's own little show
   weather_step(sc, dt);    // r137: rain / snow / the floodlights (its own pool)
+  const bool goalFx = s.ready && xrgoalfx::update(sc);  // r153: a goal explosion (its own pieces)
+  const bool ballFx = s.ready && xrballs::update(sc);   // r168: the ball skins (their own pieces)
+  if (s.celebHold > 0.0f) s.celebHold = std::max(0.0f, s.celebHold - dt);
   const bool steady = marker_active(sc) || washing || sc.tableUnderside || hands_shown(sc) || shelf_shown(sc) ||
                       ui_shown(sc) || sc.homeCount > 0 || sc.roomShown || sc.cornerOn || chars_shown(sc) ||
-                      weather_shown(sc);
+                      weather_shown(sc) || goalFx || ballFx;
   if (s.stage == Stage::Idle && s.parts.empty() && s.hatsLeft == 0) {
     return s.drop > 0.0f || steady;
   }
   const Scale k = scale_for(sc);
+  // r153: a goal explosion has the goal's moment first (hold_celebration): the usual show starts once it has played -
+  // its clock stays at the goal meanwhile; what is up already keeps moving
+  if (s.celebHold > 0.0f && s.stage == Stage::Raining && !s.evoOn) {
+    s.stageTime = 0.0f;
+    s.sinceGoal = 0.0f;
+    step_particles(sc, k, dt);
+    return true;
+  }
 
   // r43c: the hat trick's hats, thrown over about two and a half seconds.
   if (s.hatsLeft > 0) {
@@ -7420,6 +8186,7 @@ bool update(const Scene& sc) {
   return !s.parts.empty() || s.stage != Stage::Idle || s.drop > 0.0f || steady;
 }
 
+void take_ball_atlas();  // r170 (below, with set_ball_atlas)
 bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   const bool marker = marker_active(sc);
   const bool washing = wash_active();
@@ -7431,11 +8198,14 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   if (s.ready) take_room(false);       // r61: a room let go (render_room puts new ones up)
   const bool chars = s.ready && chars_shown(sc);  // r96: characters standing in your room
   const bool weather = weather_shown(sc);         // r137
+  const bool goalFx = xrgoalfx::pieces_up();      // r153: a goal explosion
+  const bool ballFx = xrballs::pieces_up();       // r168: the ball skins
   if (!s.ready ||
       (s.parts.empty() && !marker && !washing && !sc.tableUnderside && !hands && !shelf && !ui && !home && !suite &&
-       !chars && !weather)) {
+       !chars && !weather && !goalFx && !ballFx)) {
     return false;
   }
+  take_ball_atlas();  // r170
   const uint32_t slotIndex = s.slot;
   Slot& slot = s.slots[slotIndex];
   s.slot = (s.slot + 1) % kSlots;
@@ -7466,16 +8236,79 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     if ((q.kind != kKindPaper && q.kind != kKindPiece) || q.mesh >= mesh::kCount) return kQuadBucket;
     if (q.kind == kKindPaper) return q.mesh;  // a few triangles either way
     const float dx = q.p[0] - head.x, dy = q.p[1] - head.y, dz = q.p[2] - head.z;
-    const bool far = q.landed || dx * dx + dy * dy + dz * dz > farSq;
+    // r180 (his r179 Koffing goals: 143-159k mesh indices an eye): a ball piece (poison bubbles, pearls, orbs: mesh
+    // kBall, 28 x 16 at full detail) is small - always its reduced detail (12 x 8)
+    const bool far = q.landed || q.mesh == mesh::kBall || dx * dx + dy * dy + dz * dz > farSq;
     return q.mesh + (far ? mesh::kCount : 0u);
   };
+  // r180 (Lance: "the FPS DROPS DANGEROUSLY after a 'gas' goal celebration. koffing goaled and the purple smoke filled the
+  // room" - 31.7 / 34.1 fps): the soft see-through sheets (fog and smoke puffs, veils, big floating pieces, rings) are
+  // fill-rate: each covers part of your view and every one of its pixels is drawn whatever its alpha. Their OVERDRAW is
+  // budgeted: each one's share of a screen (its size against your view's width at its distance, at most 1; a veil 1)
+  // adds up, oldest first, and past kOverdrawBudget screens (x the load scale: less while frames are missed) the rest
+  // aren't drawn this frame. A puff round your eyes (within 0.6 m, or inside its own sheet) or across your line to the
+  // big screen isn't drawn at all - it would be a whole screen of fill for a blur in your face.
+  constexpr float kOverdrawBudget = 2.5f;
+  const float budget = kOverdrawBudget * std::max(0.5f, std::min(1.0f, 0.4f + 0.6f * g_loadScale));
+  float coverage = 0.0f;
+  static std::vector<uint8_t> drawIt;
+  drawIt.assign(s.parts.size(), 1);
+  XrVector3f scr{0.0f, 0.0f, 0.0f};
+  float look[3] = {0.0f, 0.0f, -1.0f};  // (behind you costs nothing: the GPU never draws it - it isn't counted)
+  {
+    const float fz[3] = {0.0f, 0.0f, -1.0f};
+    rotate(sc.views[0].pose.orientation, fz, look);
+  }
+  if (sc.screenValid) scr = sc.screenPose.position;
+  auto soft_sheet = [](const Particle& q) {
+    return q.kind == kKindFog || q.kind == kKindVeil || (q.kind == kKindFloat && q.size > 0.25f) || (q.kind == kKindRing && q.size > 0.6f);
+  };
+  for (size_t i = 0; i < s.parts.size(); ++i) {
+    const Particle& q = s.parts[i];
+    if (!soft_sheet(q)) continue;
+    if (q.kind == kKindVeil || q.shape == kFlash || q.shape == kWash) {
+      coverage += 1.0f;
+    } else {
+      const float dx = q.p[0] - head.x, dy = q.p[1] - head.y, dz = q.p[2] - head.z;
+      const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (q.kind == kKindFog && d < std::max(0.6f, 0.45f * q.size)) {  // (your eyes inside it)
+        drawIt[i] = 0;
+        continue;
+      }
+      if (q.kind == kKindFog && sc.screenValid) {  // (off your line to the big screen)
+        const float sx = scr.x - head.x, sy = scr.y - head.y, sz = scr.z - head.z;
+        const float sl2 = std::max(1e-4f, sx * sx + sy * sy + sz * sz);
+        const float tt = std::max(0.0f, std::min(1.0f, (dx * sx + dy * sy + dz * sz) / sl2));
+        const float ox = dx - sx * tt, oy = dy - sy * tt, oz = dz - sz * tt;
+        if (ox * ox + oy * oy + oz * oz < (0.3f + 0.5f * q.size) * (0.3f + 0.5f * q.size)) {
+          drawIt[i] = 0;
+          continue;
+        }
+      }
+      if (dx * look[0] + dy * look[1] + dz * look[2] < -0.5f * q.size) continue;  // (behind you)
+      const float share = q.size / (2.4f * std::max(0.1f, d));
+      coverage += std::min(1.0f, share * share);
+    }
+    if (coverage > budget) drawIt[i] = 0;
+  }
+  s.statPeakCoverage = std::max(s.statPeakCoverage, std::min(coverage, budget));
+  {  // r180: its log, once in a while when it mattered
+    static int logN = 0;
+    if (++logN >= 360 && s.statPeakCoverage > 0.5f) {
+      FXLOG("fx: r180 soft overdraw up to %.1f screens (budget %.1f, %.1f wanted now)", s.statPeakCoverage, budget, coverage);
+      s.statPeakCoverage = 0.0f;
+      logN = 0;
+    }
+  }
   uint32_t first[kQuadBucket + 1] = {}, filled[kQuadBucket + 1] = {};
   uint32_t count = 0;
-  for (const Particle& q : s.parts) {
+  for (size_t i = 0; i < s.parts.size(); ++i) {
+    const Particle& q = s.parts[i];
     // r45d: three left: the marker, the flash, the underside; r53: and the controllers; r57: the shelf.
     if (count >= kMaxParticles - 3 - kHandParts - kShelfParts - kUiParts - kHomeParts - kSuiteParts - kLedParts -
-                     kWeatherParts)
+                     kWeatherParts - kGoalFxParts - kBallFxParts)  // (r168: + the ball skins')
       break;
+    if (!drawIt[i]) continue;  // r180
     ++filled[bucket_of(q)];
     ++count;
   }
@@ -7486,8 +8319,11 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   }
   auto* inst = static_cast<Instance*>(slot.instanceMapped);
   uint32_t written = 0;
-  for (const Particle& q : s.parts) {
-    if (written++ >= count) break;
+  for (size_t pi = 0; pi < s.parts.size(); ++pi) {
+    if (written >= count) break;
+    if (!drawIt[pi]) continue;  // r180: over the overdraw budget / round your eyes
+    ++written;
+    const Particle& q = s.parts[pi];
     float alpha = 1.0f;
     if (q.kind == kKindFog || q.kind == kKindVeil || q.kind == kKindFloat || q.kind == kKindRing) {
       // r82: in over fadeIn, out over its last moments (a ring as it grows), up to its peak.
@@ -7631,12 +8467,29 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   // r137: the weather, after the LEDs' slots
   const uint32_t wxAt = ledAt + kLedParts;
   const uint32_t wxCount = weather ? write_weather(sc, inst + wxAt) : 0;
+  // r153: a goal explosion's pieces (xr_goalfx.cpp), after the weather's slots: its 3D ones by mesh, then its quads
+  const uint32_t gfxAt = wxAt + kWeatherParts;
+  xrgoalfx::MeshRun gfxRuns[24];
+  int gfxRunCount = 0;
+  uint32_t gfxQuadFirst = 0;
+  const uint32_t gfxCount =
+      goalFx ? xrgoalfx::write(sc, reinterpret_cast<xrgoalfx::Piece*>(inst + gfxAt), kGoalFxParts, gfxRuns, 24, &gfxRunCount,
+                               &gfxQuadFirst)
+             : 0;
+  // r168: the ball skins' quads (xr_balls.cpp), after the goal explosion's slots
+  const uint32_t ballAt = gfxAt + kGoalFxParts;
+  const uint32_t ballCount = ballFx ? xrballs::write(sc, reinterpret_cast<xrgoalfx::Piece*>(inst + ballAt), kBallFxParts) : 0;
   uint32_t indices = 0;
   for (uint32_t b = 0; b < kQuadBucket; ++b) indices += filled[b] * s.meshRanges[b / mesh::kCount][b % mesh::kCount].indexCount;
-  s.statPeakParts = std::max(s.statPeakParts, count);
-  s.statPeakIndices = std::max(s.statPeakIndices, indices);
+  uint32_t gfxIndices = 0;
+  for (int r = 0; r < gfxRunCount; ++r) {
+    const int m = gfxRuns[r].mesh % 1000, lod = gfxRuns[r].mesh >= 1000 ? 1 : 0;  // (+1000: its reduced detail)
+    if (m >= 0 && m < mesh::kCount) gfxIndices += gfxRuns[r].count * s.meshRanges[lod][m].indexCount;
+  }
+  s.statPeakParts = std::max(s.statPeakParts, count + gfxCount);
+  s.statPeakIndices = std::max(s.statPeakIndices, indices + gfxIndices);
   s.lastParts = count;  // r130: the budget's
-  s.lastMeshIndices = indices;
+  s.lastMeshIndices = indices + gfxIndices;
   const uint32_t occluderVerts = write_occluders(sc, static_cast<float*>(slot.occluderMapped));
 
   uint32_t index[2] = {0, 0};
@@ -7792,6 +8645,22 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
         vkCmdDrawIndexed(slot.cmd, range.indexCount, filled[b], range.firstIndex, 0, first[b]);
       }
     }
+    // r153: a goal explosion's 3D pieces (solid, like the celebration's)
+    if (gfxRunCount > 0) {
+      vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.meshPipeline);
+      vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+      const VkBuffer buffers[2] = {s.meshVerts, slot.instances};
+      const VkDeviceSize offsets[2] = {0, 0};
+      vkCmdBindVertexBuffers(slot.cmd, 0, 2, buffers, offsets);
+      vkCmdBindIndexBuffer(slot.cmd, s.meshIndices, 0, VK_INDEX_TYPE_UINT32);
+      for (int r = 0; r < gfxRunCount; ++r) {
+        const int m = gfxRuns[r].mesh % 1000, lod = gfxRuns[r].mesh >= 1000 ? 1 : 0;
+        if (m < 0 || m >= mesh::kCount || gfxRuns[r].count == 0) continue;
+        const mesh::Range& range = s.meshRanges[lod][m];
+        if (range.indexCount == 0) continue;
+        vkCmdDrawIndexed(slot.cmd, range.indexCount, gfxRuns[r].count, range.firstIndex, 0, gfxAt + gfxRuns[r].first);
+      }
+    }
     vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.fxPipeline);
     vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
     vkCmdBindVertexBuffers(slot.cmd, 0, 1, &slot.instances, &zero);
@@ -7803,6 +8672,8 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     }
     if (ledCount > 0) vkCmdDraw(slot.cmd, 4, ledCount, 0, ledAt);  // r62: the suite's LEDs
     if (wxCount > 0) vkCmdDraw(slot.cmd, 4, wxCount, 0, wxAt);     // r137: the weather
+    if (gfxCount > gfxQuadFirst) vkCmdDraw(slot.cmd, 4, gfxCount - gfxQuadFirst, 0, gfxAt + gfxQuadFirst);  // r153
+    if (ballCount > 0) vkCmdDraw(slot.cmd, 4, ballCount, 0, ballAt);  // r168: the ball skins
     if (markerCount > 0) {
       vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.markerPipeline);
       vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
@@ -7897,6 +8768,17 @@ void set_load_scale(float scale) { g_loadScale = std::max(0.25f, std::min(1.0f, 
 float load_scale() { return g_loadScale; }
 bool pieces_alive() { return !s.parts.empty(); }
 
+// r153 (xr_goalfx.cpp)
+int piece_mesh(int shape, int variant) {
+  if (shape == kPaper || shape == kMetal) {
+    if (variant == 3) return mesh::kStreamer;
+    return static_cast<int>(mesh::kPaperBent) + std::max(0, std::min(2, variant));
+  }
+  const uint8_t m = mesh_for(static_cast<Shape>(shape));
+  return m == kNoMesh ? -1 : static_cast<int>(m);
+}
+void hold_celebration(float seconds) { s.celebHold = std::max(s.celebHold, std::min(6.0f, std::max(0.0f, seconds))); }
+
 bool take_stats(uint32_t* peakParts, uint32_t* peakIndices) {
   *peakParts = s.statPeakParts;
   *peakIndices = s.statPeakIndices;
@@ -7906,6 +8788,36 @@ bool take_stats(uint32_t* peakParts, uint32_t* peakIndices) {
 
 void request_dump(const char* path) {
   std::snprintf(s.dumpPath, sizeof(s.dumpPath), "%s", path);
+}
+
+// r170: the shop's preview ball's frames (xr_balls.cpp), up at the next render
+std::mutex g_ballAtlasMutex;
+std::vector<uint8_t> g_ballAtlas;
+uint32_t g_ballAtlasW = 0, g_ballAtlasH = 0;
+bool g_ballAtlasPending = false;
+void set_ball_atlas(std::vector<uint8_t>&& rgba, uint32_t w, uint32_t h) {
+  std::lock_guard<std::mutex> lock(g_ballAtlasMutex);
+  g_ballAtlas = std::move(rgba);
+  g_ballAtlasW = w, g_ballAtlasH = h;
+  g_ballAtlasPending = true;
+}
+void take_ball_atlas() {  // (render thread, before a frame is recorded: every frame in flight finished first)
+  std::vector<uint8_t> px;
+  uint32_t w = 0, h = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_ballAtlasMutex);
+    if (!g_ballAtlasPending) return;
+    g_ballAtlasPending = false;
+    px.swap(g_ballAtlas);
+    w = g_ballAtlasW, h = g_ballAtlasH;
+  }
+  if (px.size() != size_t(w) * h * 4 || w == 0) return;
+  for (uint32_t i = 0; i < kSlots; ++i)
+    if (s.slots[i].pending) vkWaitForFences(s.dev.device, 1, &s.slots[i].fence, VK_TRUE, UINT64_MAX);
+  destroy_tex(s.ballTex);
+  s.ballTex = State::Tex{};
+  make_tex(s.ballTex, s.etchSet, px.data(), w, h, VK_FORMAT_R8G8B8A8_SRGB, s.ballSampler, false, 2);
+  FXLOG("fx: r170 preview ball frames up (%ux%u)", w, h);
 }
 
 void set_room(Room&& room) {

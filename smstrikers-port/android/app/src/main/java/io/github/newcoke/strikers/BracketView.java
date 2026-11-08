@@ -17,12 +17,14 @@ import org.json.JSONObject;
  * match its winner goes to, and the champion at the end. Drawn from the hub's tournament object.
  */
 final class BracketView extends View {
-    private static final int GOLD = 0xFFFFC400;
-    private static final int CARD = 0xFF1E2634;
-    private static final int CARD_YOU = 0xFF2B3A55;
+    // r157 (menu overhaul): the launcher's navy + gold (LobbyKit)
+    private static final int GOLD = LobbyKit.GOLD;
+    private static final int CARD = LobbyKit.TILE_HI;
+    private static final int CARD_YOU = LobbyKit.TILE_ON;
     private static final int LINE = 0xFF5A6478;
     private static final int TEXT = 0xFFF0F3F8;
-    private static final int DIM = 0xFF8C96A8;
+    private static final int DIM = LobbyKit.INK_DIM;
+    private final Typeface lucky;
 
     private JSONObject tourney;
     private int you = -1;
@@ -34,7 +36,10 @@ final class BracketView extends View {
 
     BracketView(Context context) {
         super(context);
-        dp = context.getResources().getDisplayMetrics().density;
+        // r157 round 2: everything x1.6, so its smallest words (14 "dp") are 22 dp, the launcher's 40 px rule
+        // (LobbyActivity.MIN_SP); the tree scrolls sideways as before when it is wider than the panel
+        dp = context.getResources().getDisplayMetrics().density * 1.6f;
+        lucky = LobbyKit.font(context);
         rowH = 34 * dp;
         cardW = 230 * dp;
         colGap = 40 * dp;
@@ -98,7 +103,7 @@ final class BracketView extends View {
         final int n = rounds.length();
         final int champion = tourney.isNull("champion") ? -1 : tourney.optInt("champion", -1);
         // The round names over their columns.
-        paint.setTypeface(Typeface.DEFAULT_BOLD);
+        paint.setTypeface(lucky);
         paint.setTextAlign(Paint.Align.CENTER);
         paint.setTextSize(14 * dp);
         for (int r = 0; r <= n; r++) {
@@ -106,7 +111,7 @@ final class BracketView extends View {
             final String label = r == n ? "Champion" : fromEnd == 0 ? "Final" : fromEnd == 1 ? "Semi-finals"
                     : fromEnd == 2 ? "Quarter-finals" : "Round " + (r + 1);
             paint.setColor(r == n ? GOLD : DIM);
-            canvas.drawText(label, columnX(r) + cardW * 0.5f, pad + 14 * dp, paint);
+            canvas.drawText(label.toUpperCase(java.util.Locale.ROOT), columnX(r) + cardW * 0.5f, pad + 14 * dp, paint);
         }
         // The lines first, under the cards: each match to the one its winner goes to.
         paint.setStyle(Paint.Style.STROKE);
@@ -147,15 +152,15 @@ final class BracketView extends View {
         if (champion >= 0) {
             StarLogo.draw(canvas, cx + rowH * 1.1f, cy, rowH * 0.9f, star(champion), paint);
             paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTypeface(Typeface.DEFAULT_BOLD);
+            paint.setTypeface(lucky);
             paint.setColor(GOLD);
             paint.setTextSize(16 * dp);
-            canvas.drawText(fit(name(champion), cardW - rowH * 2.4f, 16 * dp), cx + rowH * 2.2f, cy + 6 * dp, paint);
+            canvas.drawText(fit(name(champion).toUpperCase(java.util.Locale.ROOT), cardW - rowH * 2.4f, 16 * dp), cx + rowH * 2.2f, cy + 6 * dp, paint);
         } else {
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setColor(DIM);
             paint.setTextSize(14 * dp);
-            paint.setTypeface(Typeface.DEFAULT);
+            paint.setTypeface(lucky);
             canvas.drawText("?", cx + cardW * 0.5f, cy + 5 * dp, paint);
         }
     }
@@ -182,10 +187,10 @@ final class BracketView extends View {
         drawTeam(canvas, x, cy, b, winner, score != null && score.length() == 2 ? score.optInt(1) : -1, status);
         if ("ready".equals(status)) {
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTypeface(Typeface.DEFAULT_BOLD);
-            paint.setTextSize(10 * dp);
+            paint.setTypeface(lucky);
+            paint.setTextSize(14 * dp);
             paint.setColor(GOLD);
-            canvas.drawText(m.optInt("replays", 0) > 0 ? "REPLAY" : "PLAYING", x + cardW * 0.5f, cy - rowH - 4 * dp, paint);
+            canvas.drawText(m.optInt("replays", 0) > 0 ? "REPLAY" : "PLAYING", x + cardW * 0.5f, cy - rowH - 3 * dp, paint);
         }
     }
 
@@ -198,14 +203,14 @@ final class BracketView extends View {
             StarLogo.draw(canvas, x + rowH * 0.6f, cy, rowH * 0.36f, star(team), paint);
         }
         paint.setTextAlign(Paint.Align.LEFT);
-        paint.setTypeface(won || team == you ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        paint.setTypeface(lucky);
         paint.setTextSize(14 * dp);
         paint.setColor(team < 0 ? DIM : won ? GOLD : lost ? DIM : TEXT);
-        final String label = team < 0 ? "Waiting..." : name(team) + (team == you ? "  (you)" : "");
+        final String label = (team < 0 ? "Waiting..." : name(team) + (team == you ? "  (you)" : "")).toUpperCase(java.util.Locale.ROOT);
         canvas.drawText(fit(label, cardW - rowH * 1.3f - 36 * dp, 14 * dp), x + rowH * 1.15f, cy + 5 * dp, paint);
         if (done && goals >= 0) {
             paint.setTextAlign(Paint.Align.RIGHT);
-            paint.setTypeface(Typeface.DEFAULT_BOLD);
+            paint.setTypeface(lucky);
             paint.setColor(won ? GOLD : DIM);
             canvas.drawText(String.valueOf(goals), x + cardW - 10 * dp, cy + 5 * dp, paint);
         }

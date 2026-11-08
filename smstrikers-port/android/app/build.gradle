@@ -20,8 +20,8 @@ android {
         targetSdk 35
         // strikers-quest: the Quest alpha's own numbers (the phone port was 1 / 1.2.0). Raise
         // versionCode with every public build so an update installs over the last one.
-        versionCode 6915
-        versionName '0.1.18-dev (r151)'
+        versionCode 6969
+        versionName '0.1.18-dev (r193)'
         ndk {
             // The only ABI the prebuilt Dawn package exists for, and the only one worth shipping:
             // a 32-bit build would not address the game's heap comfortably, and x86 Android is
@@ -101,6 +101,11 @@ def stageAssets = tasks.register('stageStrikersAssets', Sync) {
     from('../../assets/guestart') {
         into 'guestart'
     }
+    // strikers-quest r183: the ORIGINALS (our own characters: packs, portraits, roster rows; tools/outside/originals183.py),
+    // staged into STRIKERS_HOME/guests by StrikersHome - in every build, Lance's and the public one
+    from('../../assets/originals') {
+        into 'originals'
+    }
     // strikers-quest r147: the menu music (CC0 lofi playlist + franchise theme, credits), played from the APK
     // by MenuMusic.java; not copied out to STRIKERS_HOME
     from('../../assets/music') {
@@ -109,17 +114,17 @@ def stageAssets = tasks.register('stageStrikersAssets', Sync) {
     into layout.buildDirectory.dir('strikers-assets')
 }
 
-// QUEM LÃŠ A PASTA DEPENDE DE QUEM A ESCREVE, e nÃ£o sÃ³ quem a empacota.
+// QUEM LÃƒÅ  A PASTA DEPENDE DE QUEM A ESCREVE, e nÃƒÂ£o sÃƒÂ³ quem a empacota.
 //
-// Era sÃ³ merge*Assets, e isso bastava para o debug. O release trouxe o lint
-// "vital", que monta um modelo do projeto e, para isso, percorre os diretÃ³rios
-// de assets -- sem passar pelo merge. O Gradle vÃª uma tarefa lendo a saÃ­da de
-// outra sem dependÃªncia declarada e recusa a build, com razÃ£o: a ordem entre as
-// duas nÃ£o estaria garantida.
+// Era sÃƒÂ³ merge*Assets, e isso bastava para o debug. O release trouxe o lint
+// "vital", que monta um modelo do projeto e, para isso, percorre os diretÃƒÂ³rios
+// de assets -- sem passar pelo merge. O Gradle vÃƒÂª uma tarefa lendo a saÃƒÂ­da de
+// outra sem dependÃƒÂªncia declarada e recusa a build, com razÃƒÂ£o: a ordem entre as
+// duas nÃƒÂ£o estaria garantida.
 //
-// A lista Ã© por nome porque o diretÃ³rio entra na source set como texto, e um
-// caminho em texto nÃ£o carrega consigo quem o produziu. Se aparecer mais uma
-// tarefa que leia assets, Ã© aqui que ela entra.
+// A lista ÃƒÂ© por nome porque o diretÃƒÂ³rio entra na source set como texto, e um
+// caminho em texto nÃƒÂ£o carrega consigo quem o produziu. Se aparecer mais uma
+// tarefa que leia assets, ÃƒÂ© aqui que ela entra.
 tasks.configureEach { task ->
     final boolean empacota = task.name.startsWith('merge') && task.name.endsWith('Assets')
     final boolean analisa = task.name.toLowerCase().contains('lint')

@@ -179,6 +179,13 @@ final class StrikersHome {
         } else if (!hasGameDataInHome(home) && elsewhere != null) {
             setenv("STRIKERS_DATA", elsewhere);
         }
+        // strikers-quest r183: the ORIGINALS' figures' pose files, made from the game's own files (once, in the background)
+        try {
+            io.github.newcoke.strikers.guests.render.Originals.prebakeLater(home.getAbsolutePath(),
+                    android.system.Os.getenv("STRIKERS_DATA"));
+        } catch (Throwable e) {
+            Log.w(TAG, "originals' figures", e);
+        }
 
         // The game's stderr is a file descriptor nobody reads on Android. Point the port's own log
         // at a file in the home directory instead, where `adb pull` can reach it.
@@ -355,6 +362,7 @@ final class StrikersHome {
     private static void stageAssets(Context context, File home) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         long installed = versionCode(context);
+        stageOriginals(context, home, prefs.getLong(KEY_STAGED_VERSION, -1) != installed);
         if (prefs.getLong(KEY_STAGED_VERSION, -1) == installed
                 && new File(home, "input-prompts/LICENSE-Kenney.txt").exists()
                 && new File(home, "suites").isDirectory()) {
@@ -380,6 +388,44 @@ final class StrikersHome {
         } catch (IOException e) {
             // Not fatal: the game says so on stderr and keeps the GameCube prompts.
             Log.w(TAG, "could not stage input-prompts", e);
+        }
+    }
+
+    /**
+     * strikers-quest r183: the ORIGINALS - our own characters, in the APK for everyone (no game file needed): their packs,
+     * portraits and roster rows (assets/originals -> guests/, the rows as guests/originals.txt, which the converter never
+     * writes). With every update, or when a file is gone (a guests folder cleared). An update drops their old pose files
+     * (a refitted pack may have a new skeleton): Originals.java makes them again.
+     */
+    private static void stageOriginals(Context context, File home, boolean updated) {
+        try {
+            final AssetManager assets = context.getAssets();
+            final String[] files = assets.list("originals");
+            if (files == null || files.length == 0) return;
+            final File guests = new File(home, "guests");
+            boolean missing = updated;
+            for (String f : files)
+                if (f.endsWith(".gpk") || f.equals("originals.txt") || f.equals("originals_sizes.txt")) missing = missing || !new File(guests, f).isFile();
+            // r186: their own CC0 voice banks (assets/originals/voices -> guests/voices/orig_*.gvo)
+            final String[] voices = assets.list("originals/voices");
+            if (voices != null)
+                for (String v : voices) missing = missing || !new File(guests, "voices/" + v).isFile();
+            if (!missing) return;
+            copyAssetTree(assets, "originals", guests);
+            if (updated) {
+                for (String dir : new String[] {"evo", "cel"}) {
+                    final File[] old = new File(guests, dir).listFiles();
+                    if (old == null) continue;
+                    for (File f : old)
+                        if (f.getName().startsWith("orig_")) {
+                            //noinspection ResultOfMethodCallIgnored
+                            f.delete();
+                        }
+                }
+            }
+            Log.i(TAG, "originals staged (" + files.length + " entries)");
+        } catch (IOException e) {
+            Log.w(TAG, "could not stage the originals", e);
         }
     }
 

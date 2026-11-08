@@ -10,6 +10,7 @@
 #include "NL/nlString.h"
 
 #include "Game/Audio/AudioStreamVirtuals.h"
+#include "port/stadium_pulse.h" // strikers-quest r172
 
 extern GCAudioStreaming::AudioBufferMgr g_BufferMgr;
 static void ___blank(const char*, ...);
@@ -108,6 +109,24 @@ static void WarmRandomStream(const RANDOM_STREAMS& RandomStreams, T* pStream)
 
     unsigned long randomIndex = nlRandom(RandomStreams.Count, &nlAudioSeed);
     const char* filename = RandomStreams.Files[randomIndex];
+
+    pStream->Open(filename);
+    pStream->Warm(true);
+}
+
+// strikers-quest r172: the stadium pulse's chant (include/port/stadium_pulse.h): one named file, warmed as above.
+template <typename T>
+static void WarmNamedStream(const char* filename, T* pStream)
+{
+    if (g_Settings.NoStreaming)
+    {
+        return;
+    }
+
+    if (pStream->m_State == GCAudioStreaming::SS_Initd)
+    {
+        pStream->Purge();
+    }
 
     pStream->Open(filename);
     pStream->Warm(true);
@@ -441,7 +460,25 @@ void PlayMoodDef(MOOD_DEFINITION& MoodDef)
 
     if (!g_CrowdState.StreamLocked)
     {
-        PlayVocal(MoodDef.Chant, g_CrowdState.ChantState, g_CrowdAudio.pChantStream);
+        // strikers-quest r172: the stadium pulse can start the warmed chant at once (its delay met) and louder,
+        // times the game's own chant volume (your crowd volume and the game's crowd volume included)
+        float pulseVol = 0.0f;
+        GCAudioStreaming::StereoAudioStream* pChantNow = g_CrowdAudio.pChantStream;
+        const bool pulseForce = pChantNow != NULL && g_CrowdState.ChantState.Ready &&
+                                (pChantNow->m_State == GCAudioStreaming::SS_Warming ||
+                                 pChantNow->m_State == GCAudioStreaming::SS_Warm) &&
+                                fabsf(MoodDef.Chant.Volume) > 0.0001f && PortPulseChantNow(&pulseVol);
+        if (pulseForce)
+        {
+            g_CrowdState.ChantState.SinceLast = 1.0e6f;
+            g_CrowdState.ChantState.NextAt = 0.0f;
+        }
+        if (PlayVocal(MoodDef.Chant, g_CrowdState.ChantState, g_CrowdAudio.pChantStream) && pulseForce)
+        {
+            const float v = 127.0f * g_CrowdState.CrowdVolume * MoodDef.Chant.Volume * pulseVol;
+            pChantNow->SetVolume((unsigned long)(v < 0.0f ? 0.0f : (v > 127.0f ? 127.0f : v)));
+            PortPulseChantStarted();
+        }
 
         if (PlayVocal(MoodDef.Heckle, g_CrowdState.HeckleState, g_CrowdAudio.pHeckleStream))
         {
@@ -918,7 +955,13 @@ void CrowdMood::Update(float dt)
                 {
                     g_CrowdState.ChantState.Ready = true;
                     g_CrowdState.ChantState.SinceLast = 0.0f;
-                    WarmRandomStream<GCAudioStreaming::StereoAudioStream>(g_RandomChants, g_CrowdAudio.pChantStream);
+                    // strikers-quest r172: while the stadium pulse has the section rocking, the game's own
+                    // stomp-clap chants (on the disc, commented out of CrowdMood.ini) instead of a random one
+                    const char* pulseChant = PortPulseChantPick();
+                    if (pulseChant != NULL)
+                        WarmNamedStream<GCAudioStreaming::StereoAudioStream>(pulseChant, g_CrowdAudio.pChantStream);
+                    else
+                        WarmRandomStream<GCAudioStreaming::StereoAudioStream>(g_RandomChants, g_CrowdAudio.pChantStream);
                 }
             }
 

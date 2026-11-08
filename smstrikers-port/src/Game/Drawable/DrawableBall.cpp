@@ -10,6 +10,53 @@
 #include "NL/gl/glUserData.h"
 #include "port/xr_quest.h" // strikers-quest: a bigger ball on the Tabletop field
 #include "port/xr_layers.h" // strikers-quest r43b: the ball always on the field
+#include "port/ball_skin.h" // strikers-quest r168: BALL SKINS (src/platform/ball_skin.cpp)
+#include "Game/Drawable/DrawableModel.h"
+#include "Game/Team.h"
+
+// strikers-quest r168: BALL SKINS, looks only (src/platform/ball_skin.cpp): the ball's per-frame model copy gets our
+// sphere and a frame of our living texture; PLANET EARTH also turns on its pole as drawn (the drawn orientation only -
+// the ball's own m_qOrientation, its physics and its size are the game's)
+namespace portballskin
+{
+int begin_frame(int lastTouchSide, const glModel* srcModel, float boundingRadius);
+float spin_angle(int skin);  // r170: -1 none
+bool emissive(int skin);
+glModel* apply(glModel* m, int pass);
+void feed(bool visible, const float drawnPos[3], const float gamePos[3], const float vel[3], float scale, float boundingRadius);
+} // namespace portballskin
+static int s_r168Skin = 0;               // the skin drawn this frame (0 the game's own ball)
+static nlQuaternion s_r168Spin; // PLANET EARTH's turn this frame (set before use)
+static bool s_r168Spinning = false; // r170: the skin drawn turns on its pole
+static glModel* (*s_r168BlurCB)(glModel*, eGLView&, unsigned long&) = NULL;
+static glModel* (*s_r168LightCB)(glModel*, eGLView&, unsigned long&) = NULL;
+static nlQuaternion r168_mul(const nlQuaternion& a, const nlQuaternion& b)
+{
+    nlQuaternion q;
+    q.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+    q.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    q.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+    q.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+    return q;
+}
+static glModel* R168MainCB(glModel* pModel, eGLView& view, unsigned long& uLayer)
+{
+    (void)view;
+    (void)uLayer;
+    return portballskin::apply(pModel, 0);
+}
+static glModel* R168BlurCB(glModel* pModel, eGLView& view, unsigned long& uLayer)
+{
+    pModel = portballskin::apply(pModel, 1);
+    return s_r168BlurCB != NULL ? s_r168BlurCB(pModel, view, uLayer) : pModel;
+}
+static glModel* R168LightCB(glModel* pModel, eGLView& view, unsigned long& uLayer)
+{
+    if (portballskin::emissive(s_r168Skin))
+        return NULL; // (a ball that is its own light - fire, lava, neon ...: no lit sheen over it; r170: any such skin)
+    pModel = portballskin::apply(pModel, 2);
+    return s_r168LightCB != NULL ? s_r168LightCB(pModel, view, uLayer) : pModel;
+}
 
 static int g_nMotionBlurDivs = 5;
 static float g_fMotionBlurAlpha0 = 0.1f;
@@ -87,6 +134,11 @@ inline void DrawableBall::RenderMotionBlur(DrawableObject& obj) const
     mSaved = obj.GetWorldMatrix();
     savedBlurCB = obj.GetCallback();
     obj.m_CB = BallBlurCB;
+    if (s_r168Skin != 0) // r168: the blur copies in the skin too
+    {
+        s_r168BlurCB = BallBlurCB;
+        obj.m_CB = R168BlurCB;
+    }
 
     int i;
     unsigned long uSavedFlags = obj.m_uObjectCreationFlags;
@@ -98,6 +150,8 @@ inline void DrawableBall::RenderMotionBlur(DrawableObject& obj) const
         g_fBallBlur = g_fMotionBlurAlphaScale * (1.0f - t) + g_fMotionBlurAlpha0;
 
         nlQuatNLerp(q, mPrevOrientation, mOrientation, t);
+        if (s_r168Spinning)
+            q = r168_mul(q, s_r168Spin); // r168: as the ball itself is turned (r170: any turning skin)
         obj.m_orientation = q;
         obj.m_worldMatrixUpToDate = 0;
 
@@ -123,6 +177,11 @@ void DrawableBall::RenderLighting(DrawableObject& obj) const
 
     glModel* (*savedLightingCB)(glModel*, eGLView&, unsigned long&) = obj.GetCallback();
     obj.m_CB = BallLightingCB;
+    if (s_r168Skin != 0) // r168: the lit sheen on our sphere (none on the fireball)
+    {
+        s_r168LightCB = BallLightingCB;
+        obj.m_CB = R168LightCB;
+    }
 
     unsigned long uSavedFlags = obj.m_uObjectCreationFlags;
     // PORT: BallLightingCB does `uLayer += 2`, and DrawModel hands it m_uRenderLayer itself rather than a copy.
@@ -160,11 +219,33 @@ void DrawableBall::Render() const
     }
     if (!mVisible)
     {
+        // r168: no ball this frame (the effects stop following it)
+        const float z3[3] = { 0.0f, 0.0f, 0.0f };
+        s_r168Skin = 0;
+        s_r168Spinning = false;
+        portballskin::feed(false, z3, z3, z3, 1.0f, 0.0f);
         return;
     }
 
     DrawableObject* pDrawableBall = g_pBall->GetDrawableBall();
-    pDrawableBall->m_orientation = mOrientation;
+    // r168: BALL SKINS - which one this frame (the side that touched it last wears its own; 0 the game's ball)
+    {
+        int lastSide = -1;
+        if (g_pBall->m_pLastTouch != NULL && g_pBall->m_pLastTouch->m_pTeam != NULL)
+            lastSide = g_pBall->m_pLastTouch->m_pTeam->m_nSide;
+        DrawableModel* pModel = pDrawableBall->AsDrawableModel();
+        s_r168Skin = (pModel != NULL && !pModel->m_bVertexAnimated)
+                         ? portballskin::begin_frame(lastSide, pModel->m_pModel, pDrawableBall->m_fBoundingRadius)
+                         : 0;
+        const float spin = portballskin::spin_angle(s_r168Skin);  // r170: every turning skin (EARTH, GALAXY, DISCO ...)
+        s_r168Spinning = spin >= 0.0f;
+        if (s_r168Spinning)
+        {
+            const nlVector3 pole = { 0.0f, 0.0f, 1.0f };
+            nlMakeQuat(s_r168Spin, pole, spin);
+        }
+    }
+    pDrawableBall->m_orientation = s_r168Spinning ? r168_mul(mOrientation, s_r168Spin) : mOrientation;
     pDrawableBall->m_worldMatrixUpToDate = 0;
     // PORT (strikers-quest): on the Tabletop field the ball grows with the players (Lance,
     // 2026-10-10), drawn only. Resting, its centre is one radius above the grass, so it is lifted by
@@ -184,11 +265,28 @@ void DrawableBall::Render() const
 
     unsigned long uSavedFlags = pDrawableBall->m_uObjectCreationFlags;
     pDrawableBall->m_uObjectCreationFlags &= ~0x80;
+    // r168: a skin's ball: our sphere and picture (DrawModel's copy only); the FIREBALL unlit - it is its own light
+    glModel* (*savedMainCB)(glModel*, eGLView&, unsigned long&) = pDrawableBall->m_CB;
+    if (s_r168Skin != 0)
+    {
+        pDrawableBall->m_CB = R168MainCB;
+        if (portballskin::emissive(s_r168Skin))  // r170: any skin that is its own light
+            pDrawableBall->m_uObjectCreationFlags |= 0x80;
+    }
     pDrawableBall->Draw();
+    pDrawableBall->m_CB = savedMainCB;
     pDrawableBall->m_uObjectCreationFlags = uSavedFlags;
 
     RenderMotionBlur(*pDrawableBall);
     RenderLighting(*pDrawableBall);
+
+    // r168: where it is, for the skins' trail and hits in the headset's effects layer (read only)
+    {
+        const float drawn[3] = { v3Drawn.x, v3Drawn.y, v3Drawn.z };
+        const float game[3] = { mPosition.x, mPosition.y, mPosition.z };
+        const float vel[3] = { mVelocity.x, mVelocity.y, mVelocity.z };
+        portballskin::feed(true, drawn, game, vel, fScale, pDrawableBall->m_fBoundingRadius);
+    }
 }
 
 /**

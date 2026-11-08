@@ -15,6 +15,7 @@
 #include "port/audio.h"
 #include "port/edition.h"
 #include "port/living_crowd.h"
+#include "port/stadium_pulse.h" // strikers-quest r172: the stadium pulse drives the living crowd (Plus)
 
 #include "Game/Audio/AudioScriptEventMgr.h"
 #include "Game/Audio/WorldAudio.h"
@@ -122,8 +123,12 @@ void PortLivingCrowdUpdate(float dt)
     const float target = target_intensity();
     const float k = dt * 0.4f > 1.0f ? 1.0f : dt * 0.4f;
     s_intensity += (target - s_intensity) * k;
+    // strikers-quest r172: the stadium pulse (stadium_pulse.cpp) sets the loudness and plays the close finish while a
+    // match is on; r42's intensity stays for the roar's length off the pulse.
+    PortPulseUpdate(dt);
+    const bool pulse = PortPulseValue() >= 0;
     // Lance (r42 play): "i didnt notice anything different" - a wider range than r42's 0.75-1.3.
-    PortAudioSetCrowdLiving(0.6f + 1.0f * s_intensity);
+    PortAudioSetCrowdLiving(pulse ? PortPulseCrowdGain() : 0.6f + 1.0f * s_intensity);
 
     if (s_cooldown > 0.0f)
         s_cooldown -= dt;
@@ -144,7 +149,7 @@ void PortLivingCrowdUpdate(float dt)
     }
 
     // A close finish: claps and anticipation every few seconds through the last fifth.
-    if (live_play() && score_gap() <= 1 && clock_fraction() > 0.8f)
+    if (!pulse && live_play() && score_gap() <= 1 && clock_fraction() > 0.8f) // r172: the pulse's own when it is on
     {
         s_tension -= dt;
         if (s_tension <= 0.0f)
@@ -167,6 +172,10 @@ void PortLivingCrowdEvent(int event, int team)
     typedef AudioScriptEventMgr A;
     if (event == A::AE_Goal || event == A::AE_SDWin)
         return; // the roar starts from PortCrowdRoarStart
+    // strikers-quest r172: the stadium pulse takes the moment and the home crowd's reaction to it
+    PortPulseEvent(event, team);
+    if (PortPulseValue() >= 0)
+        return;
     // Only a game worth watching gets the extra noise.
     if (!live_play() || s_intensity < 0.55f || s_cooldown > 0.0f)
         return;
@@ -216,5 +225,18 @@ void PortCrowdRoarStart(int side)
     s_roarNext = 0.7f;
     s_roarVolume = 0.6f + 0.4f * k;
     s_roarCount = 0;
+    // strikers-quest r172: with the stadium pulse on, the crowd is the HOME club's: a home goal's roar runs 6-12 s and
+    // as loud as the pulse (after the goal's push); an away goal is booed (stadium_pulse.cpp), no roar.
+    if (PortPlusFeatures())
+    {
+        PortPulseGoal(side);
+        const int pulse = PortPulseValue();
+        if (pulse >= 0)
+        {
+            const float p = pulse / 100.0f;
+            s_roarLeft = side == 0 ? (6.0f + 6.0f * p) * (k < 0.6f ? 0.6f : k) : 0.0f;
+            s_roarVolume = 0.65f + 0.35f * p;
+        }
+    }
     fprintf(stderr, "[port] crowd: roar for %.1f s (gap %d, intensity %.2f)\n", s_roarLeft, gap, s_intensity);
 }

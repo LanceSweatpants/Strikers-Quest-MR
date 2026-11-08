@@ -542,6 +542,12 @@ void cGame::BeginGame(bool bRematch, bool bStraightToKickoff)
 // controllers' skin, its own outline etched into them).
 static const int kPortGuestThemeBase = 100;
 
+// strikers-quest r153: src/platform/xr_goalfx.h (stubs off the Quest)
+extern "C" void PortGoalFxGoal(int side, int humanPad, int ownGoal, float x, float y, float z, float ndcX, float ndcY,
+                               int ndcValid);
+// strikers-quest r168: BALL SKINS (include/port/ball_skin.h): the ball's own burst at a goal (looks only)
+extern "C" void PortBallSkinGoal(float x, float y, float z);
+
 static int port_celebration_character(const cPlayer* p)
 {
     if (p == NULL)
@@ -590,6 +596,16 @@ static void port_celebration_goal(int side, int goalType, int numGoals, int hype
     // strikers-quest r43: Plus only; Classic is alpha 1.2's goal (no roar, no scorer, no banner).
     if (PortPlusFeatures())
     {
+        // strikers-quest r153: the scorer's goal explosion (src/platform/xr_goalfx.cpp): where the ball is, in the
+        // world and in the broadcast picture (read only, the match plays the same)
+        if (g_pBall != NULL)
+        {
+            const nlVector3 bp = g_pBall->m_v3Position;
+            float ndcX = 0.0f, ndcY = 0.0f;
+            const int onScreen = PortBroadcastNdc(bp.x, bp.y, bp.z, &ndcX, &ndcY);
+            PortGoalFxGoal(side, humanPad, ownGoal ? 1 : 0, bp.x, bp.y, bp.z, ndcX, ndcY, onScreen);
+            PortBallSkinGoal(bp.x, bp.y, bp.z);  // r168
+        }
         PortCrowdRoarStart(side);
         XrScorerGoal(ownGoal ? teamTouch : scorer, side, numGoals == 2);
     }

@@ -61,6 +61,7 @@ void PortAudioDumpWrite(const void* pcm, unsigned int frames);
  * the start pose's forward, positive to the right). Mixing only: nothing the match reads. */
 void PortAudioSetCrowdLiving(float gain); /* living_crowd.cpp: the match's mood, every game frame */
 void PortAudioSetCrowdUser(float gain, int spatial, float headYaw); /* xr_quest.cpp, every frame */
+float PortAudioGetCrowdUser(void); /* strikers-quest r172: that user gain, for the stadium pulse's chant stream */
 
 #ifdef __cplusplus
 }

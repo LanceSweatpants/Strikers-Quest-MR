@@ -22,6 +22,8 @@ extern "C" void PortNetSetFixedStep(int on);  // src/platform/vi.c
 
 #include "xr_voice.h"  // strikers-quest r44: voice frames ride on the input messages
 #include "xr_home.h"   // strikers-quest r61: who the friend is, for the online rival
+#include "xr_goalfx.h" // r153: each headset's goal explosion, in the hello / the start
+#include "xr_balls.h"  // r168: each headset's ball skin, in the hello / the start
 
 #include <algorithm>
 #include <atomic>
@@ -729,6 +731,63 @@ Choice read_choice(Reader& r) {
 constexpr size_t kStartMaxBytes = 3900;  // the room server takes 4096 bytes a message (a big co-op cup's start nears it)
 constexpr uint8_t kSlotsTail = 'L';
 
+// r153 (no protocol change: cosmetic, the match plays the same): 'G', a headset's equipped goal explosion (xr_goalfx.h:
+// [size u8][its id, lower case, at most 15]; "none" for none) - the hello's after its 'L' slots, the start's after its
+// 'L' (or where that would be). A build before it never reads that far in a hello (its tail reading ends with the
+// slots), and the host sends it in the start only to a friend whose hello had one (an older guest would take its 'G'
+// for the r44c test friend's cpuPlays byte: harmless, 'G' is not 1, but it never gets one anyway).
+constexpr uint8_t kGoalFxTail = 'G';
+bool g_peerSendsGoalFx = false;  // the friend's last hello had a 'G'
+
+void write_goalfx(Writer& w) {
+  const char* id = xrgoalfx::equipped();
+  const size_t n = std::min<size_t>(std::strlen(id), 15);
+  w.u8(kGoalFxTail);
+  w.u8(static_cast<uint8_t>(n));
+  w.bytes(id, n);
+}
+
+bool read_goalfx(Reader& r, std::string* out) {
+  if (!r.ok || r.at >= r.v.size() || r.v[r.at] != kGoalFxTail) return false;
+  r.u8();
+  const size_t n = std::min<size_t>(r.u8(), 15);
+  char id[16] = {};
+  r.bytes(id, n);
+  if (!r.ok) return false;
+  for (size_t i = 0; i < n; ++i)
+    if (id[i] < 'a' || id[i] > 'z') return false;
+  out->assign(id, n);
+  return true;
+}
+
+// r168 (no protocol change: cosmetic, the match plays the same): 'B', a headset's equipped BALL SKIN (xr_balls.h: [size
+// u8][its id, lower case, at most 15]) - the hello's after its 'G', the start's after its 'G'. A build before it never
+// reads past the 'G' in a hello, and the host sends it in the start only to a friend whose hello had one (an older guest
+// would take its 'B' for the r44c test friend's cpuPlays byte).
+constexpr uint8_t kBallsTail = 'B';
+bool g_peerSendsBalls = false;  // the friend's last hello had a 'B'
+
+void write_balls(Writer& w) {
+  const char* id = xrballs::equipped();
+  const size_t n = std::min<size_t>(std::strlen(id), 15);
+  w.u8(kBallsTail);
+  w.u8(static_cast<uint8_t>(n));
+  w.bytes(id, n);
+}
+
+bool read_balls(Reader& r, std::string* out) {
+  if (!r.ok || r.at >= r.v.size() || r.v[r.at] != kBallsTail) return false;
+  r.u8();
+  const size_t n = std::min<size_t>(r.u8(), 15);
+  char id[16] = {};
+  r.bytes(id, n);
+  if (!r.ok) return false;
+  for (size_t i = 0; i < n; ++i)
+    if (id[i] < 'a' || id[i] > 'z') return false;
+  out->assign(id, n);
+  return true;
+}
+
 void write_slots(Writer& w, const Choice& c) {
   for (int k = 0; k < 3; ++k) {
     const uint8_t kind = c.slotKind[k] <= 3 ? c.slotKind[k] : 0;
@@ -841,6 +900,8 @@ void send_hello() {
   // says this build takes them in the start
   w.u8(kSlotsTail);
   write_slots(w, st.localChoice);
+  write_goalfx(w);  // r153: 'G', this headset's goal explosion (the friend's headset plays it when you score)
+  write_balls(w);   // r168: 'B', this headset's ball skin (the ball wears it when your side touched it last)
   send(std::move(w.v));
   st.lastHelloMs = now_ms();
 }
@@ -1083,6 +1144,20 @@ void host_start() {
     }
   } else if (!franchise) {
     NLOG("net: the friend's build sends no sidekick slots (an older one): each side's one sidekick pick");
+  }
+  // r153: 'G', this headset's goal explosion - only to a friend whose hello had one, under the room server's limit
+  if (g_peerSendsGoalFx) {
+    Writer tail;
+    write_goalfx(tail);
+    if (w.v.size() + tail.v.size() <= kStartMaxBytes) {
+      w.bytes(tail.v.data(), tail.v.size());
+      // r168: 'B', this headset's ball skin - after the 'G', only to a friend whose hello had one
+      if (g_peerSendsBalls) {
+        Writer b;
+        write_balls(b);
+        if (w.v.size() + b.v.size() <= kStartMaxBytes) w.bytes(b.v.data(), b.v.size());
+      }
+    }
   }
   st.startMsg = w.v;
   st.match = PortNetMatch{};
@@ -1401,10 +1476,23 @@ void handle(const std::vector<uint8_t>& msg) {
     }
     // r130: 'L', the friend's three sidekick slots (a build before them sends none: c.hasSlots stays false, and the
     // start this headset hosts carries none either)
+    size_t afterL = afterH;  // r153: where a tail after the slots starts
     if (afterH < msg.size() && msg[afterH] == kSlotsTail) {
       Reader tail = r;
       tail.at = afterH + 1;
-      read_slots(tail, &c);
+      afterL = read_slots(tail, &c) ? tail.at : msg.size();
+    }
+    // r153: 'G', the friend's goal explosion (a build before it sends none: none plays for their goals)
+    {
+      Reader tail = r;
+      tail.at = afterL;
+      std::string gfx;
+      g_peerSendsGoalFx = read_goalfx(tail, &gfx);
+      xrgoalfx::set_friend_equipped(g_peerSendsGoalFx ? gfx.c_str() : "");
+      // r168: 'B', the friend's ball skin, after their 'G' (a build before it sends none: the ball stays yours)
+      std::string ball;
+      g_peerSendsBalls = g_peerSendsGoalFx && read_balls(tail, &ball);
+      xrballs::set_friend_equipped(g_peerSendsBalls ? ball.c_str() : "");
     }
     if (ready && !st.peerReady) {
       NLOG("net: friend started a %s, waiting at the loading screen",
@@ -1466,6 +1554,17 @@ void handle(const std::vector<uint8_t>& msg) {
       if ((sides & 2) != 0) read_slots(r, &away);
       if (!r.ok) return;  // (malformed: as a bad 'C' / 'F' tail; the host's next resend)
       slotSides = sides & 3;
+    }
+    // r153: 'G', the host's goal explosion (a host before it sends none; its hello's, if any, stands)
+    {
+      std::string gfx;
+      if (read_goalfx(r, &gfx)) {
+        xrgoalfx::set_friend_equipped(gfx.c_str());
+        // r168: 'B', the host's ball skin after its 'G' (a host before it sends none; its hello's, if any, stands)
+        std::string ball;
+        if (read_balls(r, &ball)) xrballs::set_friend_equipped(ball.c_str());
+      }
+      if (!r.ok) return;
     }
     // r44c: optional, from the test friend only (tools/fakefriend): which side the computer plays.
     const uint8_t cpuPlays = r.ok && r.at < msg.size() ? r.u8() : 0;

@@ -4,6 +4,7 @@ import io.github.newcoke.strikers.guests.audio.Audio;
 import io.github.newcoke.strikers.guests.charged.Charged;
 import io.github.newcoke.strikers.guests.charged.Home;
 import io.github.newcoke.strikers.guests.models.Models;
+import io.github.newcoke.strikers.guests.models.SideFig;
 import io.github.newcoke.strikers.guests.mua.Mua;
 import io.github.newcoke.strikers.guests.pics.Pics;
 import io.github.newcoke.strikers.guests.render.Render;
@@ -25,18 +26,20 @@ public final class Convert {
     private Convert() {}
 
     /** Raised whenever the converter's output changes: headsets make their guests again (GuestSetup's stamp). */
-    public static final int VERSION = 4;  // 2 (1.16): + home figures (charged/Home), Melee standing poses (render/Evo),
+    public static final int VERSION = 5;  // 2 (1.16): + home figures (charged/Home), Melee standing poses (render/Evo),
                                           // r127 / r130's 82 Pokemon (models/Fix + Stand: their post-build fixes),
                                           // the Marvel heroes (mua: RMUE52, its own stamp line)
                                           // 3 (r135): + 162 Pokemon (models: standbind / fix135 / pivot / pitch /
                                           // turn / fish post-build steps, scale-show / env-not-card), 512 etch cells
                                           // 4 (r145): Umbreon's eyes (skin 78 owner), Porygon's colours (tex_square)
+                                          // 5 (r178): + the 4 Strikers sidekicks' 3D figures (models/SideFig: from
+                                          // the player's own Strikers disc - guests/home/strikers_toad ...)
 
     /** Makes everything it can; returns how many guests are ready. One guest's failure is a warning, not the end. */
     public static int run(Job job) throws IOException {
         final String[] names = {"Our data", "Models", "Charged", "Home figures", "Sounds", "Pictures", "Portraits + poses",
-            "Marvel heroes", "Kits + loading"};
-        final int[] weight = {1, 30, 5, 5, 4, 3, 32, 20, 25};
+            "Marvel heroes", "Kits + loading", "Strikers sidekicks"};
+        final int[] weight = {1, 30, 5, 5, 4, 3, 32, 20, 25, 2};
         int total = 0;
         for (int w : weight) total += w;
         final int[] base = new int[weight.length];
@@ -47,6 +50,9 @@ public final class Convert {
         Models.run(sub(job, names[1], base[1], weight[1], all));
         Charged.run(sub(job, names[2], base[2], weight[2], all));
         Home.run(sub(job, names[3], base[3], weight[3], all));  // r118: the corner's 3D captains + Charged guests
+        // r178: the Strikers sidekicks' own 3D figures (Toad, Koopa, Birdo, Hammer Bro) from the player's Strikers disc -
+        // early, so they're made even when a later part fails (and for a player with no guest game at all)
+        SideFig.run(sub(job, names[9], base[9], weight[9], all));
         Audio.run(sub(job, names[4], base[4], weight[4], all));
         Pics.portraits(sub(job, names[5], base[5], weight[5], all));
         Render.run(sub(job, names[6], base[6], weight[6], all));

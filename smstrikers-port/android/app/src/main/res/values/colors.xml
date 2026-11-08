@@ -5,4 +5,8 @@
     <color name="ink">#FFF2F5F0</color>
     <color name="ink_dim">#FFA8BDAE</color>
     <color name="accent">#FFE8B31C</color>
+    <!-- r157 (menu overhaul): the launcher panel's navy (the franchise hub's, tools/outside/menus_kit.py NAVY_*),
+         so the panel no longer opens with a green flash before it draws -->
+    <color name="lobby_navy">#FF141C36</color>
+    <color name="lobby_gold">#FFFFD23F</color>
 </resources>

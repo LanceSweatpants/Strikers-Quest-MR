@@ -31,7 +31,11 @@ namespace xrfx {
 // -3 / -3.5, in their card's frame: ModelDraw::local) and the cards' light (auras, the spotlight, the dimming: -4)
 // r141: + 1 more before the trading cards' (21): a BLACK 1/1's world round you and on its card (under -4.5: tinted light;
 // xr_cards.h kFxSlot) - the franchise's 18 stay 3-20 (xr_quest.cpp kFrFigs), the cards 22-26, the magazine 27
-constexpr int kModelSlots = 3 + 18 + 1 + 2 + 3 + 1;
+// r160 (binder skins + card sleeves): + 2 more before the 1/1's world (21, 22): the 3D binder in your room (its skin, its
+// pages: ModelDraw::under -5.5) and the cards' sleeves / top-loaders (-6.5) - xr_cards.h kBinderSlot / kSleeveSlot; the
+// franchise's 18 stay 3-20 (xr_quest.cpp kFrFigs = kModelSlots - 12), the cards 23-28, the magazine 29
+// r163: + 1 more (20 + 1): the binder's halos / light pool (xr_binderfx.h kBinderFxSlot); the sleeves' slot is the binder's pages'
+constexpr int kModelSlots = 3 + 18 + 1 + 2 + 3 + 1 + 2 + 1;
 // r135: the guests' outline cells in guests/etch.r8 (make_etch, xr_fx_mesh.frag sdGuest): 16 x 32 (r121-r134: 16 x 16),
 // one per pickable roster place; a theme of 100 + a cell from 0 to kEtchCells - 1
 constexpr int kEtchCells = 512;
@@ -297,6 +301,9 @@ struct Room {
 // Hands a room over (any thread); it goes up to the GPU at the next render_room. An empty one lets
 // the last one go (and its memory) at the next render or render_room.
 void set_room(Room&& room);
+// r170: the shop's preview ball's picture (xr_balls.cpp: its baked frames, an RGBA atlas w x h, rows top first), up at
+// the next render (xr_fx.frag shape 160 reads it). Any thread.
+void set_ball_atlas(std::vector<uint8_t>&& rgba, uint32_t w, uint32_t h);
 // Draws the room and the world outside into a full-size projection layer of their own (solid, the
 // first layer: the game's screen and the boards go over it, the effects over those). False while
 // there is no room to show.
@@ -365,6 +372,13 @@ bool take_stats(uint32_t* peakParts, uint32_t* peakIndices);
 void set_load_scale(float scale);
 float load_scale();
 bool pieces_alive();  // r130: any celebration piece up (the load scale only steps down then)
+
+// r153: the goal explosions (xr_goalfx.cpp). Its 3D pieces are the celebration's meshes: the mesh a celebration shape
+// is drawn with (paper / foil: variant 0-2 its three bends, 3 a streamer), -1 a quad. And a goal explosion has the
+// goal's moment first: the usual show (the flash, the confetti waves, the rain, the fireworks, the pyro, a themed show)
+// waits this long after the goal (what is up already keeps moving).
+int piece_mesh(int shape, int variant);
+void hold_celebration(float seconds);
 
 // Self-test: the next rendered left eye of the effects layer is written to `path` as a PPM, the
 // pieces over mid grey so the transparent parts read.

@@ -1,0 +1,31 @@
+# r183 ORIGINALS (tools/outside/originals183.py): pack, role, plays as, name, game [, franchise, from]. Shipped in the APK (no game file needed); staged into guests/ by StrikersHome.java.
+orig_quarterbyte	captain	mario	QUARTERBYTE	Originals
+orig_highscore	captain	mario	HIGHSCORE	Originals	franchise	orig_quarterbyte
+orig_gameover	captain	peach	GAME OVER	Originals	franchise	orig_highscore
+orig_rookie	captain	mario	ROOKIE	Originals
+orig_gambit	captain	mario	GAMBIT	Originals	franchise	orig_rookie
+orig_checkmate	captain	mario	CHECKMATE	Originals	franchise	orig_gambit
+orig_tatami	captain	wario	TATAMI	Originals
+orig_nightstep	captain	peach	NIGHTSTEP	Originals	franchise	orig_tatami
+orig_overclock	captain	peach	OVERCLOCK	Originals	franchise	orig_nightstep
+orig_tincan	captain	mario	TIN CAN	Originals
+orig_ironclad	captain	mario	IRONCLAD	Originals	franchise	orig_tincan
+orig_wyrmguard	captain	luigi	WYRMGUARD	Originals	franchise	orig_ironclad
+orig_graves	captain	mario	GRAVES	Originals
+orig_halfmoon	captain	yoshi	HALF MOON	Originals	franchise	orig_graves
+orig_fullmoon	captain	donkeykong	FULL MOON	Originals	franchise	orig_halfmoon
+orig_luchador	captain	mario	LUCHADOR	Originals
+orig_luchador_b	captain	mario	RIVAL LUCHADOR	Originals	franchise	orig_luchador
+orig_luchador_c	captain	mario	CHAMPION LUCHADOR	Originals	franchise	orig_luchador_b
+orig_racedriver	captain	luigi	RACE DRIVER	Originals
+orig_racedriver_b	captain	luigi	ORANGE RACE DRIVER	Originals	franchise	orig_racedriver
+orig_racedriver_c	captain	luigi	VINTAGE RACE DRIVER	Originals	franchise	orig_racedriver_b
+orig_goalie	captain	yoshi	GOALIE	Originals
+orig_goalie_b	captain	yoshi	SHARK GOALIE	Originals	franchise	orig_goalie
+orig_goalie_c	captain	yoshi	DOLL GOALIE	Originals	franchise	orig_goalie_b
+orig_mascot	captain	wario	MASCOT	Originals
+orig_mascot_b	captain	wario	HOT DOG MASCOT	Originals	franchise	orig_mascot
+orig_mascot_c	captain	wario	EAGLE MASCOT	Originals	franchise	orig_mascot_b
+orig_redline	captain	peach	REDLINE	Originals
+orig_redline_b	captain	peach	CHROME REDLINE	Originals	franchise	orig_redline
+orig_redline_c	captain	peach	BLACK GOLD REDLINE	Originals	franchise	orig_redline_b

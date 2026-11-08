@@ -60,6 +60,8 @@ enum Id : uint8_t {
   // pincer, a scallop shell, a curling wave, a pixel cube, a light egg, a shuriken, a lab flask, a bullet, a brick.
   kMapleLeaf, kBladeLeaf, kFeather, kFish, kScrew, kMagnet, kPincer, kScallop, kWave, kCube, kEggLite, kShuriken, kFlask,
   kBullet, kBrick,
+  // r185: LUCHADOR's championship belt (Lance: "a real pro-wrestling title belt"), a unit long, face +z
+  kTitleBelt,
   kCount
 };
 
@@ -1623,6 +1625,155 @@ inline Set build(float detail) {
   start(kBrick);
   tagged(2.0f, [&] { b.box({0.0f, 0.0f, 0.0f}, {0.45f, 0.14f, 0.22f}, 0.0f); });
   finish(kBrick);
+
+  // r185: a championship title belt, a unit long along x, its face toward +z (tools/outside/belt185.py builds the same
+  // mesh for the Blender close-up: keep the two in step). A thick strap (detail colour, leather: aux 14) curving back
+  // toward its ends; a big shaped centre plate (main colour, metal: aux 10) pointed top and bottom with scalloped edges,
+  // an embossed rim and a groove inside it, sunburst rays, a raised five-point star and a domed crest; its edge (aux 11);
+  // two side plates a side (aux 12); gem inlays (dark, aux 20: the shader's ruby / sapphire): a big cabochon on the crest,
+  // six round the star, one on each side plate; four snaps at the ends (aux 13); a stitched seam along both edges
+  // (aux 21). ~1,800 triangles close up (n(): fewer far / landed); at most ~7 in the air at once (xr_fx.cpp).
+  start(kTitleBelt);
+  {
+    constexpr float kT = 0.024f, kH = 0.085f;  // strap thickness, half height
+    auto zc = [](float x) { return -0.35f * x * x; };
+    // the strap: front, back, top and bottom edges, end caps
+    tagged(14.0f, [&] {
+      const int nx = n(24, 10);
+      b.patch(nx, 2, 1.0f, [&](float u, float v) { const float x = -0.5f + u; return V3{x, kH - 2.0f * kH * v, zc(x) + 0.5f * kT}; }, none);
+      b.patch(nx, 2, 1.0f, [&](float u, float v) { const float x = -0.5f + u; return V3{x, -kH + 2.0f * kH * v, zc(x) - 0.5f * kT}; }, none);
+      b.patch(nx, 1, 1.0f, [&](float u, float v) { const float x = -0.5f + u; return V3{x, kH, zc(x) + kT * (v - 0.5f)}; }, none);
+      b.patch(nx, 1, 1.0f, [&](float u, float v) { const float x = -0.5f + u; return V3{x, -kH, zc(x) + kT * (0.5f - v)}; }, none);
+      for (float ex : {-0.5f, 0.5f}) b.box(V3{ex, 0.0f, zc(ex)}, V3{0.002f, kH, 0.5f * kT}, 1.0f);
+    });
+    // the plates are built in crisp layers (Lance's r184 belt read as a lump): a polygon raised with a chamfered top
+    // (pts counter-clockwise seen from +z; its top inset s about (cx, cy); walls, chamfer, top: mat 0)
+    auto raised = [&](const std::vector<RH>& pts, float z0, float z1, float h, float s, float cx, float cy) {
+      const int N = static_cast<int>(pts.size());
+      auto P = [&pts, N](float u) {
+        const float f = u * N;
+        const int i = std::min(std::max(static_cast<int>(std::floor(f)), 0), N - 1);
+        const float w = f - i;
+        const RH a = pts[i], c = pts[(i + 1) % N];
+        return RH{a.first + (c.first - a.first) * w, a.second + (c.second - a.second) * w};
+      };
+      b.patch(N, 1, 0.0f, [&](float u, float v) { const RH q = P(u); return V3{q.first, q.second, z1 * (1.0f - v) + z0 * v}; }, none);
+      b.patch(N, 1, 0.0f, [&](float u, float v) {
+        const RH q = P(u);
+        const float k = s + (1.0f - s) * v;
+        return V3{cx + (q.first - cx) * k, cy + (q.second - cy) * k, (z1 + h) * (1.0f - v) + z1 * v};
+      }, none);
+      b.patch(N, 1, 0.0f, [&](float u, float v) {
+        const RH q = P(u);
+        const float k = s * v;
+        return V3{cx + (q.first - cx) * k, cy + (q.second - cy) * k, z1 + h};
+      }, none);
+    };
+    // the centre plate's outline: an oval pointed top and bottom, scalloped
+    auto outline_r = [](float t) {
+      const float s = std::sin(t), c = std::cos(t);
+      const float re = 1.0f / std::sqrt((s / 0.2f) * (s / 0.2f) + (c / 0.155f) * (c / 0.155f));
+      return re * (1.0f + 0.32f * std::pow(std::fabs(c), 10.0f) + 0.05f * std::cos(8.0f * t));
+    };
+    const int np = n(48, 24);
+    std::vector<RH> outl;
+    for (int k = 0; k < np; ++k) {
+      const float t = -2.0f * kPi * k / np, r = outline_r(t);
+      outl.push_back({r * std::sin(t), r * std::cos(t)});
+    }
+    const float zA = 0.5f * kT + 0.014f, zF = zA + 0.006f;  // the plate's top, its face
+    tagged(10.0f, [&] { raised(outl, 0.5f * kT - 0.004f, zA, 0.006f, 0.96f, 0.0f, 0.0f); });
+    // its embossed rim: a raised band round the face, chamfered both sides
+    tagged(10.0f, [&] {
+      const float ks[4] = {0.8f, 0.83f, 0.91f, 0.94f}, zs[4] = {zF, zF + 0.007f, zF + 0.007f, zF};
+      for (int j = 0; j < 3; ++j) {
+        b.patch(np, 1, 0.0f, [&](float u, float v) {
+          const float t = -2.0f * kPi * u, r = outline_r(t) * (ks[j] + (ks[j + 1] - ks[j]) * v);
+          return V3{r * std::sin(t), r * std::cos(t), zs[j] + (zs[j + 1] - zs[j]) * v};
+        }, none);
+      }
+    });
+    // sunburst rays engraved across the field (thin polished strips, aux 15)
+    tagged(15.0f, [&] {
+      for (int k = 0; k < 24; ++k) {
+        const float t = 2.0f * kPi * (k + 0.5f) / 24.0f, r1 = outline_r(t) * 0.78f;
+        const float dx = std::sin(t), dy = std::cos(t);
+        b.patch(1, 1, 0.0f, [=](float u, float v) {
+          const float r = 0.13f + (r1 - 0.13f) * v, w = 0.004f * (1.0f - 0.6f * v) * (u - 0.5f) * -2.0f;
+          return V3{dx * r + dy * w, dy * r - dx * w, zF + 0.0008f};
+        }, none);
+      }
+    });
+    // the raised five-point star and the domed medallion on it
+    const float zS = zF + 0.012f;
+    tagged(10.0f, [&] {
+      std::vector<RH> star;
+      for (int k = 0; k < 10; ++k) {
+        const float a = -2.0f * kPi * k / 10.0f, r = k % 2 == 0 ? 0.125f : 0.052f;
+        star.push_back({r * std::sin(a), r * std::cos(a)});
+      }
+      raised(star, zF - 0.002f, zF + 0.007f, 0.005f, 0.72f, 0.0f, 0.0f);
+      b.lathe_poly(2, n(20, 10), 0.0f, {{0.0f, zS - 0.002f}, {0.05f, zS - 0.002f}, {0.05f, zS + 0.004f}, {0.042f, zS + 0.011f},
+                                        {0.022f, zS + 0.016f}, {0.0f, zS + 0.017f}});
+    });
+    // a gem inlay: a cabochon of radius rr standing on (x, y, z)
+    auto gem = [&](float x, float y, float z, float rr, int segs) {
+      const size_t from = set.verts.size();
+      b.lathe_poly(2, segs, 3.0f, {{0.0f, -0.004f}, {rr, -0.004f}, {rr, 0.3f * rr}, {0.6f * rr, 0.75f * rr}, {0.0f, 0.9f * rr}});
+      b.xform(from, rot_z(0.0f), V3{x, y, z});
+      b.tag(from, 20.0f);
+    };
+    gem(0.0f, 0.0f, zS + 0.012f, 0.027f, n(16, 8));
+    for (int k = 0; k < 5; ++k) {  // in the star's notches
+      const float t = 2.0f * kPi * (k + 0.5f) / 5.0f;
+      gem(0.098f * std::sin(t), 0.098f * std::cos(t), zF + 0.001f, 0.012f, n(8, 5));
+    }
+    // two side plates a side, set on the strap's curve, each with its gem
+    for (float x : {-0.405f, -0.29f, 0.29f, 0.405f}) {
+      const bool inner = std::fabs(x) < 0.35f;
+      const float ha = inner ? 0.05f : 0.04f, hb = inner ? 0.074f : 0.062f;
+      const float zs = zc(x) + 0.5f * kT;
+      const M3 tilt = rot_y(std::atan(0.7f * x));
+      std::vector<RH> rr;
+      const int nr = n(20, 12);
+      for (int k = 0; k < nr; ++k) {
+        const float t = -2.0f * kPi * k / nr, s = std::sin(t), c = std::cos(t);
+        rr.push_back({ha * (s < 0.0f ? -1.0f : 1.0f) * std::pow(std::fabs(s), 0.3f),
+                      hb * (c < 0.0f ? -1.0f : 1.0f) * std::pow(std::fabs(c), 0.3f)});
+      }
+      const size_t from = set.verts.size();
+      raised(rr, -0.004f, 0.009f, 0.004f, 0.84f, 0.0f, 0.0f);
+      b.xform(from, tilt, V3{x, 0.0f, zs});
+      b.tag(from, 12.0f);
+      const size_t g0 = set.verts.size();
+      gem(0.0f, 0.0f, 0.013f, inner ? 0.015f : 0.012f, n(8, 5));
+      b.xform(g0, tilt, V3{x, 0.0f, zs});
+    }
+    // the snaps at the ends
+    for (float x : {-0.465f, 0.465f}) {
+      for (float y : {-0.04f, 0.04f}) {
+        const size_t from = set.verts.size();
+        b.lathe_poly(2, n(8, 5), 0.0f, {{0.0f, 0.0f}, {0.014f, 0.0f}, {0.012f, 0.006f}, {0.0f, 0.008f}});
+        b.xform(from, rot_y(std::atan(0.7f * x)), V3{x, y, zc(x) + 0.5f * kT});
+        b.tag(from, 13.0f);
+      }
+    }
+    // the stitched seams: short raised dashes along both edges (not under the plates)
+    tagged(21.0f, [&] {
+      for (float y : {-0.068f, 0.068f}) {
+        for (float x = -0.485f; x < 0.48f; x += 0.026f) {
+          const float xm = x + 0.008f;
+          const float ax = std::fabs(xm);
+          if (ax < 0.215f || std::fabs(ax - 0.29f) < 0.058f) continue;  // (under the plates: the inner ones are taller than the seam)
+          b.patch(1, 1, 2.0f, [=](float u, float v) {
+            const float xx = x + 0.016f * u;
+            return V3{xx, y + 0.002f - 0.004f * v, -0.35f * xx * xx + 0.5f * kT + 0.0015f};
+          }, none);
+        }
+      }
+    });
+  }
+  finish(kTitleBelt);
 
   return set;
 }

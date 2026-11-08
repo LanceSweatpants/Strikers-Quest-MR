@@ -253,6 +253,10 @@ list(REMOVE_ITEM PLATFORM_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_evo.cpp"   # r96: the 3D evolution
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_big.cpp"   # r137: big character pictures
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_cards.cpp" # r137: STRIKERS trading cards
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_goalfx.cpp" # r153: goal explosions
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_binderfx.cpp" # r163: the 3D binder's living skins
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_balls.cpp" # r168: ball skins (the headset's side)
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_menu.cpp" # r157: the menus' kit
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_league.cpp" # r100: online franchise leagues
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_net.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_text.cpp"
@@ -707,6 +711,10 @@ if(STRIKERS_AURORA)
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_evo.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_big.cpp"  # r137
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_cards.cpp"  # r137: trading cards
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_goalfx.cpp"  # r153: goal explosions
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_binderfx.cpp"  # r163: the 3D binder's living skins
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_balls.cpp"  # r168: ball skins (the headset's side)
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_menu.cpp"  # r157: the menus' kit
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_league.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_net.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_text.cpp")

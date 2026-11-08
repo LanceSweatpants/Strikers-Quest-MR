@@ -362,6 +362,9 @@ struct PStats
     int seasonGoals;
     int form;           // -3 (a slump) .. +3 (on fire)
     int personality;    // PERS_*
+    // r165 (Lance: "post season success or failure doesnt make or break someones seasonal awards, it felt like whoever
+    // made it furthest in the playoffs won the most awards"): the regular season's goals and form alone, for awards night
+    int regGoals, regForm;
 };
 struct ClubState
 {
@@ -380,6 +383,9 @@ struct ClubState
     std::string mem[3];
     Prog mp[3];
     int streak;                   // r71: + wins in a row / - losses in a row
+    // r167 (EVOLUTION SELECTOR): each slot's highest form reached when it plays as an earlier one (top[slot]; "" = the one it
+    // plays as, its key). Slots as slot_key: 0 captain, 1 backup, 2-4 members. Only a person's club sets it (top_of checks it)
+    std::string top[5];
 };
 struct Game
 {
@@ -419,6 +425,27 @@ struct Nemesis
     int last[5];         // the last meetings' margins (theirs - yours), newest first; 99 = none
     std::vector<std::string> log;  // what happened, newest first (up to 6)
     int owner;           // r100: whose nemesis it is in an online league (that member's club); -1 = the career's own
+};
+
+// r167: FREE AGENCY (franchise.h). A free agent: a character on no club, with its own level, record and personality.
+struct FreeAgent
+{
+    std::string key;     // the form it is (a released Charizard stays a Charizard)
+    Prog prog;
+    PStats st;
+    int from = -1;       // the club that released it (-1 never on one)
+    int since = 0;       // the season it became free
+    bool fresh = true;   // never on a club in this career: it joins at its spot's level (as r131's signings)
+    int decide = 0;      // mid-season: decides at the end of this week (0: no offers yet)
+};
+// An offer: a club's role for an agent (PORT_FA_*), a backup's promised starts, a captain offer that releases the captain
+// (else the captain goes to the bench and the backup is released); the week it was made.
+struct FaBid
+{
+    std::string key;
+    int club = -1, role = 0;
+    bool promise = false, relCap = false;
+    int week = 0;
 };
 
 struct Career
@@ -461,6 +488,20 @@ struct Career
     std::vector<int> lifeDone;
     int newsWeek = 0;  // r100: the week the news / feed is about (a league's played games add to it)
     int leagueV = 0;   // r100: the league's version this copy is (the server's count)
+    // r167: free agency - the free agents, the offers out, the last CPU bidding round (season * 100 + its week, 99 the
+    // off-season's), your last result line
+    std::vector<FreeAgent> fa;
+    std::vector<FaBid> bids;
+    int faRound = 0;
+    std::string faLast;
+    // r177 (Lance: retirements so every off-season has a real rookie class): by character (char_id) - who a person's club
+    // got this season (never retired that season), who was told "thinking about retirement" (a person's own retire the
+    // off-season after), lines retired that come back as rookies (the season they return), rookies by the season they
+    // were rookies in (Rookie of the Year: any role)
+    std::vector<std::pair<std::string, int> > joined;
+    std::vector<std::string> retireWarn;
+    std::vector<std::pair<std::string, int> > returning;
+    std::vector<std::pair<std::string, int> > rookieOf;
 };
 
 Career s_career;
@@ -580,6 +621,7 @@ struct PlayedResult
 void init_stats(PStats& s, int personality)
 {
     s.goals = s.games = s.seasonGoals = s.form = 0;
+    s.regGoals = s.regForm = 0;  // r165
     s.personality = personality;
 }
 
@@ -755,6 +797,10 @@ bool write_career(const Career& c, const std::string& path)
         for (int k = 0; k < 5; k++)
             fprintf(f, " %d %d %d %d %d", st[k]->goals, st[k]->games, st[k]->seasonGoals, st[k]->form, st[k]->personality);
         fprintf(f, "\n");
+        fprintf(f, "lifereg %d", i);  // r165: the regular season's goals and form (awards night)
+        for (int k = 0; k < 5; k++)
+            fprintf(f, " %d %d", st[k]->regGoals, st[k]->regForm);
+        fprintf(f, "\n");
     }
     for (size_t i = 0; i < c.feed.size(); i++)
         fprintf(f, "feed %s\n", c.feed[i].c_str());
@@ -808,6 +854,35 @@ bool write_career(const Career& c, const std::string& path)
     }
     for (size_t i = 0; i < c.champions.size(); i++)
         fprintf(f, "champion %d %d\n", c.champions[i].first, c.champions[i].second);
+    // r167: the forms played below the highest reached ("top <club> <slot> <highest>"), free agency (careers from before
+    // r167 have none of these: every player plays its highest form, nobody is free until the window refreshes the pool)
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        for (int k = 0; k < 5; k++)
+            if (!c.clubs[i].top[k].empty())
+                fprintf(f, "top %d %d %s\n", i, k, c.clubs[i].top[k].c_str());
+    for (size_t i = 0; i < c.fa.size(); i++)
+    {
+        const FreeAgent& a = c.fa[i];
+        fprintf(f, "fa %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s\n", a.fresh ? 1 : 0, a.from, a.since, a.decide,
+                a.prog.level, a.prog.xp, a.prog.shiny ? 1 : 0, a.prog.declinedAt, a.prog.startLevel, a.st.goals, a.st.games,
+                a.st.seasonGoals, a.st.form, a.st.personality, a.st.regGoals, a.st.regForm, a.key.c_str());
+    }
+    for (size_t i = 0; i < c.bids.size(); i++)
+    {
+        const FaBid& b = c.bids[i];
+        fprintf(f, "fabid %d %d %d %d %d %s\n", b.club, b.role, b.promise ? 1 : 0, b.relCap ? 1 : 0, b.week, b.key.c_str());
+    }
+    fprintf(f, "faround %d\n", c.faRound);
+    for (size_t i = 0; i < c.joined.size(); i++)  // r177
+        fprintf(f, "joined %d %s\n", c.joined[i].second, c.joined[i].first.c_str());
+    for (size_t i = 0; i < c.retireWarn.size(); i++)
+        fprintf(f, "retwarn %s\n", c.retireWarn[i].c_str());
+    for (size_t i = 0; i < c.returning.size(); i++)
+        fprintf(f, "returning %d %s\n", c.returning[i].second, c.returning[i].first.c_str());
+    for (size_t i = 0; i < c.rookieOf.size(); i++)
+        fprintf(f, "rookieof %d %s\n", c.rookieOf[i].second, c.rookieOf[i].first.c_str());
+    if (!c.faLast.empty())
+        fprintf(f, "falast %s\n", c.faLast.c_str());
     fclose(f);
     remove(path.c_str());
     return rename(tmp.c_str(), path.c_str()) == 0;
@@ -1021,8 +1096,35 @@ bool load_path(const std::string& path, int slot, Career* out)
                     st[k]->seasonGoals = v[7 + k * 5];
                     st[k]->form = v[8 + k * 5];
                     st[k]->personality = v[9 + k * 5];
+                    st[k]->regGoals = st[k]->seasonGoals;  // r165: a save from before lifereg (its line below wins)
+                    st[k]->regForm = st[k]->form;
                 }
                 hadLife = true;
+            }
+        }
+        else if (strncmp(line, "lifereg ", 8) == 0)  // r165
+        {
+            int v[11];
+            int n = 0;
+            const char* p = line + 8;
+            while (n < 11)
+            {
+                char* end = NULL;
+                const long x = strtol(p, &end, 10);
+                if (end == p)
+                    break;
+                v[n++] = (int)x;
+                p = end;
+            }
+            if (n == 11 && v[0] >= 0 && v[0] < PORT_FR_CLUBS)
+            {
+                ClubState& s = c.clubs[v[0]];
+                PStats* st[5] = {&s.capSt, &s.bkSt, &s.sk[0], &s.sk[1], &s.sk[2]};
+                for (int k = 0; k < 5; k++)
+                {
+                    st[k]->regGoals = v[1 + k * 2];
+                    st[k]->regForm = v[2 + k * 2];
+                }
             }
         }
         else if (strncmp(line, "nem ", 4) == 0)
@@ -1040,7 +1142,7 @@ bool load_path(const std::string& path, int slot, Career* out)
                 n.rank = v[3];
                 n.beatYou = v[4];
                 n.lostToYou = v[5];
-                n.title = v[6] >= 0 && v[6] < 11 ? v[6] : 0;  // (kTitles' 11, below)
+                n.title = v[6] >= 0 && v[6] < 1000 ? v[6] : 0;  // (r173: title_name clamps to the table, kTitleDefs below)
                 n.traits = v[7];
                 n.since = v[8];
                 n.active = v[9] != 0;
@@ -1127,6 +1229,73 @@ bool load_path(const std::string& path, int slot, Career* out)
             if (sscanf(line + 9, "%d %d", &season, &club) == 2)
                 c.champions.push_back(std::make_pair(season, club));
         }
+        else if (strncmp(line, "top ", 4) == 0)  // r167
+        {
+            int i = -1, k = -1;
+            char key[96];
+            if (sscanf(line + 4, "%d %d %95s", &i, &k, key) == 3 && i >= 0 && i < PORT_FR_CLUBS && k >= 0 && k < 5)
+                c.clubs[i].top[k] = key;
+        }
+        else if (strncmp(line, "fa ", 3) == 0)  // r167
+        {
+            int v[16];
+            char key[96];
+            if (sscanf(line + 3, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %95s", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+                       &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], key) == 17)
+            {
+                FreeAgent a;
+                a.key = key;
+                a.fresh = v[0] != 0;
+                a.from = v[1] >= 0 && v[1] < PORT_FR_CLUBS ? v[1] : -1;
+                a.since = v[2];
+                a.decide = v[3];
+                init_prog(a.prog);
+                a.prog.level = std::max(1, std::min(100, v[4]));
+                a.prog.xp = v[5];
+                a.prog.shiny = v[6] != 0;
+                a.prog.declinedAt = v[7];
+                a.prog.startLevel = v[8];
+                init_stats(a.st, v[13]);
+                a.st.goals = v[9];
+                a.st.games = v[10];
+                a.st.seasonGoals = v[11];
+                a.st.form = v[12];
+                a.st.regGoals = v[14];
+                a.st.regForm = v[15];
+                c.fa.push_back(a);
+            }
+        }
+        else if (strncmp(line, "fabid ", 6) == 0)  // r167
+        {
+            int club = -1, role = 0, pr = 0, rc = 0, wk = 0;
+            char key[96];
+            if (sscanf(line + 6, "%d %d %d %d %d %95s", &club, &role, &pr, &rc, &wk, key) == 6 && club >= 0 && club < PORT_FR_CLUBS &&
+                role >= 0 && role < PORT_FA_ROLES)
+            {
+                FaBid b;
+                b.key = key;
+                b.club = club;
+                b.role = role;
+                b.promise = pr != 0;
+                b.relCap = rc != 0;
+                b.week = wk;
+                c.bids.push_back(b);
+            }
+        }
+        else if (strncmp(line, "faround ", 8) == 0)  // r167
+            c.faRound = atoi(line + 8);
+        else if (strncmp(line, "joined ", 7) == 0 || strncmp(line, "returning ", 10) == 0 || strncmp(line, "rookieof ", 9) == 0)  // r177
+        {
+            const bool j = line[0] == 'j', r = line[0] == 'r' && line[1] == 'e';
+            int season = 0;
+            char id[128];
+            if (sscanf(line + (j ? 7 : (r ? 10 : 9)), "%d %127s", &season, id) == 2)
+                (j ? c.joined : (r ? c.returning : c.rookieOf)).push_back(std::make_pair(std::string(id), season));
+        }
+        else if (strncmp(line, "retwarn ", 8) == 0)  // r177
+            c.retireWarn.push_back(line + 8);
+        else if (strncmp(line, "falast ", 7) == 0)  // r167
+            c.faLast = line + 7;
     }
     fclose(f);
     if (!ok || c.games.empty())
@@ -1945,6 +2114,11 @@ void life_game(Career& c, const Game& g, const int scorers[2][kScorerSlots])
             p.seasonGoals += goals;
             const int before = p.form;
             p.form = std::max(-3, std::min(3, p.form + (won ? 1 : -1) + (goals >= 2 ? 1 : 0)));
+            if (g.series < 0)  // r165: a regular-season game: what awards night counts
+            {
+                p.regGoals += goals;
+                p.regForm = std::max(-3, std::min(3, p.regForm + (won ? 1 : -1) + (goals >= 2 ? 1 : 0)));
+            }
             if (goals >= 3)
             {
                 c.news.push_back("HAT TRICK: " + upper(names[k]) + " SCORED " + std::to_string(goals) + " FOR " + place);
@@ -1973,9 +2147,85 @@ void life_game(Career& c, const Game& g, const int scorers[2][kScorerSlots])
 }
 
 // ----------------------------------------------------------------------------------- r72: Nemesis
-const char* const kTitles[] = {"THE GRUDGE",     "THE PLAYOFF KILLER", "THE GIANT SLAYER", "THE ENFORCER",
-                               "THE TORMENTOR",  "THE SHOWSTOPPER",    "THE GHOST",        "THE AVENGER",
-                               "THE MENACE",     "THE SNIPER",         "THE TRAITOR"};
+// r173 (Lance: "you gave ppl like 2 names in all my franchises. its 'the avenger' or 'the giant slayer' ... there need to
+// be wayyyy more titles"): a title is a storyline. Each belongs to one (TitleCat) with a strength; a beef record gets the
+// strongest storyline its game told (a final knockout, a five-goal game, a Super Strike, a shutout, three straight wins
+// over you, a hit parade, a golden goal ... down to its personality and its element / power), one of that storyline's
+// titles not already held in the league this season (variety), the rare storylines' titles only for rare feats. A stronger
+// story later re-titles an active nemesis ("NEMESIS X IS NOW THE ..."). Awards night names its winners too (the hall of
+// fame, the news). The first 11 keep their old numbers (saved careers' "nem" lines hold the index).
+enum TitleCat
+{
+    TC_GRUDGE, TC_KNOCKOUT, TC_KNOCKOUT_FINAL, TC_GIANT, TC_HAT3, TC_HAT4, TC_HAT5, TC_SS1, TC_SS2, TC_ENFORCER, TC_ENFORCER4,
+    TC_BLOWOUT, TC_CLUTCH, TC_GOLDEN, TC_SHUTOUT, TC_CURSE, TC_REVENGE, TC_FIRE, TC_ROOKIE, TC_LEGEND, TC_TRAITOR, TC_EVOLVED,
+    TC_SCORER, TC_P_HOTHEAD, TC_P_SHOWBOAT, TC_P_SILENT, TC_P_HONORABLE, TC_P_TRICKSTER, TC_P_UNDERDOG, TC_P_VETERAN,
+    TC_P_FRONTRUNNER, TC_E_INFERNO, TC_E_THUNDER, TC_E_BOULDER, TC_E_TIDAL, TC_E_PHANTOM, TC_E_CYCLONE, TC_E_GLACIER, TC_E_BLOOM,
+    TC_AW_MVP, TC_AW_BOOT, TC_AW_SIXTH, TC_AW_RECORD, TC_COUNT
+};
+// how strong a story each is (a re-title needs a stronger one; awards' only matter among themselves)
+const int kTitleCatStrength[TC_COUNT] = {10, 100, 110, 72, 70, 88, 95, 60, 85, 58, 80, 75, 50, 62, 65, 68, 50, 45, 40, 105, 90,
+                                         90, 55, 30, 30, 30, 30, 30, 30, 30, 30, 25, 25, 25, 25, 25, 25, 25, 25, 0, 0, 0, 0};
+struct TitleDef
+{
+    const char* name;
+    int cat;
+};
+const TitleDef kTitleDefs[] = {
+    // (r72's eleven, their old numbers)
+    {"THE GRUDGE", TC_GRUDGE}, {"THE PLAYOFF KILLER", TC_KNOCKOUT}, {"THE GIANT SLAYER", TC_GIANT}, {"THE ENFORCER", TC_ENFORCER},
+    {"THE TORMENTOR", TC_BLOWOUT}, {"THE SHOWSTOPPER", TC_SS1}, {"THE GHOST", TC_P_SILENT}, {"THE AVENGER", TC_EVOLVED},
+    {"THE MENACE", TC_P_HOTHEAD}, {"THE SNIPER", TC_HAT3}, {"THE TRAITOR", TC_TRAITOR},
+    // r173
+    {"THE THORN IN YOUR SIDE", TC_GRUDGE}, {"THE BAD BLOOD", TC_GRUDGE}, {"THE SWORN RIVAL", TC_GRUDGE}, {"THE OLD SCORE", TC_GRUDGE},
+    {"THE LONG MEMORY", TC_GRUDGE},
+    {"THE GUILLOTINE", TC_KNOCKOUT}, {"THE DREAM CRUSHER", TC_KNOCKOUT}, {"THE GATEKEEPER", TC_KNOCKOUT},
+    {"THE SEASON ENDER", TC_KNOCKOUT}, {"THE HEARTBREAKER", TC_KNOCKOUT},
+    {"THE CROWN THIEF", TC_KNOCKOUT_FINAL}, {"THE RING STEALER", TC_KNOCKOUT_FINAL}, {"THE LAST WORD", TC_KNOCKOUT_FINAL},
+    {"THE UPSET ARTIST", TC_GIANT}, {"THE DARK HORSE", TC_GIANT}, {"THE SPOILER", TC_GIANT}, {"THE SLINGSHOT", TC_GIANT},
+    {"THE LONG SHOT", TC_GIANT},
+    {"THE HAT-TRICK HERO", TC_HAT3}, {"THE MARKSMAN", TC_HAT3}, {"THE TRIGGERMAN", TC_HAT3}, {"THE NET BUSTER", TC_HAT3},
+    {"THE SHARPSHOOTER", TC_HAT3},
+    {"THE ONE-MAN ARMY", TC_HAT4}, {"THE SCORING MACHINE", TC_HAT4}, {"THE GOAL RUSH", TC_HAT4},
+    {"THE AVALANCHE", TC_HAT5}, {"THE FIVE-ALARM FIRE", TC_HAT5},
+    {"THE THUNDERCLAP", TC_SS1}, {"THE SKYFALL", TC_SS1}, {"THE BOOMSTICK", TC_SS1}, {"THE FIREWORKS", TC_SS1},
+    {"THE MEGATON", TC_SS2}, {"THE DOUBLE STRIKE", TC_SS2},
+    {"THE WRECKING BALL", TC_ENFORCER}, {"THE BULLDOZER", TC_ENFORCER}, {"THE HAMMER", TC_ENFORCER}, {"THE BRUISER", TC_ENFORCER},
+    {"THE AFTERSHOCK", TC_ENFORCER4}, {"THE EARTHQUAKE", TC_ENFORCER4},
+    {"THE BULLY", TC_BLOWOUT}, {"THE NIGHTMARE", TC_BLOWOUT}, {"THE STEAMROLLER", TC_BLOWOUT}, {"THE BLOWTORCH", TC_BLOWOUT},
+    {"THE CLOSER", TC_CLUTCH}, {"THE DAGGER", TC_CLUTCH}, {"THE ICE VEINS", TC_CLUTCH}, {"THE FINAL SAY", TC_CLUTCH},
+    {"THE GOLDEN GOAL", TC_GOLDEN}, {"THE SUDDEN DEATH", TC_GOLDEN}, {"THE EXTRA-TIME HERO", TC_GOLDEN}, {"THE OVERTIME THIEF", TC_GOLDEN},
+    {"THE WALL", TC_SHUTOUT}, {"THE FORTRESS", TC_SHUTOUT}, {"THE VAULT", TC_SHUTOUT}, {"THE LOCKDOWN", TC_SHUTOUT},
+    {"THE CURSE", TC_CURSE}, {"THE JINX", TC_CURSE}, {"THE HAUNTING", TC_CURSE}, {"THE BOOGEYMAN", TC_CURSE},
+    {"THE ACHILLES HEEL", TC_CURSE},
+    {"THE VENDETTA", TC_REVENGE}, {"THE RECKONING", TC_REVENGE}, {"THE PAYBACK", TC_REVENGE}, {"THE COMEBACK KID", TC_REVENGE},
+    {"THE HEAT WAVE", TC_FIRE}, {"THE HOT HAND", TC_FIRE}, {"THE WILDFIRE", TC_FIRE}, {"THE SUPERNOVA", TC_FIRE},
+    {"THE ROOKIE SENSATION", TC_ROOKIE}, {"THE NEW KID", TC_ROOKIE}, {"THE PRODIGY", TC_ROOKIE}, {"THE PHENOM", TC_ROOKIE},
+    {"THE FINAL BOSS", TC_LEGEND}, {"THE LEGEND KILLER", TC_LEGEND}, {"THE ETERNAL RIVAL", TC_LEGEND}, {"THE ARCHRIVAL", TC_LEGEND},
+    {"THE TURNCOAT", TC_TRAITOR}, {"THE MUTINEER", TC_TRAITOR}, {"THE DEFECTOR", TC_TRAITOR}, {"THE SNAKE", TC_TRAITOR},
+    {"THE REBORN", TC_EVOLVED}, {"THE ASCENDED", TC_EVOLVED}, {"THE AWAKENED", TC_EVOLVED}, {"THE NEW BREED", TC_EVOLVED},
+    {"THE POACHER", TC_SCORER}, {"THE OPPORTUNIST", TC_SCORER}, {"THE SUPER SUB", TC_SCORER}, {"THE FOX IN THE BOX", TC_SCORER},
+    {"THE LIVE WIRE", TC_P_HOTHEAD}, {"THE SPARK", TC_P_HOTHEAD}, {"THE SHORT FUSE", TC_P_HOTHEAD},
+    {"THE SHOWMAN", TC_P_SHOWBOAT}, {"THE HEADLINER", TC_P_SHOWBOAT}, {"THE MAIN EVENT", TC_P_SHOWBOAT},
+    {"THE SILENT STORM", TC_P_SILENT}, {"THE WHISPER", TC_P_SILENT}, {"THE NIGHTSHADE", TC_P_SILENT},
+    {"THE NOBLE FOE", TC_P_HONORABLE}, {"THE HONOR GUARD", TC_P_HONORABLE}, {"THE WORTHY RIVAL", TC_P_HONORABLE},
+    {"THE TRICKSTER", TC_P_TRICKSTER}, {"THE ILLUSIONIST", TC_P_TRICKSTER}, {"THE PRANKSTER", TC_P_TRICKSTER},
+    {"THE MIRAGE", TC_P_TRICKSTER},
+    {"THE UNDERDOG", TC_P_UNDERDOG}, {"THE SCRAPPER", TC_P_UNDERDOG}, {"THE GRINDER", TC_P_UNDERDOG},
+    {"THE OLD GUARD", TC_P_VETERAN}, {"THE IRON VETERAN", TC_P_VETERAN}, {"THE LAST STAND", TC_P_VETERAN},
+    {"THE FRONT-RUNNER", TC_P_FRONTRUNNER}, {"THE TABLE TOPPER", TC_P_FRONTRUNNER}, {"THE FAVORITE", TC_P_FRONTRUNNER},
+    {"THE INFERNO", TC_E_INFERNO}, {"THE FLAMETHROWER", TC_E_INFERNO}, {"THE FIREBRAND", TC_E_INFERNO},
+    {"THE STORMFRONT", TC_E_THUNDER}, {"THE LIVE CURRENT", TC_E_THUNDER}, {"THE STORM CALLER", TC_E_THUNDER},
+    {"THE LANDSLIDE", TC_E_BOULDER}, {"THE IRONSIDE", TC_E_BOULDER}, {"THE ROCKSLIDE", TC_E_BOULDER},
+    {"THE RIPTIDE", TC_E_TIDAL}, {"THE UNDERTOW", TC_E_TIDAL}, {"THE TIDEBREAKER", TC_E_TIDAL},
+    {"THE POLTERGEIST", TC_E_PHANTOM}, {"THE APPARITION", TC_E_PHANTOM}, {"THE ENIGMA", TC_E_PHANTOM},
+    {"THE TYPHOON", TC_E_CYCLONE}, {"THE TALON", TC_E_CYCLONE}, {"THE SKYBREAKER", TC_E_CYCLONE},
+    {"THE BLIZZARD", TC_E_GLACIER}, {"THE DEEP FREEZE", TC_E_GLACIER}, {"THE FROSTBITE", TC_E_GLACIER},
+    {"THE THORN", TC_E_BLOOM}, {"THE WILD VINE", TC_E_BLOOM}, {"THE WILDCAT", TC_E_BLOOM},
+    {"THE FRANCHISE", TC_AW_MVP}, {"THE ENGINE", TC_AW_MVP}, {"THE CORNERSTONE", TC_AW_MVP}, {"THE PRIME MOVER", TC_AW_MVP},
+    {"THE GOAL MACHINE", TC_AW_BOOT}, {"THE NET SHREDDER", TC_AW_BOOT}, {"THE GOLDEN FOOT", TC_AW_BOOT}, {"THE FINISHER", TC_AW_BOOT},
+    {"THE SPARK PLUG", TC_AW_SIXTH}, {"THE GLUE", TC_AW_SIXTH}, {"THE SIXTH STAR", TC_AW_SIXTH},
+    {"THE RECORD BREAKER", TC_AW_RECORD}, {"THE HISTORY MAKER", TC_AW_RECORD},
+};
 enum
 {
     T_GRUDGE,
@@ -1989,8 +2239,58 @@ enum
     T_MENACE,
     T_SNIPER,
     T_TRAITOR,
-    T_COUNT,
+    T_COUNT = (int)(sizeof kTitleDefs / sizeof kTitleDefs[0]),
 };
+const char* title_name(int t) { return kTitleDefs[t >= 0 && t < T_COUNT ? t : 0].name; }
+int title_cat(int t) { return kTitleDefs[t >= 0 && t < T_COUNT ? t : 0].cat; }
+std::string fa_home(const std::string& key, int* club);  // r167 (below): the element / power division a title can come from
+unsigned fa_hash(const Career& c, const std::string& key, int club, int salt);
+
+// r173: a title from the strongest storyline in `cats` (strongest first) with one free this season (not held by another
+// beef record active or started this season); every one of them taken: the strongest storyline's, by the hash
+int pick_title(const Career& c, const std::string& key, std::vector<int> cats)
+{
+    if (cats.empty())
+        cats.push_back(TC_GRUDGE);
+    std::vector<int> taken;
+    for (size_t i = 0; i < c.nems.size(); i++)
+        if (c.nems[i].key != key && (c.nems[i].active || c.nems[i].since == c.season))
+            taken.push_back(c.nems[i].title);
+    for (int pass = 0; pass < 2; pass++)
+        for (size_t ci = 0; ci < cats.size(); ci++)
+        {
+            std::vector<int> opts;
+            for (int t = 0; t < T_COUNT; t++)
+                if (kTitleDefs[t].cat == cats[ci] && (pass == 1 || std::find(taken.begin(), taken.end(), t) == taken.end()))
+                    opts.push_back(t);
+            if (!opts.empty())
+                return opts[fa_hash(c, key, cats[ci], 173) % opts.size()];
+            if (pass == 1)
+                break;  // (the second pass: the strongest storyline's, held or not)
+        }
+    return T_GRUDGE;
+}
+// the storylines a character always has: its personality's, its element's / power's (weakest), then a plain grudge
+void flavour_cats(const std::string& key, int personality, std::vector<std::pair<int, int> >& ev)
+{
+    if (personality >= 0 && personality < PERS_COUNT)
+        ev.push_back(std::make_pair(30, TC_P_HOTHEAD + personality));
+    int club = -1;
+    const std::string div = key.compare(0, 3, "sk#") == 0 ? std::string() : fa_home(key, &club);
+    static const char* const kDiv[8] = {"Inferno", "Thunder", "Boulder", "Tidal", "Phantom", "Cyclone", "Glacier", "Bloom"};
+    for (int d = 0; d < 8; d++)
+        if (div == kDiv[d])
+            ev.push_back(std::make_pair(25, TC_E_INFERNO + d));
+    ev.push_back(std::make_pair(10, TC_GRUDGE));
+}
+std::vector<int> ranked_cats(std::vector<std::pair<int, int> > ev)
+{
+    std::stable_sort(ev.begin(), ev.end(), [](const std::pair<int, int>& a, const std::pair<int, int>& b) { return a.first > b.first; });
+    std::vector<int> out;
+    for (size_t i = 0; i < ev.size(); i++)
+        out.push_back(ev[i].second);
+    return out;
+}
 // What a nemesis gains each time it beats you (Lance: traits, a signature move, a bigger crowd; no
 // raw stat boosts).
 const char* const kTraits[] = {"SNIPER: SHOOTS ON SIGHT AGAINST YOU", "ENFORCER: GOES AFTER YOUR CAPTAIN",
@@ -2097,9 +2397,9 @@ void add_heat(Career& c, Nemesis& n, int delta, int titleHint, const std::string
             c.news.push_back(c.league.empty() ? "YOUR OWN " + upper(n.name) + " HAS TURNED ON YOU"
                                               : upper(n.name) + " HAS TURNED ON " + you);
         else
-            c.news.push_back("NEMESIS: " + upper(n.name) + " " + kTitles[n.title] + " (" + place + ") HAS BEEF WITH " + you);
+            c.news.push_back("NEMESIS: " + upper(n.name) + " " + title_name(n.title) + " (" + place + ") HAS BEEF WITH " + you);
         nem_log(n, "SEASON " + std::to_string(c.season) + ": BECAME YOUR NEMESIS (" + why + ")");
-        fprintf(stderr, "[franchise] nemesis: %s %s (%s)\n", n.name.c_str(), kTitles[n.title], why.c_str());
+        fprintf(stderr, "[franchise] nemesis: %s %s (%s)\n", n.name.c_str(), title_name(n.title), why.c_str());
         fflush(stderr);
     }
     else if (n.active && n.heat < nem_cool_below(c))
@@ -2157,23 +2457,58 @@ void nemesis_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], 
         knockedYouOut = w == opp;
         youKnockedThem = w == me;
     }
-    int d = 0, hint = nemesis_title_for(ost.personality, T_GRUDGE);
+    int d = 0;
+    // r173: the game's storylines (strength, TitleCat), the title comes from the strongest (pick_title, below)
+    std::vector<std::pair<int, int> > ev;
     std::string why;
     if (margin > 0)
     {
         d += 12 + 4 * std::min(margin, 4);
         why = "BEAT YOU " + std::to_string(theirs) + "-" + std::to_string(mine);
-        if (seed_of(c, opp) > seed_of(c, me) && seed_of(c, me) > 0)
-            hint = T_GIANT_SLAYER;
+        if ((seed_of(c, opp) > seed_of(c, me) && seed_of(c, me) > 0) || strength(os) + 3.0 < strength(c.clubs[me]))
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_GIANT], TC_GIANT));
+        if (margin >= 4)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_BLOWOUT], TC_BLOWOUT));
+        if (mine == 0)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_SHUTOUT], TC_SHUTOUT));
+        if (g.overtime)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_GOLDEN], TC_GOLDEN));
+        else if (margin == 1)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_CLUTCH], TC_CLUTCH));
+        if (n.last[0] > 0 && n.last[0] != 99 && n.last[1] > 0 && n.last[1] != 99)  // (with this one: three straight over you)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_CURSE], TC_CURSE));
+        if (n.rank >= 4 || n.beatYou + 1 >= 8)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_LEGEND], TC_LEGEND));
     }
     else if (-margin >= 3)
     {
         d += 15;
         why = "YOU HUMILIATED THEM " + std::to_string(mine) + "-" + std::to_string(theirs);
-        hint = T_AVENGER;
+        ev.push_back(std::make_pair(kTitleCatStrength[TC_REVENGE], TC_REVENGE));
     }
     else
         why = "LOST TO YOU " + std::to_string(mine) + "-" + std::to_string(theirs);
+    {
+        const int goals = scorers[o][0];
+        if (goals >= 5)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_HAT5], TC_HAT5));
+        else if (goals >= 4)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_HAT4], TC_HAT4));
+        else if (goals >= 3)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_HAT3], TC_HAT3));
+        if (ss[o] >= 2)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_SS2], TC_SS2));
+        else if (ss[o] >= 1)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_SS1], TC_SS1));
+        if (capHits[o] >= 4)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_ENFORCER4], TC_ENFORCER4));
+        else if (capHits[o] >= 2)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_ENFORCER], TC_ENFORCER));
+        if (ost.form >= 3)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_FIRE], TC_FIRE));
+        if (c.season >= 2 && ost.games <= PORT_FR_WEEKS)  // (new to the league this season: a signing, a newcomer)
+            ev.push_back(std::make_pair(kTitleCatStrength[TC_ROOKIE], TC_ROOKIE));
+    }
     if (margin == 1 || margin == -1 || g.overtime)
         d += 6;  // a real contest
     // r114: on Pro and up the clubs you beat don't forget either (+8 Pro, +10 Superstar, +12 Legend)
@@ -2181,15 +2516,12 @@ void nemesis_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], 
         d += 6 + 2 * diff_k(c);
     d += 8 * ss[m];
     d += 4 * capHits[o] + 3 * capHits[m] + anyHits[o];
-    if (capHits[o] >= 2)
-        hint = T_ENFORCER;
-    if (scorers[o][0] >= 3)
-        hint = T_SNIPER;
     if (knockedYouOut)
     {
         d += 30;
-        hint = T_PLAYOFF_KILLER;
-        why = "KNOCKED YOU OUT OF THE PLAYOFFS";
+        const bool final = c.series[g.series].round == 4;
+        ev.push_back(std::make_pair(kTitleCatStrength[final ? TC_KNOCKOUT_FINAL : TC_KNOCKOUT], final ? TC_KNOCKOUT_FINAL : TC_KNOCKOUT));
+        why = final ? "BEAT YOU IN THE SUPER STRIKE SERIES" : "KNOCKED YOU OUT OF THE PLAYOFFS";
     }
     if (youKnockedThem)
     {
@@ -2207,7 +2539,19 @@ void nemesis_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], 
     else
         n.lostToYou++;
     const bool wasActive = n.active;
+    // r173: the title from the game's strongest storyline (its personality / element / a grudge when nothing big happened)
+    const int topStory = ev.empty() ? 0 : std::max_element(ev.begin(), ev.end())->first;
+    flavour_cats(key, ost.personality, ev);
+    const int hint = pick_title(c, key, ranked_cats(ev));
     add_heat(c, n, d, hint, why);
+    // r173: an active nemesis with a bigger story than its title's gets the new one (never down)
+    if (wasActive && n.active && topStory >= 58 && topStory > kTitleCatStrength[title_cat(n.title)])
+    {
+        n.title = hint;
+        const std::string whose = c.league.empty() ? std::string("YOUR NEMESIS ") : upper(s_clubs[me].place) + "'S NEMESIS ";
+        c.news.push_back(whose + upper(n.name) + " IS NOW " + title_name(n.title));
+        nem_log(n, "SEASON " + std::to_string(c.season) + ": NOW " + title_name(n.title) + " (" + why + ")");
+    }
     const std::string when = n.club >= 0 ? (c.phase == PHASE_REGULAR ? "WEEK " + std::to_string(c.week)
                                                                        : "PLAYOFFS")
                                          : "";
@@ -2249,7 +2593,12 @@ void nemesis_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], 
             const std::string sk = sk_name(os, k - 1);  // r131: a member by its own name
             Nemesis& sn = nemesis_for(c, "sk#" + std::to_string(opp) + "#" + sk, sk, opp, false);
             s_metThisWeek.push_back(sn.key);
-            add_heat(c, sn, 8 * scorers[o][k], nemesis_title_for(os.sk[k - 1].personality, T_SNIPER),
+            // r173: its storyline: a hat trick on you, else a scorer's; its personality, its element (a member's own key)
+            std::vector<std::pair<int, int> > sev;
+            sev.push_back(scorers[o][k] >= 3 ? std::make_pair(kTitleCatStrength[TC_HAT3], (int)TC_HAT3)
+                                             : std::make_pair(kTitleCatStrength[TC_SCORER], (int)TC_SCORER));
+            flavour_cats(os.mem[k - 1].empty() ? sn.key : os.mem[k - 1], os.sk[k - 1].personality, sev);
+            add_heat(c, sn, 8 * scorers[o][k], pick_title(c, sn.key, ranked_cats(sev)),
                      "SCORED " + std::to_string(scorers[o][k]) + " ON YOU");
         }
 }
@@ -2271,7 +2620,7 @@ void teammates_week(Career& c, bool lost)
             d -= 10;  // got the spot
         if (!lost)
             d -= 3;
-        add_heat(c, n, d, T_TRAITOR, "BENCHED WHILE YOU LOSE");
+        add_heat(c, n, d, n.active ? n.title : pick_title(c, n.key, {TC_TRAITOR}), "BENCHED WHILE YOU LOSE");  // r173
     }
     const PStats& cap = s.startsBackup && !s.backup.empty() ? s.bkSt : s.capSt;
     for (int k = 0; k < 3; k++)
@@ -2281,7 +2630,7 @@ void teammates_week(Career& c, bool lost)
         if (!wantsSpot && !find_nemesis(c, "sk#" + std::to_string(me) + "#" + skn))
             continue;
         Nemesis& n = nemesis_for(c, "sk#" + std::to_string(me) + "#" + skn, skn, me, true);
-        add_heat(c, n, wantsSpot ? 3 : -3, T_TRAITOR, "WANTS YOUR CAPTAIN'S SPOT");
+        add_heat(c, n, wantsSpot ? 3 : -3, n.active ? n.title : pick_title(c, n.key, {TC_TRAITOR}), "WANTS YOUR CAPTAIN'S SPOT");  // r173
     }
 }
 
@@ -2411,6 +2760,30 @@ void swap_sidekicks(Career& c, int a, int b)
 }
 
 std::string kind_name(const std::string& key);
+int fa_value(const std::string& key, const Prog& p);  // r167 (below)
+
+// r173: one sidekick member of club a (slot ka) for one of club b (slot kb): the character, its level, its record, its
+// seasons; its beef records ("sk#club#name") follow it to its new club
+void swap_member_slots(Career& c, int a, int ka, int b, int kb)
+{
+    ClubState& x = c.clubs[a];
+    ClubState& y = c.clubs[b];
+    const std::string nx = name_of(x.mem[ka]), ny = name_of(y.mem[kb]);
+    each_nemesis(c, "sk#" + std::to_string(a) + "#" + nx, [&](Nemesis* n) {
+        n->key = "sk#" + std::to_string(b) + "#" + nx;
+        n->club = b;
+    });
+    each_nemesis(c, "sk#" + std::to_string(b) + "#" + ny, [&](Nemesis* n) {
+        n->key = "sk#" + std::to_string(a) + "#" + ny;
+        n->club = a;
+    });
+    std::swap(x.mem[ka], y.mem[kb]);
+    std::swap(x.mp[ka], y.mp[kb]);
+    std::swap(x.sk[ka], y.sk[kb]);
+    std::swap(x.skAge[ka], y.skAge[kb]);
+    x.top[2 + ka].clear();
+    y.top[2 + kb].clear();
+}
 
 // r131: a sidekick trio's trade value (each slot: a member's rating + a point a level over 8, a generic one the kind's;
 // a club with no members: the kind's, as r77) and its name ("Toads", or its members': "Pikachu / Boo / Toads")
@@ -2485,18 +2858,37 @@ void cpu_week(Career& c)
             post(c, c.clubs[a].bkSt.personality, EV_TRADED, nb, s_clubs[a].place);
         }
     }
-    if (rand01(c.rng) < 0.06)
+    // r173 (Lance: sidekicks one at a time, "not as a fuckin bunch deal"): a CPU club trades one named sidekick for another
+    // club's - each valued on its own (rating + a point a level over 8), within 10% of each other - never the whole trio
+    if (rand01(c.rng) < 0.12)
     {
         int a = (int)(next_rand(c.rng) % PORT_FR_CLUBS), b = (int)(next_rand(c.rng) % PORT_FR_CLUBS);
-        if (a != b && !is_human(c, a) && !is_human(c, b) && !same_trio(c.clubs[a], c.clubs[b]))  // r131: members too
+        const int ka = (int)(next_rand(c.rng) % 3), kb = (int)(next_rand(c.rng) % 3);
+        if (a != b && !is_human(c, a) && !is_human(c, b) && !c.clubs[a].mem[ka].empty() && !c.clubs[b].mem[kb].empty())
         {
-            c.news.push_back("BIG TRADE: " + upper(s_clubs[a].place) + " AND " + upper(s_clubs[b].place) + " SWAP SIDEKICKS (" +
-                             upper(trio_name(c.clubs[a])) + " FOR " + upper(trio_name(c.clubs[b])) + ")");
-            swap_sidekicks(c, a, b);
+            const int va = fa_value(c.clubs[a].mem[ka], c.clubs[a].mp[ka]), vb = fa_value(c.clubs[b].mem[kb], c.clubs[b].mp[kb]);
+            if (va * 10 >= vb * 9 && vb * 10 >= va * 9)
+            {
+                const std::string na = name_of(c.clubs[a].mem[ka]), nb = name_of(c.clubs[b].mem[kb]);
+                swap_member_slots(c, a, ka, b, kb);
+                c.news.push_back("TRADE: " + upper(s_clubs[a].place) + " SEND SIDEKICK " + upper(na) + " TO " + upper(s_clubs[b].place) +
+                                 " FOR " + upper(nb));
+                post(c, c.clubs[b].sk[kb].personality, EV_TRADED, na, s_clubs[b].place);
+            }
         }
     }
     if (c.week == 12)
         c.news.push_back("THE TRADE DEADLINE HAS PASSED");
+}
+
+// r177: a character in its rookie season (signed as a rookie: rookieOf holds the season it first plays)
+bool rookie_season(const Career& c, const std::string& key)
+{
+    const std::string id = char_id(key);
+    for (size_t i = 0; i < c.rookieOf.size(); i++)
+        if (c.rookieOf[i].first == id && c.rookieOf[i].second == c.season)
+            return true;
+    return false;
 }
 
 // r71: awards night once the champion is crowned (Lance: MVP, Golden Boot, Rookie of the Year, Best
@@ -2532,23 +2924,27 @@ void awards_night(Career& c)
             if (capKeys[b].empty())
                 continue;
             const PStats& p = *caps[b];
-            const double score = p.seasonGoals * 3.0 + s.wins * 2.0 + (i == c.champion ? 6.0 : 0.0) + p.form;
+            // r165: the regular season only - its goals, its wins (s.wins is the table's), its form; no champion's bonus
+            const double score = p.regGoals * 3.0 + s.wins * 2.0 + p.regForm;
             if (score > mvp.score)
-                mvp = Pick{name_of(capKeys[b]), i, p.seasonGoals, score, capKeys[b]};
-            if (p.seasonGoals > boot.goals)
-                boot = Pick{name_of(capKeys[b]), i, p.seasonGoals, 0.0, capKeys[b]};
+                mvp = Pick{name_of(capKeys[b]), i, p.regGoals, score, capKeys[b]};
+            if (p.regGoals > boot.goals)
+                boot = Pick{name_of(capKeys[b]), i, p.regGoals, 0.0, capKeys[b]};
+            // r177 (Lance: Rookie of the Year open to every rookie): a captain / backup in its first season counts too
+            if (rookie_season(c, capKeys[b]) && p.regGoals > rookie.goals)
+                rookie = Pick{name_of(capKeys[b]), i, p.regGoals, 0.0, capKeys[b]};
         }
         for (int k = 0; k < 3; k++)
         {
             const std::string face = s.mem[k].empty() ? kind_portrait(s.kind) : s.mem[k];  // r131: a member's own
-            if (s.sk[k].seasonGoals > boot.goals)
-                boot = Pick{sk_name(s, k), i, s.sk[k].seasonGoals, 0.0, face};
-            if (s.skAge[k] == 0 && s.sk[k].seasonGoals > rookie.goals)
-                rookie = Pick{sk_name(s, k), i, s.sk[k].seasonGoals, 0.0, face};
-            const double sixthScore = s.sk[k].seasonGoals * 3.0 + s.sk[k].form * 1.5 + s.wins * 0.5 +
-                                      (i == c.champion ? 3.0 : 0.0);
+            if (s.sk[k].regGoals > boot.goals)
+                boot = Pick{sk_name(s, k), i, s.sk[k].regGoals, 0.0, face};
+            // r177: a named member is a rookie in its first season (rookieOf); a generic sidekick at age 0 as before
+            if ((s.mem[k].empty() ? s.skAge[k] == 0 : rookie_season(c, s.mem[k])) && s.sk[k].regGoals > rookie.goals)
+                rookie = Pick{sk_name(s, k), i, s.sk[k].regGoals, 0.0, face};
+            const double sixthScore = s.sk[k].regGoals * 3.0 + s.sk[k].regForm * 1.5 + s.wins * 0.5;  // r165
             if ((!s.names[k].empty() || !s.mem[k].empty()) && sixthScore > sixth.score)
-                sixth = Pick{sk_name(s, k), i, s.sk[k].seasonGoals, sixthScore, face};
+                sixth = Pick{sk_name(s, k), i, s.sk[k].regGoals, sixthScore, face};
         }
     }
     int keeper = 0;
@@ -2593,11 +2989,49 @@ void awards_night(Career& c)
         c.recordSeason = c.season;
         c.recordName = boot.name;
     }
+    // r173: the winners get a title of the night (no two the same; the record's is a rare one), into the hall of fame and
+    // the news ("AWARDS NIGHT: CHARIZARD IS THE FRANCHISE")
+    std::vector<int> nightUsed;
+    auto night_title = [&](const std::string& key, int cat) -> std::string {
+        std::vector<int> opts;
+        for (int t = 0; t < T_COUNT; t++)
+            if (kTitleDefs[t].cat == cat && std::find(nightUsed.begin(), nightUsed.end(), t) == nightUsed.end())
+                opts.push_back(t);
+        if (opts.empty())
+            return std::string();
+        const int t = opts[fa_hash(c, key, cat, 1730) % opts.size()];
+        nightUsed.push_back(t);
+        return title_name(t);
+    };
+    std::vector<std::string> awardTitle(c.awards.size());
+    for (size_t i = 0; i < c.awards.size(); i++)
+    {
+        const std::string& a = c.awards[i];
+        const std::string& key = i < c.awardKeys.size() ? c.awardKeys[i] : a;
+        int cat = -1;
+        if (a.compare(0, 4, "MVP:") == 0)
+            cat = TC_AW_MVP;
+        else if (a.compare(0, 12, "GOLDEN BOOT:") == 0)
+            cat = TC_AW_BOOT;
+        else if (a.compare(0, 20, "SIDEKICK OF THE YEAR") == 0)
+            cat = TC_AW_SIXTH;
+        else if (a.compare(0, 18, "ROOKIE OF THE YEAR") == 0)
+            cat = TC_ROOKIE;
+        else if (a.compare(0, 10, "NEW RECORD") == 0)
+            cat = TC_AW_RECORD;
+        if (cat < 0)
+            continue;
+        awardTitle[i] = night_title(key, cat);
+        const size_t colon = a.find(": "), paren = a.find(" (");
+        if (!awardTitle[i].empty() && colon != std::string::npos && cat != TC_AW_RECORD)
+            c.news.push_back("AWARDS NIGHT: " + a.substr(colon + 2, (paren == std::string::npos ? a.size() : paren) - colon - 2) + " IS " +
+                             awardTitle[i] + " (" + a.substr(0, colon) + ")");
+    }
     // the hall of fame, newest first
     std::vector<std::string> fame;
     for (size_t i = 0; i < c.awards.size(); i++)
         if (c.awards[i].compare(0, 4, "BEST") != 0)
-            fame.push_back(season + " " + c.awards[i]);
+            fame.push_back(season + " " + c.awards[i] + (awardTitle[i].empty() ? std::string() : " - " + awardTitle[i]));
     c.history.insert(c.history.begin(), fame.begin(), fame.end());
     if (c.history.size() > 60)
         c.history.resize(60);
@@ -2659,6 +3093,8 @@ void off_season(Career& c)
         {
             all[k]->seasonGoals = 0;
             all[k]->form /= 2;
+            all[k]->regGoals = 0;  // r165
+            all[k]->regForm = all[k]->form;
         }
         s.streak = 0;
     }
@@ -2703,6 +3139,45 @@ std::string name_of(const std::string& key)
     return n.empty() ? key : n;
 }
 
+// r152 (Lance, after Thor IV turned out to be Beta Ray Bill): a Marvel costume by its own name from Marvel: Ultimate
+// Alliance on the cards' lines (the coin breakdown's card XP) - as its trading card's title (xr_cards.cpp load_set): a
+// character of its own alone ("Beta Ray Bill"), a look of the hero's with the hero after it ("Ultimate Thor"); else its name
+std::string card_name_of(const std::string& key)
+{
+    static std::vector<std::pair<std::string, std::string> > names;  // (key, title)
+    static bool read = false;
+    if (!read)
+    {
+        read = true;
+        if (FILE* f = fopen((home_dir() + "/franchise/costume_names.txt").c_str(), "r"))
+        {
+            char line[512];
+            while (fgets(line, sizeof line, f) != NULL)
+            {
+                if (line[0] == '#')
+                    continue;
+                std::vector<std::string> p(1);
+                for (const char* s = line; *s != '\0' && *s != '\n' && *s != '\r'; ++s)
+                {
+                    if (*s == '\t')
+                        p.emplace_back();
+                    else
+                        p.back() += *s;
+                }
+                if (p.size() < 3 || (p[0].find("_c") == std::string::npos && !PortOriginalUniform(p[0].c_str())) || p[1].empty())
+                    continue;
+                const bool own = (p.size() > 3 && p[3] == "char") || p[1].find(p[2]) != std::string::npos;
+                names.push_back(std::make_pair(p[0], own ? p[1] : p[1] + " " + p[2]));
+            }
+            fclose(f);
+        }
+    }
+    for (size_t i = 0; i < names.size(); ++i)
+        if (names[i].first == key)
+            return names[i].second;
+    return name_of(key);
+}
+
 std::string sk_name(const ClubState& s, int k) { return s.mem[k].empty() ? s.names[k] : name_of(s.mem[k]); }
 
 // r130 (Lance: "let ANY spot be ANY character"): a player key as a character select menu pick: a Strikers captain
@@ -2733,6 +3208,90 @@ const int kShinyOdds = 128;  // Lance: 1 in 128 an evolution (and once shiny, al
 // r130: a club's player by slot: 0 the captain, 1 the backup, 2-4 the sidekick members (mem / mp)
 std::string& slot_key(ClubState& s, int slot) { return slot <= 0 ? s.captain : (slot == 1 ? s.backup : s.mem[std::min(2, slot - 2)]); }
 Prog& slot_prog(ClubState& s, int slot) { return slot <= 0 ? s.cap : (slot == 1 ? s.bk : s.mp[std::min(2, slot - 2)]); }
+const std::string& slot_key_c(const ClubState& s, int slot)
+{
+    return slot <= 0 ? s.captain : (slot == 1 ? s.backup : s.mem[std::min(2, slot - 2)]);
+}
+const Prog& slot_prog_c(const ClubState& s, int slot) { return slot <= 0 ? s.cap : (slot == 1 ? s.bk : s.mp[std::min(2, slot - 2)]); }
+PStats& slot_stats(ClubState& s, int slot) { return slot <= 0 ? s.capSt : (slot == 1 ? s.bkSt : s.sk[std::min(2, slot - 2)]); }
+
+// r167 (EVOLUTION SELECTOR): a form's line from its first form up to it (evolutions.txt backwards, else the roster's
+// "evolves from"), first form first
+std::vector<std::string> form_chain(const std::string& key)
+{
+    std::vector<std::string> out;
+    if (key.empty())
+        return out;
+    std::string k = key;
+    out.push_back(k);
+    for (int guard = 0; guard < 12; guard++)
+    {
+        std::string prev;
+        for (size_t i = 0; i < s_evos.size() && prev.empty(); i++)
+            if (s_evos[i].to == k)
+                prev = s_evos[i].from;
+        if (prev.empty())
+        {
+            const int idx = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, k.c_str());
+            const char* from = idx >= 0 ? PortGuestRosterEvolvesFrom(idx) : NULL;
+            if (from != NULL && from[0] != '\0')
+                prev = from;
+        }
+        if (prev.empty() || prev == k || std::find(out.begin(), out.end(), prev) != out.end())
+            break;
+        out.push_back(prev);
+        k = prev;
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+// r167: the highest form a slot's player has reached (its key, unless it plays as an earlier form of that line)
+std::string top_of(const ClubState& s, int slot)
+{
+    const std::string& key = slot_key_c(s, slot);
+    const std::string& t = s.top[std::max(0, std::min(4, slot))];
+    if (t.empty() || key.empty() || t == key)
+        return key;
+    const std::vector<std::string> ch = form_chain(t);
+    return std::find(ch.begin(), ch.end(), key) != ch.end() ? t : key;
+}
+
+// r167: a player now playing as another form of its line: its beef records follow it (as do_evolve_slot's, without the
+// anger: picking a form is no evolution)
+void each_nemesis_rekey(Career& c, int club, int slot, const std::string& from, const std::string& to)
+{
+    if (slot <= 1)
+        each_nemesis(c, from, [&](Nemesis* n) {
+            n->key = to;
+            n->name = name_of(to);
+        });
+    else
+        each_nemesis(c, "sk#" + std::to_string(club) + "#" + name_of(from), [&](Nemesis* n) {
+            n->key = "sk#" + std::to_string(club) + "#" + name_of(to);
+            n->name = name_of(to);
+        });
+}
+
+// r167: a slot back to its highest form (before it leaves the club, or evolves on): the selector's choice undone
+void settle_form(Career& c, int club, int slot)
+{
+    ClubState& s = c.clubs[club];
+    const std::string t = top_of(s, slot);
+    std::string& key = slot_key(s, slot);
+    if (!t.empty() && t != key)
+    {
+        const std::string was = key;
+        key = t;
+        each_nemesis_rekey(c, club, slot, was, t);
+    }
+    s.top[std::max(0, std::min(4, slot))].clear();
+}
+void settle_forms(Career& c, int club)
+{
+    for (int k = 0; k < 5; k++)
+        settle_form(c, club, k);
+}
 
 // Evolves a club's captain (or backup; r130: or a sidekick member, slot 2-4) into `to`: a shiny roll, the news.
 void do_evolve_slot(Career& c, int club, int slot, const std::string& to);
@@ -2745,16 +3304,17 @@ void do_evolve_slot(Career& c, int club, int slot, const std::string& to)
     const std::string from = key;
     const bool wasShiny = p.shiny;
     // r110: a Marvel hero's next costume (no shiny ones), in costume words
-    const bool costume = from.compare(0, 4, "mua_") == 0;
+    const bool costume = PortCostumeKey(from.c_str());  // r183: and an original single's uniforms
     // r146: your Pokemon of an evolution line whose every card you have: a little luckier (card_bonus: 1 in 96)
     int odds = kShinyOdds;
     if (card_bonus_on(c) && club == c.myClub)
         if (const CardBonus* b = card_bonus(from))
             if (b->shinyOdds > 0 && b->shinyOdds < kShinyOdds)
                 odds = b->shinyOdds;
-    if (!costume && !p.shiny && next_rand(c.rng) % odds == 0)
+    if (!costume && !PortOriginalKey(from.c_str()) && !p.shiny && next_rand(c.rng) % odds == 0)  // r183: originals have no shiny looks
         p.shiny = true;
     key = to;
+    s.top[std::max(0, std::min(4, slot))].clear();  // r167: evolved: it plays as its new (highest) form
     p.declinedAt = 0;
     std::string line = upper(s_clubs[club].place) + "'S " + upper(name_of(from)) +
                        (costume ? " SUITED UP: " : " EVOLVED INTO ") + upper(name_of(to));
@@ -2769,10 +3329,10 @@ void do_evolve_slot(Career& c, int club, int slot, const std::string& to)
         n->name = name_of(to);
         if (n->active && !n->teammate)
         {
-            n->title = T_AVENGER;
+            n->title = pick_title(c, n->key, {TC_EVOLVED});  // r173: one of the evolved storyline's (was always THE AVENGER)
             n->heat = std::min(100, n->heat + 15);
             const std::string whose = c.league.empty() ? std::string("YOUR NEMESIS") : upper(s_clubs[nem_owner(c, *n)].place) + "'S NEMESIS";
-            c.news.push_back(whose + (costume ? " SUITED UP: " : " EVOLVED: ") + upper(n->name) + " " + kTitles[n->title] +
+            c.news.push_back(whose + (costume ? " SUITED UP: " : " EVOLVED: ") + upper(n->name) + " " + title_name(n->title) +
                              " IS ANGRIER THAN EVER");
             nem_log(*n, "SEASON " + std::to_string(c.season) + (costume ? ": SUITED UP AS " : ": EVOLVED INTO ") +
                             upper(n->name) + ", ANGRIER");
@@ -2816,6 +3376,9 @@ void evolve_cpu(Career& c)
         }
     }
 }
+
+void fa_week(Career& c);             // r167: free agency (below)
+void fa_offseason_open(Career& c);
 
 // The rest of the week (or playoff day), then on to the next.
 void finish_week(Career& c)
@@ -2882,6 +3445,7 @@ void finish_week(Career& c)
     }
     s_lifeGame = -1;
     nemesis_week(c);  // r72
+    fa_week(c);     // r167: free agency's offers and decisions (weeks 1-12)
     cpu_week(c);    // r71
     evolve_cpu(c);  // r70c
     c.week++;
@@ -2900,6 +3464,7 @@ void finish_week(Career& c)
         {
             c.headline = club_name(c.champion) + " win the Super Strike Series!";
             awards_night(c);  // r71
+            fa_offseason_open(c);  // r167: the off-season's free agency (decided when the next season starts)
         }
         else
         {
@@ -2913,6 +3478,1106 @@ void finish_week(Career& c)
     }
     if (c.phase == PHASE_PLAYOFFS)
         schedule_day(c);
+}
+
+// ================================================================================================ r167: FREE AGENCY
+// (Lance: "leftovers become free agents ... do an offer system of sorts so teams are actually competing to land agents and
+// its not richest team signs everyone"; franchise.h). No money anywhere: an offer is a ROLE. Each agent scores every offer
+// (fa_eval: the role, the club as a contender, its personality, its old club, its home, squad fit, beef) and signs with the
+// best one if it's good enough (kFaAccept). CPU clubs bid on their needs (an empty or weak spot; contenders chase stars), one
+// offer at a time and one signing a round, so a strong club can't hoard: a star picks the captaincy of a weaker club over a
+// contender's bench unless its personality says otherwise. Every roll is a hash of the career's seed (fa_noise) or its rng.
+const char* const kPersName[PERS_COUNT + 1] = {"NEUTRAL",   "HOTHEAD",  "SHOWBOAT", "SILENT ASSASSIN", "HONORABLE",
+                                               "TRICKSTER", "UNDERDOG", "VETERAN",  "FRONT-RUNNER"};
+const int kFaDeadline = 12;      // the trade deadline (cpu_week's)
+const double kFaAccept = 15.0;   // an agent signs only for an offer worth this much to it
+
+bool fa_window(const Career& c) { return (c.phase == PHASE_REGULAR && c.week <= kFaDeadline) || c.phase == PHASE_DONE; }
+
+unsigned fa_hash(const Career& c, const std::string& key, int club, int salt)
+{
+    unsigned h = 2166136261u ^ c.seed;
+    for (size_t i = 0; i < key.size(); i++)
+    {
+        h ^= (unsigned char)key[i];
+        h *= 16777619u;
+    }
+    const unsigned more[3] = {(unsigned)(club + 7), (unsigned)c.season, (unsigned)salt};
+    for (int k = 0; k < 3; k++)
+    {
+        h ^= more[k];
+        h *= 16777619u;
+    }
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    return h;
+}
+// -amp .. +amp, fixed for the agent, the club and the season (the page's "leads" is what it decides)
+double fa_noise(const Career& c, const std::string& key, int club, double amp, int salt)
+{
+    return ((fa_hash(c, key, club, salt) % 20001u) / 10000.0 - 1.0) * amp;
+}
+
+int fa_value(const std::string& key, const Prog& p) { return rating(key) + std::max(0, p.level - 8); }
+
+// a captain type can be a captain / backup; a Charged sidekick guest (Boo ...) a sidekick member only
+bool fa_captain_type(const std::string& key) { return !sk_guest(key); }
+
+const char* fa_game(const std::string& key)
+{
+    if (key.compare(0, 3, "pk_") == 0)
+        return "POKEMON";
+    if (key.compare(0, 4, "mua_") == 0)
+        return "MARVEL";
+    if (key.compare(0, 5, "orig_") == 0)  // r183
+        return "ORIGINALS";
+    if (key.compare(0, 9, "strikers_") == 0)
+        return "STRIKERS";
+    int idx = PortGuestRosterFindAny(PORT_GUEST_CAPTAIN, key.c_str());
+    if (idx < 0)
+        idx = PortGuestRosterFindAny(PORT_GUEST_SIDEKICK, key.c_str());
+    const char* g = idx >= 0 ? PortGuestRosterGame(idx) : NULL;
+    return g != NULL && strstr(g, "Charged") != NULL ? "CHARGED" : "MELEE";
+}
+
+int club_by_id(const std::string& id)
+{
+    for (size_t i = 0; i < s_clubs.size(); i++)
+        if (s_clubs[i].id == id)
+            return (int)i;
+    return -1;
+}
+
+// A character's home: its home ground's club (its world's place among the 32) or, a Pokemon or a hero, the division of
+// its element (the divisions are named for them: Inferno, Thunder, Boulder, Tidal, Phantom, Cyclone, Glacier, Bloom).
+std::string fa_home(const std::string& key, int* club)
+{
+    *club = -1;
+    static std::unordered_map<std::string, std::string> s_types;
+    static bool s_typesRead = false;
+    if (!s_typesRead)
+    {
+        s_typesRead = true;
+        if (FILE* f = fopen((home_dir() + "/franchise/types.txt").c_str(), "r"))
+        {
+            char line[256];
+            while (fgets(line, sizeof line, f) != NULL)
+            {
+                char k[96], t[32];
+                if (line[0] != '#' && sscanf(line, "%95s %31s", k, t) == 2)
+                    s_types[k] = t;
+            }
+            fclose(f);
+        }
+    }
+    static const char* const kPlace[][2] = {
+        {"strikers_mario", "mushroomkingdom"}, {"strikers_luigi", "mushroomkingdom"}, {"strikers_peach", "mushroomkingdom"},
+        {"strikers_daisy", "mushroomkingdom"}, {"strikers_yoshi", "mushroomkingdom"}, {"strikers_waluigi", "mushroomkingdom"},
+        {"strikers_wario", "mushroomkingdom"}, {"strikers_donkeykong", "konga"},     {"diddykong", "konga"},
+        {"drmario", "mushroomkingdom"},        {"boo", "mushroomkingdom"},          {"drybones", "mushroomkingdom"},
+        {"shyguy", "mushroomkingdom"},         {"montymole", "mushroomkingdom"},    {"bowser", "pipelinecentral"},
+        {"bowserjr", "pipelinecentral"},       {"petey", "pipelinecentral"},        {"fox", "corneria"},
+        {"falco", "corneria"},                 {"falcon", "mutecity"},              {"kirby", "dreamland"},
+        {"link", "lostwoods"},                 {"younglink", "lostwoods"},          {"zelda", "lakehylia"},
+        {"sheik", "lakehylia"},                {"ganondorf", "deathmountain"},      {"samus", "norfair"},
+        {"marth", "archanea"},                 {"roy", "archanea"},                 {"ness", "onett"},
+        {"popo", "infiniteglacier"},           {"nana", "infiniteglacier"},         {"gamewatch", "galactic"},
+    };
+    static const char* const kHero[][2] = {
+        {"ghostrider", "Inferno"},  {"humantorch", "Inferno"},   {"thor", "Thunder"},          {"storm", "Thunder"},
+        {"iceman", "Glacier"},      {"drstrange", "Phantom"},    {"invisiblewoman", "Phantom"}, {"jeangrey", "Phantom"},
+        {"professorx", "Phantom"},  {"moonknight", "Phantom"},   {"nightcrawler", "Phantom"},  {"mysterio", "Phantom"},
+        {"drdoom", "Phantom"},      {"ironman", "Cyclone"},      {"silversurfer", "Cyclone"},  {"captainmarvel", "Cyclone"},
+        {"msmarvel", "Cyclone"},    {"vision", "Cyclone"},       {"hawkeye", "Cyclone"},       {"thing", "Boulder"},
+        {"colossus", "Boulder"},    {"lukecage", "Boulder"},     {"rhino", "Boulder"},         {"wolverine", "Boulder"},
+        {"mrfantastic", "Tidal"},   {"lizard", "Tidal"},         {"blackpanther", "Bloom"},
+    };
+    const std::string root = char_root(key);
+    for (size_t i = 0; i < sizeof kPlace / sizeof kPlace[0]; i++)
+        if (root == kPlace[i][0])
+        {
+            *club = club_by_id(kPlace[i][1]);
+            return *club >= 0 ? s_clubs[*club].div : std::string();
+        }
+    if (root.compare(0, 4, "mua_") == 0)
+    {
+        const std::string hero = root.substr(4);
+        for (size_t i = 0; i < sizeof kHero / sizeof kHero[0]; i++)
+            if (hero == kHero[i][0])
+                return kHero[i][1];
+        return std::string();
+    }
+    std::unordered_map<std::string, std::string>::const_iterator it = s_types.find(key);
+    if (it == s_types.end())
+        it = s_types.find(root);
+    if (it == s_types.end())
+        return std::string();
+    const std::string& t = it->second;
+    if (t == "fire")
+        return "Inferno";
+    if (t == "electric")
+        return "Thunder";
+    if (t == "rock" || t == "ground" || t == "steel" || t == "fighting")
+        return "Boulder";
+    if (t == "water")
+        return "Tidal";
+    if (t == "ghost" || t == "dark" || t == "psychic" || t == "poison")
+        return "Phantom";
+    if (t == "flying" || t == "dragon")
+        return "Cyclone";
+    if (t == "ice")
+        return "Glacier";
+    return "Bloom";  // grass, bug, fairy, normal
+}
+
+double fa_avg_strength(const Career& c)
+{
+    double sum = 0.0;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        sum += strength(c.clubs[i]);
+    return sum / PORT_FR_CLUBS;
+}
+double fa_avg_goals(const Career& c)
+{
+    double sum = 0.0;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        sum += c.clubs[i].goalsFor;
+    return sum / PORT_FR_CLUBS;
+}
+
+// How much of a contender a club is: its record (a start of 2-2 counted in early, so week 1 isn't everything), its strength
+// against the league's, the champion a little more
+double fa_contend(const Career& c, int club, double avgStr)
+{
+    const ClubState& s = c.clubs[club];
+    const double pct = (s.wins + 2.0) / (s.wins + s.losses + 4.0);
+    double v = 40.0 * (pct - 0.5) + 1.2 * (strength(s) - avgStr);
+    if (c.phase == PHASE_DONE && c.champion == club)
+        v += 8.0;
+    return v;
+}
+
+// The value a club's spot has now (its holder's, as its highest form; a generic sidekick the kind's; an empty backup 0)
+int fa_occ_value(const Career& c, int club, int role)
+{
+    const ClubState& s = c.clubs[club];
+    if (role == PORT_FA_CAPTAIN)
+        return fa_value(top_of(s, 0), s.cap);
+    if (role == PORT_FA_BACKUP)
+        return s.backup.empty() ? 0 : fa_value(top_of(s, 1), s.bk);
+    const int k = std::max(0, std::min(2, role - PORT_FA_SIDEKICK1));
+    return s.mem[k].empty() ? rating(s.kind) + std::max(0, s.side.level - 8) : fa_value(top_of(s, 2 + k), s.mp[k]);
+}
+
+bool fa_role_ok(const FreeAgent& a, int role) { return role >= PORT_FA_SIDEKICK1 || fa_captain_type(a.key); }
+
+// An agent with active beef against that club's captain (a person's club: nemeses are with people) never signs there
+bool fa_refuses(const Career& c, const FreeAgent& a, int club)
+{
+    if (!is_human(c, club))
+        return false;
+    const std::string id = char_id(a.key), nm = name_of(a.key);
+    for (size_t i = 0; i < c.nems.size(); i++)
+    {
+        const Nemesis& n = c.nems[i];
+        if (!n.active || nem_owner(c, n) != club)
+            continue;
+        if (n.key == a.key || (!id.empty() && char_id(n.key) == id) || (n.key.compare(0, 3, "sk#") == 0 && n.name == nm))
+            return true;
+    }
+    return false;
+}
+
+struct FaEval
+{
+    double score = 0.0;
+    bool refuse = false;
+    std::string why;
+};
+FaEval fa_eval(const Career& c, const FreeAgent& a, const FaBid& b, double avgStr, double avgGf)
+{
+    FaEval e;
+    if (b.club < 0 || b.club >= PORT_FR_CLUBS)
+    {
+        e.refuse = true;
+        return e;
+    }
+    if (fa_refuses(c, a, b.club))
+    {
+        e.refuse = true;
+        e.why = "WON'T PLAY FOR A NEMESIS";
+        return e;
+    }
+    const ClubState& s = c.clubs[b.club];
+    const int p = a.st.personality;
+    double rm = 1.0, cm = 1.0;  // how much the role / the club's chances weigh for it
+    switch (p)
+    {
+        case PERS_HOTHEAD: rm = 1.4; cm = 0.6; break;
+        case PERS_SHOWBOAT: rm = 1.25; cm = 0.8; break;
+        case PERS_HONORABLE: rm = 1.0; cm = 0.8; break;
+        case PERS_UNDERDOG: rm = 1.15; cm = -0.7; break;  // (it wants to carry a club, not join the best one)
+        case PERS_VETERAN: rm = 0.75; cm = 1.5; break;
+        case PERS_FRONTRUNNER: rm = 0.8; cm = 2.0; break;
+        default: break;  // neutral, silent assassin, trickster
+    }
+    double base = 0.0;
+    std::string roleWhy;
+    if (b.role == PORT_FA_CAPTAIN)
+    {
+        base = 100.0;
+        roleWhy = p == PERS_HOTHEAD ? "WANTS THE SPOTLIGHT" : "WANTS THE CAPTAINCY";
+    }
+    else if (b.role == PORT_FA_BACKUP)
+    {
+        base = 55.0 + (b.promise ? (p == PERS_HONORABLE || a.fresh ? 45.0 : 30.0) : 0.0);  // (r173: a rookie wants the starts)
+        roleWhy = b.promise ? "PROMISED THE STARTS" : "A CO-CAPTAIN'S SPOT";
+    }
+    else
+    {
+        const bool bench = b.role == PORT_FA_SIDEKICK1 && !s.backup.empty();  // (slot 1 sits when a co-captain plays)
+        base = bench ? (a.fresh ? 25.0 : 18.0) : (a.fresh ? 60.0 : 32.0);  // r173: a rookie wants to PLAY most of all
+        roleWhy = bench ? "A BENCH SPOT" : (a.fresh ? "WANTS TO PLAY" : "A SIDEKICK SPOT");
+    }
+    std::vector<std::pair<double, std::string> > parts;
+    const double role = base * rm, contend = fa_contend(c, b.club, avgStr) * cm * (a.fresh ? 0.5 : 1.0);  // (r173: a rookie: minutes first)
+    e.score = role + contend;
+    parts.push_back(std::make_pair(role - 45.0, roleWhy));
+    parts.push_back(std::make_pair(contend, p == PERS_UNDERDOG ? "WANTS TO CARRY A CLUB"
+                                                               : (p == PERS_FRONTRUNNER ? "CHASES A WINNER"
+                                                                                        : (p == PERS_VETERAN ? "CHASING A RING" : "A CONTENDER"))));
+    const int val = fa_value(a.key, a.prog);
+    if (fa_captain_type(a.key) && b.role >= PORT_FA_SIDEKICK1 && !a.fresh)
+        e.score -= 14.0;  // a captain would rather lead (r173: a rookie takes the minutes)
+    if (b.role == PORT_FA_BACKUP && !b.promise && fa_occ_value(c, b.club, PORT_FA_CAPTAIN) >= val + 3)
+        e.score -= 14.0;  // squad fit: won't sit behind a better captain
+    if (p == PERS_HOTHEAD && b.role == PORT_FA_CAPTAIN)
+        e.score += 10.0;
+    if (p == PERS_SHOWBOAT)
+    {
+        const double show = 0.15 * (s.goalsFor - avgGf);
+        e.score += show;
+        parts.push_back(std::make_pair(show, "LOVES THEIR ATTACK"));
+    }
+    if (!a.fresh && a.from == b.club)
+    {
+        double back = -4.0;
+        if (p == PERS_HONORABLE)
+            back = 25.0;
+        else if (p == PERS_VETERAN)
+            back = 10.0;
+        else if (p == PERS_HOTHEAD)
+            back = -15.0;  // (holds the release against them)
+        e.score += back;
+        parts.push_back(std::make_pair(back, "LOYAL TO " + upper(s_clubs[b.club].place)));
+    }
+    int homeClub = -1;
+    const std::string div = fa_home(a.key, &homeClub);
+    if (homeClub == b.club)
+    {
+        e.score += 16.0;
+        parts.push_back(std::make_pair(16.0, "HOMETOWN CLUB"));
+    }
+    else if (!div.empty() && s_clubs[b.club].div == div)
+    {
+        e.score += 9.0;
+        parts.push_back(std::make_pair(9.0, "HOME REGION"));
+    }
+    const double luck = fa_noise(c, a.key, b.club, p == PERS_TRICKSTER ? 14.0 : 4.0, 0);
+    e.score += luck;
+    if (p == PERS_TRICKSTER)
+        parts.push_back(std::make_pair(luck, "UNPREDICTABLE"));
+    double best = -1e9;
+    for (size_t i = 0; i < parts.size(); i++)
+        if (parts[i].first > best)
+        {
+            best = parts[i].first;
+            e.why = parts[i].second;
+        }
+    if (best <= 0.0)
+        e.why = roleWhy;
+    return e;
+}
+
+int fa_find(const Career& c, const std::string& key)
+{
+    for (size_t i = 0; i < c.fa.size(); i++)
+        if (c.fa[i].key == key)
+            return (int)i;
+    return -1;
+}
+
+const char* fa_role_word(int role)
+{
+    static const char* const k[PORT_FA_ROLES] = {"CAPTAIN", "BACKUP", "SIDEKICK", "SIDEKICK", "SIDEKICK"};
+    return k[std::max(0, std::min(PORT_FA_ROLES - 1, role))];
+}
+
+// The pool kept in step: the ones on a club now gone (signed by the r131 fill, traded), every character on no club in it
+// (never dealt, added to the roster since: fresh, at the sidekicks' level, a personality of its own), offers for ones
+// gone dropped. Pure bookkeeping (no random numbers): any headset gets the same.
+bool s_holdReturning = false;  // r177 (season_signings)
+void fa_refresh(Career& c)
+{
+    read_data();
+    std::unordered_map<std::string, int> held;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        std::vector<std::string> ids;
+        club_ids(c.clubs[i], ids);
+        for (size_t k = 0; k < ids.size(); k++)
+            held[ids[k]] = i;
+    }
+    int level = 0;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        level += c.clubs[i].side.level;
+    level = std::max(8, level / PORT_FR_CLUBS);
+    std::vector<FreeAgent> keep;
+    std::unordered_map<std::string, bool> listed;
+    for (size_t i = 0; i < c.fa.size(); i++)
+    {
+        const std::string id = char_id(c.fa[i].key);
+        if (id.empty() || held.count(id) != 0 || listed.count(id) != 0)
+            continue;
+        listed[id] = true;
+        keep.push_back(c.fa[i]);
+        if (keep.back().fresh)  // r173: a never-signed one is a ROOKIE: Lv 8 (everyone's first level), no XP, no record
+        {
+            init_prog(keep.back().prog);
+            init_stats(keep.back().st, keep.back().st.personality);
+        }
+    }
+    auto add = [&](const std::string& key) {
+        const std::string id = char_id(key);
+        if (id.empty() || held.count(id) != 0 || listed.count(id) != 0)
+            return;
+        // r177: a retired line comes back as a rookie the season after (not into the off-season it retired in, nor the
+        // new season's first fill: s_holdReturning)
+        for (size_t i = 0; i < c.returning.size(); i++)
+            if (c.returning[i].first == id && (c.season < c.returning[i].second || (c.season == c.returning[i].second && s_holdReturning)))
+                return;
+        listed[id] = true;
+        FreeAgent f;
+        f.key = key;
+        init_prog(f.prog);
+        (void)level;  // r173: a rookie (init_prog: Lv 8), never the league's level (r167 trained them: they read as vets)
+        init_stats(f.st, (int)(fa_hash(c, key, -1, 77) % PERS_COUNT));
+        f.fresh = true;
+        f.since = c.season;
+        keep.push_back(f);
+    };
+    const std::vector<Captain> caps = captains();
+    for (size_t i = 0; i < caps.size(); i++)
+        if (!caps[i].evolved)
+            add(caps[i].key);
+    const std::vector<Kind> ks = kinds();
+    for (size_t i = 0; i < ks.size(); i++)
+        if (ks[i].guest >= 0)
+            add(ks[i].key);
+    c.fa.swap(keep);
+    for (int i = (int)c.bids.size() - 1; i >= 0; i--)
+        if (fa_find(c, c.bids[(size_t)i].key) < 0)
+            c.bids.erase(c.bids.begin() + i);
+}
+
+// A club's player into free agency (its highest form, its level, record and personality kept). The slot is emptied
+// (a backup gone, a member slot back to its generic sidekick); the captain's slot is the caller's to fill.
+void fa_release(Career& c, int club, int slot, std::vector<std::string>& lines)
+{
+    ClubState& s = c.clubs[club];
+    if (slot_key(s, slot).empty())
+        return;
+    settle_form(c, club, slot);
+    const std::string key = slot_key(s, slot);
+    FreeAgent f;
+    f.key = key;
+    f.prog = slot_prog(s, slot);
+    f.st = slot_stats(s, slot);
+    f.from = club;
+    f.since = c.season;
+    f.fresh = false;
+    f.decide = 0;
+    c.fa.push_back(f);
+    const std::string place = upper(s_clubs[club].place);
+    auto gone = [&](Nemesis* n) {
+        if (n->club != club)
+            return;
+        n->club = -1;
+        nem_log(*n, "SEASON " + std::to_string(c.season) + ": RELEASED BY " + place);
+    };
+    each_nemesis(c, key, gone);
+    if (slot >= 2)
+        each_nemesis(c, "sk#" + std::to_string(club) + "#" + name_of(key), gone);
+    lines.push_back("RELEASED: " + upper(name_of(key)) + " (" + place + ")");
+    const int pers = is_human(c, club) ? PERS_NEUTRAL : (int)(fa_hash(c, key, club, 78) % PERS_COUNT);
+    if (slot == 1)
+    {
+        s.backup.clear();
+        init_prog(s.bk);
+        init_stats(s.bkSt, pers);
+        s.startsBackup = false;
+    }
+    else if (slot >= 2)
+    {
+        const int k = std::min(2, slot - 2);
+        s.mem[k].clear();
+        s.mp[k] = s.side;
+        init_stats(s.sk[k], pers);
+        s.skAge[k] = 0;
+    }
+    s.top[std::max(0, std::min(4, slot))].clear();
+}
+
+// An agent joins a club in a role (the spot's holder released; a captain's offer puts the old captain on the bench - its
+// backup released - or releases it)
+void fa_sign(Career& c, int club, const std::string& key, int role, bool promise, bool relCap, std::vector<std::string>& lines)
+{
+    const int ai = fa_find(c, key);
+    if (ai < 0 || club < 0 || club >= PORT_FR_CLUBS)
+        return;
+    const FreeAgent a = c.fa[(size_t)ai];
+    c.fa.erase(c.fa.begin() + ai);
+    ClubState& s = c.clubs[club];
+    if (is_human(c, club))
+        settle_forms(c, club);
+    auto take = [&](int slot, int spotLevel) {
+        Prog& p = slot_prog(s, slot);
+        if (a.fresh)
+        {
+            init_prog(p);
+            (void)spotLevel;  // r173: a rookie joins as a rookie (Lv 8), not at its spot's level
+        }
+        else
+        {
+            p = a.prog;
+            p.startLevel = p.level;
+            p.declinedAt = 0;
+        }
+        slot_stats(s, slot) = a.st;
+        slot_key(s, slot) = a.key;
+        s.top[slot].clear();
+    };
+    if (role == PORT_FA_CAPTAIN)
+    {
+        const int level = s.cap.level;
+        if (relCap)
+            fa_release(c, club, 0, lines);
+        else
+        {
+            if (!s.backup.empty())
+                fa_release(c, club, 1, lines);
+            s.backup = s.captain;  // the old captain to the bench
+            s.bk = s.cap;
+            s.bkSt = s.capSt;
+        }
+        take(0, level);
+        s.startsBackup = false;
+    }
+    else if (role == PORT_FA_BACKUP)
+    {
+        if (!s.backup.empty())
+            fa_release(c, club, 1, lines);
+        take(1, s.cap.level);
+        s.startsBackup = promise;
+    }
+    else
+    {
+        const int k = std::max(0, std::min(2, role - PORT_FA_SIDEKICK1));
+        if (!s.mem[k].empty())
+            fa_release(c, club, 2 + k, lines);
+        take(2 + k, s.side.level);
+        s.skAge[k] = 0;
+    }
+    const std::string place = upper(s_clubs[club].place);
+    each_nemesis(c, a.key, [&](Nemesis* n) {
+        n->club = club;
+        nem_log(*n, "SEASON " + std::to_string(c.season) + ": SIGNED WITH " + place);
+    });
+    post(c, a.st.personality, EV_TRADED, name_of(a.key), s_clubs[club].place);
+    {
+        // r177: the season it plays for its new club first (an off-season signing: the next one) - a person's signing never
+        // retires that season; a rookie's first season is its Rookie of the Year season
+        const int first = c.phase == PHASE_DONE ? c.season + 1 : c.season;
+        if (is_human(c, club))
+            c.joined.push_back(std::make_pair(char_id(a.key), first));
+        if (a.fresh)
+            c.rookieOf.push_back(std::make_pair(char_id(a.key), first));
+    }
+    fprintf(stderr, "[franchise] free agency: %s signs with %s as %s%s\n", a.key.c_str(), s_clubs[club].id.c_str(),
+            fa_role_word(role), promise ? " (promised starts)" : "");
+    fflush(stderr);
+}
+
+// An agent decides: the best offer worth kFaAccept signs it ("X SPURNS Y FOR Z" when it had a choice), else it turns them
+// all down and stays free. A CPU club that signed someone sits the round's other decisions out (signedClubs).
+bool fa_decide(Career& c, const std::string& key, std::vector<int>& signedClubs, std::vector<std::string>& lines)
+{
+    const int ai = fa_find(c, key);
+    if (ai < 0)
+        return false;
+    const double avgStr = fa_avg_strength(c), avgGf = fa_avg_goals(c);
+    struct Cand
+    {
+        size_t bid;
+        double score;
+        std::string why;
+    };
+    std::vector<Cand> cands;
+    bool mine = false, refusedMe = false;
+    for (size_t i = 0; i < c.bids.size(); i++)
+    {
+        const FaBid& b = c.bids[i];
+        if (b.key != key)
+            continue;
+        if (b.club == c.myClub)
+            mine = true;
+        if (!fa_role_ok(c.fa[(size_t)ai], b.role))
+            continue;
+        if (!is_human(c, b.club) && std::find(signedClubs.begin(), signedClubs.end(), b.club) != signedClubs.end())
+            continue;
+        const FaEval e = fa_eval(c, c.fa[(size_t)ai], b, avgStr, avgGf);
+        if (e.refuse)
+        {
+            if (b.club == c.myClub)
+                refusedMe = true;
+            continue;
+        }
+        Cand cd;
+        cd.bid = i;
+        cd.score = e.score;
+        cd.why = e.why;
+        cands.push_back(cd);
+    }
+    std::stable_sort(cands.begin(), cands.end(), [&](const Cand& x, const Cand& y) {
+        return x.score != y.score ? x.score > y.score : c.bids[x.bid].club < c.bids[y.bid].club;
+    });
+    const std::string name = upper(name_of(key));
+    auto drop_bids = [&](const std::string& k) {
+        for (int i = (int)c.bids.size() - 1; i >= 0; i--)
+            if (c.bids[(size_t)i].key == k)
+                c.bids.erase(c.bids.begin() + i);
+    };
+    if (cands.empty() || cands[0].score < kFaAccept)
+    {
+        if (mine || cands.size() >= 2)
+            lines.push_back(name + " TURNS DOWN EVERY OFFER");
+        if (mine)
+            c.faLast = refusedMe ? name + " WON'T PLAY FOR YOU: BEEF" : name + " TURNED DOWN YOUR OFFER";
+        drop_bids(key);
+        c.fa[(size_t)ai].decide = 0;
+        fprintf(stderr, "[franchise] free agency: %s turned down %d offers\n", key.c_str(), (int)cands.size());
+        fflush(stderr);
+        return false;
+    }
+    const FaBid win = c.bids[cands[0].bid];
+    const std::string why = cands[0].why;
+    int runner = -1;
+    for (size_t i = 1; i < cands.size() && runner < 0; i++)
+        if (c.bids[cands[i].bid].club != win.club)
+            runner = c.bids[cands[i].bid].club;
+    std::string line = runner >= 0 ? name + " SPURNS " + upper(s_clubs[runner].place) + " FOR " + upper(s_clubs[win.club].place)
+                                   : name + " SIGNS WITH " + upper(s_clubs[win.club].place);
+    line += std::string(" (") + fa_role_word(win.role) + ")";
+    lines.push_back(line);
+    if (win.club == c.myClub)
+    {
+        c.faLast = name + " SIGNED WITH YOU: " + fa_role_word(win.role) + "!";
+        c.headline = name_of(key) + " signed with you" + (runner >= 0 ? " over " + s_clubs[runner].place : std::string()) + "!";
+    }
+    else if (mine)
+    {
+        c.faLast = name + (refusedMe ? " WON'T PLAY FOR YOU: BEEF" : " SPURNED YOU FOR " + upper(s_clubs[win.club].place) + ": " + why);
+    }
+    drop_bids(key);
+    if (!is_human(c, win.club))
+    {
+        for (int i = (int)c.bids.size() - 1; i >= 0; i--)  // one signing a round for a CPU club (its other offer withdrawn)
+            if (c.bids[(size_t)i].club == win.club)
+                c.bids.erase(c.bids.begin() + i);
+        signedClubs.push_back(win.club);
+    }
+    fprintf(stderr, "[franchise] free agency: %s picks %s (%s, %.1f) of %d offers%s\n", key.c_str(), s_clubs[win.club].id.c_str(),
+            why.c_str(), cands[0].score, (int)cands.size(), runner >= 0 ? (" over " + s_clubs[runner].id).c_str() : "");
+    fflush(stderr);
+    fa_sign(c, win.club, key, win.role, win.promise, win.relCap, lines);
+    return true;
+}
+
+// The CPU clubs' offers: each without one out (and with `chance`) picks the agent who'd help it most - a better captain
+// (the captaincy: its own goes to the bench), a backup for an empty or weak spot, a sidekick for a generic or weak one;
+// contenders (the 8 strongest) lean to the stars. One offer a club; an offer starts an agent's clock (mid-season).
+void fa_cpu_round(Career& c, double chance, int roundId)
+{
+    c.faRound = roundId;
+    if (c.fa.empty())
+        return;
+    std::vector<int> order, byStr;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        if (!is_human(c, i))
+        {
+            order.push_back(i);
+            byStr.push_back(i);
+        }
+    for (int i = (int)order.size() - 1; i > 0; i--)
+    {
+        const int j = (int)(next_rand(c.rng) % (unsigned)(i + 1));
+        std::swap(order[(size_t)i], order[(size_t)j]);
+    }
+    std::stable_sort(byStr.begin(), byStr.end(), [&](int a, int b) { return strength(c.clubs[a]) > strength(c.clubs[b]); });
+    for (size_t oi = 0; oi < order.size(); oi++)
+    {
+        const int club = order[oi];
+        bool has = false;
+        for (size_t i = 0; i < c.bids.size() && !has; i++)
+            has = c.bids[i].club == club;
+        if (has || rand01(c.rng) >= chance)
+            continue;
+        const bool contender = std::find(byStr.begin(), byStr.begin() + std::min<size_t>(8, byStr.size()), club) !=
+                               byStr.begin() + std::min<size_t>(8, byStr.size());
+        const ClubState& s = c.clubs[club];
+        const int capV = fa_occ_value(c, club, PORT_FA_CAPTAIN);
+        double best = 0.0;
+        int bestAgent = -1, bestRole = 0;
+        for (size_t ai = 0; ai < c.fa.size(); ai++)
+        {
+            const FreeAgent& a = c.fa[ai];
+            const int val = fa_value(a.key, a.prog);
+            const bool ct = fa_captain_type(a.key);
+            auto cand = [&](int role, double gain) {
+                if (contender)
+                    gain += 0.25 * (val - 75);
+                gain += fa_noise(c, a.key, club, 3.0, 1);
+                if (gain > best)
+                {
+                    best = gain;
+                    bestAgent = (int)ai;
+                    bestRole = role;
+                }
+            };
+            if (ct)
+            {
+                if (val >= capV + 4)
+                    cand(PORT_FA_CAPTAIN, val - capV + 6.0);
+                if (s.backup.empty())
+                {
+                    if (val >= 66)
+                        cand(PORT_FA_BACKUP, val - 66 + 8.0);
+                }
+                else
+                {
+                    const int bkV = fa_occ_value(c, club, PORT_FA_BACKUP);
+                    if (val >= bkV + 4)
+                        cand(PORT_FA_BACKUP, (double)(val - bkV));
+                }
+            }
+            for (int k = 0; k < 3; k++)
+            {
+                const int occ = fa_occ_value(c, club, PORT_FA_SIDEKICK1 + k);
+                if (val >= occ + 5)
+                    cand(PORT_FA_SIDEKICK1 + k, val - occ - (ct ? 4.0 : 0.0) - (k == 0 && !s.backup.empty() ? 4.0 : 0.0));
+                // r173 (Lance: "more freedom to sign people who are legit rookie level/never played before"): a rookie is
+                // signed on talent (its rating against the member's own, levels aside: it'll grow), for a field spot
+                if (a.fresh)
+                {
+                    const std::string& m = s.mem[k];
+                    const int occRating = m.empty() ? rating(s.kind) : rating(top_of(s, 2 + k));
+                    if (rating(a.key) >= occRating + 2)
+                        cand(PORT_FA_SIDEKICK1 + k, 3.0 + rating(a.key) - occRating - (k == 0 && !s.backup.empty() ? 3.0 : 0.0));
+                }
+            }
+        }
+        if (bestAgent < 0)
+            continue;
+        FreeAgent& a = c.fa[(size_t)bestAgent];
+        FaBid b;
+        b.key = a.key;
+        b.club = club;
+        b.role = bestRole;
+        b.promise = bestRole == PORT_FA_BACKUP && fa_value(a.key, a.prog) >= capV - 2;
+        b.relCap = false;
+        b.week = c.phase == PHASE_REGULAR ? c.week : 0;
+        c.bids.push_back(b);
+        if (c.phase == PHASE_REGULAR && a.decide == 0)
+            a.decide = std::min(kFaDeadline, c.week + 1);
+    }
+}
+
+// The front of the week's news: the free-agency lines (signings first), the rest counted
+void fa_news(Career& c, const std::vector<std::string>& lines)
+{
+    if (lines.empty())
+        return;
+    std::vector<std::string> top, rest;
+    for (size_t i = 0; i < lines.size(); i++)
+        (lines[i].find(" SPURNS ") != std::string::npos || lines[i].find(" SIGNS WITH ") != std::string::npos ? top : rest)
+            .push_back(lines[i]);
+    top.insert(top.end(), rest.begin(), rest.end());
+    std::vector<std::string> out;
+    for (size_t i = 0; i < top.size() && out.size() < 4; i++)
+        out.push_back(top[i]);
+    if (top.size() > out.size())
+        out.push_back(std::to_string(top.size() - out.size()) + " MORE FREE-AGENCY MOVES");
+    // r173: after the week's own stories (results' hat tricks, streaks, beef): r167 put these first, which pushed the real
+    // stories out of the 8 lines the hub and STRIKERS ILLUSTRATED read
+    c.news.insert(c.news.end(), out.begin(), out.end());
+}
+
+// The agents with offers, the best first (the stars decide first; the clubs that miss bid again)
+std::vector<std::string> fa_bid_keys(const Career& c, bool dueOnly)
+{
+    std::vector<std::pair<int, std::string> > v;
+    for (size_t i = 0; i < c.fa.size(); i++)
+    {
+        const FreeAgent& a = c.fa[i];
+        bool has = false;
+        for (size_t k = 0; k < c.bids.size() && !has; k++)
+            has = c.bids[k].key == a.key;
+        if (!has || (dueOnly && a.decide > c.week && c.week < kFaDeadline))
+            continue;
+        v.push_back(std::make_pair(fa_value(a.key, a.prog), a.key));
+    }
+    std::stable_sort(v.begin(), v.end(), [](const std::pair<int, std::string>& a, const std::pair<int, std::string>& b) {
+        return a.first > b.first;
+    });
+    std::vector<std::string> out;
+    for (size_t i = 0; i < v.size(); i++)
+        out.push_back(v[i].second);
+    return out;
+}
+
+// Mid-season (finish_week, weeks 1-12): CPU offers, then the agents whose day it is decide; at the deadline all of them.
+void fa_week(Career& c)
+{
+    if (c.phase != PHASE_REGULAR || c.week > kFaDeadline)
+        return;
+    fa_refresh(c);
+    fa_cpu_round(c, 0.3, c.season * 100 + c.week);
+    std::vector<std::string> lines;
+    std::vector<int> signedClubs;
+    const std::vector<std::string> keys = fa_bid_keys(c, true);
+    for (size_t i = 0; i < keys.size(); i++)
+        fa_decide(c, keys[i], signedClubs, lines);
+    if (c.week >= kFaDeadline)
+    {
+        c.bids.clear();
+        for (size_t i = 0; i < c.fa.size(); i++)
+            c.fa[i].decide = 0;
+    }
+    fa_news(c, lines);
+}
+
+// The champion crowned: the off-season window opens, every CPU club with a need makes its offer (you see them and can
+// beat them until the next season starts)
+// r167 unrest (FRANCHISE-PLAN.md's A-Life: "they want your spot (a grown sidekick wants to be a captain)"): with every
+// character dealt, the ones left over are the league's weakest, so a market needs players worth chasing. At the
+// off-season a CPU club's player may test free agency - one a club at most: a member who has outgrown its captain, a backup
+// better than its captain, or a front-runner / veteran stuck on one of the 8 worst records. Its personality says how
+// likely (a hothead, showboat or front-runner 70%, an honorable one 15%, the rest 45%).
+void fa_unrest(Career& c, std::vector<std::string>& lines)
+{
+    std::vector<int> byWins;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+        byWins.push_back(i);
+    std::stable_sort(byWins.begin(), byWins.end(), [&](int a, int b) { return ranks_above(c, b, a); });  // worst first
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        if (is_human(c, i))
+            continue;
+        ClubState& s = c.clubs[i];
+        const int capV = fa_occ_value(c, i, PORT_FA_CAPTAIN);
+        const bool losing = std::find(byWins.begin(), byWins.begin() + 8, i) != byWins.begin() + 8;
+        int slot = -1;
+        std::string why;
+        for (int k = 0; k < 3 && slot < 0; k++)
+            if (!s.mem[k].empty() && fa_captain_type(s.mem[k]) && fa_occ_value(c, i, PORT_FA_SIDEKICK1 + k) >= capV + 3)
+            {
+                slot = 2 + k;
+                why = "WANTS TO BE A CAPTAIN";
+            }
+        if (slot < 0 && !s.backup.empty() && fa_occ_value(c, i, PORT_FA_BACKUP) >= capV + 4)
+        {
+            slot = 1;
+            why = "WANTS A CLUB OF ITS OWN";
+        }
+        if (slot < 0 && losing)
+            for (int k = 0; k < 2 && slot < 0; k++)
+            {
+                if (k == 1 && s.backup.empty())
+                    continue;
+                const int p = (k == 0 ? s.capSt : s.bkSt).personality;
+                if ((p == PERS_FRONTRUNNER || p == PERS_VETERAN) && (k == 1 || !s.backup.empty()))
+                {
+                    slot = k;
+                    why = "WANTS A WINNER";
+                }
+            }
+        if (slot < 0)
+            continue;
+        const int p = slot_stats(s, slot).personality;
+        const double chance = p == PERS_HOTHEAD || p == PERS_SHOWBOAT || p == PERS_FRONTRUNNER ? 0.7 : (p == PERS_HONORABLE ? 0.15 : 0.45);
+        if (rand01(c.rng) >= chance)
+            continue;
+        const std::string name = upper(name_of(slot_key(s, slot)));
+        std::vector<std::string> rel;
+        fa_release(c, i, slot, rel);
+        if (slot == 0)  // its backup takes the captaincy
+        {
+            s.captain = s.backup;
+            s.cap = s.bk;
+            s.capSt = s.bkSt;
+            s.backup.clear();
+            init_prog(s.bk);
+            init_stats(s.bkSt, (int)(fa_hash(c, s.captain, i, 79) % PERS_COUNT));
+            s.startsBackup = false;
+        }
+        lines.push_back(name + " (" + upper(s_clubs[i].place) + ") TESTS FREE AGENCY: " + why);
+        fprintf(stderr, "[franchise] free agency: %s leaves %s (%s)\n", name.c_str(), s_clubs[i].id.c_str(), why.c_str());
+    }
+    fflush(stderr);
+}
+
+void fa_offseason_open(Career& c)
+{
+    std::vector<std::string> unrest;
+    fa_unrest(c, unrest);  // (records are the season just finished)
+    fa_refresh(c);
+    for (size_t i = 0; i < c.fa.size(); i++)
+        c.fa[i].decide = 0;
+    fa_cpu_round(c, 1.0, c.season * 100 + 99);
+    int agents = 0;
+    for (size_t i = 0; i < c.fa.size(); i++)
+        for (size_t k = 0; k < c.bids.size(); k++)
+            if (c.bids[k].key == c.fa[i].key)
+            {
+                agents++;
+                break;
+            }
+    int rookies = 0;
+    for (size_t i = 0; i < c.fa.size(); i++)
+        rookies += c.fa[i].fresh ? 1 : 0;
+    c.news.push_back("FREE AGENCY IS OPEN: " + std::to_string(c.fa.size()) + " FREE AGENTS, " + std::to_string(agents) +
+                     " WANTED ALREADY");
+    if (rookies > 0)  // r173: next year's rookies (never played, never evolved: first forms, Lv 8)
+        c.news.push_back("ROOKIE CLASS: " + std::to_string(rookies) + " ROOKIES ENTER FREE AGENCY");
+    for (size_t i = 0; i < unrest.size() && i < 3; i++)
+        c.news.push_back(unrest[i]);
+    if (unrest.size() > 3)
+        c.news.push_back(std::to_string(unrest.size() - 3) + " MORE PLAYERS TEST FREE AGENCY");
+}
+
+// The next season starts: the off-season's offers decided, then two more rounds (the clubs that missed bid again)
+void fa_offseason_resolve(Career& c)
+{
+    fa_refresh(c);
+    std::vector<std::string> lines;
+    for (int round = 0; round < 3; round++)
+    {
+        if (round > 0 || c.faRound != c.season * 100 + 99)
+            fa_cpu_round(c, 1.0, c.season * 100 + 99);
+        const std::vector<std::string> keys = fa_bid_keys(c, false);
+        if (keys.empty())
+            break;
+        std::vector<int> signedClubs;
+        for (size_t i = 0; i < keys.size(); i++)
+            fa_decide(c, keys[i], signedClubs, lines);
+        c.bids.clear();  // (offers that lost go; the clubs bid again next round)
+    }
+    c.bids.clear();
+    for (size_t i = 0; i < c.fa.size(); i++)
+        c.fa[i].decide = 0;
+    fa_news(c, lines);
+}
+
+// r177 (Lance: retirements, so every off-season has a real rookie class): after the champion's crowned, at the next
+// season's start (next_season, before free agency's decisions), characters retire - captains, backups, sidekick members,
+// every club's, yours too. The chance grows with seasons played (its games / 20: 5% a season), more when its form has
+// gone (-2 or worse), a veteran / an honorable one leaving on a high (form +2), a hothead / showboat / front-runner hanging
+// on; at most kRetireMax a season, the likeliest first. Yours: never one you got this season, and only after a season's
+// warning ("X IS THINKING ABOUT RETIREMENT" the off-season before). The send-off goes into the news, the feed, the hall
+// of fame (its goals, seasons, titles); its beef ends. Its spot: the backup takes the captaincy (else a captain-class
+// member, else the best captain in free agency); a member's slot goes back to its generic sidekick, the club refills it
+// through free agency. Its line comes back the season after as a ROOKIE (fa_refresh: first form, Lv 8, no record, no
+// shiny, a new personality) - its old career stays in the history.
+const int kRetireMax = 14;
+int seasons_played(const PStats& st) { return st.games / PORT_FR_WEEKS; }
+double retire_chance(const PStats& st)
+{
+    const int n = seasons_played(st);
+    if (n < 1)
+        return 0.0;
+    double p = 0.05 * n;  // (from the first off-season: every one has its returnees)
+    if (st.form <= -2)
+        p += 0.12;  // the legs have gone
+    if ((st.personality == PERS_VETERAN && st.form >= 2) || (st.personality == PERS_HONORABLE && st.form >= 2))
+        p += 0.12;  // out on a high
+    if (st.personality == PERS_HOTHEAD || st.personality == PERS_SHOWBOAT || st.personality == PERS_FRONTRUNNER)
+        p -= 0.05;  // hangs on
+    return std::max(0.0, std::min(0.85, p));
+}
+
+void retire_player(Career& c, int club, int slot, std::vector<std::string>& lines)
+{
+    ClubState& s = c.clubs[club];
+    settle_form(c, club, slot);
+    const std::string key = slot_key(s, slot);
+    PStats& st = slot_stats(s, slot);
+    const std::string name = upper(name_of(key)), place = upper(s_clubs[club].place), id = char_id(key);
+    const int seasons = std::max(1, seasons_played(st));
+    int titles = 0;
+    for (size_t i = 0; i < c.champions.size(); i++)
+        if (c.champions[i].second == club && c.champions[i].first > c.season - seasons)
+            titles++;
+    const std::string career = std::to_string(st.goals) + " GOALS IN " + std::to_string(seasons) + (seasons == 1 ? " SEASON" : " SEASONS") +
+                               (titles > 0 ? ", " + std::to_string(titles) + (titles == 1 ? " TITLE" : " TITLES") : std::string());
+    lines.push_back("RETIRED: " + name + " (" + place + ") HANGS IT UP: " + career);
+    c.history.insert(c.history.begin(), "SEASON " + std::to_string(c.season) + " RETIRED: " + name + " (" + place + "), " + career);
+    post(c, st.personality, EV_RETIRED, name_of(key), s_clubs[club].place);
+    auto done = [&](Nemesis* n) {
+        n->club = -1;
+        n->active = false;
+        nem_log(*n, "SEASON " + std::to_string(c.season) + ": RETIRED");
+    };
+    each_nemesis(c, key, done);
+    if (slot >= 2)
+        each_nemesis(c, "sk#" + std::to_string(club) + "#" + name_of(key), done);
+    fprintf(stderr, "[franchise] retired: %s (%s) after %d seasons, %d goals\n", key.c_str(), s_clubs[club].id.c_str(), seasons, st.goals);
+    const int pers = is_human(c, club) ? PERS_NEUTRAL : (int)(fa_hash(c, key, club, 177) % PERS_COUNT);
+    if (slot == 1)
+    {
+        s.backup.clear();
+        init_prog(s.bk);
+        init_stats(s.bkSt, pers);
+        s.startsBackup = false;
+    }
+    else if (slot >= 2)
+    {
+        const int k = std::min(2, slot - 2);
+        s.mem[k].clear();
+        s.mp[k] = s.side;
+        init_stats(s.sk[k], pers);
+        s.skAge[k] = 0;
+    }
+    else if (!s.backup.empty())  // the captain: its backup takes the armband
+    {
+        s.captain = s.backup;
+        s.cap = s.bk;
+        s.capSt = s.bkSt;
+        s.top[0] = s.top[1];
+        s.backup.clear();
+        s.top[1].clear();
+        init_prog(s.bk);
+        init_stats(s.bkSt, pers);
+        s.startsBackup = false;
+        lines.push_back(upper(s_clubs[club].place) + " MAKE " + upper(name_of(s.captain)) + " THEIR CAPTAIN");
+    }
+    else
+    {
+        int best = -1;  // a captain-class member, else the best captain in free agency
+        for (int k = 0; k < 3; k++)
+            if (!s.mem[k].empty() && fa_captain_type(s.mem[k]) && (best < 0 || fa_value(s.mem[k], s.mp[k]) > fa_value(s.mem[best], s.mp[best])))
+                best = k;
+        if (best >= 0)
+        {
+            s.captain = s.mem[best];
+            s.cap = s.mp[best];
+            s.capSt = s.sk[best];
+            s.mem[best].clear();
+            s.mp[best] = s.side;
+            init_stats(s.sk[best], pers);
+        }
+        else
+        {
+            fa_refresh(c);
+            int fi = -1;
+            for (size_t i = 0; i < c.fa.size(); i++)
+                if (fa_captain_type(c.fa[i].key) && (fi < 0 || fa_value(c.fa[i].key, c.fa[i].prog) > fa_value(c.fa[fi].key, c.fa[fi].prog)))
+                    fi = (int)i;
+            if (fi >= 0)
+            {
+                s.captain = c.fa[fi].key;
+                s.cap = c.fa[fi].prog;
+                s.capSt = c.fa[fi].st;
+                c.fa.erase(c.fa.begin() + fi);
+            }
+            // (no captain anywhere: it plays on - a roster too small for this to come up)
+            else
+                return;
+        }
+        s.top[0].clear();
+        lines.push_back(upper(s_clubs[club].place) + " MAKE " + upper(name_of(s.captain)) + " THEIR CAPTAIN");
+    }
+    s.top[std::max(0, std::min(4, slot))].clear();
+    c.returning.push_back(std::make_pair(id, c.season + 1));  // (back as a rookie next season)
+}
+
+void fa_retirements(Career& c)
+{
+    struct Cand
+    {
+        int club, slot;
+        double p;
+    };
+    std::vector<Cand> cands;
+    std::vector<std::string> warnNow, lines;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        ClubState& s = c.clubs[i];
+        for (int slot = 0; slot < 5; slot++)
+        {
+            const std::string& key = slot_key(s, slot);
+            if (key.empty())
+                continue;
+            const double p = retire_chance(slot_stats(s, slot));
+            if (p <= 0.0 || rand01(c.rng) >= p)
+                continue;
+            if (is_human(c, i))
+            {
+                const std::string id = char_id(key);
+                bool newHere = false, warned = false;
+                for (size_t j = 0; j < c.joined.size(); j++)
+                    newHere = newHere || (c.joined[j].first == id && c.joined[j].second >= c.season);
+                warned = std::find(c.retireWarn.begin(), c.retireWarn.end(), id) != c.retireWarn.end();
+                if (newHere)
+                    continue;
+                if (!warned)  // a heads-up first: it retires next off-season if it still wants to
+                {
+                    warnNow.push_back(id);
+                    c.news.push_back(upper(name_of(key)) + " IS THINKING ABOUT RETIREMENT");
+                    if (i == c.myClub)
+                        c.headline = name_of(key) + " is thinking about retirement after this season.";
+                    continue;
+                }
+            }
+            cands.push_back(Cand{i, slot, p});
+        }
+    }
+    std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.p > b.p; });
+    if ((int)cands.size() > kRetireMax)
+        cands.resize(kRetireMax);
+    // (highest slots first within a club: a captain's retirement may move a member up)
+    std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.club != b.club ? a.club < b.club : a.slot > b.slot; });
+    for (size_t i = 0; i < cands.size(); i++)
+        retire_player(c, cands[i].club, cands[i].slot, lines);
+    c.retireWarn = warnNow;  // (last year's warnings are spent: retired, or changed their mind)
+    for (int i = (int)c.joined.size() - 1; i >= 0; i--)  // (keep only this and next season's)
+        if (c.joined[(size_t)i].second < c.season)
+            c.joined.erase(c.joined.begin() + i);
+    if (!lines.empty())
+    {
+        std::vector<std::string> out;
+        for (size_t i = 0; i < lines.size() && out.size() < 4; i++)
+            if (lines[i].compare(0, 8, "RETIRED:") == 0)
+                out.push_back(lines[i]);
+        int retired = 0;
+        for (size_t i = 0; i < lines.size(); i++)
+            retired += lines[i].compare(0, 8, "RETIRED:") == 0 ? 1 : 0;
+        if (retired > (int)out.size())
+            out.push_back(std::to_string(retired - (int)out.size()) + " MORE RETIREMENTS: THEIR LINES RETURN AS ROOKIES NEXT SEASON");
+        c.news.insert(c.news.begin(), out.begin(), out.end());
+    }
+    fprintf(stderr, "[franchise] season %d retirements: %d (%d warned)\n", c.season, (int)cands.size(), (int)warnNow.size());
+    fflush(stderr);
 }
 
 // r131 (Lance: "each character is only chosen once per franchise ... i wanna upload more pokemon and maybe digimon
@@ -2939,45 +4604,56 @@ void season_signings(Career& c)
                 if (holder.find(ids[k]) == holder.end())
                     holder[ids[k]] = i;
         }
-    struct Free
+    // r167: the free agents are free agency's own (c.fa: the ones never dealt and the released, each with its level, record
+    // and personality); what the bidding left, the best first (its value, up to 5 points of luck as r131's)
+    (void)caps;
+    (void)ks;
+    s_holdReturning = true;  // r177: this off-season's retirees wait for next season's free agency
+    fa_refresh(c);
+    std::vector<int> faOrder;
+    std::vector<double> faScore(c.fa.size(), 0.0);
+    for (size_t i = 0; i < c.fa.size(); i++)
     {
-        std::string key;
-        double score;
-        bool captain;
-    };
-    std::vector<Free> fa;  // the free agents, best first
-    std::unordered_map<std::string, bool> listed;
-    auto add = [&](const std::string& key, bool captain) {
-        const std::string id = char_id(key);
-        if (id.empty() || holder.count(id) != 0 || listed.count(id) != 0)
-            return;
-        listed[id] = true;
-        Free f;
-        f.key = key;
-        f.score = rating(key) + 5.0 * rand01(c.rng);
-        f.captain = captain;
-        fa.push_back(f);
-    };
-    for (size_t i = 0; i < caps.size(); i++)
-        if (!caps[i].evolved)
-            add(caps[i].key, true);
-    for (size_t i = 0; i < ks.size(); i++)
-        if (ks[i].guest >= 0)
-            add(ks[i].key, false);
-    std::stable_sort(fa.begin(), fa.end(), [](const Free& a, const Free& b) { return a.score > b.score; });
-    std::vector<bool> gone(fa.size(), false);
+        faOrder.push_back((int)i);
+        faScore[i] = fa_value(c.fa[i].key, c.fa[i].prog) + 5.0 * rand01(c.rng);
+    }
+    std::stable_sort(faOrder.begin(), faOrder.end(), [&](int a, int b) { return faScore[a] > faScore[b]; });
+    std::vector<bool> gone(c.fa.size(), false);
+    int fi = -1;  // the one sign() took last
     auto sign = [&](bool captainOnly) -> std::string {
-        for (size_t i = 0; i < fa.size(); i++)
-            if (!gone[i] && (!captainOnly || fa[i].captain))
+        fi = -1;
+        for (size_t j = 0; j < faOrder.size(); j++)
+        {
+            const int i = faOrder[j];
+            if (!gone[i] && (!captainOnly || fa_captain_type(c.fa[i].key)))
             {
                 gone[i] = true;
-                return fa[i].key;
+                fi = i;
+                return c.fa[i].key;
             }
+        }
         return std::string();
     };
-    auto fresh = [](Prog& p, int level) {
+    // (r131: at its spot's level; r167: a released one keeps its own level and record)
+    auto fresh = [&](Prog& p, int level) {
+        if (fi >= 0 && !c.fa[fi].fresh)
+        {
+            p = c.fa[fi].prog;
+            p.startLevel = p.level;
+            p.declinedAt = 0;
+            return;
+        }
         init_prog(p);
-        p.level = p.startLevel = std::max(8, std::min(100, level));
+        if (fi < 0)  // r173: a rookie signed here stays a rookie (Lv 8); r131's spot level only without one
+            p.level = p.startLevel = std::max(8, std::min(100, level));
+    };
+    auto stats_of = [&](PStats& st) {
+        if (fi >= 0 && c.fa[fi].fresh)  // r177: a rookie's first season (Rookie of the Year)
+            c.rookieOf.push_back(std::make_pair(char_id(c.fa[fi].key), c.season));
+        if (fi >= 0)
+            st = c.fa[fi].st;
+        else
+            init_stats(st, (int)(next_rand(c.rng) % PERS_COUNT));
     };
     std::vector<std::string> lines;
     int signings = 0;
@@ -3019,7 +4695,7 @@ void season_signings(Career& c)
             {
                 s.captain = fk;
                 fresh(s.cap, s.cap.level);
-                init_stats(s.capSt, (int)(next_rand(c.rng) % PERS_COUNT));
+                stats_of(s.capSt);  // r167
                 joined(i, fk, was);
             }
             else if (!s.backup.empty() && !dup(s.backup))
@@ -3041,7 +4717,7 @@ void season_signings(Career& c)
             s.backup = sign(true);
             s.startsBackup = false;
             fresh(s.bk, s.cap.level);
-            init_stats(s.bkSt, (int)(next_rand(c.rng) % PERS_COUNT));
+            stats_of(s.bkSt);  // r167
             if (!s.backup.empty())
                 joined(i, s.backup, was);
         }
@@ -3051,7 +4727,7 @@ void season_signings(Career& c)
                 const std::string was = s.mem[k];
                 s.mem[k] = sign(false);
                 fresh(s.mp[k], s.side.level);
-                init_stats(s.sk[k], (int)(next_rand(c.rng) % PERS_COUNT));
+                stats_of(s.sk[k]);  // r167
                 s.skAge[k] = 0;
                 if (!s.mem[k].empty())
                     joined(i, s.mem[k], was);
@@ -3087,7 +4763,7 @@ void season_signings(Career& c)
                 s.backup = fk;
                 s.startsBackup = false;
                 fresh(s.bk, s.cap.level);
-                init_stats(s.bkSt, (int)(next_rand(c.rng) % PERS_COUNT));
+                stats_of(s.bkSt);  // r167
                 joined(club, fk, std::string());
                 continue;
             }
@@ -3104,14 +4780,21 @@ void season_signings(Career& c)
                 continue;
             s.mem[slot] = fk;
             fresh(s.mp[slot], s.side.level);
-            init_stats(s.sk[slot], (int)(next_rand(c.rng) % PERS_COUNT));
+            stats_of(s.sk[slot]);  // r167
             s.skAge[slot] = 0;
             joined(club, fk, std::string());
         }
     c.news.insert(c.news.end(), lines.begin(), lines.end());
     if (signings > (int)lines.size())
         c.news.push_back(std::to_string(signings - (int)lines.size()) + " MORE FREE AGENTS SIGNED AROUND THE LEAGUE");
-    fprintf(stderr, "[franchise] season %d signings: %d (%d free agents were left)\n", c.season, signings, (int)fa.size());
+    const int before = (int)c.fa.size();
+    for (int i = (int)c.fa.size() - 1; i >= 0; i--)  // r167: the signed ones leave free agency
+        if (gone[(size_t)i])
+            c.fa.erase(c.fa.begin() + i);
+    fa_refresh(c);
+    s_holdReturning = false;
+    fprintf(stderr, "[franchise] season %d signings: %d (%d free agents were left, %d still free)\n", c.season, signings, before,
+            (int)c.fa.size());
     fflush(stderr);
 }
 
@@ -3121,6 +4804,8 @@ void next_season(Career& c)
     c.news.clear();
     c.feed.clear();
     off_season(c);  // r71: retirements, rookies, the trade window
+    fa_retirements(c);  // r177: the characters who retire (their lines return as rookies next season)
+    fa_offseason_resolve(c);  // r167: the free agents decide (last season's records count), before r131's fill
     c.season++;
     c.week = 1;
     season_signings(c);  // r131: one character, one club; free agents (new guests too) fill the CPU clubs' empty spots
@@ -3651,6 +5336,8 @@ bool PortFranchiseSetMembers(const int picks[3])
         return false;
     Career& c = s_career;
     ClubState& s = c.clubs[c.myClub];
+    for (int k = 2; k < 5; k++)
+        settle_form(c, c.myClub, k);  // r167: the members as their highest forms (a slot's pick doesn't follow a move)
     // r130 (review): a member kept (in any slot) keeps its own level, evolutions and shiny
     const std::string oldMem[3] = {s.mem[0], s.mem[1], s.mem[2]};
     const Prog oldMp[3] = {s.mp[0], s.mp[1], s.mp[2]};
@@ -3843,6 +5530,7 @@ void PortFranchiseDelete(int slot)
 }
 
 bool PortFranchiseActive() { return s_active; }
+unsigned PortFranchiseCareerSeed() { return s_active ? s_career.seed : 0u; }  // r153
 void PortFranchiseClose()
 {
     if (s_match == MATCH_NONE)
@@ -3933,6 +5621,8 @@ bool PortFranchiseGetView(PortFranchiseView* v)
         for (int k = 0; k < 3; k++)
             copy_str(v->oppSidekicks[k], sizeof v->oppSidekicks[k], sk_name(o, k));
     }
+    for (int k = 0; k < 3; k++)  // r173: your sidekick slots' characters (the trades' pieces)
+        copy_str(v->memberKeys[k], sizeof v->memberKeys[k], c.clubs[c.myClub].mem[k]);
     std::vector<int> div;
     const int base = (c.myClub / 4) * 4;
     for (int i = 0; i < 4; i++)
@@ -4177,7 +5867,7 @@ bool PortFranchiseGetView(PortFranchiseView* v)
         const Nemesis& n = c.nems[order[i]];
         PortFranchiseView::Nem& o = v->nems[i];
         copy_str(o.name, sizeof o.name, n.name);
-        copy_str(o.title, sizeof o.title, n.title >= 0 && n.title < T_COUNT ? kTitles[n.title] : "");
+        copy_str(o.title, sizeof o.title, title_name(n.title));
         copy_str(o.key, sizeof o.key, n.key.compare(0, 3, "sk#") == 0 ? std::string() : n.key);
         o.club = n.club;
         o.heat = n.heat;
@@ -4240,7 +5930,7 @@ static bool find_evolution(PortFranchiseEvolution* out, bool postponedToo, int o
     {
         if (onlySlot >= 0 && b != onlySlot)
             continue;
-        const std::string& key = slot_key(s, b);
+        const std::string key = top_of(s, b);  // r167: evolving goes on from its highest form (it may play as an earlier one)
         const Prog& p = slot_prog(s, b);
         if (key.empty() || (!postponedToo && p.declinedAt == p.level))
             continue;
@@ -4270,6 +5960,8 @@ static bool find_evolution(PortFranchiseEvolution* out, bool postponedToo, int o
 bool PortFranchisePendingEvolution(PortFranchiseEvolution* out) { return find_evolution(out, false, -1); }
 
 bool PortFranchiseReadyEvolution(PortFranchiseEvolution* out) { return find_evolution(out, true, -1); }
+
+bool PortFranchiseReadyEvolutionFor(int slot, PortFranchiseEvolution* out) { return find_evolution(out, true, slot); }  // r167
 
 bool PortFranchiseEvolve(int choice, bool* shiny, bool* newShiny)
 {
@@ -4323,7 +6015,7 @@ static bool evolve_slot_impl(int slot, int choice, bool* shiny, bool* newShiny)
     {
         // r95: postponed: not asked again until its next level; the Evo Watch page's A evolves it any time
         p.declinedAt = p.level;
-        c.headline = strncmp(e.fromKey, "mua_", 4) == 0  // r111: a Marvel hero's next costume
+        c.headline = PortCostumeKey(e.fromKey)  // r111; r183: an original's uniforms: a Marvel hero's next costume
                          ? std::string(e.fromName) + " will wait. Suit up any time: Evo Watch page, A."
                          : std::string(e.fromName) + " will wait. Evolve it any time: Evo Watch page, A.";
         save();
@@ -4332,10 +6024,11 @@ static bool evolve_slot_impl(int slot, int choice, bool* shiny, bool* newShiny)
         return false;
     }
     const bool was = p.shiny;
+    settle_form(c, c.myClub, e.slot);  // r167: from its highest form (picked an earlier one: back to it first)
     do_evolve_slot(c, c.myClub, e.slot, e.toKey[choice]);
     *shiny = p.shiny;
     *newShiny = p.shiny && !was;
-    c.headline = strncmp(e.fromKey, "mua_", 4) == 0  // r110: a Marvel hero's next costume
+    c.headline = PortCostumeKey(e.fromKey)  // r110; r183: a Marvel hero's next costume
                      ? std::string("Your ") + e.fromName + " suited up: " + e.toName[choice] + "!"
                      : std::string("Your ") + e.fromName + " evolved into " + e.toName[choice] + (*newShiny ? " - and it's SHINY!" : "!");
     if (PortGuestUnlock(e.toKey[choice]))
@@ -5625,16 +7318,16 @@ static std::string card_bonus_line(const Career& c, bool whys = false)
         if (whys && b != NULL && !b->why.empty())
             out += " (" + b->why + ")";
     };
-    add(s.captain, name_of(s.captain));
+    add(s.captain, card_name_of(s.captain));  // (r152: a costume by its own name)
     if (!s.backup.empty())
-        add(s.backup, name_of(s.backup));
+        add(s.backup, card_name_of(s.backup));
     bool generic = false;
     for (int k = 0; k < 3; k++)
     {
         if (s.mem[k].empty())
             generic = true;
         else
-            add(s.mem[k], name_of(s.mem[k]));
+            add(s.mem[k], card_name_of(s.mem[k]));
     }
     if (generic)
         add(s.kind, kind_name(s.kind));
@@ -5930,9 +7623,9 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
     out->newXp = q.xp;
     copy_str(out->name, sizeof out->name, name_of(key));
     std::string to;
-    out->evoLevel = next_evolution(key, &to);
+    out->evoLevel = next_evolution(top_of(s, backupStarts ? 1 : 0), &to);  // r167: from its highest form reached
     out->pokemon = out->evoLevel > 0 || key.compare(0, 3, "pk_") == 0;
-    out->costume = key.compare(0, 4, "mua_") == 0;  // r111
+    out->costume = PortCostumeKey(key.c_str());  // r111; r183
     if (out->evoLevel > 0)
     {
         copy_str(out->evoName, sizeof out->evoName, name_of(to));
@@ -5965,9 +7658,9 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
         out->coNewXp = cq.xp;
         copy_str(out->coName, sizeof out->coName, name_of(coKey));
         std::string coTo;
-        out->coEvoLevel = next_evolution(coKey, &coTo);
+        out->coEvoLevel = next_evolution(top_of(s, backupStarts ? 0 : 1), &coTo);  // r167
         out->coPokemon = out->coEvoLevel > 0 || coKey.compare(0, 3, "pk_") == 0;
-        out->coCostume = coKey.compare(0, 4, "mua_") == 0;  // r111
+        out->coCostume = PortCostumeKey(coKey.c_str());  // r111; r183
         if (out->coEvoLevel > 0)
         {
             copy_str(out->coEvoName, sizeof out->coEvoName, name_of(coTo));
@@ -5977,6 +7670,158 @@ bool PortFranchiseLiveXp(PortFranchiseLive* out)
     s_last = *out;
     s_lastKey = cacheKey;
     return true;
+}
+
+// ------------------------------------------------------------------- r173: level-ups through a match (franchise.h)
+extern "C" int PortBroadcastNdc(float x, float y, float z, float* ndcX, float* ndcY);  // glPlat.cpp
+namespace
+{
+int s_lvGame = -2;            // the match (game index) the levels below are of
+int s_lvMax[2][4];            // each side's m_ID 0-3: the highest level shown this match (-1 not looked at yet)
+long long s_lvKey = -1;       // the match's numbers last worked out from
+std::vector<PortFranchiseLevelUp> s_lvOut;
+
+// a field player (side, m_ID) of a franchise match: its key, its progress, its goals (s_matchGoals' slot) and assists slot
+bool lv_player(const Career& c, int side, int id, std::string* key, const Prog** p, int* goalSlot)
+{
+    const int club = s_matchClub[side];
+    if (club < 0 || club >= PORT_FR_CLUBS)
+        return false;
+    const ClubState& s = c.clubs[club];
+    const bool backupStarts = s.startsBackup && !s.backup.empty();
+    const bool co = !s.backup.empty() && PortSecondCaptain(side) >= 0;
+    if (id == 0)
+    {
+        *key = backupStarts ? s.backup : s.captain;
+        *p = backupStarts ? &s.bk : &s.cap;
+        *goalSlot = 0;
+        return true;
+    }
+    if (id == 1 && co)
+    {
+        *key = backupStarts ? s.captain : s.backup;
+        *p = backupStarts ? &s.cap : &s.bk;
+        *goalSlot = 4;
+        return true;
+    }
+    if (id < 1 || id > 3)
+        return false;
+    const int k = id - 1;
+    *key = s.mem[k].empty() ? s.names[k] : s.mem[k];
+    *p = s.mem[k].empty() ? &s.side : &s.mp[k];
+    *goalSlot = id;
+    return !key->empty();
+}
+
+void lv_frame()
+{
+    if (s_match != MATCH_PLAYING || !s_active || s_matchGame < 0 || s_matchGame >= (int)s_career.games.size() || s_watchGame >= 0)
+    {
+        s_lvGame = -2;
+        return;
+    }
+    const Career& c = s_career;
+    const Game& g = c.games[s_matchGame];
+    if (s_lvGame != s_matchGame)
+    {
+        s_lvGame = s_matchGame;
+        s_lvKey = -1;
+        for (int sd = 0; sd < 2; sd++)
+            for (int k = 0; k < 4; k++)
+                s_lvMax[sd][k] = -1;
+    }
+    int assists[2][4];
+    match_assists(0, assists[0]);
+    match_assists(1, assists[1]);
+    long long key = 17;
+    for (int sd = 0; sd < 2; sd++)
+        for (int k = 0; k < kScorerSlots; k++)
+            key = key * 131 + s_matchGoals[sd][k] * 17 + (k < 4 ? assists[sd][k] : 0);
+    if (key == s_lvKey)
+        return;  // (worked out again only when the match's numbers move)
+    s_lvKey = key;
+    int goals[2] = {0, 0};
+    for (int sd = 0; sd < 2; sd++)
+        for (int k = 0; k < kScorerSlots; k++)
+            goals[sd] += s_matchGoals[sd][k];
+    for (int sd = 0; sd < 2; sd++)
+    {
+        const int club = s_matchClub[sd];
+        if (club < 0 || club >= PORT_FR_CLUBS)
+            continue;
+        // the club's part as award_xp gives it if the match ended now (the r77 live meter's numbers)
+        const bool won = goals[sd] > goals[1 - sd];
+        int team = (won ? 70 : 40) + 8 * goals[sd];
+        if (g.series >= 0)
+            team += team / 2;
+        if (nemesis_match(c, g))
+            team += team / 4;
+        if (!is_human(c, club))
+            team += team * 15 * diff_k(c) / 100;
+        team += played_goal_bonus(c, g, goals[sd]);
+        for (int id = 0; id < 4; id++)
+        {
+            std::string pk;
+            const Prog* p = NULL;
+            int slot = 0;
+            if (!lv_player(c, sd, id, &pk, &p, &slot))
+                continue;
+            const int ast = assists[sd][id];
+            const int xp = card_xp(c, club, pk, team + personal_bonus(c, g, s_matchGoals[sd][slot], ast));
+            Prog q = *p;
+            gain(q, xp);
+            if (s_lvMax[sd][id] < 0)
+            {
+                s_lvMax[sd][id] = q.level;  // (where it stands at the first look: no moment for that)
+                continue;
+            }
+            if (q.level > s_lvMax[sd][id])
+            {
+                s_lvMax[sd][id] = q.level;
+                PortFranchiseLevelUp e;
+                memset(&e, 0, sizeof e);
+                e.side = sd;
+                e.playerId = id;
+                e.level = q.level;
+                copy_str(e.name, sizeof e.name, name_of(pk));  // (a generic sidekick's key is its name)
+                if (s_lvOut.size() < 16)
+                    s_lvOut.push_back(e);
+                fprintf(stderr, "[franchise] level up in the match: %s (side %d, player %d) -> LV %d\n", e.name, sd, id, e.level);
+                fflush(stderr);
+            }
+        }
+    }
+}
+}  // namespace
+
+int PortFranchiseTakeLevelUps(PortFranchiseLevelUp* out, int max)
+{
+    lv_frame();
+    int n = 0;
+    for (size_t i = 0; i < s_lvOut.size() && n < max; i++)
+        out[n++] = s_lvOut[i];
+    s_lvOut.clear();
+    return n;
+}
+
+bool PortFranchisePlayerWhere(int side, int playerId, float pos[3], float ndc[2], int* ndcValid)
+{
+    *ndcValid = 0;
+    if (s_match != MATCH_PLAYING || side < 0 || side > 1 || g_pTeams[side] == NULL)
+        return false;
+    for (int i = 0; i < 5; i++)
+    {
+        cPlayer* p = g_pTeams[side]->GetPlayer(i);
+        if (p == NULL || p->m_ID != playerId)
+            continue;
+        const nlVector3& v = p->GetPosition();
+        pos[0] = v.x;
+        pos[1] = v.y;
+        pos[2] = v.z;
+        *ndcValid = PortBroadcastNdc(pos[0], pos[1], pos[2] + 1.0f, &ndc[0], &ndc[1]);
+        return true;
+    }
+    return false;
 }
 
 int PortFranchiseEvoWatch(PortFranchiseEvoRow* out, int max)
@@ -5991,7 +7836,7 @@ int PortFranchiseEvoWatch(PortFranchiseEvoRow* out, int max)
         for (int b = 0; b < 5; b++)  // r130: and the sidekick members (slots 2-4)
         {
             const std::string& key = slot_key(s, b);
-            if (key.compare(0, 3, "pk_") != 0 && key.compare(0, 4, "mua_") != 0)
+            if (key.compare(0, 3, "pk_") != 0 && key.compare(0, 4, "mua_") != 0 && !PortOriginalKey(key.c_str()))  // r183: originals
                 continue;  // Pokemon only (r110: and the Marvel heroes, whose next costume is their "evolution")
             const Prog& p = slot_prog(s, b);
             PortFranchiseEvoRow r;
@@ -6006,12 +7851,13 @@ int PortFranchiseEvoWatch(PortFranchiseEvoRow* out, int max)
             r.xp = p.xp;
             r.seasonGain = std::max(0, p.level - p.startLevel);
             std::string to;
-            r.evoLevel = next_evolution(key, &to);
+            const std::string topKey = top_of(s, b);  // r167: its next form from its highest one reached
+            r.evoLevel = next_evolution(topKey, &to);
             if (r.evoLevel > 0)
                 copy_str(r.evoName, sizeof r.evoName, name_of(to));
             std::string now[5];
-            r.ready = r.mine && evolutions_for(key, p, now) > 0;  // r95
-            r.costume = key.compare(0, 4, "mua_") == 0;            // r111
+            r.ready = r.mine && evolutions_for(topKey, p, now) > 0;  // r95
+            r.costume = PortCostumeKey(key.c_str());            // r111; r183
             rows.push_back(r);
         }
     }
@@ -6056,34 +7902,39 @@ bool PortFranchiseTradeOpen()
     return (s_career.phase == PHASE_REGULAR && s_career.week <= 12) || s_career.phase == PHASE_DONE;
 }
 
+// r173 (Lance: "when it comes to sidekicks, i should be able to trade them individually, not as a fuckin bunch deal"): a
+// sidekick is a trade piece of its own - one of your named sidekick members (what 2-4: its slot) for one of another club's
+// named members, never the trio as a bundle (r77-r172 swapped all three). A generic sidekick (no character) is no piece.
+// Captains / backups as before. Each player's value: its rating + a point a level over 8 (as its highest form).
 int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, int* myValue, char* myName, int nameSize)
 {
     *myValue = 0;
     if (myName != NULL && nameSize > 0)
         myName[0] = '\0';
-    if (!s_active || what < 0 || what > 2 || out == NULL || max <= 0)
+    if (!s_active || what < 0 || what > 4 || out == NULL || max <= 0)
         return 0;
     Career& c = s_career;
     ClubState& me = c.clubs[c.myClub];
     if (what == 1 && me.backup.empty())
         return 0;
-    // r131: a sidekick trio with members: their names, values and levels (the members go with the trade)
-    auto trio_level = [](const ClubState& s) {
-        int sum = 0;
-        for (int k = 0; k < 3; k++)
-            sum += s.mem[k].empty() ? s.side.level : s.mp[k].level;
-        return sum / 3;
-    };
-    if (what == 2)
+    const bool sidekick = what >= 2;
+    const int myK = what - 2;
+    if (sidekick)
     {
-        *myValue = trio_value(me);
+        if (me.mem[myK].empty())
+        {
+            if (myName != NULL)  // (a generic sidekick: shown, not tradeable)
+                copy_str(myName, (size_t)nameSize, sk_name(me, myK));
+            return 0;
+        }
+        *myValue = player_value(top_of(me, 2 + myK), me.mp[myK]);
         if (myName != NULL)
-            copy_str(myName, (size_t)nameSize, trio_name(me) + " LV " + std::to_string(trio_level(me)));
+            copy_str(myName, (size_t)nameSize, name_of(top_of(me, 2 + myK)) + " LV " + std::to_string(me.mp[myK].level));
     }
     else
     {
         const Slot mine = slot_of(me, what == 1);
-        *myValue = player_value(*mine.key, *mine.prog);
+        *myValue = player_value(top_of(me, what == 1 ? 1 : 0), *mine.prog);  // r167: as its highest form
         if (myName != NULL)
             copy_str(myName, (size_t)nameSize, name_of(*mine.key) + " LV " + std::to_string(mine.prog->level));
     }
@@ -6093,28 +7944,26 @@ int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, i
         if (i == c.myClub)
             continue;
         ClubState& s = c.clubs[i];
-        for (int b = 0; b < (what == 2 ? 1 : 2); b++)
+        for (int b = 0; b < (sidekick ? 3 : 2); b++)
         {
             PortFranchiseTradeOffer o;
             memset(&o, 0, sizeof o);
             o.club = i;
-            o.backup = b != 0;
-            if (what == 2)
+            o.slot = -1;
+            if (sidekick)
             {
-                if (same_trio(s, me))  // r131: members count (the same kind, different members: a real trade)
+                if (s.mem[b].empty())
                     continue;
-                copy_str(o.name, sizeof o.name, trio_name(s));
-                // r116; r131: its first member's portrait when it has members
-                std::string face = kind_portrait(s.kind);
-                for (int k = 2; k >= 0; k--)
-                    if (!s.mem[k].empty())
-                        face = s.mem[k];
-                copy_str(o.key, sizeof o.key, face);
-                o.level = trio_level(s);
-                o.value = trio_value(s);
+                o.slot = b;
+                copy_str(o.name, sizeof o.name, name_of(s.mem[b]));
+                copy_str(o.key, sizeof o.key, s.mem[b]);
+                o.level = s.mp[b].level;
+                o.shiny = s.mp[b].shiny;
+                o.value = player_value(s.mem[b], s.mp[b]);
             }
             else
             {
+                o.backup = b != 0;
                 const Slot their = slot_of(s, b != 0);
                 if (their.key->empty())
                     continue;
@@ -6137,25 +7986,25 @@ int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, i
     return n;
 }
 
-static bool trade_impl(int what, int club, bool backup);
+static bool trade_impl(int what, int club, bool backup, int theirSlot);
 
-bool PortFranchiseTrade(int what, int club, bool backup)
+bool PortFranchiseTrade(int what, int club, bool backup, int theirSlot)
 {
     // r100: an online league's: never with a person's club; an action (again on a newer copy, if it still stands)
     if (in_league() && is_human(s_career, club))
         return false;
     static bool s_done;
     s_done = false;
-    league_do("trade", [what, club, backup]() {
-        s_done = trade_impl(what, club, backup);
+    league_do("trade", [what, club, backup, theirSlot]() {
+        s_done = trade_impl(what, club, backup, theirSlot);
         return s_done;
     });
     return s_done;
 }
 
-static bool trade_impl(int what, int club, bool backup)
+static bool trade_impl(int what, int club, bool backup, int theirSlot)
 {
-    if (!PortFranchiseTradeOpen() || what < 0 || what > 2 || club < 0 || club >= PORT_FR_CLUBS)
+    if (!PortFranchiseTradeOpen() || what < 0 || what > 4 || club < 0 || club >= PORT_FR_CLUBS)
         return false;
     Career& c = s_career;
     if (club == c.myClub)
@@ -6164,18 +8013,22 @@ static bool trade_impl(int what, int club, bool backup)
     ClubState& them = c.clubs[club];
     std::string gave, got;
     int myValue = 0, theirValue = 0;
-    if (what == 2)
+    PStats* theirStats = NULL;
+    if (what >= 2)
     {
-        if (same_trio(them, me))
+        // r173: one sidekick for one sidekick (both named characters)
+        const int k = what - 2;
+        if (theirSlot < 0 || theirSlot > 2 || me.mem[k].empty() || them.mem[theirSlot].empty())
             return false;
-        // r131: the whole trio, its members too (one character, one club: a swap keeps it so)
-        myValue = trio_value(me);
-        theirValue = trio_value(them);
+        myValue = player_value(top_of(me, 2 + k), me.mp[k]);
+        theirValue = player_value(them.mem[theirSlot], them.mp[theirSlot]);
         if (myValue * 10 < theirValue * 9)
             return false;
-        gave = trio_name(me);
-        got = trio_name(them);
-        swap_sidekicks(c, c.myClub, club);
+        settle_form(c, c.myClub, 2 + k);  // r167: it leaves as its highest form
+        gave = name_of(me.mem[k]);
+        got = name_of(them.mem[theirSlot]);
+        swap_member_slots(c, c.myClub, k, club, theirSlot);
+        theirStats = &them.sk[theirSlot];
     }
     else
     {
@@ -6184,10 +8037,11 @@ static bool trade_impl(int what, int club, bool backup)
         Slot mine = slot_of(me, what == 1), their = slot_of(them, backup);
         if (their.key->empty())
             return false;
-        myValue = player_value(*mine.key, *mine.prog);
+        myValue = player_value(top_of(me, what == 1 ? 1 : 0), *mine.prog);  // r167: as its highest form
         theirValue = player_value(*their.key, *their.prog);
         if (myValue * 10 < theirValue * 9)
             return false;
+        settle_form(c, c.myClub, what == 1 ? 1 : 0);  // r167: it leaves as its highest form
         gave = name_of(*mine.key);
         got = name_of(*their.key);
         std::swap(*mine.key, *their.key);
@@ -6196,20 +8050,23 @@ static bool trade_impl(int what, int club, bool backup)
         // a nemesis that moved plays for its new club now
         each_nemesis(c, *their.key, [&](Nemesis* n) { n->club = club; });  // r100: everyone's records
         each_nemesis(c, *mine.key, [&](Nemesis* n) { n->club = c.myClub; });
+        theirStats = backup ? &them.bkSt : &them.capSt;
     }
     const std::string place = s_clubs[club].place;
+    // r177: who you got never retires this season
+    c.joined.push_back(std::make_pair(what >= 2 ? char_id(me.mem[what - 2]) : char_id(what == 1 ? me.backup : me.captain),
+                                      c.phase == PHASE_DONE ? c.season + 1 : c.season));
     c.headline = "Trade: you sent " + gave + " to " + place + " for " + got + ".";
     c.news.push_back("TRADE: " + upper(s_clubs[c.myClub].place) + " SEND " + upper(gave) + " TO " + upper(place) + " FOR " +
                      upper(got));
-    if (what != 2)
-        post(c, (backup ? them.bkSt : them.capSt).personality, EV_TRADED, gave, place);
+    if (theirStats != NULL)
+        post(c, theirStats->personality, EV_TRADED, gave, place);
     save();
     fprintf(stderr, "[franchise] your trade: %s to %s for %s (value %d for %d)\n", gave.c_str(), s_clubs[club].id.c_str(),
             got.c_str(), myValue, theirValue);
     fflush(stderr);
     return true;
 }
-
 void PortFranchiseGoal(int side, int who, int goals)
 {
     if (s_match != MATCH_PLAYING || side < 0 || side > 1 || goals <= 0)
@@ -6359,7 +8216,7 @@ bool PortFranchiseMatchCard(PortFranchiseCard* out)
         out->nemesis = true;
         out->nemesisSide = g.home == c.myClub ? 1 : 0;
         copy_str(out->nemesisName, sizeof out->nemesisName, n->name);
-        copy_str(out->nemesisTitle, sizeof out->nemesisTitle, kTitles[n->title]);
+        copy_str(out->nemesisTitle, sizeof out->nemesisTitle, title_name(n->title));
         copy_str(out->nemesisKey, sizeof out->nemesisKey, n->key);
         out->nemesisBeatYou = n->beatYou;
         out->nemesisLostToYou = n->lostToYou;
@@ -6434,4 +8291,463 @@ bool PortFranchiseWatch(int index)
         }
     }
     return false;
+}
+
+// ======================================================================================= r167: FREE AGENCY (franchise.h)
+namespace
+{
+// the spots an offer touches (bits: 0 captain, 1 backup, 2-4 the sidekick slots): a captain's offer that benches the
+// captain touches the backup's spot too
+int fa_spots(int role, bool relCap)
+{
+    if (role == PORT_FA_CAPTAIN)
+        return relCap ? 1 : 3;
+    return 1 << std::max(1, std::min(4, role));
+}
+
+void fa_copy_agent(const Career& c, const FreeAgent& a, PortFranchiseFreeAgent& r, double avgStr, double avgGf)
+{
+    memset(&r, 0, sizeof r);
+    copy_str(r.key, sizeof r.key, a.key);
+    copy_str(r.name, sizeof r.name, name_of(a.key));
+    r.rating = rating(a.key);
+    r.level = a.prog.level;
+    r.value = fa_value(a.key, a.prog);
+    r.shiny = a.prog.shiny;
+    r.captainType = fa_captain_type(a.key);
+    copy_str(r.game, sizeof r.game, fa_game(a.key));
+    const std::vector<std::string> back = form_chain(a.key);
+    r.stage = std::max(1, (int)back.size());
+    r.stages = r.stage;
+    std::string k = a.key;
+    for (int guard = 0; guard < 6; guard++)  // the forms still to come (the first branch of a split)
+    {
+        std::string next;
+        for (size_t i = 0; i < s_evos.size() && next.empty(); i++)
+            if (s_evos[i].from == k && has_captain(s_evos[i].to))
+                next = s_evos[i].to;
+        if (next.empty())
+            break;
+        r.stages++;
+        k = next;
+    }
+    r.personality = a.st.personality < 0 || a.st.personality >= PERS_COUNT ? 0 : a.st.personality + 1;
+    copy_str(r.persName, sizeof r.persName, kPersName[r.personality]);
+    int homeClub = -1;
+    const std::string div = fa_home(a.key, &homeClub);
+    r.homeClub = homeClub;
+    copy_str(r.home, sizeof r.home, homeClub >= 0 ? upper(s_clubs[homeClub].place) : upper(div));
+    r.formerClub = a.fresh ? -1 : a.from;
+    r.leader = -1;
+    r.myRole = -1;
+    r.refusesMe = fa_refuses(c, a, c.myClub);
+    r.decideWeek = a.decide;
+    r.rookie = a.fresh;  // r173
+    double best = -1e9;
+    std::vector<int> clubs;
+    for (size_t i = 0; i < c.bids.size(); i++)
+    {
+        const FaBid& b = c.bids[i];
+        if (b.key != a.key)
+            continue;
+        if (std::find(clubs.begin(), clubs.end(), b.club) == clubs.end())
+            clubs.push_back(b.club);
+        if (b.club == c.myClub)
+        {
+            r.myRole = b.role;
+            r.myPromise = b.promise;
+        }
+        if (!fa_role_ok(a, b.role))
+            continue;
+        const FaEval e = fa_eval(c, a, b, avgStr, avgGf);
+        if (!e.refuse && e.score > best)
+        {
+            best = e.score;
+            r.leader = b.club;
+            r.leaderRole = b.role;
+            r.leaderPromise = b.promise;
+            copy_str(r.leaderWhy, sizeof r.leaderWhy, best >= kFaAccept ? e.why : std::string("NOT ENOUGH YET"));
+        }
+    }
+    r.interested = (int)clubs.size();
+    r.myLead = r.myRole >= 0 && r.leader == c.myClub && best >= kFaAccept;
+}
+
+bool fa_offer_impl(const std::string& key, int role, bool promise, bool relCap)
+{
+    Career& c = s_career;
+    if (!fa_window(c) || role < 0 || role >= PORT_FA_ROLES)
+        return false;
+    fa_refresh(c);
+    const int ai = fa_find(c, key);
+    if (ai < 0)
+        return false;
+    FreeAgent& a = c.fa[(size_t)ai];
+    if (!fa_role_ok(a, role) || fa_refuses(c, a, c.myClub))
+        return false;
+    if (role != PORT_FA_BACKUP)
+        promise = false;
+    if (role != PORT_FA_CAPTAIN)
+        relCap = false;
+    // one offer a spot: yours to this agent, and yours to another for a spot this one touches, are replaced
+    const int spots = fa_spots(role, relCap);
+    for (int i = (int)c.bids.size() - 1; i >= 0; i--)
+    {
+        const FaBid& b = c.bids[(size_t)i];
+        if (b.club == c.myClub && (b.key == key || (fa_spots(b.role, b.relCap) & spots) != 0))
+            c.bids.erase(c.bids.begin() + i);
+    }
+    FaBid b;
+    b.key = key;
+    b.club = c.myClub;
+    b.role = role;
+    b.promise = promise;
+    b.relCap = relCap;
+    b.week = c.phase == PHASE_REGULAR ? c.week : 0;
+    c.bids.push_back(b);
+    FreeAgent& a2 = c.fa[(size_t)fa_find(c, key)];
+    if (c.phase == PHASE_REGULAR && a2.decide == 0)
+        a2.decide = std::min(kFaDeadline, c.week + 1);
+    c.faLast = "OFFER OUT: " + upper(name_of(key)) + " AS YOUR " + fa_role_word(role) + (promise ? " (PROMISED STARTS)" : "");
+    save();
+    fprintf(stderr, "[franchise] free agency: your offer to %s (%s%s%s)\n", key.c_str(), fa_role_word(role),
+            promise ? ", promised starts" : "", relCap ? ", captain released" : "");
+    fflush(stderr);
+    return true;
+}
+
+bool fa_withdraw_impl(const std::string& key)
+{
+    Career& c = s_career;
+    bool any = false;
+    for (int i = (int)c.bids.size() - 1; i >= 0; i--)
+        if (c.bids[(size_t)i].club == c.myClub && c.bids[(size_t)i].key == key)
+        {
+            c.bids.erase(c.bids.begin() + i);
+            any = true;
+        }
+    if (!any)
+        return false;
+    bool others = false;
+    for (size_t i = 0; i < c.bids.size() && !others; i++)
+        others = c.bids[i].key == key;
+    const int ai = fa_find(c, key);
+    if (ai >= 0 && !others)
+        c.fa[(size_t)ai].decide = 0;
+    c.faLast = "OFFER WITHDRAWN: " + upper(name_of(key));
+    save();
+    return true;
+}
+
+// r167: the forms tiles of one of your slots (reached ones, then the next forms still locked)
+bool forms_of(const Career& c, int slot, PortFranchiseForms& f)
+{
+    const ClubState& s = c.clubs[c.myClub];
+    const std::string& key = slot_key_c(s, slot);
+    if (key.empty())
+        return false;
+    memset(&f, 0, sizeof f);
+    f.slot = slot;
+    static const char* const kRole[5] = {"CAPTAIN", "BACKUP", "SIDEKICK 1", "SIDEKICK 2", "SIDEKICK 3"};
+    copy_str(f.role, sizeof f.role, kRole[slot]);
+    const Prog& p = slot_prog_c(s, slot);
+    f.level = p.level;
+    f.shiny = p.shiny;
+    f.costume = PortCostumeKey(key.c_str());  // r183
+    const std::string top = top_of(s, slot);
+    std::vector<std::string> keys;
+    std::vector<int> at;
+    const std::vector<std::string> chain = form_chain(top);
+    for (size_t i = 0; i < chain.size(); i++)
+        if (has_captain(chain[i]) || chain[i] == key)
+        {
+            keys.push_back(chain[i]);
+            at.push_back(0);
+        }
+    std::string k = top;
+    for (int guard = 0; guard < 6 && keys.size() < 6; guard++)
+    {
+        std::vector<std::pair<std::string, int> > opts;
+        for (size_t i = 0; i < s_evos.size(); i++)
+            if (s_evos[i].from == k && has_captain(s_evos[i].to))
+                opts.push_back(std::make_pair(s_evos[i].to, s_evos[i].level));
+        for (size_t i = 0; i < opts.size() && keys.size() < 6; i++)
+        {
+            keys.push_back(opts[i].first);
+            at.push_back(std::max(1, opts[i].second));
+        }
+        if (opts.size() != 1)
+            break;  // (a split: its options shown, no further)
+        k = opts[0].first;
+    }
+    if (keys.size() < 2)
+        return false;
+    f.count = (int)keys.size();
+    for (int i = 0; i < f.count; i++)
+    {
+        copy_str(f.key[i], sizeof f.key[i], keys[(size_t)i]);
+        copy_str(f.name[i], sizeof f.name[i], name_of(keys[(size_t)i]));
+        f.reached[i] = at[(size_t)i] == 0;
+        f.at[i] = at[(size_t)i];
+        if (keys[(size_t)i] == key)
+            f.current = i;
+    }
+    std::string now[5];
+    f.ready = evolutions_for(top, p, now) > 0;
+    return true;
+}
+
+bool set_form_impl(int slot, const std::string& key)
+{
+    Career& c = s_career;
+    if (slot < 0 || slot > 4)
+        return false;
+    ClubState& s = c.clubs[c.myClub];
+    std::string& cur = slot_key(s, slot);
+    if (cur.empty() || key == cur || !has_captain(key))
+        return false;
+    const std::string top = top_of(s, slot);
+    const std::vector<std::string> chain = form_chain(top);
+    if (std::find(chain.begin(), chain.end(), key) == chain.end())
+        return false;
+    const std::string was = cur;
+    cur = key;
+    s.top[slot] = key == top ? std::string() : top;
+    each_nemesis_rekey(c, c.myClub, slot, was, key);
+    c.headline = key == top ? name_of(key) + " is back in its top form." : name_of(top) + " plays as " + name_of(key) + " now.";
+    save();
+    fprintf(stderr, "[franchise] form: slot %d plays as %s (highest %s)\n", slot, key.c_str(), top.c_str());
+    fflush(stderr);
+    return true;
+}
+}  // namespace
+
+bool PortFranchiseFaWindowGet(PortFranchiseFaWindow* out)
+{
+    memset(out, 0, sizeof *out);
+    if (!s_active)
+        return false;
+    Career& c = s_career;
+    fa_refresh(c);
+    out->active = true;
+    out->offSeason = c.phase == PHASE_DONE;
+    out->open = fa_window(c) && s_match == MATCH_NONE && !coop_blocked();
+    out->week = c.week;
+    out->agents = (int)c.fa.size();
+    for (size_t i = 0; i < c.bids.size(); i++)
+        out->myOffers += c.bids[i].club == c.myClub ? 1 : 0;
+    std::string st;
+    if (coop_blocked())
+        st = "YOUR FRIEND RUNS THIS CAREER: THEY MAKE THE OFFERS";
+    else if (c.phase == PHASE_DONE)
+        st = "OFF-SEASON: THEY ALL DECIDE WHEN SEASON " + std::to_string(c.season + 1) + " STARTS";
+    else if (c.phase == PHASE_REGULAR && c.week <= kFaDeadline)
+        st = "OPEN TO WEEK " + std::to_string(kFaDeadline) + ": EACH DECIDES 2 MATCH DAYS AFTER ITS FIRST OFFER";
+    else
+        st = "SHUT: IT OPENS WHEN THE CHAMPION IS CROWNED";
+    copy_str(out->status, sizeof out->status, st);
+    copy_str(out->last, sizeof out->last, c.faLast);
+    return true;
+}
+
+int PortFranchiseFreeAgents(PortFranchiseFreeAgent* out, int max, int filter, int sort)
+{
+    if (!s_active || out == NULL || max <= 0)
+        return 0;
+    Career& c = s_career;
+    fa_refresh(c);
+    const double avgStr = fa_avg_strength(c), avgGf = fa_avg_goals(c);
+    std::vector<PortFranchiseFreeAgent> rows;
+    for (size_t i = 0; i < c.fa.size(); i++)
+    {
+        PortFranchiseFreeAgent r;
+        fa_copy_agent(c, c.fa[i], r, avgStr, avgGf);
+        if ((filter == 1 && !r.captainType) || (filter == 2 && r.captainType) || (filter == 3 && r.myRole < 0) ||
+            (filter == 4 && !r.rookie))
+            continue;
+        rows.push_back(r);
+    }
+    std::stable_sort(rows.begin(), rows.end(), [sort](const PortFranchiseFreeAgent& a, const PortFranchiseFreeAgent& b) {
+        if (sort == 1 && a.interested != b.interested)
+            return a.interested > b.interested;
+        if (sort == 2)
+            return strcmp(a.name, b.name) < 0;
+        if (a.rookie && b.rookie && a.rating != b.rating)  // r173: rookies (all Lv 8) by their talent
+            return a.rating > b.rating;
+        if (a.value != b.value)
+            return a.value > b.value;
+        return strcmp(a.name, b.name) < 0;
+    });
+    const int n = std::min(max, (int)rows.size());
+    for (int i = 0; i < n; i++)
+        out[i] = rows[(size_t)i];
+    return n;
+}
+
+int PortFranchiseFaRoles(const char* key, PortFranchiseFaRole* out, int max)
+{
+    if (!s_active || key == NULL || out == NULL || max <= 0)
+        return 0;
+    Career& c = s_career;
+    const int ai = fa_find(c, key);
+    if (ai < 0)
+        return 0;
+    const FreeAgent& a = c.fa[(size_t)ai];
+    const ClubState& me = c.clubs[c.myClub];
+    const double avgStr = fa_avg_strength(c), avgGf = fa_avg_goals(c);
+    const bool open = fa_window(c) && s_match == MATCH_NONE && !coop_blocked();
+    const bool refuses = fa_refuses(c, a, c.myClub);
+    // the best offer of the other clubs now
+    double other = -1e9;
+    int otherClub = -1, otherRole = 0;
+    for (size_t i = 0; i < c.bids.size(); i++)
+    {
+        const FaBid& b = c.bids[i];
+        if (b.key != a.key || b.club == c.myClub || !fa_role_ok(a, b.role))
+            continue;
+        const FaEval e = fa_eval(c, a, b, avgStr, avgGf);
+        if (!e.refuse && e.score > other)
+        {
+            other = e.score;
+            otherClub = b.club;
+            otherRole = b.role;
+        }
+    }
+    const FaBid* mineNow = NULL;
+    for (size_t i = 0; i < c.bids.size(); i++)
+        if (c.bids[i].key == a.key && c.bids[i].club == c.myClub)
+            mineNow = &c.bids[i];
+    const std::string capName = upper(name_of(top_of(me, 0))), bkName = me.backup.empty() ? std::string() : upper(name_of(top_of(me, 1)));
+    struct Row
+    {
+        int role;
+        bool promise, relCap;
+        std::string label, effect, release, releaseKey;
+    };
+    std::vector<Row> rows;
+    rows.push_back({PORT_FA_CAPTAIN, false, false, "CAPTAIN",
+                    bkName.empty() ? capName + " TO THE BENCH (YOUR BACKUP)" : capName + " TO THE BENCH, " + bkName + " RELEASED",
+                    bkName, me.backup.empty() ? std::string() : top_of(me, 1)});
+    rows.push_back({PORT_FA_CAPTAIN, false, true, "CAPTAIN (RELEASE YOURS)", capName + " RELEASED", capName, top_of(me, 0)});
+    rows.push_back({PORT_FA_BACKUP, false, false, "BACKUP",
+                    bkName.empty() ? std::string("FILLS YOUR EMPTY BACKUP SPOT") : bkName + " RELEASED", bkName,
+                    me.backup.empty() ? std::string() : top_of(me, 1)});
+    rows.push_back({PORT_FA_BACKUP, true, false, "BACKUP + PROMISED STARTS",
+                    "STARTS OVER " + capName + (bkName.empty() ? std::string() : ", " + bkName + " RELEASED"), bkName,
+                    me.backup.empty() ? std::string() : top_of(me, 1)});
+    for (int k = 0; k < 3; k++)
+    {
+        const bool bench = k == 0 && !me.backup.empty();
+        const std::string who = me.mem[k].empty() ? std::string() : upper(name_of(top_of(me, 2 + k)));
+        std::string eff = who.empty() ? "REPLACES " + upper(me.names[k].empty() ? kind_name(me.kind) : me.names[k]) + " (NOBODY RELEASED)"
+                                      : who + " RELEASED";
+        if (bench)
+            eff += ", SITS WHEN YOUR CO-CAPTAIN PLAYS";
+        rows.push_back({PORT_FA_SIDEKICK1 + k, false, false, "SIDEKICK " + std::to_string(k + 1), eff, who,
+                        me.mem[k].empty() ? std::string() : top_of(me, 2 + k)});
+    }
+    int n = 0;
+    for (size_t i = 0; i < rows.size() && n < max; i++)
+    {
+        const Row& rw = rows[i];
+        PortFranchiseFaRole& o = out[n++];
+        memset(&o, 0, sizeof o);
+        o.role = rw.role;
+        o.promise = rw.promise;
+        o.releaseCaptain = rw.relCap;
+        o.allowed = open && !refuses && fa_role_ok(a, rw.role);
+        copy_str(o.label, sizeof o.label, rw.label);
+        copy_str(o.effect, sizeof o.effect, rw.effect);
+        copy_str(o.release, sizeof o.release, rw.release);
+        copy_str(o.releaseKey, sizeof o.releaseKey, rw.releaseKey);
+        FaBid b;
+        b.key = a.key;
+        b.club = c.myClub;
+        b.role = rw.role;
+        b.promise = rw.promise;
+        b.relCap = rw.relCap;
+        const FaEval e = fa_eval(c, a, b, avgStr, avgGf);
+        std::string vs;
+        if (!fa_role_ok(a, rw.role))
+            vs = "A SIDEKICK ONLY";
+        else if (e.refuse)
+            vs = "REFUSES YOU: BEEF";
+        else if (e.score < kFaAccept)
+            vs = "NOT ENOUGH YET";
+        else if (otherClub < 0)
+        {
+            vs = "NO OTHER OFFERS";
+            o.wouldLead = true;
+        }
+        else if (e.score > other)
+        {
+            vs = "WOULD LEAD " + upper(s_clubs[otherClub].place);
+            o.wouldLead = true;
+        }
+        else
+            vs = "BEHIND " + upper(s_clubs[otherClub].place) + " (" + fa_role_word(otherRole) + ")";
+        copy_str(o.versus, sizeof o.versus, vs);
+        o.current = mineNow != NULL && mineNow->role == rw.role && mineNow->promise == rw.promise && mineNow->relCap == rw.relCap;
+        const int spots = fa_spots(rw.role, rw.relCap);
+        for (size_t k = 0; k < c.bids.size(); k++)
+            if (c.bids[k].club == c.myClub && c.bids[k].key != a.key && (fa_spots(c.bids[k].role, c.bids[k].relCap) & spots) != 0)
+            {
+                copy_str(o.replaces, sizeof o.replaces, "REPLACES YOUR OFFER TO " + upper(name_of(c.bids[k].key)));
+                break;
+            }
+    }
+    return n;
+}
+
+bool PortFranchiseFaOffer(const char* key, int role, bool promise, bool releaseCaptain)
+{
+    if (!s_active || s_match != MATCH_NONE || coop_blocked() || key == NULL)
+        return false;
+    const std::string k = key;
+    static bool s_done;
+    s_done = false;
+    league_do("fa offer", [k, role, promise, releaseCaptain]() {  // (an online league's: an action, as a trade)
+        s_done = fa_offer_impl(k, role, promise, releaseCaptain);
+        return s_done;
+    });
+    return s_done;
+}
+
+bool PortFranchiseFaWithdraw(const char* key)
+{
+    if (!s_active || s_match != MATCH_NONE || coop_blocked() || key == NULL)
+        return false;
+    const std::string k = key;
+    static bool s_done;
+    s_done = false;
+    league_do("fa withdraw", [k]() {
+        s_done = fa_withdraw_impl(k);
+        return s_done;
+    });
+    return s_done;
+}
+
+int PortFranchiseFormsList(PortFranchiseForms* out, int max)
+{
+    if (!s_active || out == NULL || max <= 0)
+        return 0;
+    int n = 0;
+    for (int slot = 0; slot < 5 && n < max; slot++)
+        if (forms_of(s_career, slot, out[n]))
+            n++;
+    return n;
+}
+
+bool PortFranchiseSetForm(int slot, const char* key)
+{
+    if (!s_active || s_match != MATCH_NONE || coop_blocked() || key == NULL)
+        return false;
+    const std::string k = key;
+    static bool s_done;
+    s_done = false;
+    league_do("form", [slot, k]() {
+        s_done = set_form_impl(slot, k);
+        return s_done;
+    });
+    return s_done;
 }

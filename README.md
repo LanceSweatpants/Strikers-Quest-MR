@@ -21,6 +21,10 @@ APK.*
 > **NO FILE FROM A GAME = NO GUESTS FROM THAT GAME.** Super Mario Strikers itself still plays as
 > always. See [Guest characters](#guest-characters-alpha-114).
 
+**NEW in alpha 1.18 - THE ORIGINALS:** 10 characters made for this game (5 that evolve in Franchise, 5 with 3
+uniforms each), each with its own goal celebration and Lancini Tizm cards. They are **built into the app**, so they
+need no game file at all - find them on the ORIGINALS tab in character select.
+
 ### [⬇ Download the latest version](https://github.com/LanceSweatpants/Strikers-Quest-MR/releases/latest)
 
 On that page, under **Assets**, get the file ending in **`.apk`** (not "Source code"). Then follow
@@ -752,6 +756,13 @@ the same server.
   - *Spring at last (LOFI TAPE)*, *Only In The Milky Way* Part 1 and Part 2 (Free Music Archive); the Franchise theme
   *lofi hip hop loop* by omfgdude ([OpenGameArt](https://opengameart.org/content/lofi-hip-hop-loop)). Full list in
   `smstrikers-port/android/app/src/main/assets/music/CREDITS.txt`.
+- TIZM BOOM card sting: the first 3 seconds of ["Retro Twangy Surf Rock"](https://budgetpixel.com/background-music/retro-twangy-surf-rock-b0240c69)
+  by BudgetPixel AI, licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Changed: cut to 3 seconds,
+  mixed to mono, resampled to 32 kHz, levelled and faded out (`assets/franchise/cardsounds/boom.wav`).
+- Menu font: *Luckiest Guy* by Astigmatic, Apache License 2.0 (text in
+  `smstrikers-port/android/app/src/main/assets/fonts/LuckiestGuy-LICENSE.txt`).
+- THE ORIGINALS (alpha 1.18): characters designed for Quest 3 Strikers, modelled with Tripo (paid plan) and
+  rigged, fitted and textured for the game by the Quest 3 Strikers project (`smstrikers-port/assets/originals/`).
 - Quest mixed-reality port and the Quest 3 Strikers art: [LanceSweatpants](https://github.com/LanceSweatpants).
 
 ## License

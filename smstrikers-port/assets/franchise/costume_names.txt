@@ -1,0 +1,123 @@
+# Marvel: Ultimate Alliance costume names (tools/outside/mua_costume_names.py, from the game's data/herostat.engb skin_01_name..skin_04_name: the names its costume menu shows). Tab separated: card key, costume name as shown in-game, hero name, kind (r152: char - a character of its own, the card titled by it alone, "BETA RAY BILL"; outfit - a look of the hero's, titled with the hero after it, "ULTIMATE THOR"). A base key (no _cN) is the hero's costume 1: its card keeps the hero's own name. Keys not listed have no name in the game's data and keep "HERO II/III/IV".
+mua_ghostrider	Classic	Ghost Rider	outfit
+mua_ghostrider_c2	Original	Ghost Rider	outfit
+mua_ghostrider_c3	Vengeance	Ghost Rider	char
+mua_ghostrider_c4	Western	Ghost Rider	outfit
+mua_drstrange	Classic	Dr. Strange	outfit
+mua_drstrange_c2	Royal Seer	Dr. Strange	outfit
+mua_drstrange_c3	Blue Mage	Dr. Strange	outfit
+mua_drstrange_c4	Ultimate	Dr. Strange	outfit
+mua_spiderman	Classic	Spider-Man	outfit
+mua_spiderman_c2	Symbiote	Spider-Man	outfit
+mua_spiderman_c3	Scarlet Spider	Spider-Man	char
+mua_spiderman_c4	Stark Armor	Spider-Man	outfit
+mua_blade	Ultimate	Blade	outfit
+mua_blade_c2	Classic	Blade	outfit
+mua_blade_c3	Night Stalker	Blade	outfit
+mua_blade_c4	Daywalker	Blade	outfit
+mua_spiderwoman	Classic	Spider-Woman	outfit
+mua_spiderwoman_c2	Agent of S.H.I.E.L.D.	Spider-Woman	outfit
+mua_spiderwoman_c3	Secret Wars	Spider-Woman	outfit
+mua_spiderwoman_c4	Spider-Girl	Spider-Woman	char
+mua_iceman	Classic	Iceman	outfit
+mua_iceman_c2	Bobby Drake	Iceman	char
+mua_iceman_c3	Spiky	Iceman	outfit
+mua_iceman_c4	Original	Iceman	outfit
+mua_wolverine	Astonishing	Wolverine	outfit
+mua_wolverine_c2	Classic	Wolverine	outfit
+mua_wolverine_c3	Ultimate	Wolverine	outfit
+mua_wolverine_c4	Modern	Wolverine	outfit
+mua_colossus	Ultimate	Colossus	outfit
+mua_colossus_c2	Classic	Colossus	outfit
+mua_colossus_c3	Astonishing	Colossus	outfit
+mua_colossus_c4	Retro	Colossus	outfit
+mua_captainamerica	Ultimate	Captain America	outfit
+mua_captainamerica_c2	Classic	Captain America	outfit
+mua_captainamerica_c3	US Agent	Captain America	char
+mua_captainamerica_c4	WW2	Captain America	outfit
+mua_elektra	Classic	Elektra	outfit
+mua_elektra_c2	Ultimate	Elektra	outfit
+mua_elektra_c3	Assassin	Elektra	outfit
+mua_elektra_c4	Stealth	Elektra	outfit
+mua_ironman	Classic	Iron Man	outfit
+mua_ironman_c2	New Avenger	Iron Man	outfit
+mua_ironman_c3	Ultimate	Iron Man	outfit
+mua_ironman_c4	War Machine	Iron Man	char
+mua_thor	Classic	Thor	outfit
+mua_thor_c2	Asgardian Armor	Thor	outfit
+mua_thor_c3	Ultimate	Thor	outfit
+mua_thor_c4	Beta Ray Bill	Thor	char
+mua_deadpool	Classic	Deadpool	outfit
+mua_deadpool_c2	Assassin	Deadpool	outfit
+mua_deadpool_c3	Ultimate	Deadpool	outfit
+mua_deadpool_c4	Weapon X	Deadpool	outfit
+mua_blackpanther	Modern	Black Panther	outfit
+mua_blackpanther_c2	Holy Armor	Black Panther	outfit
+mua_blackpanther_c3	Classic	Black Panther	outfit
+mua_blackpanther_c4	Ceremonial	Black Panther	outfit
+mua_daredevil	Classic	Daredevil	outfit
+mua_daredevil_c2	Original	Daredevil	outfit
+mua_daredevil_c3	Marvel Knight	Daredevil	outfit
+mua_daredevil_c4	Armored	Daredevil	outfit
+mua_storm	Astonishing	Storm	outfit
+mua_storm_c2	Ultimate	Storm	outfit
+mua_storm_c3	Classic	Storm	outfit
+mua_storm_c4	Retro	Storm	outfit
+mua_thing	Modern	Thing	outfit
+mua_thing_c2	Ultimate	Thing	outfit
+mua_thing_c3	Classic	Thing	outfit
+mua_thing_c4	Original	Thing	outfit
+mua_humantorch	Ultimate	Human Torch	outfit
+mua_humantorch_c2	Original	Human Torch	outfit
+mua_humantorch_c3	Classic	Human Torch	outfit
+mua_humantorch_c4	Modern	Human Torch	outfit
+mua_hawkeye	Classic	Hawkeye	outfit
+mua_hawkeye_c2	Modern	Hawkeye	outfit
+mua_hawkeye_c3	Ultimate	Hawkeye	outfit
+mua_hawkeye_c4	Street Gear	Hawkeye	outfit
+mua_blackwidow	Natasha Romanoff	Black Widow	char
+mua_blackwidow_c2	Classic	Black Widow	outfit
+mua_blackwidow_c3	Ultimate	Black Widow	outfit
+mua_blackwidow_c4	Yelena Belova	Black Widow	char
+mua_invisiblewoman	Ultimate	Invisible Woman	outfit
+mua_invisiblewoman_c2	Original	Invisible Woman	outfit
+mua_invisiblewoman_c3	Classic	Invisible Woman	outfit
+mua_invisiblewoman_c4	New Marvel	Invisible Woman	outfit
+mua_moonknight	Classic	Moon Knight	outfit
+mua_moonknight_c2	Ultimate	Moon Knight	outfit
+mua_moonknight_c3	Khonshu	Moon Knight	char
+mua_mrfantastic	Ultimate	Mr. Fantastic	outfit
+mua_mrfantastic_c2	Original	Mr. Fantastic	outfit
+mua_mrfantastic_c3	Classic	Mr. Fantastic	outfit
+mua_mrfantastic_c4	New Marvel	Mr. Fantastic	outfit
+mua_nickfury	Classic	Nick Fury	outfit
+mua_nickfury_c2	Stealth	Nick Fury	outfit
+mua_nickfury_c3	General Fury	Nick Fury	char
+mua_nickfury_c4	Ultimate	Nick Fury	outfit
+mua_silversurfer	Power Surge	Silver Surfer	outfit
+mua_msmarvel	Warbird	Ms. Marvel	char
+mua_msmarvel_c2	Original	Ms. Marvel	outfit
+mua_msmarvel_c3	Ventura	Ms. Marvel	outfit
+mua_msmarvel_c4	Binary	Ms. Marvel	char
+mua_captainmarvel	Genis-Vell	Captain Marvel	char
+mua_captainmarvel_c2	Genis	Captain Marvel	char
+mua_captainmarvel_c3	Captain Mar-Vell	Captain Marvel	char
+mua_captainmarvel_c4	Ultimate	Captain Marvel	outfit
+mua_lukecage	New Avengers	Luke Cage	outfit
+mua_lukecage_c2	Hero for Hire	Luke Cage	outfit
+mua_lukecage_c3	Street	Luke Cage	outfit
+mua_lukecage_c4	Modern	Luke Cage	outfit
+mua_ronin	Ronin	Ronin	char
+mua_ronin_c2	Ronin Unmasked	Ronin	char
+mua_ronin_c3	Echo	Ronin	char
+mua_ronin_c4	Street Gear	Ronin	outfit
+orig_luchador_b	RIVAL	LUCHADOR	outfit
+orig_luchador_c	CHAMPION	LUCHADOR	outfit
+orig_racedriver_b	ORANGE	RACE DRIVER	outfit
+orig_racedriver_c	VINTAGE	RACE DRIVER	outfit
+orig_goalie_b	SHARK	GOALIE	outfit
+orig_goalie_c	DOLL	GOALIE	outfit
+orig_mascot_b	HOT DOG	MASCOT	outfit
+orig_mascot_c	EAGLE	MASCOT	outfit
+orig_redline_b	CHROME	REDLINE	outfit
+orig_redline_c	BLACK GOLD	REDLINE	outfit

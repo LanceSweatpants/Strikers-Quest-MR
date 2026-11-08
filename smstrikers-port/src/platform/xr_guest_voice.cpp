@@ -104,6 +104,13 @@ const Bank& bank_for(int guest)
         return b;
     const std::string path = voice_dir() + pack + ".gvo";
     FILE* f = fopen(path.c_str(), "rb");
+    // r186: an ORIGINAL's uniform (orig_<single>_b / _c) speaks with its single's bank (same character, new kit)
+    if (f == NULL && PortOriginalKey(pack))
+    {
+        const size_t len = strlen(pack);
+        if (len > 2 && pack[len - 2] == '_' && (pack[len - 1] == 'b' || pack[len - 1] == 'c'))
+            f = fopen((voice_dir() + std::string(pack, len - 2) + ".gvo").c_str(), "rb");
+    }
     if (f == NULL)
         return b;
     char magic[4];
@@ -222,6 +229,9 @@ float PortGuestVoiceMute(const void* sfx, SoundStrToIDNode* table, unsigned long
         Owner& o = it->second;
         o.refresh = false;
         o.guest = guest_of(sfx, NULL);
+        // r187 (Lance: no sounds for the originals until he records his own): an ORIGINAL is handled as a guest even
+        // with no bank - the host class's voices are muted and nothing plays in their place (silent). His recordings
+        // drop in as guests/voices/<pack>.gvo (tools/outside/lancevoices187.py; a uniform uses its single's bank).
         if (o.guest >= 0)
         {
             // Every voice of this player's table to nothing (the game re-reads the table for a
@@ -262,9 +272,19 @@ void PortGuestVoiceStart(const void* sfx, const char* type, int volGroup, float 
     if (it == s_owners.end() || it->second.guest < 0)
         return;
     Owner& o = it->second;
-    const std::vector<const char*> want = labels_for(type);
+    std::vector<const char*> want = labels_for(type);
     if (want.empty())
         return;
+    // r186 (WIN and END_GAME both went to "cheer": a losing guest cheered at full time): at the end of the game a
+    // player whose side has fewer goals says its "lose" clip, or nothing at all - never a cheer
+    if (strstr(type, "GOAL") == NULL && (strstr(type, "WIN") != NULL || strstr(type, "END_GAME") != NULL))
+    {
+        int side = -1;
+        guest_of(sfx, &side);
+        if (side >= 0 && g_pTeams[0] != NULL && g_pTeams[1] != NULL &&
+            g_pTeams[side]->m_nScore < g_pTeams[1 - side]->m_nScore)
+            want = {"lose"};
+    }
     // Calls for the ball come often: one every few seconds at most.
     const bool call = strstr(type, "CALL_") != NULL;
     if (call && s_msNow - o.lastCallMs < 2500u && o.lastCallMs != 0)
@@ -428,8 +448,23 @@ void PortCardSound(const short* pcm, int frames, float volume)
     const float gain = Audio::MasterVolume::GetVoiceVolume() * volume;
     if (!(gain > 0.001f))
         return;
-    Clip& c = s_clips[s_next];
-    s_next = (s_next + 1) % 4;
+    // r161 (the goal explosions' room takeovers play short hit sounds over a longer one): a clip no longer playing is
+    // used first, the oldest in turn only when all four still play
+    int pickClip = s_next;
+    for (int k = 0; k < 4; ++k)
+    {
+        const int i = (s_next + k) % 4;
+        bool busy = false;
+        for (const Playing& p : s_playing)
+            busy = busy || p.clip == &s_clips[i];
+        if (!busy)
+        {
+            pickClip = i;
+            break;
+        }
+    }
+    Clip& c = s_clips[pickClip];
+    s_next = (pickClip + 1) % 4;
     for (Playing& p : s_playing)
         if (p.clip == &c)
             p.clip = NULL;

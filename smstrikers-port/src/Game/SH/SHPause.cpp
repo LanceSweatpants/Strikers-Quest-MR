@@ -16,8 +16,83 @@
 #include "NL/nlLocalization.h"
 #include "NL/nlPrint.h"
 #include "NL/nlTask.h"
+#include "Game/Team.h"     // strikers-quest r157: the score for the headset's pause panel
+#include "port/xr_quest.h" // strikers-quest r157: PortPauseMenu* (the headset's pause panel drives this menu)
+#include "port/xr_net.h"   // strikers-quest r157: PortNetLocalPad (the pad that quits)
+#include "Game/DB/UserOptions.h"
 
 extern FEInput* g_pFEInput;
+
+// strikers-quest r157 (menu overhaul; Lance: "i want those menus to be easy to navigate"): the headset's pause panel is
+// the one cursor now (r42-r156: this menu on the left stick and the port's own panel on the right stick, at once). This
+// menu stays underneath: the panel reads its state and picks its items through its own handlers - the same as A on them -
+// so the quit / forfeit / Strikers 101 wording and flow stay the game's.
+static PauseMenuScene* s_portPause = NULL;
+static int s_portPauseAsk = -1;
+
+extern "C" int PortPauseMenuState(void)
+{
+    PauseMenuScene* p = s_portPause;
+    if (p == NULL)
+        return 0;
+    if (OverlayManager::Instance()->GetCurrentScene() != (BaseSceneHandler*)p)
+        return -1; // a screen of its own over it
+    if (p->mIsInTransition || p->mQuitDelay > 0.0f || FrontEnd::m_bGameOver)
+        return -1;
+    return p->mContext == PauseMenuScene::SC_101_PAUSE ? 2 : 1;
+}
+
+extern "C" void PortPauseMenuSelect(int what)
+{
+    s_portPauseAsk = what;
+}
+
+// strikers-quest r157: the game's own AUDIO / VISUAL OPTIONS values as the pause panel's rows - read, and written exactly
+// as those screens write them (feOptionsSubMenus.cpp OptionsAudioMenuV2 / OptionsVisualMenuV2::Save: into the user's
+// options, the volumes applied at once with ApplySettings(false, false); the camera ones read by the next gameplay
+// camera, as from the game's own screen). Volumes and the zoom 0..10. The sound mode isn't changed in a pause: the
+// game's own pause screen hides and disables it (it reloads the music) - PORT_OPT_MODE is read only.
+extern "C" int PortPauseOption(int which)
+{
+    const UserInfo& u = nlSingleton<GameInfoManager>::Instance()->mUserInfo;
+    switch (which)
+    {
+    case PORT_OPT_MUSIC: return u.mAudioOptions.MusicVolume;
+    case PORT_OPT_SFX: return u.mAudioOptions.SFXVolume;
+    case PORT_OPT_VOICE: return u.mAudioOptions.VoiceVolume;
+    case PORT_OPT_MODE: return (int)u.mAudioOptions.Mode;
+    case PORT_OPT_AUTOZOOM: return u.mVisualOptions.mIsAutoZoomCamera ? 1 : 0;
+    case PORT_OPT_ZOOM: return (int)(10.0f * u.mVisualOptions.mCameraZoomLevel + 0.5f);
+    case PORT_OPT_WIDESCREEN: return u.mVisualOptions.mIsWidescreen ? 1 : 0;
+    default: return 0;
+    }
+}
+
+extern "C" void PortPauseOptionSet(int which, int value)
+{
+    UserInfo& u = nlSingleton<GameInfoManager>::Instance()->mUserInfo;
+    const int v10 = value < 0 ? 0 : (value > 10 ? 10 : value);
+    switch (which)
+    {
+    case PORT_OPT_MUSIC: u.mAudioOptions.MusicVolume = v10; break;
+    case PORT_OPT_SFX: u.mAudioOptions.SFXVolume = v10; break;
+    case PORT_OPT_VOICE: u.mAudioOptions.VoiceVolume = v10; break;
+    case PORT_OPT_AUTOZOOM: u.mVisualOptions.mIsAutoZoomCamera = value != 0; return;
+    case PORT_OPT_ZOOM: u.mVisualOptions.mCameraZoomLevel = (float)v10 / 10.0f; return;
+    case PORT_OPT_WIDESCREEN: u.mVisualOptions.mIsWidescreen = value != 0; return;
+    default: return; // (PORT_OPT_MODE: not in a pause)
+    }
+    u.mAudioOptions.ApplySettings(false, false);
+}
+
+extern "C" int PortPauseScore(int* home, int* away)
+{
+    if (g_pTeams[0] == NULL || g_pTeams[1] == NULL)
+        return 0;
+    *home = g_pTeams[0]->m_nScore;
+    *away = g_pTeams[1]->m_nScore;
+    return 1;
+}
 extern nlColour MenuHighliteColour;
 
 
@@ -63,6 +138,11 @@ PauseMenuScene::PauseMenuScene(PauseMenuScene::ScreenContext context)
  */
 PauseMenuScene::~PauseMenuScene()
 {
+    if (s_portPause == this) // strikers-quest r157
+    {
+        s_portPause = NULL;
+        s_portPauseAsk = -1;
+    }
 }
 
 /**
@@ -254,6 +334,8 @@ void PauseMenuScene::SceneCreated()
     typedef MenuItem<TLComponentInstance>::Callback MenuCallback;
 
     FEAudio::EnableSounds(false);
+    s_portPause = this; // strikers-quest r157: the headset's pause panel drives this menu
+    s_portPauseAsk = -1;
 
     switch (mContext)
     {
@@ -511,6 +593,59 @@ void PauseMenuScene::Update(float fDeltaT)
 
     if (m_pFEPresentation->m_currentSlide == NULL)
         return;
+
+    // strikers-quest r157: the headset's pause panel picked an item: its own handler, exactly as A on it (the item lit
+    // first, as the stick would). Afterwards the menu opens on RESUME again (Lance: pause opens on RESUME every time).
+    if (s_portPauseAsk >= 0)
+    {
+        const int what = s_portPauseAsk;
+        s_portPauseAsk = -1;
+        int index = -1;
+        int resumeIndex = 0;
+        if (mContext == SC_REGULAR_PAUSE)
+        {
+            index = what <= PORT_PAUSE_QUIT ? what : -1; // (PauseMenuCBs' order)
+        }
+        else if (mContext == SC_101_PAUSE)
+        {
+            resumeIndex = 1;
+            index = what == PORT_PAUSE_LESSONS ? 0 : (what == PORT_PAUSE_RESUME ? 1 : (what == PORT_PAUSE_QUIT ? 2 : -1));
+        }
+        if (index >= 0 && index < mMenuItems.GetNumItemsAdded())
+        {
+            if (index != mMenuItems.GetActiveItemIndex())
+                mMenuItems.SetItem(index);
+            // the pad "pressing" it: the one this headset plays on (pad 0 offline - the only place the panel drives
+            // this menu; online it's off, lockstep). The game takes the quitter from it: a tournament's forfeit is
+            // GetPlayingSide(that pad); a cup's is the user's cup team, Strikers 101 and a quick match need none.
+            // mControllingInput is FE_ALL_PADS for every pause (feManager.cpp), so it can't say.
+            mQuittingController = (eFEINPUT_PAD)PortNetLocalPad();
+            if (nlSingleton<GameInfoManager>::Instance()->GetPlayingSide((unsigned short)mQuittingController) == -1)
+            {
+                for (int pad = 0; pad < 4; pad++) // (that pad on no side: the first pad that is)
+                {
+                    if (nlSingleton<GameInfoManager>::Instance()->GetPlayingSide((unsigned short)pad) != -1)
+                    {
+                        mQuittingController = (eFEINPUT_PAD)pad;
+                        break;
+                    }
+                }
+            }
+            switch (mMenuItems.RunCallbackOnCurrent(ON_APPLY))
+            {
+            case RES_OK:
+                FEAudio::PlayAnimAudioEvent("sfx_accept", false);
+                break;
+            case RES_ITEM_DISABLED:
+                FEAudio::PlayAnimAudioEvent("sfx_deny", false);
+                break;
+            default:
+                break;
+            }
+            mLastSelectedIndex = resumeIndex;
+        }
+        return;
+    }
 
     if (g_pFEInput->IsAutoPressed(mControllingInput, 0xd, true, NULL))
     {

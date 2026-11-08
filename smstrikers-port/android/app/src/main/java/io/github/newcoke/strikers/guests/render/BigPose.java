@@ -103,7 +103,9 @@ final class BigPose {
         if (configured || home == null) return;
         configured = true;
         poses(text(new File(home, "franchise/big_poses.txt")));  // r144: the reviewed list (assets/franchise, staged)
-        readRoster(text(new File(home, "guests/roster.txt")));
+        // r183: and the ORIGINALS (shipped in the APK, staged as guests/originals.txt)
+        final String roster = text(new File(home, "guests/roster.txt")), originals = text(new File(home, "guests/originals.txt"));
+        readRoster(roster == null ? originals : originals == null ? roster : roster + "\n" + originals);
         limbsText = text(new File(home, "guests/limbs.txt"));
         arms = Cfg.limbs(limbsText);
         String path = data != null && !data.isEmpty() ? data : null;

@@ -79,6 +79,9 @@ unsigned PortFranchiseChangeSerial();
 // A match of the loaded career is starting (asked for, or waiting for the friend at its start).
 bool PortFranchiseMatchStarting();
 bool PortFranchiseActive();                // a career is loaded
+// r153 (Lance: "i want EACH save/franchise to be a FRESH card binder with a fresh slate of RNG"): the loaded career's
+// id (its seed; 0 none loaded) - xr_cards.cpp keeps a binder per career by it
+unsigned PortFranchiseCareerSeed();
 void PortFranchiseClose();                 // back to no career (the menu closed)
 
 // The clubs (all careers share them).
@@ -192,6 +195,7 @@ struct PortFranchiseView
     // r131: your next opponent's other players: its co-captain ("" none) and the three sidekicks by name (a member's own)
     char oppCoCaptain[48];
     char oppSidekicks[3][48];
+    char memberKeys[3][48];  // r173: your three sidekick slots' characters ("" a generic sidekick)
 };
 bool PortFranchiseGetView(PortFranchiseView* v);
 
@@ -277,6 +281,22 @@ struct PortFranchiseLive
     bool coEvolves, coPokemon, coCostume;
 };
 bool PortFranchiseLiveXp(PortFranchiseLive* out);
+// r173 (Lance: "since we can see everybody's XP/EVO level at the hub now, take that away from the game screen ... if someone
+// levels up during a game, just have them luminated for a second as well as a 'level up' or '+1' graphic above them"): the
+// in-match XP meter is gone; instead each player on the field, either club, is followed: its level as the match stands
+// (the live meter's own numbers: the result, the club's goals, its own goals and assists, playoff / beef / difficulty /
+// card bonuses) - one going higher than it has shown this match is a level-up moment. The XP itself is awarded at the end
+// as always (nothing here changes it). Game thread; the headset takes them each frame.
+struct PortFranchiseLevelUp
+{
+    int side;          // 0 home, 1 away
+    int playerId;      // cPlayer m_ID: 0 the captain, 1-3 (1: the co-captain when one plays)
+    int level;         // the level it reaches
+    char name[48];
+};
+int PortFranchiseTakeLevelUps(PortFranchiseLevelUp* out, int max);
+// r173: where that player is now (game units) and on the broadcast picture (ndc -1..1, *ndcValid 0 off screen); false gone
+bool PortFranchisePlayerWhere(int side, int playerId, float pos[3], float ndc[2], int* ndcValid);
 // r77 (Lance: "an evo watch where we see the current levels of all pokemon that are in our franchise"):
 // every Pokemon in the league (each club's captain and backup), its level and XP, its next form and the
 // level it comes at, and how many levels it gained this season, best first. Fills up to max, returns how
@@ -309,11 +329,15 @@ struct PortFranchiseTradeOffer
     int level, value;
     bool shiny, fair;
     char key[48];         // r116: its portrait
+    int slot;             // r173: a sidekick's: its slot on their club (0-2), -1 a captain / backup
 };
+// r173 (Lance: "when it comes to sidekicks, i should be able to trade them individually, not as a fuckin bunch deal"): `what`
+// 0 your captain, 1 your backup, 2-4 your sidekick in slot 1-3 (a named character: a generic sidekick is no trade piece),
+// each for one player of theirs: a captain / backup for a captain or backup, a sidekick for one of their named sidekicks.
 // The players you could get for `what`, best value first; *myValue / myName = what you'd give.
 int PortFranchiseTradeOptions(int what, PortFranchiseTradeOffer* out, int max, int* myValue, char* myName, int nameSize);
 // The trade (an offer from PortFranchiseTradeOptions); false when refused (not fair, window shut).
-bool PortFranchiseTrade(int what, int club, bool backup);
+bool PortFranchiseTrade(int what, int club, bool backup, int theirSlot = -1);  // r173: theirSlot = an offer's slot
 // r70b: your own match worked out instead of played (toPlayoffs: every week to the end of the regular
 // season, yours too).
 bool PortFranchiseSimMine(bool toPlayoffs);
@@ -457,5 +481,104 @@ struct PortFranchiseCardBonus
     char why[64];   // "LV3 +20%, LINE +15%, FIRE +10%"
 };
 void PortFranchiseSetCardBonuses(const PortFranchiseCardBonus* list, int count, int coinPct, const char* coinWhy);
+
+// r167 (Lance: "leftovers become free agents ... do an offer system of sorts so teams are actually competing to land agents
+// and its not richest team signs everyone"): FREE AGENCY. Every character on no club (never dealt, or released) is a free
+// agent with its own level, record and personality. Signing is free (no coins); the window is the trade window: weeks 1-12
+// and the off-season (champion crowned -> the next season's start). You (and every CPU club, on its needs) make offers: a
+// ROLE (captain / backup / a sidekick slot; a backup can be promised the starts) and, for the spot, who goes (its holder is
+// released into free agency when the agent signs). Each agent weighs its offers - the role, the club's record and strength
+// (contenders), its personality (a front-runner chases winners, a hothead wants the captaincy, an honorable one stays loyal
+// to its old club, an underdog wants to carry a weak one ...), its home region, squad fit (no sitting behind a better
+// captain) - and never joins a club whose captain it has active beef with. Mid-season it decides after the next match day
+// (by the week-12 deadline at the latest); off-season offers are decided when the next season starts. Deterministic from
+// the career (its seed / rng), so a save, co-op and an online league agree. The r131 rule holds: one character, one club.
+enum
+{
+    PORT_FA_CAPTAIN = 0,
+    PORT_FA_BACKUP = 1,
+    PORT_FA_SIDEKICK1 = 2,  // + 0..2 (the sidekick slots)
+    PORT_FA_ROLES = 5,
+};
+struct PortFranchiseFaWindow
+{
+    bool active;         // a career loaded
+    bool open;           // offers can be made now
+    bool offSeason;      // the off-season window (decisions at the next season's start)
+    int week;            // the week now (regular season)
+    int agents;          // free agents now
+    int myOffers;        // your offers out
+    char status[112];    // "OPEN TO WEEK 12: AGENTS DECIDE AFTER THE NEXT MATCH DAY" / "SHUT ..."
+    char last[112];      // your last free-agency result ("CHARIZARD SIGNED WITH YOU" ...), "" none
+};
+bool PortFranchiseFaWindowGet(PortFranchiseFaWindow* out);
+struct PortFranchiseFreeAgent
+{
+    char key[48], name[48];
+    int rating, level, value;     // value = rating + a point a level over 8 (the trades' number)
+    bool shiny, captainType;      // captainType: can be a captain / backup (else a sidekick only)
+    char game[16];                // "POKEMON", "MARVEL", "MELEE", "STRIKERS", "CHARGED"
+    int stage, stages;            // its form in its line (stage 2 of 3), 1 / 1 a one-form character
+    int personality;              // PERS + 1: 0 neutral, 1 hothead .. 8 front-runner
+    char persName[24];
+    int homeClub;                 // its home ground's club, -1 none (a Pokemon's home is a division: homeName)
+    char home[32];                // "INFERNO" (a division) / "LAKE HYLIA" (a club) / ""
+    int formerClub;               // the club that released it, -1 never on one
+    int interested;               // clubs with an offer out
+    int leader;                   // the club whose offer leads now, -1 none
+    int leaderRole;               // its role (PORT_FA_*)
+    bool leaderPromise;
+    char leaderWhy[48];           // why it leads ("WANTS THE CAPTAINCY", "CHASES A WINNER", "HOMETOWN CLUB" ...)
+    int myRole;                   // your offer's role, -1 none
+    bool myPromise, myLead;       // ... promised starts, it leads now
+    bool refusesMe;               // beef with your captain: never signs with you
+    int decideWeek;               // mid-season: decides after this week; 0: at the next season's start / no offers yet
+    bool rookie;                  // r173: never played in this career (a first form, never evolved, Lv 8, no record)
+};
+// The free agents, filtered (0 all, 1 captain types, 2 sidekick types, 3 the ones you made an offer to, r173: 4 rookies) and
+// sorted (0 value - rookies by their rating, 1 the most interest, 2 by name). Fills up to max, returns how many.
+int PortFranchiseFreeAgents(PortFranchiseFreeAgent* out, int max, int filter, int sort);
+// What each offer you could make that agent means: rows for CAPTAIN (your captain to the bench: your backup goes), CAPTAIN
+// (your captain released), BACKUP, BACKUP + PROMISED STARTS, SIDEKICK 1-3. Fills up to max, returns how many.
+struct PortFranchiseFaRole
+{
+    int role;
+    bool promise, releaseCaptain;
+    bool allowed;                 // (a sidekick-only agent can't be a captain / backup; refused: beef)
+    char label[48];               // "CAPTAIN", "BACKUP + PROMISED STARTS", "SIDEKICK 2"
+    char effect[112];             // "GHOST RIDER TO THE BENCH, WOLVERINE RELEASED" / "NOBODY RELEASED"
+    char release[48];             // who goes into free agency if it signs ("" nobody)
+    char releaseKey[48];
+    bool wouldLead;               // this offer would lead now
+    char versus[64];              // "LEADS" / "BEHIND MUTE CITY (CAPTAIN)" / "NO OTHER OFFERS"
+    bool current;                 // your offer now is this one
+    char replaces[64];            // "REPLACES YOUR OFFER TO PIKACHU" ("" none)
+};
+int PortFranchiseFaRoles(const char* key, PortFranchiseFaRole* out, int max);
+// Your offer to that agent (it replaces yours to it, and yours to another agent for the same spot). False: not now.
+bool PortFranchiseFaOffer(const char* key, int role, bool promise, bool releaseCaptain);
+bool PortFranchiseFaWithdraw(const char* key);
+
+// r167 (Lance: an EVOLUTION SELECTOR): any form a player of yours has reached stays unlocked; you pick which one plays, any
+// time but a match (each form its own model and stats; the level, XP and shiny are the player's and stay). Evolving goes on
+// from its highest form reached. Your players whose line has more than one form:
+struct PortFranchiseForms
+{
+    int slot;                     // 0 captain, 1 backup, 2-4 your sidekick members
+    char role[16];                // "CAPTAIN" ...
+    int level;
+    bool shiny, costume;          // costume: a Marvel hero (forms = costumes)
+    int count;                    // tiles: the forms reached, then the next ones (locked)
+    int current;                  // the tile playing now
+    char key[6][48], name[6][48];
+    bool reached[6];
+    int at[6];                    // a locked form's level, 0 reached
+    bool ready;                   // its next form is ready to evolve (A on it: the EVO page)
+};
+int PortFranchiseFormsList(PortFranchiseForms* out, int max);
+// Play that slot as `key` (a form it has reached). False: not one of its forms, a match on, not this headset's to do.
+bool PortFranchiseSetForm(int slot, const char* key);
+// r167: that slot's evolution when it's ready (postponed too): the selector's EVOLVE! tile opens the EVO page with it
+bool PortFranchiseReadyEvolutionFor(int slot, PortFranchiseEvolution* out);
 
 #endif // PORT_FRANCHISE_H

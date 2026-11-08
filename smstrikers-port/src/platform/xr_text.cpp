@@ -88,8 +88,17 @@ Mask text_mask(const char* text, float px, int pad) {
   int ascent = 0, descent = 0, gap = 0;
   stbtt_GetFontVMetrics(&f, &ascent, &descent, &gap);
   Mask m;
-  m.w = static_cast<int>(std::ceil(text_width(text, px))) + 2 * pad;
+  // r187 crash fix: a size <= 0 (or NaN / huge) made a negative / huge mask and the vector threw std::length_error,
+  // killing the app (r185's select menu). Such text is drawn as nothing; the mask is capped at 16384 px a side.
+  if (!(px > 0.0f) || !(px < 16384.0f) || pad < 0 || pad > 4096) return m;
+  const float tw = text_width(text, px);
+  if (!(tw >= 0.0f) || !(tw < 16384.0f)) return m;
+  m.w = static_cast<int>(std::ceil(tw)) + 2 * pad;
   m.h = static_cast<int>(std::ceil((ascent - descent) * scale)) + 2 * pad;
+  if (m.w <= 0 || m.h <= 0) {
+    m.w = m.h = 0;
+    return m;
+  }
   m.a.assign(static_cast<size_t>(m.w) * m.h, 0.0f);
   const int baseline = pad + static_cast<int>(std::lround(ascent * scale));
   float x = static_cast<float>(pad);
@@ -731,6 +740,7 @@ namespace {
 // r61: `text` with its left edge at x, centred on cy, shrunk to fit `room` pixels.
 void text_left(Canvas& cv, const std::string& text, float x, float cy, float px, float room, Color top, Color bottom,
                float outline) {
+  if (!(room > 0.0f) || !(px > 0.0f)) return;  // r187: no room, nothing drawn (a negative size crashed r185)
   const float wide = text_width(text.c_str(), px);
   if (wide > room && wide > 0.0f) px *= room / wide;
   const float w = text_width(text.c_str(), px);
@@ -1395,19 +1405,38 @@ void character_select(uint8_t* rgba, int w, int h, const char* title, const Sele
                  0.5f * (tx1 - tx0), gold);
   }
   // the foot: the title at the left, the buttons beside it
-  const float fy = 0.955f * h, gsz = 0.048f * h;
+  float gsz = 0.048f * h, wordPx = 0.036f * h, gapIn = 0.012f * w, gapOut = 0.03f * w;
+  const float fy = 0.955f * h;
   if (title != nullptr && title[0] != '\0') text_left(cv, caps(title), m + 0.01f * w, fy, 0.036f * h, 0.3f * w, cream, gold, 2.5f);
-  float total = 0.0f;
-  for (int i = 0; i < hintCount; ++i) {
-    const float gw = std::strlen(hints[i].glyph) > 1 ? std::max(gsz, text_width(hints[i].glyph, 0.62f * gsz) + 0.7f * gsz) : gsz;
-    total += gw + 0.012f * w + text_width(caps(hints[i].words).c_str(), 0.036f * h) + 0.03f * w;
+  auto row_width = [&]() {
+    float total = 0.0f;
+    for (int i = 0; i < hintCount; ++i) {
+      const float gw = std::strlen(hints[i].glyph) > 1 ? std::max(gsz, text_width(hints[i].glyph, 0.62f * gsz) + 0.7f * gsz) : gsz;
+      total += gw + gapIn + text_width(caps(hints[i].words).c_str(), wordPx) + gapOut;
+    }
+    return total;
+  };
+  // r187 crash fix (r185: an original's "UNIFORMS" with the franchise pick's "NO BACKUP" / "ALL THE SAME" ran the row
+  // past the panel's edge: the last hint's room (w - hx) went negative, text_left scaled its size negative and
+  // text_mask's vector got a negative size: std::length_error, the app gone). The row now shrinks to fit its room.
+  float total = row_width();
+  const float rowX0 = 0.34f * w, rowRoom = w - m - 0.01f * w - rowX0;
+  if (total > rowRoom && total > 0.0f) {
+    const float k = rowRoom / total;
+    gsz *= k;
+    wordPx *= k;
+    gapIn *= k;
+    gapOut *= k;
+    total = row_width();
   }
-  float hx = std::max(0.34f * w, 0.62f * w - 0.5f * total);
+  float hx = std::max(rowX0, 0.62f * w - 0.5f * total);
   for (int i = 0; i < hintCount; ++i) {
-    hx += button_glyph(cv, hints[i].glyph, hx, fy, gsz, rgb(hints[i].rgb)) + 0.012f * w;
+    hx += button_glyph(cv, hints[i].glyph, hx, fy, gsz, rgb(hints[i].rgb)) + gapIn;
     const std::string s = caps(hints[i].words);
-    text_left(cv, s, hx, fy, 0.036f * h, w - hx, rgb(0xE6ECF5), rgb(0xB8C2D6), 2.0f);
-    hx += text_width(s.c_str(), 0.036f * h) + 0.03f * w;
+    const float room = w - m - hx;
+    if (room <= 1.0f) break;  // (never a negative room: nothing more fits)
+    text_left(cv, s, hx, fy, wordPx, room, rgb(0xE6ECF5), rgb(0xB8C2D6), 2.0f);
+    hx += std::min(room, text_width(s.c_str(), wordPx)) + gapOut;
   }
   cv.write(rgba);
 }

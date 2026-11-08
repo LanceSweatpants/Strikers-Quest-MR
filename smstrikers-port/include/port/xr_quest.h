@@ -116,6 +116,38 @@ void PortXrScorerPlayer(int playerId);
 void PortXrScorerFaceOff(int faceoff);
 /* PortCelebrationPoll, every game frame: the game is paused (the crowd volume panel shows). */
 void PortXrSetPaused(int paused);
+/* r157 (menu overhaul), SHPause.cpp: the headset's pause panel is the one cursor; the game's own pause menu stays
+ * underneath and does what it picks. State: 0 not up, 1 the pause menu ready (on top, settled), 2 Strikers 101's (LESSONS,
+ * RESUME, QUIT), -1 up but busy (a screen of its own over it - its quit / forfeit question, CHOOSE SIDES, STATISTICS,
+ * AUDIO / VISUAL OPTIONS, LESSONS - or going away). Select: PORT_PAUSE_* run through its own handlers (as A on that item),
+ * so the quit / forfeit / Strikers 101 wording and flow stay the game's. Score: the match's score (0: no match). */
+enum
+{
+    PORT_PAUSE_RESUME = 0,
+    PORT_PAUSE_CHOOSE_SIDES = 1,
+    PORT_PAUSE_AUDIO = 2,
+    PORT_PAUSE_VISUAL = 3,
+    PORT_PAUSE_STATISTICS = 4,
+    PORT_PAUSE_QUIT = 5,
+    PORT_PAUSE_LESSONS = 6
+};
+int PortPauseMenuState(void);
+void PortPauseMenuSelect(int what);
+int PortPauseScore(int* home, int* away);
+/* r157: the game's own AUDIO / VISUAL OPTIONS values (SHPause.cpp; written as those screens write them). Volumes and
+ * the zoom 0..10, the switches 0 / 1, the mode eAudioMode (0 stereo, 1 mono, 2 Dolby; read only in a pause). */
+enum
+{
+    PORT_OPT_MUSIC = 0,
+    PORT_OPT_SFX = 1,
+    PORT_OPT_VOICE = 2,
+    PORT_OPT_MODE = 3,
+    PORT_OPT_AUTOZOOM = 4,
+    PORT_OPT_ZOOM = 5,
+    PORT_OPT_WIDESCREEN = 6
+};
+int PortPauseOption(int which);
+void PortPauseOptionSet(int which, int value);
 /* Fielder.cpp UseTeamPowerup, for the log: the team's items (ePowerUpType) and whether the
  * player's state refused it. */
 void PortXrNoteItemUse(int current, int next, int blocked);

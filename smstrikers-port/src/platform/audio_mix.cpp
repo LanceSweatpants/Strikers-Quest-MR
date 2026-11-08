@@ -405,6 +405,8 @@ static float s_crowdYaw = 0.0f;
 static int s_crowdSpatial = 0;
 
 extern "C" void PortAudioSetCrowdLiving(float gain) { s_crowdLiving = gain; }
+// strikers-quest r172: your crowd volume, for the stadium pulse's chant stream (stadium_pulse.cpp)
+extern "C" float PortAudioGetCrowdUser(void) { return s_crowdUser; }
 extern "C" void PortAudioSetCrowdUser(float gain, int spatial, float headYaw) {
     s_crowdUser = gain;
     // strikers-quest r43: the crowd round the stands is Plus; Classic keeps the game's own panning,
@@ -933,6 +935,7 @@ extern "C" void PortAudioDumpWrite(const void* pcm, unsigned int frames) {
     (void)frames;
 }
 extern "C" void PortAudioSetCrowdLiving(float) {}
+extern "C" float PortAudioGetCrowdUser(void) { return 1.0f; } // strikers-quest r172
 extern "C" void PortAudioSetCrowdUser(float, int, float) {}
 
 #endif

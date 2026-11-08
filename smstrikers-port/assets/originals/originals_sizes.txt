@@ -1,0 +1,34 @@
+# r188 ORIGINALS' own sizes, read by xr_guest.cpp limb_value after guests/limbs.txt (same "<pack> size <scale>" lines).
+# Shipped in assets/originals, staged to guests/originals_sizes.txt by StrikersHome.stageOriginals (the converter never writes it).
+# r188 (Lance on r187: "LUCHADOR is waaaay too puny, GRAVES too"): the ORIGINALS' own sizes (tools/outside/
+# origsizes188.py, logs/r188-sizes): each at least its host class's height (bind and standing), each evolution
+# form 6%+ taller than the one before, a single's 3 uniforms the same size. Never below 1.
+orig_highscore size 1.08
+orig_gameover size 1.28
+orig_rookie size 1.16
+orig_gambit size 1.41
+orig_checkmate size 1.60
+orig_tatami size 1.12
+orig_nightstep size 1.25
+orig_overclock size 1.20
+orig_tincan size 1.17
+orig_ironclad size 1.39
+orig_wyrmguard size 1.34
+orig_graves size 1.43
+orig_halfmoon size 1.42
+orig_fullmoon size 1.61
+orig_luchador size 1.48
+orig_luchador_b size 1.48
+orig_luchador_c size 1.48
+orig_racedriver size 1.36
+orig_racedriver_b size 1.36
+orig_racedriver_c size 1.36
+orig_goalie size 1.28
+orig_goalie_b size 1.28
+orig_goalie_c size 1.28
+orig_mascot size 1.11
+orig_mascot_b size 1.11
+orig_mascot_c size 1.11
+orig_redline size 1.19
+orig_redline_b size 1.19
+orig_redline_c size 1.19

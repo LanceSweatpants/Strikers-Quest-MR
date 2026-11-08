@@ -16,14 +16,20 @@ import android.text.InputFilter;
 import android.text.InputType;
 import android.text.SpannableString;
 import android.text.Spanned;
+import android.text.TextUtils;
+import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
+import android.text.style.TypefaceSpan;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -53,6 +59,13 @@ import java.util.List;
  *
  * <p>r44: Quick match (a queue on the room server pairs you with anyone else searching on the same
  * Version and release, and both get a room code) and the Voice chat switch.
+ *
+ * <p>r157 (menu overhaul, MENUS-PLAN.md; Lance: "easy to navigate, right now its just easy to get lost"): HOME is
+ * five tiles (PLAY with the game file + version on it, ONLINE, GUESTS, SETTINGS, UPDATE with a NEW badge), every
+ * other page has a breadcrumb + a BACK pill in the same spot, SETTINGS has a rail (GAME, CONTROLS, SOUND, HOME
+ * GROUND, ACHIEVEMENTS), the notes that used to stack over the buttons are one notice strip with GOT IT, a green
+ * check marks what's chosen, and a hint bar sits at the bottom. B / BACK goes back one level (hold it: HOME). Each
+ * page's own logic is as before; MENUS-INVENTORY.md lists where every option went.
  */
 public class LobbyActivity extends Activity {
 
@@ -101,15 +114,37 @@ public class LobbyActivity extends Activity {
     private static final String LAST_CODE = "lastCode";
     // No I, O, 0 or 1: a code is read out loud or off a headset.
     private static final String CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-    private static final int BG = Color.rgb(16, 20, 28);
-    private static final int CARD = Color.rgb(30, 38, 52);
-    private static final int ACCENT = Color.rgb(255, 196, 0);
-    private static final int WARN = Color.rgb(255, 150, 140);
-    private static final int MUTED = Color.rgb(150, 160, 175);
+    // r157 (menu overhaul): the hub's navy + gold (LobbyKit, from tools/outside/menus_kit.py) for the old grey-blue
+    private static final int CARD = LobbyKit.TILE_HI;
+    private static final int ACCENT = LobbyKit.GOLD;
+    private static final int WARN = LobbyKit.WARN;
+    private static final int MUTED = LobbyKit.INK_DIM;
+    private static final int OK_GREEN = Color.rgb(140, 220, 140);
 
     private LinearLayout page;
+    // r157 (menu overhaul): the chrome round every page. HOME is the tile grid (homeView); every other page is `page`
+    // (in pageScroll, with the SETTINGS rail on its left), under the breadcrumb (crumbs: BACK pill + path) and the
+    // notice strip, over the hint bar.
+    private Typeface lucky;
+    private LinearLayout crumbs, rail, pageRow, noticeStrip, homeView, crumbRow, noticeRow;
+    private ScrollView pageScroll;
+    private TextView noticeText, versionPill;
+    private View hintBack, hintHold;
+    private Button noticeGotIt;
+    private Runnable backAction;       // where B / BACK goes from the page up now; null on HOME
+    private String flashNote;          // a note after an action (update permission, file access, voice chat ...)
+    private int flashColour;
+    private boolean onUpdate;          // the UPDATE page is up (the update check redraws it)
+    private boolean bHeld;             // B held past HOLD_B_MS: it went HOME, its release does nothing more
+    private static final long HOLD_B_MS = 600;
+    // r157 round 2 (MENUS-PLAN.md rule 9: every word at least 40 px at panel size): the mockups are the 1024 x 640 dp
+    // panel at 1920 x 1200 px, so 40 px = 21.3 dp; Luckiest Guy's line is its em (ascent + descent = 1.001 em), so no
+    // text on the launcher is under 22 sp (tools/outside/launcher_preview.py checks it)
+    static final int MIN_SP = 22;
+    // the SETTINGS rail (MENUS-PLAN.md section 2)
+    private static final int RAIL_GAME = 0, RAIL_CONTROLS = 1, RAIL_SOUND = 2, RAIL_HOME_GROUND = 3, RAIL_ACH = 4;
+    private static final String[] RAIL_NAMES = {"GAME", "CONTROLS", "SOUND", "HOME GROUND", "ACHIEVEMENTS"};
     private SharedPreferences prefs;
-    private TextView accessNote;  // r39b: under the buttons while the file access switch is off
     private int chooserToken;     // r41: the game file list being filled (a newer one wins)
     private Updater.Release update;  // r41: a newer release on GitHub, null when there is none
     private boolean onHome;          // r41: the home page is showing (the update check redraws it)
@@ -123,41 +158,8 @@ public class LobbyActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setGravity(Gravity.CENTER_HORIZONTAL);
-        page.setBackgroundColor(BG);
-        int pad = dp(28);
-        page.setPadding(pad, pad, pad, pad);
-        // r41: scrolls, for the game file list and a last error on a short panel.
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(BG);
-        scroll.setFillViewport(true);
-        scroll.addView(page, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        // r147: the page under the NOW PLAYING card
-        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-        root.setBackgroundColor(BG);
-        root.addView(scroll, new android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        nowPlaying = new TextView(this);
-        nowPlaying.setTextColor(Color.WHITE);
-        nowPlaying.setTextSize(14);
-        nowPlaying.setMaxWidth(dp(300));
-        nowPlaying.setPadding(dp(14), dp(8), dp(16), dp(10));
-        GradientDrawable card = new GradientDrawable();
-        card.setCornerRadius(dp(14));
-        card.setColor(Color.argb(235, 22, 30, 48));
-        card.setStroke(dp(2), ACCENT);
-        nowPlaying.setBackground(card);
-        nowPlaying.setAlpha(0f);
-        nowPlaying.setVisibility(View.GONE);
-        android.widget.FrameLayout.LayoutParams npLp = new android.widget.FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
-        npLp.topMargin = dp(12);
-        npLp.rightMargin = dp(12);
-        root.addView(nowPlaying, npLp);
-        setContentView(root);
+        lucky = LobbyKit.font(this);
+        buildChrome();
         music = MenuMusic.forPanel(this, this::showNowPlaying);
         if (SHOW_TOURNEY.equals(getIntent().getStringExtra(EXTRA_SHOW))) {
             showTourneys();  // r45: back from a tournament match
@@ -186,43 +188,682 @@ public class LobbyActivity extends Activity {
         }, "strikers-ra-badges").start();
     }
 
+    // ------------------------------------------------------------------ r157 (menu overhaul): the chrome
+
+    /**
+     * r157 (menu overhaul): the frame every page sits in (MENUS-PLAN.md section 1): the title bar (QUEST 3 STRIKERS +
+     * the release pill, NOW PLAYING over its right end), the breadcrumb row (BACK pill + where you are, the notice
+     * strip beside it), the body (HOME's tiles, or a page with the SETTINGS rail on its left), and the hint bar.
+     */
+    private void buildChrome() {
+        final int match = ViewGroup.LayoutParams.MATCH_PARENT, wrapped = ViewGroup.LayoutParams.WRAP_CONTENT;
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(LobbyKit.NAVY_BOT);
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setBackground(LobbyKit.frame(getResources().getDisplayMetrics().density));
+        shell.setPadding(dp(18), dp(8), dp(18), dp(10));
+        root.addView(shell, new FrameLayout.LayoutParams(match, match));
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = luckyText("", 32, LobbyKit.CREAM);
+        SpannableString n = new SpannableString("QUEST 3  STRIKERS");
+        n.setSpan(new ForegroundColorSpan(ACCENT), 0, 7, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        n.setSpan(new RelativeSizeSpan(0.82f), 0, 7, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        name.setAllCaps(false);  // already capitals; the caps transform would drop the colour spans
+        name.setText(n);
+        name.setShadowLayer(dp(3), 0, dp(2), 0xC0000000);
+        head.addView(name, wrap());
+        versionPill = luckyText(releaseName(), MIN_SP, LobbyKit.INK_SOFT);
+        versionPill.setBackground(LobbyKit.round(0xFF0E1428, dp(14)));
+        versionPill.setPadding(dp(12), dp(5), dp(12), dp(3));
+        LinearLayout.LayoutParams vlp = wrap();
+        vlp.leftMargin = dp(14);
+        head.addView(versionPill, vlp);
+        shell.addView(head, new LinearLayout.LayoutParams(match, dp(52)));
+
+        crumbRow = new LinearLayout(this);
+        crumbRow.setOrientation(LinearLayout.HORIZONTAL);
+        crumbRow.setGravity(Gravity.CENTER_VERTICAL);
+        crumbRow.setMinimumHeight(dp(46));
+        crumbs = new LinearLayout(this);
+        crumbs.setOrientation(LinearLayout.HORIZONTAL);
+        crumbs.setGravity(Gravity.CENTER_VERTICAL);
+        crumbRow.addView(crumbs, wrap());
+        noticeStrip = new LinearLayout(this);
+        noticeStrip.setOrientation(LinearLayout.HORIZONTAL);
+        noticeStrip.setGravity(Gravity.CENTER_VERTICAL);
+        noticeStrip.setPadding(dp(12), dp(3), dp(5), dp(3));
+        ImageView bang = new ImageView(this);
+        bang.setImageDrawable(new LobbyKit.Icon(LobbyKit.ICON_WARN, LobbyKit.NOTICE_EDGE));
+        noticeStrip.addView(bang, new LinearLayout.LayoutParams(dp(22), dp(28)));
+        noticeText = luckyText("", MIN_SP, Color.WHITE);
+        noticeText.setMaxLines(2);
+        noticeText.setEllipsize(TextUtils.TruncateAt.END);
+        noticeText.setPadding(dp(8), dp(2), dp(8), 0);
+        noticeStrip.addView(noticeText, new LinearLayout.LayoutParams(0, wrapped, 1f));
+        noticeGotIt = pill("GOT IT", ACCENT, 0xFF14080C, v -> dismissNotice());
+        noticeStrip.addView(noticeGotIt, wrap());
+        noticeStrip.setVisibility(View.GONE);
+        crumbRow.addView(noticeStrip, noticeBeside());
+        shell.addView(crumbRow, new LinearLayout.LayoutParams(match, wrapped));
+        // round 2: on a page the breadcrumb can take most of the row (BACK + 3 parts at 22 sp), so there the strip
+        // gets the row under it instead (refreshNotice moves it); on HOME it stays beside the HOME chip
+        noticeRow = new LinearLayout(this);
+        noticeRow.setOrientation(LinearLayout.HORIZONTAL);
+        shell.addView(noticeRow, new LinearLayout.LayoutParams(match, wrapped));
+
+        FrameLayout body = new FrameLayout(this);
+        homeView = new LinearLayout(this);
+        homeView.setOrientation(LinearLayout.HORIZONTAL);
+        body.addView(homeView, new FrameLayout.LayoutParams(match, match));
+        pageRow = new LinearLayout(this);
+        pageRow.setOrientation(LinearLayout.HORIZONTAL);
+        rail = new LinearLayout(this);
+        rail.setOrientation(LinearLayout.VERTICAL);
+        rail.setPadding(0, 0, dp(14), 0);
+        pageRow.addView(rail, new LinearLayout.LayoutParams(dp(236), match));
+        page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setGravity(Gravity.CENTER_HORIZONTAL);
+        page.setPadding(dp(6), dp(2), dp(6), dp(14));
+        // r41: scrolls, for the game file list and a last error on a short panel.
+        pageScroll = new ScrollView(this);
+        pageScroll.setFillViewport(true);
+        pageScroll.addView(page, new ScrollView.LayoutParams(match, wrapped));
+        pageRow.addView(pageScroll, new LinearLayout.LayoutParams(0, match, 1f));
+        body.addView(pageRow, new FrameLayout.LayoutParams(match, match));
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(match, 0, 1f);
+        blp.topMargin = dp(6);
+        shell.addView(body, blp);
+
+        // the hint bar (MENUS-PLAN.md rule 3): the pointer, then B, then the extra
+        LinearLayout hints = new LinearLayout(this);
+        hints.setOrientation(LinearLayout.HORIZONTAL);
+        hints.setGravity(Gravity.CENTER);
+        hints.setBackground(LobbyKit.round(0xE005070E, dp(22)));
+        hints.addView(hint("RT", LobbyKit.SLATE, "POINT + PULL TO PICK"));
+        hintBack = hint("B", LobbyKit.B_RED, "BACK");
+        hints.addView(hintBack);
+        hintHold = hint("B", LobbyKit.B_RED, "HOLD: HOME");
+        hints.addView(hintHold);
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(match, dp(50));
+        hlp.topMargin = dp(8);
+        shell.addView(hints, hlp);
+
+        // r147: the NOW PLAYING card, over the title bar's right end
+        nowPlaying = new TextView(this);
+        nowPlaying.setTextColor(Color.WHITE);
+        nowPlaying.setTypeface(lucky);
+        nowPlaying.setTextSize(MIN_SP);
+        nowPlaying.setMaxWidth(dp(440));
+        nowPlaying.setSingleLine(false);
+        nowPlaying.setMaxLines(2);
+        nowPlaying.setEllipsize(TextUtils.TruncateAt.END);
+        nowPlaying.setPadding(dp(16), dp(4), dp(18), dp(4));  // round 2: 52 dp, clear of the breadcrumb row
+        nowPlaying.setCompoundDrawablePadding(dp(10));
+        LobbyKit.Icon noteIcon = new LobbyKit.Icon(LobbyKit.ICON_NOTE, ACCENT);
+        noteIcon.setBounds(0, 0, dp(28), dp(28));
+        nowPlaying.setCompoundDrawables(noteIcon, null, null, null);
+        GradientDrawable card = new GradientDrawable();
+        card.setCornerRadius(dp(16));
+        card.setColor(Color.argb(240, 14, 20, 40));
+        card.setStroke(dp(3), ACCENT);
+        nowPlaying.setBackground(card);
+        nowPlaying.setAlpha(0f);
+        nowPlaying.setVisibility(View.GONE);
+        FrameLayout.LayoutParams npLp = new FrameLayout.LayoutParams(wrapped, wrapped, Gravity.TOP | Gravity.END);
+        npLp.topMargin = dp(4);
+        npLp.rightMargin = dp(18);
+        root.addView(nowPlaying, npLp);
+        setContentView(root);
+    }
+
+    /** r157: a line in Luckiest Guy (the game's font), capitals, as every heading, tile and button. */
+    private TextView luckyText(String text, int sp, int colour) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTypeface(lucky);
+        t.setAllCaps(true);
+        t.setTextSize(Math.max(sp, MIN_SP));  // round 2: never under the 40 px rule
+        t.setTextColor(colour);
+        t.setIncludeFontPadding(false);
+        return t;
+    }
+
+    /**
+     * r157 round 2: a title that must stay on one line (the tiles): `sp` at most, shrinking to MIN_SP to fit the
+     * tile's width (Android's own uniform autosize); launcher_preview.py flags any that wouldn't fit even at MIN_SP.
+     */
+    private TextView fitText(String text, int sp, int colour) {
+        TextView t = luckyText(text, sp, colour);
+        t.setMaxLines(1);  // not setSingleLine: its horizontal scrolling turns autosize off
+        t.setGravity(Gravity.CENTER);
+        t.setAutoSizeTextTypeUniformWithConfiguration(MIN_SP, Math.max(sp, MIN_SP), 1,
+                android.util.TypedValue.COMPLEX_UNIT_SP);
+        return t;
+    }
+
+    /** r157: one hint in the hint bar: the button's glyph (its colour, as the game's prompts) + what it does. */
+    private View hint(String glyph, int colour, String words) {
+        LinearLayout h = new LinearLayout(this);
+        h.setOrientation(LinearLayout.HORIZONTAL);
+        h.setGravity(Gravity.CENTER_VERTICAL);
+        h.setPadding(dp(14), 0, dp(14), 0);
+        TextView g = luckyText(glyph, 14, Color.WHITE);
+        g.setGravity(Gravity.CENTER);
+        GradientDrawable bg = LobbyKit.round(colour, dp(20));
+        bg.setStroke(dp(2), 0x60FFFFFF);
+        g.setBackground(bg);
+        g.setPadding(dp(glyph.length() > 1 ? 10 : 0), dp(3), dp(glyph.length() > 1 ? 10 : 0), 0);
+        g.setMinWidth(dp(40));
+        h.addView(g, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
+        TextView w = luckyText(words, MIN_SP, Color.WHITE);
+        w.setPadding(dp(10), dp(3), 0, 0);
+        h.addView(w, wrap());
+        return h;
+    }
+
+    /** r157: a small pressable pill (BACK, GOT IT, CHANGE ...). */
+    private Button pill(String text, int ink, int fill, View.OnClickListener onClick) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setTypeface(lucky);
+        b.setAllCaps(true);
+        b.setTextSize(MIN_SP);
+        b.setTextColor(ink);
+        b.setIncludeFontPadding(false);
+        b.setMinHeight(dp(40));
+        b.setMinimumHeight(dp(40));
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setPadding(dp(16), dp(4), dp(16), dp(2));
+        GradientDrawable bg = LobbyKit.round(fill, dp(20));
+        bg.setStroke(dp(2), 0x50FFFFFF);
+        b.setBackground(LobbyKit.pressable(bg, 0, dp(20), getResources().getDisplayMetrics().density));
+        b.setStateListAnimator(null);
+        b.setOnClickListener(onClick);
+        b.setEnabled(onClick != null);  // a breadcrumb part with nowhere to go: shown, no ring
+        return b;
+    }
+
+    /**
+     * r157: every page but HOME starts here. `colour` lights the last part of the breadcrumb (the section's colour),
+     * `back` is where B / the BACK pill goes, `railAt` the SETTINGS rail's lit row (-1: no rail), `path` the
+     * breadcrumb after HOME. Whatever the last page had running (a tournament link, a quick match search, its
+     * countdown, a RetroAchievements load) ends, as each page's own Back did before.
+     */
+    private void openPage(int colour, Runnable back, int railAt, String... path) {
+        leaveTourneyPage();  // r45
+        ++quickToken;        // r44: a search, or a "player found" countdown, stops with its page
+        searching = false;
+        ++raToken;           // r46
+        page.removeAllViews();
+        onHome = false;
+        onGuests = false;
+        onUpdate = false;
+        flashNote = null;
+        backAction = back;
+        homeView.removeAllViews();
+        homeView.setVisibility(View.GONE);
+        pageRow.setVisibility(View.VISIBLE);
+        rail.setVisibility(railAt >= 0 ? View.VISIBLE : View.GONE);
+        if (railAt >= 0) fillRail(railAt);
+        pageScroll.scrollTo(0, 0);
+        setCrumbs(colour, path);
+        hintBack.setAlpha(1f);
+        hintHold.setVisibility(path.length >= 2 ? View.VISIBLE : View.GONE);
+        refreshNotice();
+    }
+
+    /** r157: BACK pill (not on HOME), then HOME > ... > the page, the last part lit; the others jump there. */
+    private void setCrumbs(int colour, String[] path) {
+        crumbs.removeAllViews();
+        if (backAction != null) {
+            Button back = pill("BACK", Color.WHITE, 0xFF0E1428, v -> goBack());
+            LobbyKit.Icon arrow = new LobbyKit.Icon(LobbyKit.ICON_BACK, Color.WHITE);
+            arrow.setBounds(0, 0, dp(20), dp(20));
+            back.setCompoundDrawables(arrow, null, null, null);
+            back.setCompoundDrawablePadding(dp(6));
+            LinearLayout.LayoutParams lp = wrap();
+            lp.rightMargin = dp(12);
+            crumbs.addView(back, lp);
+        }
+        String[] all = new String[path.length + 1];
+        all[0] = "HOME";
+        System.arraycopy(path, 0, all, 1, path.length);
+        for (int i = 0; i < all.length; i++) {
+            final boolean last = i == all.length - 1;
+            if (i > 0) {
+                // round 2: a drawn gold arrow (the font has none, and the system's fallback isn't sure on Horizon)
+                ImageView sep = new ImageView(this);
+                sep.setImageDrawable(new LobbyKit.Icon(LobbyKit.ICON_CRUMB, ACCENT));
+                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(14), dp(18));
+                slp.leftMargin = dp(6);
+                slp.rightMargin = dp(6);
+                crumbs.addView(sep, slp);
+            }
+            if (last) {
+                TextView lit = luckyText(all[i], 19, colour == ACCENT ? LobbyKit.NAVY_BOT : Color.WHITE);
+                lit.setBackground(LobbyKit.round(colour, dp(16)));
+                lit.setPadding(dp(12), dp(6), dp(12), dp(3));
+                lit.setShadowLayer(colour == ACCENT ? 0 : dp(2), 0, dp(1), 0x90000000);
+                crumbs.addView(lit, wrap());
+            } else {
+                final Runnable to = crumbTarget(all[i]);
+                Button part = pill(all[i], LobbyKit.INK_SOFT, 0x00000000, to != null ? v -> to.run() : null);
+                part.setTextSize(MIN_SP);
+                part.setPadding(dp(8), dp(4), dp(8), dp(2));
+                crumbs.addView(part, wrap());
+            }
+        }
+    }
+
+    /** r157: where a breadcrumb part goes (HOME is "the top" from anywhere). */
+    private Runnable crumbTarget(String part) {
+        switch (part) {
+            case "HOME": return this::showHome;
+            case "ONLINE": return this::showOnline;
+            case "TOURNAMENTS": return this::showTourneys;
+            case "GUESTS": return this::showGuestsHub;
+            case "MAKE GUESTS": return this::showGuests;
+            case "WHO PLAYS WHO": return this::showCharacters;
+            case "SETTINGS":
+            case "GAME": return this::showGameSettings;
+            case "CONTROLS": return this::showControls;
+            case "SOUND": return this::showSound;
+            case "HOME GROUND": return this::showHomeGround;
+            case "ACHIEVEMENTS": return this::showRetroAch;
+            case "UPDATE": return this::showUpdate;
+            default: return null;
+        }
+    }
+
+    /** r157: the SETTINGS rail, `at` lit in the section's teal. */
+    private void fillRail(int at) {
+        rail.removeAllViews();
+        final float density = getResources().getDisplayMetrics().density;
+        for (int i = 0; i < RAIL_NAMES.length; i++) {
+            final int item = i;
+            Button b = new Button(this);
+            b.setText(RAIL_NAMES[i]);
+            b.setTypeface(lucky);
+            b.setAllCaps(true);
+            b.setTextSize(24);
+            b.setMaxLines(1);  // round 2: one line, shrinking to MIN_SP before it would wrap
+            b.setAutoSizeTextTypeUniformWithConfiguration(MIN_SP, 24, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+            b.setIncludeFontPadding(false);
+            b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            b.setPadding(dp(16), dp(4), dp(8), 0);
+            b.setTextColor(i == at ? Color.WHITE : LobbyKit.INK_SOFT);
+            if (i == at) b.setShadowLayer(dp(2), 0, dp(1), 0x90000000);
+            b.setBackground(LobbyKit.pressable(LobbyKit.round(i == at ? LobbyKit.SETTINGS : LobbyKit.TILE, dp(16)), 0,
+                    dp(16), density));
+            b.setStateListAnimator(null);
+            b.setOnClickListener(v -> railOpen(item));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60));
+            lp.bottomMargin = dp(8);
+            rail.addView(b, lp);
+        }
+    }
+
+    private void railOpen(int item) {
+        switch (item) {
+            case RAIL_CONTROLS: showControls(); break;
+            case RAIL_SOUND: showSound(); break;
+            case RAIL_HOME_GROUND: showHomeGround(); break;
+            case RAIL_ACH: showRetroAch(); break;
+            default: showGameSettings(); break;
+        }
+    }
+
+    /** r157: B / BACK, one level up (on HOME: nothing, so a stray B doesn't close the panel). */
+    private void goBack() {
+        if (backAction != null) backAction.run();
+    }
+
+    /**
+     * r157 (MENUS-PLAN.md rule 2): B, or the system's BACK (the Quest's menu button on a panel, a pad's B), goes
+     * back one level; held, it goes HOME. A text box's keyboard takes its own BACK first (the system hands it to the
+     * keyboard before the panel sees it).
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        final int k = e.getKeyCode();
+        if (k == KeyEvent.KEYCODE_BACK || k == KeyEvent.KEYCODE_BUTTON_B || k == KeyEvent.KEYCODE_ESCAPE) {
+            if (e.getAction() == KeyEvent.ACTION_DOWN) {
+                if (e.getRepeatCount() == 0) {
+                    bHeld = false;
+                } else if (!bHeld && e.getEventTime() - e.getDownTime() >= HOLD_B_MS) {
+                    bHeld = true;
+                    if (!onHome) showHome();
+                }
+                return true;
+            }
+            if (e.getAction() == KeyEvent.ACTION_UP) {
+                final boolean held = bHeld || e.getEventTime() - e.getDownTime() >= HOLD_B_MS;
+                if (!e.isCanceled()) {
+                    if (held && !bHeld) {
+                        if (!onHome) showHome();
+                    } else if (!held) {
+                        goBack();
+                    }
+                }
+                bHeld = false;
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
+    // ------------------------------------------------------------------ r157: the notice strip
+
+    /** r157: a note after an action (it used to go over the buttons), in the strip until GOT IT or the next page. */
+    private void notice(String text, int colour) {
+        flashNote = text;
+        flashColour = colour;
+        refreshNotice();
+    }
+
+    /**
+     * r157 (MENUS-PLAN.md launcher fix 4): one strip beside the breadcrumb, one note at a time: a note after an
+     * action first, then why online didn't start (r43), then the crash note (r41; its full text is on UPDATE).
+     */
+    private void refreshNotice() {
+        String text = null;
+        int colour = WARN;
+        View.OnClickListener tap = null;
+        if (flashNote != null) {
+            text = flashNote;
+            colour = flashColour;
+        } else {
+            text = onlineNoteText();
+            if (text == null) {
+                text = crashLine();
+                if (text != null) tap = v -> showUpdate();
+            }
+        }
+        // round 2: beside the HOME chip on HOME, its own row under the breadcrumb on a page
+        final ViewGroup want = onHome ? crumbRow : noticeRow;
+        if (noticeStrip.getParent() != want) {
+            ((ViewGroup) noticeStrip.getParent()).removeView(noticeStrip);
+            if (onHome) {
+                crumbRow.addView(noticeStrip, noticeBeside());
+            } else {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.topMargin = dp(4);
+                noticeRow.addView(noticeStrip, lp);
+            }
+        }
+        if (text == null) {
+            noticeStrip.setVisibility(View.GONE);
+            return;
+        }
+        final boolean bad = colour == WARN;
+        GradientDrawable bg = LobbyKit.round(bad ? LobbyKit.NOTICE_BG : 0xFF14203E, dp(20));
+        bg.setStroke(dp(3), bad ? LobbyKit.NOTICE_EDGE : ACCENT);
+        noticeStrip.setBackground(bg);
+        noticeText.setText(text);
+        noticeText.setTextColor(bad ? Color.WHITE : LobbyKit.CREAM);
+        noticeText.setOnClickListener(tap);
+        noticeText.setClickable(tap != null);
+        noticeStrip.setVisibility(View.VISIBLE);
+    }
+
+    private LinearLayout.LayoutParams noticeBeside() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp.leftMargin = dp(14);
+        return lp;
+    }
+
+    /** r157: GOT IT clears the note shown (the online note's and the crash note's files go, as their OK did). */
+    private void dismissNotice() {
+        if (flashNote != null) {
+            flashNote = null;
+        } else if (onlineNoteText() != null) {
+            //noinspection ResultOfMethodCallIgnored
+            new File(StrikersHome.homeDir(this), ONLINE_NOTE).delete();
+        } else {
+            //noinspection ResultOfMethodCallIgnored
+            crashFile().delete();
+            if (onUpdate) {
+                showUpdate();
+                return;
+            }
+        }
+        refreshNotice();
+    }
+
+    // ------------------------------------------------------------------ r157: HOME and the section pages
+
+    /** r157 (menu overhaul): HOME, five tiles, nothing scrolls: PLAY big, then ONLINE, GUESTS, SETTINGS, UPDATE. */
     private void showHome() {
         leaveTourneyPage();
+        ++quickToken;
+        searching = false;
+        ++raToken;
         page.removeAllViews();
         onHome = true;
         onGuests = false;
-        title("Quest 3 Strikers", 30);
-        if (update != null) {
-            note(shortName(update) + " is out.").setTextColor(ACCENT);
-            page.addView(button("Update now", true, v -> startUpdate()));
+        onUpdate = false;
+        flashNote = null;
+        backAction = null;
+        rail.setVisibility(View.GONE);
+        pageRow.setVisibility(View.GONE);
+        homeView.setVisibility(View.VISIBLE);
+        homeView.removeAllViews();
+        crumbs.removeAllViews();  // HOME alone: a gold chip, no BACK pill, no path
+        TextView here = luckyText("HOME", 19, LobbyKit.NAVY_BOT);
+        here.setBackground(LobbyKit.round(ACCENT, dp(16)));
+        here.setPadding(dp(12), dp(6), dp(12), dp(3));
+        crumbs.addView(here, wrap());
+        hintBack.setAlpha(0.35f);  // nothing to go back to: faded, in its place (MENUS-PLAN.md rule 3)
+        hintHold.setVisibility(View.GONE);
+
+        // round 2: our own drawn ball + goal burst (LobbyKit.Icon ICON_PLAY_ART), not the app icon; no game art ships
+        View play = tile(LobbyKit.PLAY, new LobbyKit.Icon(LobbyKit.ICON_PLAY_ART, Color.WHITE), "PLAY", playLine(),
+                null, true, v -> start(""));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.47f);
+        plp.rightMargin = dp(12);
+        homeView.addView(play, plp);
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        homeView.addView(right, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.53f));
+        final boolean guestsMade = io.github.newcoke.strikers.guests.GuestSetup.made(StrikersHome.homeDir(this));
+        LinearLayout top = tileRow(right, true);
+        top.addView(tile(LobbyKit.ONLINE, new LobbyKit.Icon(LobbyKit.ICON_GLOBE, Color.WHITE), "ONLINE",
+                "PLAY A FRIEND, TOURNAMENTS", null, false, v -> showOnline()), tileLp(true));
+        top.addView(tile(LobbyKit.GUESTS, new LobbyKit.Icon(LobbyKit.ICON_PEOPLE, Color.WHITE), "GUESTS",
+                guestsMade ? "MAKE + SWAP THEM" : "MAKE YOURS FIRST", guestsMade ? null : "NEW", false,
+                v -> showGuestsHub()), tileLp(false));
+        LinearLayout bottom = tileRow(right, false);
+        bottom.addView(tile(LobbyKit.SETTINGS, new LobbyKit.Icon(LobbyKit.ICON_GEAR, Color.WHITE), "SETTINGS",
+                "CONTROLS, SOUND, MORE", null, false, v -> showGameSettings()), tileLp(true));
+        bottom.addView(tile(LobbyKit.UPDATE, new LobbyKit.Icon(LobbyKit.ICON_DOWNLOAD, Color.WHITE), "UPDATE",
+                update != null ? shortName(update) + " is out" : "THIS VERSION, CRASH NOTE",
+                update != null ? "NEW" : null, false, v -> showUpdate()), tileLp(false));
+        refreshNotice();
+    }
+
+    private LinearLayout tileRow(LinearLayout parent, boolean first) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        if (!first) lp.topMargin = dp(12);
+        parent.addView(r, lp);
+        return r;
+    }
+
+    private LinearLayout.LayoutParams tileLp(boolean first) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        if (!first) lp.leftMargin = dp(12);
+        return lp;
+    }
+
+    /**
+     * r157: one big tile: the section's colour fading into the navy, a band of it along the top, the icon, the name,
+     * one line under it, and a red badge (NEW) in the corner. `big`: HOME's PLAY.
+     */
+    private View tile(int colour, android.graphics.drawable.Drawable art, String name, String sub, String badge,
+                      boolean big, View.OnClickListener onClick) {
+        return tile(colour, art, name, sub, badge, big, big ? 72 : 30, onClick);
+    }
+
+    /** tile() with the title's largest size (round 2: it shrinks to fit one line, never under MIN_SP). */
+    private View tile(int colour, android.graphics.drawable.Drawable art, String name, String sub, String badge,
+                      boolean big, int titleSp, View.OnClickListener onClick) {
+        final float density = getResources().getDisplayMetrics().density;
+        FrameLayout t = new FrameLayout(this);
+        GradientDrawable bg = LobbyKit.fade(LobbyKit.mix(colour, LobbyKit.TILE, big ? 0.1f : 0.6f),
+                LobbyKit.mix(colour, LobbyKit.NAVY_BOT, big ? 0.62f : 0.72f), dp(22));
+        t.setBackground(LobbyKit.pressable(bg, LobbyKit.mix(colour, Color.WHITE, 0.15f), dp(22), density));
+        t.setClickable(true);
+        t.setFocusable(true);
+        t.setOnClickListener(onClick);
+        t.setContentDescription(name);
+        LinearLayout in = new LinearLayout(this);
+        in.setOrientation(LinearLayout.VERTICAL);
+        in.setGravity(Gravity.CENTER);
+        in.setPadding(dp(10), dp(14), dp(10), dp(10));
+        ImageView icon = new ImageView(this);
+        icon.setImageDrawable(art);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        in.addView(icon, new LinearLayout.LayoutParams(dp(big ? 200 : 66), dp(big ? 200 : 66)));
+        TextView title = fitText(name, titleSp, big ? LobbyKit.CREAM : Color.WHITE);  // round 2: one line, always
+        title.setShadowLayer(dp(4), 0, dp(3), 0xD0000000);
+        title.setPadding(0, dp(big ? 6 : 8), 0, dp(4));
+        in.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(titleSp + 14)));
+        if (sub != null) {
+            TextView line = luckyText(sub, MIN_SP, big ? Color.WHITE : LobbyKit.INK_SOFT);
+            line.setGravity(Gravity.CENTER);
+            line.setMaxLines(2);
+            if (big) {
+                line.setBackground(LobbyKit.round(0x90000000, dp(20)));
+                line.setPadding(dp(20), dp(8), dp(20), dp(5));
+            }
+            LinearLayout.LayoutParams llp = wrap();
+            llp.topMargin = dp(big ? 12 : 2);
+            in.addView(line, llp);
         }
-        showLastError();
-        showOnlineNote();
-        note("Quest alpha. Online: both players pick Grudge Match in the same room, on the same Version."
-                + " Co-op Cup: the host picks a cup, the friend any cup; both start its next match.");
-        page.addView(button("Play offline", true, v -> start("")));
-        page.addView(button("Quick match", true, v -> showQuick()));  // r44
-        page.addView(button("Tournaments", true, v -> showTourneys()));  // r45
+        t.addView(in, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (badge != null) {
+            TextView b = luckyText(badge, MIN_SP, Color.WHITE);
+            GradientDrawable bb = LobbyKit.round(0xFFE0503C, dp(14));
+            bb.setStroke(dp(2), Color.WHITE);
+            b.setBackground(bb);
+            b.setPadding(dp(10), dp(5), dp(10), dp(2));
+            FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
+            blp.topMargin = dp(16);
+            blp.rightMargin = dp(12);
+            t.addView(b, blp);
+        }
+        return t;
+    }
+
+    /** r157: a row of tiles inside a page (ONLINE's four, GUESTS' two). */
+    private LinearLayout pageTiles(int height) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(height));
+        lp.topMargin = dp(4);
+        lp.bottomMargin = dp(10);
+        page.addView(r, lp);
+        return r;
+    }
+
+    /** r157: what PLAY starts, on its tile: "SUPER MARIO STRIKERS (USA) - PLUS 1.18", or what's in the way. */
+    private String playLine() {
+        final String edition = editionName(StrikersHome.edition(this));
+        if (!StrikersHome.hasAllFilesAccess() && !StrikersHome.hasGameDataInHome(StrikersHome.homeDir(this))) {
+            return "PULL: THE APP ASKS FOR FILE ACCESS FIRST";
+        }
+        String path = StrikersHome.describeGameData(this);
+        if (path == null) return "NO GAME FILE YET: PULL TO PICK IT";
+        File f = new File(path);
+        if (f.isDirectory()) return "THE EXTRACTED DISC\n" + edition;
+        GameFile.Found found = GameFile.check(f);
+        // round 2: the version on its own line (at MIN_SP the two don't fit one line on the tile)
+        return found.usable ? found.label + "\n" + edition : "GAME FILE PROBLEM: PULL TO PICK ANOTHER";
+    }
+
+    /**
+     * r157 (menu overhaul): HOME > ONLINE: QUICK MATCH, HOST A ROOM, JOIN WITH A CODE, TOURNAMENTS, the voice chat
+     * row, and the online / co-op how-to in one line (the full text stays in the README).
+     */
+    private void showOnline() {
+        openPage(LobbyKit.ONLINE, this::showHome, -1, "ONLINE");
+        LinearLayout four = pageTiles(212);  // round 2: the row, the how-to and the notice strip fit without scrolling
+        four.addView(tile(LobbyKit.ONLINE, new LobbyKit.Icon(LobbyKit.ICON_GLOBE, Color.WHITE), "QUICK MATCH",
+                "ANYONE, RIGHT NOW", null, false, 28, v -> showQuick()), tileLp(true));  // r44
         // r44d (Lance: "make sure everyones codes randomize"): a fresh code every time, not the last one.
-        page.addView(button("Host an online match", false, v -> showHost(newCode())));
-        page.addView(button("Join with a code", false, v -> showJoin()));
-        page.addView(button("Voice chat: " + (voiceOn() ? "On" : "Off"), false, v -> toggleVoice()));  // r44
-        page.addView(button(menuMusicText(), false, v -> cycleMenuMusic()));  // r147
-        page.addView(button("Home ground", false, v -> showHomeGround()));  // r61
-        // strikers-quest 1.14: guests made on this headset from the player's own game files
-        page.addView(button("Guest characters", !io.github.newcoke.strikers.guests.GuestSetup.made(StrikersHome.homeDir(this)),
-                v -> showGuests()));
-        page.addView(button("Characters", false, v -> showCharacters()));  // r66: guest characters
-        page.addView(button("Controls", false, v -> showControls()));  // r46
-        page.addView(button("RetroAchievements", false, v -> showRetroAch()));  // r46
-        page.addView(button("Choose game file", false, v -> showChooser(null, null)));
-        TextView game = note(gameStatus());
-        game.setTextSize(14);
-        // strikers-quest r43: Classic or Plus, by the app's own version below.
-        page.addView(button("Version: " + editionName(StrikersHome.edition(this)), false, v -> showVersions()));
+        four.addView(tile(LobbyKit.ONLINE, new LobbyKit.Icon(LobbyKit.ICON_HOUSE, Color.WHITE), "HOST A ROOM",
+                "GET A CODE", null, false, 28, v -> showHost(newCode())), tileLp(false));
+        four.addView(tile(LobbyKit.ONLINE, new LobbyKit.Icon(LobbyKit.ICON_CHAT, Color.WHITE), "JOIN WITH A CODE",
+                "TYPE THEIR CODE", null, false, 28, v -> showJoin()), tileLp(false));
+        four.addView(tile(LobbyKit.UPDATE, new LobbyKit.Icon(LobbyKit.ICON_TROPHY, Color.WHITE), "TOURNAMENTS",
+                "4 OR 8, KNOCKOUT", null, false, 28, v -> showTourneys()), tileLp(false));  // r45
+        valueRow(new LobbyKit.Icon(LobbyKit.ICON_CHAT, LobbyKit.INK_SOFT), "VOICE CHAT IN ONLINE MATCHES",
+                voiceOn() ? "ON" : "OFF", voiceOn(), v -> toggleVoice());  // r44
+        line("Grudge Match: same room. Co-op Cup: the host picks a cup, the friend any cup, both start its next"
+                + " match.");
+        line("Same release + version for both  (yours: " + editionName(StrikersHome.edition(this))
+                + ")").setTextColor(LobbyKit.INK_DIM);
+    }
+
+    /** r157 (menu overhaul): HOME > GUESTS: MAKE GUESTS (the converter) and WHO PLAYS WHO (the swaps). */
+    private void showGuestsHub() {
+        openPage(LobbyKit.GUESTS, this::showHome, -1, "GUESTS");
+        final boolean made = io.github.newcoke.strikers.guests.GuestSetup.made(StrikersHome.homeDir(this));
+        final int swapped = readGuests().size();
+        LinearLayout two = pageTiles(270);
+        two.addView(tile(LobbyKit.GUESTS, new LobbyKit.Icon(LobbyKit.ICON_PEOPLE, Color.WHITE), "MAKE GUESTS",
+                made ? "MADE ON THIS HEADSET" : "FROM YOUR OWN GAME FILES", made ? null : "NEW", false,
+                v -> showGuests()), tileLp(true));
+        two.addView(tile(LobbyKit.GUESTS, new LobbyKit.Icon(LobbyKit.ICON_SWAP, Color.WHITE), "WHO PLAYS WHO",
+                swapped == 0 ? "EVERYONE AS THEMSELVES" : swapped + " SWAPPED IN", null, false, v -> showCharacters()),
+                tileLp(false));
+        line("Who plays who closes a game left running: the new line-up starts with the next game.")
+                .setTextColor(LobbyKit.INK_DIM);
+    }
+
+    /**
+     * r157 (menu overhaul): HOME > UPDATE: update now (when a release is out), this version, and the last crash note
+     * in full (the strip shows its first line).
+     */
+    private void showUpdate() {
+        openPage(LobbyKit.UPDATE, this::showHome, -1, "UPDATE");
+        onUpdate = true;
+        title("Update now", 18);
+        if (update != null) {
+            line(shortName(update) + " is out.").setTextColor(ACCENT);
+            page.addView(button("Update now", true, v -> startUpdate()));
+        } else {
+            line("No newer release. The panel looks on GitHub each time it starts.");
+        }
+        title("This version", 18);
+        line(releaseName() + "  -  " + editionName(StrikersHome.edition(this)));
         TextView version = note(versionText());
-        version.setTextSize(12);
+        version.setTextSize(MIN_SP);
         version.setTextColor(MUTED);
+        title("Last crash note", 18);
+        final File f = crashFile();
+        if (f.isFile()) {
+            TextView t = note("The game closed last time with:\n" + crashText());
+            t.setTextColor(WARN);
+            t.setTextSize(MIN_SP);
+            page.addView(button("Clear it", false, v -> {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+                showUpdate();
+            }));
+        } else {
+            line("None: no message from the game's last run.");
+        }
     }
 
     /** strikers-quest r41: GitHub's latest release, once per panel start, off the UI thread. */
@@ -233,7 +874,13 @@ public class LobbyActivity extends Activity {
             if (r == null) return;
             runOnUiThread(() -> {
                 update = r;
+                // r157: HOME's UPDATE tile gets its NEW badge (and the UPDATE page its button), keeping a note up
+                final String keep = flashNote;
+                final int keepColour = flashColour;
                 if (onHome) showHome();
+                else if (onUpdate) showUpdate();
+                else return;
+                if (keep != null) notice(keep, keepColour);
             });
         }, "strikers-update-check").start();
     }
@@ -248,19 +895,16 @@ public class LobbyActivity extends Activity {
             try {
                 startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.parse("package:" + getPackageName())));
-                showHome();
-                note("Allow this app to install its update, then come back here and press Update now"
-                        + " again.").setTextColor(WARN);
+                showUpdate();  // r157: the note in the strip
+                notice("Allow this app to install its update, then come back and press Update now again.", WARN);
                 return;
             } catch (Exception e) {
                 // fall through to the installer
             }
         }
-        onHome = false;
-        page.removeAllViews();
+        openPage(LobbyKit.UPDATE, this::showUpdate, -1, "UPDATE", "UPDATING");  // r157: BACK pill for Back
         title("Updating to " + shortName(r), 24);
         final TextView status = note("Downloading... 0%");
-        page.addView(button("Back", false, v -> showHome()));
         new Thread(() -> {
             try {
                 File apk = Updater.download(r, new File(getCacheDir(), "update"),
@@ -290,8 +934,8 @@ public class LobbyActivity extends Activity {
             if (confirm != null) startActivity(confirm);
         } else if (status != PackageInstaller.STATUS_SUCCESS) {
             String msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
-            showHome();
-            note("The update wasn't installed" + (msg != null ? ": " + msg : ".")).setTextColor(WARN);
+            showUpdate();  // r157: the note in the strip
+            notice("The update wasn't installed" + (msg != null ? ": " + msg : "."), WARN);
         }
     }
 
@@ -303,33 +947,43 @@ public class LobbyActivity extends Activity {
 
     /**
      * strikers-quest r41: the message the game closed with last time (fatal.c writes it; under the
-     * immersive view its own message box is never seen), with an OK that clears it.
+     * immersive view its own message box is never seen). r157: its first line is in the notice strip (GOT IT
+     * clears it, as OK did), the first 12 lines on UPDATE > LAST CRASH NOTE.
      */
-    private void showLastError() {
-        final File f = new File(StrikersHome.homeDir(this), "last-error.txt");
-        if (!f.isFile()) return;
-        String text = readText(f, 1500);
+    private File crashFile() {
+        return new File(StrikersHome.homeDir(this), "last-error.txt");
+    }
+
+    private String crashText() {
+        String text = readText(crashFile(), 1500);
         String[] lines = text.split("\n");
         StringBuilder shown = new StringBuilder();
         for (int i = 0; i < lines.length && i < 12; i++) shown.append(i > 0 ? "\n" : "").append(lines[i]);
-        TextView t = note("The game closed last time with this message:\n\n" + shown);
-        t.setTextColor(WARN);
-        t.setTextSize(14);
-        page.addView(button("OK", false, v -> {
-            //noinspection ResultOfMethodCallIgnored
-            f.delete();
-            showHome();
-        }));
+        return shown.toString();
+    }
+
+    /** r157: the crash note's line for the strip, null when there is none. */
+    private String crashLine() {
+        if (!crashFile().isFile()) return null;
+        String first = "";
+        for (String l : crashText().split("\n")) {
+            if (!l.trim().isEmpty()) {
+                first = l.trim();
+                break;
+            }
+        }
+        if (first.length() > 70) first = first.substring(0, 70) + "...";
+        return "The game closed last time: " + first + "  (UPDATE > LAST CRASH NOTE)";
     }
 
     /**
-     * strikers-quest r43: why the last online match didn't start, in words, with an OK that clears it.
-     * The game comes back here when it refuses one (StrikersActivity), so this is what the player sees
-     * first, with the Version button on the same page. Before r43 the reason was only in the log.
+     * strikers-quest r43: why the last online match didn't start, in words. The game comes back here when it
+     * refuses one (StrikersActivity), so this is what the player sees first. Before r43 the reason was only in the
+     * log. r157: in the notice strip (GOT IT clears it, as OK did), null when there is none.
      */
-    private void showOnlineNote() {
+    private String onlineNoteText() {
         final File f = new File(StrikersHome.homeDir(this), ONLINE_NOTE);
-        if (!f.isFile()) return;
+        if (!f.isFile()) return null;
         String why = readText(f, 200);
         String mine = StrikersHome.edition(this);
         String text;
@@ -339,27 +993,22 @@ public class LobbyActivity extends Activity {
             if (theirs.equals(mine)) {  // already switched to theirs
                 //noinspection ResultOfMethodCallIgnored
                 f.delete();
-                return;
+                return null;
             }
-            text = "Your friend is playing " + editionName(theirs) + ". You are on " + editionName(mine)
-                    + ".\nOne of you: switch Version to match, then start the match again.";
+            // r157: where the Version is now, in the words of the page
+            text = "Online didn't start: your friend is on " + editionName(theirs) + ", you're on "
+                    + editionName(mine) + ". One of you: SETTINGS > GAME > VERSION, then start again.";
         } else if (why.startsWith(NOTE_VERSION_CHANGED)) {
             text = "The game was still open on the other Version, so it closed. Press the same button"
                     + " again to play " + editionName(mine) + ".";
         } else {
-            text = "Your friend has a different release of Quest 3 Strikers, so you can't play online"
-                    + " together. Both of you need the same one (Update now, or the GitHub page).";
+            text = "Online didn't start: your friend has a different release. Both of you need the same one"
+                    + " (UPDATE, or the GitHub page).";
         }
-        TextView t = note(text);
-        t.setTextColor(WARN);
-        page.addView(button("OK", false, v -> {
-            //noinspection ResultOfMethodCallIgnored
-            f.delete();
-            showHome();
-        }));
+        return text;
     }
 
-    /** strikers-quest r43: one line for {@link #showOnlineNote} (StrikersActivity, in the game's process). */
+    /** strikers-quest r43: one line for {@link #onlineNoteText} (StrikersActivity, in the game's process). */
     static void writeOnlineNote(android.content.Context context, String line) {
         try (java.io.OutputStream out = new java.io.FileOutputStream(
                 new File(StrikersHome.homeDir(context), ONLINE_NOTE))) {
@@ -388,31 +1037,93 @@ public class LobbyActivity extends Activity {
      * that are no longer strikers as they know it"). A tap saves it at once; the game takes it when it
      * starts (StrikersHome.prepare -> STRIKERS_EDITION, src/platform/edition.cpp).
      */
-    private void showVersions() {
-        leaveTourneyPage();  // r45
-        page.removeAllViews();
-        onHome = false;
-        title("Choose your version", 24);
-        note("To play online, you and your friend need the same one.");
+    // r157 (menu overhaul): the Version picker and "Choose game file" are one page now, SETTINGS > GAME (the
+    // mockup's 3_launcher_settings.png): the game file card with CHANGE, then the two Versions side by side.
+    private void showGameSettings() {
+        openPage(LobbyKit.SETTINGS, this::showHome, RAIL_GAME, "SETTINGS", "GAME");
+        final float density = getResources().getDisplayMetrics().density;
+        // the game file (r41's gameStatus, as a card)
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setBackground(LobbyKit.round(LobbyKit.TILE, dp(20)));
+        card.setPadding(dp(18), dp(14), dp(16), dp(14));
+        ImageView disk = new ImageView(this);
+        disk.setImageDrawable(new LobbyKit.Icon(LobbyKit.ICON_FLOPPY, Color.WHITE));
+        card.addView(disk, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        words.setPadding(dp(16), 0, dp(10), 0);
+        words.addView(luckyText("GAME FILE", 15, LobbyKit.INK_DIM), wrap());
+        final String[] file = gameFileLines();
+        TextView name = luckyText(file[0], 22, Color.WHITE);
+        name.setPadding(0, dp(4), 0, dp(2));
+        words.addView(name, wrap());
+        TextView where = new TextView(this);
+        where.setText(file[1]);
+        where.setTextSize(MIN_SP);
+        where.setTypeface(lucky);  // round 2
+        where.setAllCaps(true);
+        where.setTextColor(file[2] != null ? OK_GREEN : WARN);
+        words.addView(where, wrap());
+        card.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button change = pill("CHANGE", ACCENT, LobbyKit.PILL, v -> showChooser(null, null));
+        change.setTextSize(24);
+        change.setPadding(dp(24), dp(10), dp(24), dp(6));
+        card.addView(change, wrap());
+        page.addView(card, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // strikers-quest r43: the Version picker (Lance: "we draw a line after 1.2 to notify versions after
+        // that are no longer strikers as they know it"). A tap saves it at once; the game takes it when it
+        // starts (StrikersHome.prepare -> STRIKERS_EDITION, src/platform/edition.cpp). r157: side by side, the
+        // gold line between them, a green check on the one chosen.
+        title("Version", 18);
         final String current = StrikersHome.edition(this);
-        page.addView(versionRow(StrikersHome.CLASSIC, "Mario Strikers as you know it", current));
-        // The line: everything under it adds to the game.
-        TextView label = note("Below this line: not Strikers as you know it");
-        label.setTextColor(ACCENT);
-        label.setTextSize(15);
-        label.setPadding(0, dp(18), 0, dp(6));
-        View line = new View(this);
-        line.setBackgroundColor(ACCENT);
-        page.addView(line, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
-        page.addView(versionRow(StrikersHome.PLUS, "New: life-size goal scorer, GOAL SCORED BY banner,"
-                + " longer goal replay, living crowd", current));
-        page.addView(button("Back", false, v -> showHome()));
+        LinearLayout two = new LinearLayout(this);
+        two.setOrientation(LinearLayout.HORIZONTAL);
+        two.addView(versionCard(StrikersHome.CLASSIC, "Strikers as you know it", current, density),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        // The line: everything past it adds to the game.
+        View gold = new View(this);
+        gold.setBackgroundColor(ACCENT);
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(4), ViewGroup.LayoutParams.MATCH_PARENT);
+        glp.leftMargin = dp(10);
+        glp.rightMargin = dp(10);
+        two.addView(gold, glp);
+        two.addView(versionCard(StrikersHome.PLUS, "Life-size scorer, scorer banner, longer replay, living crowd", current, density), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        page.addView(two, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        line("Right of the line: not Strikers as you know it").setTextColor(ACCENT);
+        line("Online: you both need the same one. Changing it closes a running game.");
     }
 
-    /** strikers-quest r43: one Version in the picker, its name large over what it is. */
-    private Button versionRow(String edition, String about, String current) {
-        String name = editionName(edition) + (edition.equals(current) ? "   (chosen)" : "");
-        Button b = row(name + "\n" + about, true, v -> {
+    /** r157: the game file card's lines: the game's name, where it is (or what's wrong), non-null [2] = ready. */
+    private String[] gameFileLines() {
+        if (!StrikersHome.hasAllFilesAccess()) {
+            return new String[] {"NOT FOUND YET", "The app needs file access to look for it (CHANGE asks).", null};
+        }
+        String path = StrikersHome.describeGameData(this);
+        if (path == null) return new String[] {"NO GAME FILE YET", "Press CHANGE to pick yours.", null};
+        File f = new File(path);
+        if (f.isDirectory()) return new String[] {"THE EXTRACTED DISC", "Ready - " + GameFile.shortPath(f), ""};
+        GameFile.Found found = GameFile.check(f);
+        return found.usable
+                ? new String[] {found.label, "Ready - " + GameFile.shortPath(f), ""}
+                : new String[] {f.getName(), "Problem: " + found.problem, null};
+    }
+
+    /** strikers-quest r43: one Version in the picker, its name large over what it is. r157: a card, lit + a green
+     *  check when chosen. */
+    private View versionCard(String edition, String about, String current, float density) {
+        final boolean chosen = edition.equals(current);
+        FrameLayout c = new FrameLayout(this);
+        c.setBackground(LobbyKit.pressable(LobbyKit.round(chosen ? LobbyKit.TILE_ON : LobbyKit.TILE, dp(20)), 0,
+                dp(20), density));
+        c.setClickable(true);
+        c.setFocusable(true);
+        c.setOnClickListener(v -> {
             if (!edition.equals(StrikersHome.edition(this))) {
                 StrikersHome.chooseEdition(this, edition);
                 endRunningGame();
@@ -420,13 +1131,34 @@ public class LobbyActivity extends Activity {
                 //noinspection ResultOfMethodCallIgnored
                 new File(StrikersHome.homeDir(this), ONLINE_NOTE).delete();
             }
-            showHome();
+            showGameSettings();
         });
-        SpannableString text = new SpannableString(b.getText());
-        text.setSpan(new RelativeSizeSpan(1.35f), 0, name.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        text.setSpan(new StyleSpan(Typeface.BOLD), 0, name.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        b.setText(text);
-        return b;
+        LinearLayout in = new LinearLayout(this);
+        in.setOrientation(LinearLayout.VERTICAL);
+        in.setPadding(dp(20), dp(18), dp(56), dp(18));
+        TextView n = luckyText(editionName(edition), 30, chosen ? ACCENT : Color.WHITE);
+        n.setShadowLayer(dp(3), 0, dp(2), 0xA0000000);
+        in.addView(n, wrap());
+        TextView a = luckyText(about, 15, LobbyKit.INK_SOFT);
+        a.setPadding(0, dp(10), 0, 0);
+        in.addView(a, wrap());
+        c.addView(in);
+        if (chosen) c.addView(checkMark(), checkLp());
+        return c;
+    }
+
+    /** r157 (MENUS-PLAN.md rule 8): "chosen" is a green check, nothing else. */
+    private ImageView checkMark() {
+        ImageView v = new ImageView(this);
+        v.setImageDrawable(new LobbyKit.Icon(LobbyKit.ICON_CHECK, Color.WHITE));
+        return v;
+    }
+
+    private FrameLayout.LayoutParams checkLp() {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.TOP | Gravity.END);
+        lp.topMargin = dp(12);
+        lp.rightMargin = dp(12);
+        return lp;
     }
 
     /**
@@ -478,32 +1210,33 @@ public class LobbyActivity extends Activity {
      */
     private void showChooser(String code, String reason) {
         if (!StrikersHome.hasAllFilesAccess() && askForFileAccess(this)) {
-            showHome();
-            accessNote = note("Turn on \"Allow access to manage all files\" so the game can find your"
-                    + " game file, then come back here and press the same button again.");
+            // r157: the page stays; the note goes in the strip
+            notice("Turn on \"Allow access to manage all files\" so the game can find your game file, then press"
+                    + " the same button again.", WARN);
             return;
         }
-        leaveTourneyPage();  // r45
-        page.removeAllViews();
-        onHome = false;
-        title("Choose your game file", 24);
+        // r157: SETTINGS > GAME > GAME FILE from CHANGE; from PLAY / a match (code != null) BACK goes HOME
+        if (code == null) {
+            openPage(LobbyKit.SETTINGS, this::showGameSettings, RAIL_GAME, "SETTINGS", "GAME", "GAME FILE");
+        } else {
+            openPage(LobbyKit.PLAY, this::showHome, -1, "GAME FILE");
+        }
         if (reason != null) note(reason).setTextColor(WARN);
         final TextView status = note("Looking for game files on this Quest...");
         final LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.setGravity(Gravity.CENTER_HORIZONTAL);
-        page.addView(list, wrap());
+        page.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
         page.addView(button("Look again", false, v -> showChooser(code, null)));
-        page.addView(button("Back", false, v -> showHome()));
         final int token = ++chooserToken;
         new Thread(() -> {
             final List<GameFile.Found> found = GameFile.scan();
             runOnUiThread(() -> {
                 if (token != chooserToken || list.getParent() != page) return;  // left this page
                 if (found.isEmpty()) {
-                    status.setText("No .iso, .rvz or .wia file found on this Quest.\n\nOn your PC, open"
-                            + " SideQuest, click the folder icon, open Download, and drag your game file"
-                            + " in. Then press Look again.");
+                    status.setText("No .iso, .rvz or .wia file on this Quest.\nOn your PC: SideQuest, the folder"
+                            + " icon, Download, drag your game file in. Then LOOK AGAIN.");
                     return;
                 }
                 status.setText("Tap your game file:");
@@ -511,11 +1244,11 @@ public class LobbyActivity extends Activity {
                 for (GameFile.Found f : found) {
                     String where = GameFile.shortPath(f.file) + " · " + GameFile.size(f.file.length());
                     boolean isChosen = f.file.getAbsolutePath().equals(chosen);
-                    String text = f.file.getName() + (isChosen ? "   (chosen)" : "") + "\n"
+                    String text = f.file.getName() + "\n"
                             + (f.usable ? f.label : f.label + ": " + f.problem) + "\n" + where;
-                    list.addView(row(text, f.usable, f.usable ? v -> {
+                    list.addView(checkRow(text, isChosen, f.usable, f.usable ? v -> {
                         GameFile.choose(this, f.file.getAbsolutePath());
-                        if (code != null) start(code); else showHome();
+                        if (code != null) start(code); else showGameSettings();  // r157: back to GAME
                     } : null));
                 }
             });
@@ -523,40 +1256,34 @@ public class LobbyActivity extends Activity {
     }
 
     private void showHost(String code) {
-        leaveTourneyPage();  // r45
-        page.removeAllViews();
-        onHome = false;
+        openPage(LobbyKit.ONLINE, this::showOnline, -1, "ONLINE", "HOST A ROOM");  // r157
         title("Your room code", 24);
         TextView big = new TextView(this);
         big.setText(spaced(code));
         big.setTextColor(ACCENT);
-        big.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        big.setTextSize(64);
+        big.setTypeface(lucky);  // r157: the game's font (no I, O, 0 or 1 to mix up in it either)
+        big.setShadowLayer(dp(4), 0, dp(3), 0xC0000000);
+        big.setTextSize(72);
         big.setGravity(Gravity.CENTER);
         big.setPadding(0, dp(8), 0, dp(8));
         page.addView(big, wrap());
         hostedCode = code;  // r64
-        note("Tell your friend this code. Both of you: Grudge Match, pick your team, start.\n"
-                + "Co-op Cup (same team, vs the computer): you go into your cup and start its next match; "
-                + "your friend goes into any cup and starts its next match too. Your cup is the one you play: "
-                + "you're the captain and one sidekick, your friend the other two sidekicks.");
+        note("Tell your friend this code. Both: Grudge Match, pick your team, start.\n"
+                + "Co-op Cup: you start your cup's next match, your friend any cup's. Your cup is played: you're the"
+                + " captain + 1 sidekick, your friend the other 2.");
         page.addView(button("Start", true, v -> start(code)));
         page.addView(button("New code", false, v -> showHost(newCode())));
-        page.addView(button("Back", false, v -> showHome()));
     }
 
     private void showJoin() {
-        leaveTourneyPage();  // r45
-        page.removeAllViews();
-        onHome = false;
-        title("Join a room", 24);
+        openPage(LobbyKit.ONLINE, this::showOnline, -1, "ONLINE", "JOIN WITH A CODE");  // r157
         note("Type the code your friend sees.");
         EditText field = new EditText(this);
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         field.setFilters(new InputFilter[] {new InputFilter.AllCaps(), new InputFilter.LengthFilter(8)});
-        field.setTextSize(40);
-        field.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        field.setTextSize(44);
+        field.setTypeface(lucky);  // r157
         field.setTextColor(Color.WHITE);
         field.setHintTextColor(Color.GRAY);
         field.setHint("CODE");
@@ -581,7 +1308,6 @@ public class LobbyActivity extends Activity {
             return true;
         });
         page.addView(button("Join", true, v -> join.run()));
-        page.addView(button("Back", false, v -> showHome()));
         field.requestFocus();
     }
 
@@ -593,22 +1319,16 @@ public class LobbyActivity extends Activity {
      */
     private void showQuick() {
         if (!readyToStart(null)) return;  // the game file first: no use matching a game that can't start
-        leaveTourneyPage();  // r45
-        page.removeAllViews();
-        onHome = false;
+        // r157: BACK (the pill, or B) is Cancel: openPage on any other page ends the search (++quickToken)
+        openPage(LobbyKit.ONLINE, this::showOnline, -1, "ONLINE", "QUICK MATCH");
         searching = true;
-        title("Quick match", 24);
-        final TextView status = note("Looking for another player...");
-        status.setTextColor(ACCENT);
+        final TextView status = luckyText("Looking for another player...", 26, ACCENT);
+        status.setGravity(Gravity.CENTER);
+        status.setPadding(0, dp(20), 0, dp(14));
+        page.addView(status, wrap());
         String edition = StrikersHome.edition(this);
-        note("You'll be matched with someone playing " + editionName(edition) + " right now. Then both of"
-                + " you: Grudge Match, pick your team, start." + (voiceOn() ? "" : "\nVoice chat is off"
-                + " (the button on the first page)."));
-        page.addView(button("Cancel", false, v -> {
-            ++quickToken;
-            searching = false;
-            showHome();
-        }));
+        note("Matching you with someone on " + editionName(edition) + ". Then both: Grudge Match, pick your team,"
+                + " start." + (voiceOn() ? "" : "\nVoice chat is off (ONLINE > VOICE CHAT).") + "\nBACK stops looking.");
         final int token = ++quickToken;
         final String key = (StrikersHome.CLASSIC.equals(edition) ? "C" : "P") + ONLINE_PROTOCOL;
         new Thread(() -> quickLoop(token, key, status), "strikers-quick").start();
@@ -667,12 +1387,13 @@ public class LobbyActivity extends Activity {
 
     /** strikers-quest r44: a player was found; a moment to read what to do, then the game starts. */
     private void matched(String code) {
+        // r157: BACK on this page stops the start (openPage's ++quickToken), as leaving it never could before
+        openPage(LobbyKit.ONLINE, this::showOnline, -1, "ONLINE", "QUICK MATCH", "PLAYER FOUND");
         searching = false;
-        page.removeAllViews();
         title("Player found!", 28);
-        TextView t = note("In the game: Grudge Match, pick your team, start. The match begins when you both"
-                + " have.\n\n(Your room: " + spaced(code) + ")");
-        t.setTextSize(18);
+        TextView t = note("In the game: Grudge Match, pick your team, start. It begins when you both have.\n(Your"
+                + " room: " + spaced(code) + ")");
+        t.setTextSize(MIN_SP);
         final int token = ++quickToken;
         page.postDelayed(() -> {
             if (token == quickToken) start(code);
@@ -732,34 +1453,28 @@ public class LobbyActivity extends Activity {
     }
 
     private void showControls() {
-        leaveTourneyPage();
-        page.removeAllViews();
-        onHome = false;
-        title("Controls", 26);
-        note("Tap a game button, then the Quest button you want for it. It changes right away, even with"
-                + " the game open. A Bluetooth controller follows the same buttons (A/B/X/Y, LT/RT, RB, Start).");
+        openPage(LobbyKit.SETTINGS, this::showHome, RAIL_CONTROLS, "SETTINGS", "CONTROLS");  // r157
+        note("Pick a game button, then its Quest button. It changes at once, even in a match. A Bluetooth pad"
+                + " follows the same map (A/B/X/Y, LT/RT, RB, Start).");
         final String[] map = readControls();
         for (int i = 0; i < ACTIONS.length; i++) {
             final int action = i;
             final String head = ACTION_LABELS[i];
             final boolean changed = !map[i].equals(DEFAULT_CONTROLS[i]);
-            Button b = row(head + "\n" + sourceLabel(map[i]) + (changed ? "   (changed)" : ""), true,
-                    v -> showControlPick(action));
-            SpannableString text = new SpannableString(b.getText());
-            text.setSpan(new StyleSpan(Typeface.BOLD), 0, head.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            b.setText(text);
-            page.addView(b);
+            // r157: a changed button's Quest button in a gold pill (no "(changed)"); round 2: one row each, the game
+            // button left, its Quest button in the pill (half the height of two-line rows, less to scroll)
+            valueRow(null, head, sourceLabel(map[i]), changed ? ACCENT : 0xFF0E1428,
+                    changed ? LobbyKit.NAVY_BOT : Color.WHITE, v -> showControlPick(action));
         }
-        TextView fixed = note("Always: left stick moves, right stick is the GameCube C-stick, clicking a stick"
-                + " twice switches the view, and the left grip moves the table, or the big screen while you"
-                + " point at its edge (it lights up).");
-        fixed.setTextSize(14);
+        TextView fixed = note("Always: left stick moves, right stick = C-stick, a stick clicked twice switches the"
+                + " view, left grip moves the table (or the big screen at its lit edge).");
+        fixed.setTextSize(MIN_SP);
         fixed.setTextColor(MUTED);
-        page.addView(button("Back to the default buttons", false, v -> {
+        // r157: "Back to the default buttons" read like BACK; the same button, its own words
+        page.addView(button("Default buttons", false, v -> {
             writeControls(DEFAULT_CONTROLS.clone());
             showControls();
         }));
-        page.addView(button("Back", false, v -> showHome()));
     }
 
     // --- strikers-quest r61: the home ground (Lance + GPT: "give people their own Strikers home ground
@@ -810,7 +1525,10 @@ public class LobbyActivity extends Activity {
             if (!l.trim().isEmpty()) unlocked.add(l.trim());
         }
         List<HomeGuest> out = new ArrayList<>();
-        for (String line : readText(new File(home, "guests/roster.txt"), 200000).split("\n")) {
+        // r183: and the ORIGINALS shipped in the APK (guests/originals.txt)
+        String rosters = readText(new File(home, "guests/roster.txt"), 200000) + "\n"
+                + readText(new File(home, "guests/originals.txt"), 64000);
+        for (String line : rosters.split("\n")) {
             if (line.startsWith("#")) continue;
             String[] f = line.split("\t");
             if (f.length < 5 || !f[1].trim().equals("captain")) continue;
@@ -914,13 +1632,9 @@ public class LobbyActivity extends Activity {
     }
 
     private void showHomeGround() {
-        leaveTourneyPage();
-        page.removeAllViews();
-        onHome = false;
-        title("Home ground", 26);
-        note("Your home team's colours, your trophies, your rivals and what you earn show up around you: by"
-                + " the trophy shelf, beside the big screen, on the Tabletop, and in your suite when you"
-                + " enter a cup.");
+        openPage(LobbyKit.SETTINGS, this::showHome, RAIL_HOME_GROUND, "SETTINGS", "HOME GROUND");  // r157
+        note("Your home team's colours, trophies and rivals show up around you: the shelf, by the big screen,"
+                + " on the Tabletop, in your cup suite.");
         final String pick = readHomePick();
         // r90 (Lance: "its still only available for the base players"): every character on this headset's
         // roster too, by game; the game takes a guest's pack as well as a captain's number.
@@ -931,19 +1645,20 @@ public class LobbyActivity extends Activity {
         note("Your home captain now: " + current);
         // r134 (Lance: "when they select home ground at the beginning they can choose (NONE) to have none"): no home
         // ground at all - no board, no banners by the screen, no corner, no trophy shelf (the game reads "none")
-        page.addView(row("None: no home ground (no board, banners, corner or trophy shelf)"
-                + (pick.equals("none") ? "   (current)" : ""), true, v -> {
+        // r157: the one chosen lit with a green check (no "(current)")
+        page.addView(checkRow("None: no home ground (no board, banners, corner or trophy shelf)",
+                pick.equals("none"), true, v -> {
             writeHomePick("none");
             showHomeGround();
         }));
-        page.addView(row("Automatic: the captain you play most" + (pick.equals("-1") ? "   (current)" : ""), true, v -> {
+        page.addView(checkRow("Automatic: the captain you play most", pick.equals("-1"), true, v -> {
             writeHomePick("-1");
             showHomeGround();
         }));
         title("Super Mario Strikers", 18);
         for (final int c : HOME_CAPTAINS) {
             final String key = Integer.toString(c);
-            page.addView(row(className(c) + (pick.equals(key) ? "   (current)" : ""), true, v -> {
+            page.addView(checkRow(className(c), pick.equals(key), true, v -> {
                 writeHomePick(key);
                 showHomeGround();
             }));
@@ -954,14 +1669,13 @@ public class LobbyActivity extends Activity {
                 lastGame = g.game;
                 title(g.game.equals("Colosseum") ? "Pokemon Colosseum" : g.game, 18);
             }
-            page.addView(row(g.name + (pick.equals(g.pack) ? "   (current)" : ""), true, v -> {
+            page.addView(checkRow(g.name, pick.equals(g.pack), true, v -> {
                 writeHomePick(g.pack);
                 showHomeGround();
             }));
         }
         TextView summary = note(homeSummary(guestNames));
-        summary.setTextSize(14);
-        page.addView(button("Back", false, v -> showHome()));
+        summary.setTextSize(MIN_SP);
     }
 
     // --- strikers-quest r66: guest characters (src/platform/xr_guest.cpp) ---
@@ -1058,16 +1772,13 @@ public class LobbyActivity extends Activity {
 
     private void showGuests() {
         final io.github.newcoke.strikers.guests.GuestSetup.Found found = guestFound;
-        leaveTourneyPage();
-        page.removeAllViews();
-        onHome = false;
+        openPage(LobbyKit.GUESTS, this::showGuestsHub, -1, "GUESTS", "MAKE GUESTS");  // r157 (R: MAKE GUESTS)
         onGuests = true;
         guestProgress = null;
-        title("Guest characters", 26);
-        TextView rule = note("YOU NEED YOUR OWN GAME FILES FOR THE GUEST CHARACTERS.\nCopy them anywhere on the Quest"
-                + " (Download is fine) as .iso or .rvz. The Wii games (Mario Strikers Charged, Marvel: Ultimate Alliance):"
-                + " .rvz only (Dolphin: Convert File Format)."
-                + " Nothing from these games comes with this app: your headset makes the characters from your files.");
+        // round 2: cut to the 40 px rule; the full text stays in the README
+        TextView rule = note("You need your own game files for the guests: .iso or .rvz, anywhere on the Quest (the Wii"
+                + " games: .rvz only, Dolphin's Convert File Format). Nothing from them comes with this app: your"
+                + " headset makes the guests.");
         rule.setTextColor(ACCENT);
         if (found == null && !guestScanning) scanGuests();
         if (found == null) {
@@ -1078,21 +1789,22 @@ public class LobbyActivity extends Activity {
                 TextView t = note(io.github.newcoke.strikers.guests.GuestSetup.NAMES[i] + ": "
                         + (f != null ? "found  (" + GameFile.shortPath(f) + ")" : "not found") + "\n"
                         + io.github.newcoke.strikers.guests.GuestSetup.GIVES[i]);
-                t.setTextSize(15);
+                t.setTextSize(MIN_SP);
                 t.setTextColor(f != null ? Color.WHITE : MUTED);
             }
             for (String p : found.problems) note(p).setTextColor(WARN);
             if (StrikersHome.strikersImage(this) == null) {
-                note("Pick your Super Mario Strikers file first (Choose game file): the guests' kits and moves come"
-                        + " from it.").setTextColor(WARN);
+                note("Pick your Super Mario Strikers file first (SETTINGS > GAME > CHANGE): the guests' kits and moves"
+                        + " come from it.").setTextColor(WARN);
             }
         }
         final File home = StrikersHome.homeDir(this);
         if (io.github.newcoke.strikers.guests.GuestSetup.running) {
             guestProgress = note(guestLine());
             guestProgress.setTextColor(ACCENT);
-            note("Keep the app open while it works (a few minutes). The game can't start until it's done.").setTextSize(14);
-        } else if (found != null && !found.files.isEmpty() && StrikersHome.strikersImage(this) != null) {
+            note("Keep the app open (a few minutes). The game can't start until it's done.");
+        } else if (found != null && StrikersHome.strikersImage(this) != null) {
+            // (r178: with no guest game too - the Strikers sidekicks' 3D figures come from the Strikers disc alone)
             boolean needed = io.github.newcoke.strikers.guests.GuestSetup.needed(home, found.files);
             page.addView(button(needed ? "Make guest characters" : "Make them again", needed, v -> startGuests()));
         }
@@ -1100,7 +1812,7 @@ public class LobbyActivity extends Activity {
         if (!io.github.newcoke.strikers.guests.GuestSetup.running && result != null) {
             note(result).setTextColor(io.github.newcoke.strikers.guests.GuestSetup.warnings.isEmpty() ? ACCENT : WARN);
             java.util.List<String> w = new java.util.ArrayList<>(io.github.newcoke.strikers.guests.GuestSetup.warnings);
-            for (int i = 0; i < w.size() && i < 12; i++) note(w.get(i)).setTextSize(13);
+            for (int i = 0; i < w.size() && i < 12; i++) note(w.get(i)).setTextSize(MIN_SP);
         }
         if (!io.github.newcoke.strikers.guests.GuestSetup.running) {
             page.addView(button("Search again", false, v -> {
@@ -1108,10 +1820,6 @@ public class LobbyActivity extends Activity {
                 showGuests();
             }));
         }
-        page.addView(button("Back", false, v -> {
-            onGuests = false;
-            showHome();
-        }));
     }
 
     private static String guestLine() {
@@ -1122,7 +1830,7 @@ public class LobbyActivity extends Activity {
     private void scanGuests() {
         if (!StrikersHome.hasAllFilesAccess()) {
             guestFound = new io.github.newcoke.strikers.guests.GuestSetup.Found();
-            guestFound.problems.add("Turn on file access for this app first (Choose game file shows how).");
+            guestFound.problems.add("Turn on file access for this app first (SETTINGS > GAME > CHANGE asks for it).");
             return;
         }
         guestScanning = true;
@@ -1150,21 +1858,20 @@ public class LobbyActivity extends Activity {
     }
 
     private void showCharacters() {
-        leaveTourneyPage();
-        page.removeAllViews();
-        onHome = false;
-        title("Characters", 26);
+        openPage(LobbyKit.GUESTS, this::showGuestsHub, -1, "GUESTS", "WHO PLAYS WHO");  // r157 (R: WHO PLAYS WHO)
         final java.util.List<String> packs = guestPacks();
         note(packs.isEmpty()
                 ? "No guest characters on this headset yet."
-                : "Pick who plays instead of each Strikers character. Guests play by Strikers' rules (its goalie,"
-                        + " its Super Strikes); Charged's characters move their own way. It applies the next time"
-                        + " the game starts.");
+                : "Pick who plays instead of each Strikers character. Guests play by Strikers' rules; Charged's"
+                        + " move their own way. It applies the next time the game starts.");
+        // r157 (MENUS-PLAN.md launcher fix 7): the page says what a change does to a running game
+        line("A change here closes a game left running in the background.").setTextColor(WARN);
         final java.util.Map<String, String> picks = readGuests();
         for (final String[] slot : GUEST_SLOTS) {
             String g = picks.get(slot[0]);
-            String text = slot[1] + ":   " + (g == null ? "themselves" : guestLabel(g));
-            page.addView(row(text, true, v -> showCharacterPick(slot)));
+            // round 2: one row each, the Strikers character left, who plays him in the pill (gold when swapped)
+            valueRow(null, slot[1], g == null ? "themselves" : guestLabel(g), g != null ? ACCENT : 0xFF0E1428,
+                    g != null ? LobbyKit.NAVY_BOT : Color.WHITE, v -> showCharacterPick(slot));
         }
         if (!picks.isEmpty()) {
             page.addView(button("Everyone back to normal", false, v -> {
@@ -1172,34 +1879,32 @@ public class LobbyActivity extends Activity {
                 showCharacters();
             }));
         }
-        page.addView(button("Back", false, v -> showHome()));
     }
 
     private void showCharacterPick(final String[] slot) {
-        page.removeAllViews();
-        onHome = false;
-        title("Instead of " + slot[1], 24);
+        // r157: a level under WHO PLAYS WHO; BACK goes back up to it
+        openPage(LobbyKit.GUESTS, this::showCharacters, -1, "GUESTS", "WHO PLAYS WHO", "INSTEAD OF " + slot[1]);
         final java.util.Map<String, String> picks = readGuests();
         final String current = picks.get(slot[0]);
-        page.addView(row(slot[1] + " themselves" + (current == null ? "   (current)" : ""), true, v -> {
+        page.addView(checkRow(slot[1] + " themselves", current == null, true, v -> {
             picks.remove(slot[0]);
             writeGuests(picks);
             showCharacters();
         }));
         for (final String pack : guestPacks()) {
-            page.addView(row(guestLabel(pack) + (pack.equals(current) ? "   (current)" : ""), true, v -> {
+            page.addView(checkRow(guestLabel(pack), pack.equals(current), true, v -> {
                 picks.put(slot[0], pack);
                 writeGuests(picks);
                 showCharacters();
             }));
         }
-        page.addView(button("Back", false, v -> showCharacters()));
     }
 
     /** One game button: the Quest buttons to pick from. One already taken swaps with it. */
     private void showControlPick(final int action) {
-        page.removeAllViews();
-        onHome = false;
+        // r157: a level under CONTROLS; BACK goes back up to it
+        openPage(LobbyKit.SETTINGS, this::showControls, RAIL_CONTROLS, "SETTINGS", "CONTROLS",
+                ACTION_LABELS[action].replaceFirst("\\s*\\(.*$", ""));
         title(ACTION_LABELS[action], 24);
         final String[] map = readControls();
         note("Pick the Quest button for it. Now: " + sourceLabel(map[action]) + ".");
@@ -1209,7 +1914,8 @@ public class LobbyActivity extends Activity {
             for (int i = 0; i < ACTIONS.length; i++) {
                 if (i != action && map[i].equals(source) && !source.equals("none")) owner = "   (now " + ACTION_LABELS[i] + ": they swap)";
             }
-            page.addView(row(SOURCE_LABELS[s] + (source.equals(map[action]) ? "   (current)" : owner), true, v -> {
+            final boolean now = source.equals(map[action]);
+            page.addView(checkRow(SOURCE_LABELS[s] + (now ? "" : owner), now, true, v -> {
                 final String old = map[action];
                 if (!source.equals("none")) {
                     for (int i = 0; i < ACTIONS.length; i++) {
@@ -1221,7 +1927,6 @@ public class LobbyActivity extends Activity {
                 showControls();
             }));
         }
-        page.addView(button("Back", false, v -> showControls()));
     }
 
     // --- strikers-quest r46: RetroAchievements (Lance: "its allowed to use THEIR strikers achievement
@@ -1231,16 +1936,13 @@ public class LobbyActivity extends Activity {
     private int raToken;  // the page's background work (a newer page, or Back, ends it)
 
     private void showRetroAch() {
-        leaveTourneyPage();
-        page.removeAllViews();
-        onHome = false;
-        final int token = ++raToken;
-        title("RetroAchievements", 26);
+        openPage(LobbyKit.SETTINGS, this::showHome, RAIL_ACH, "SETTINGS", "ACHIEVEMENTS");  // r157
+        final int token = ++raToken;  // after openPage, which ends the last page's work (++raToken)
+        title("RetroAchievements", 24);
         final RetroAch.Login login = RetroAch.saved(this);
         if (login == null) {
-            note("Log in with your RetroAchievements account (retroachievements.org) to get Super Mario"
-                    + " Strikers' achievements. Only a login token is kept on this Quest, never your password."
-                    + " Achievements count in casual mode.");
+            note("Log in with your RetroAchievements account (retroachievements.org). Only a login token is kept,"
+                    + " never your password. Casual mode.");
             final EditText user = new EditText(this);
             user.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
             user.setHint("Username");
@@ -1284,10 +1986,6 @@ public class LobbyActivity extends Activity {
                     });
                 }, "strikers-ra-login").start();
             }));
-            page.addView(button("Back", false, v -> {
-                ++raToken;
-                showHome();
-            }));
             return;
         }
         note("Logged in as " + login.user + ".");
@@ -1305,10 +2003,6 @@ public class LobbyActivity extends Activity {
             ++raToken;
             RetroAch.logout(this);
             showRetroAch();
-        }));
-        page.addView(button("Back", false, v -> {
-            ++raToken;
-            showHome();
         }));
         new Thread(() -> {
             java.util.List<RetroAch.Achievement> set = null;
@@ -1338,17 +2032,14 @@ public class LobbyActivity extends Activity {
                     }
                 }
                 status.setText(have + " of " + got.size() + " unlocked, " + points + " of " + all
-                        + " points.\nThey unlock as you play, with a pop-up in the headset. (Logged in"
-                        + " while the game was already running? Close it and start it again.)");
+                        + " points.\nThey unlock as you play. Logged in with the game open? Start it again.");
                 status.setTextColor(Color.rgb(190, 200, 215));
                 for (RetroAch.Achievement a : got) {
-                    final String head = (a.unlocked ? "✓ " : "") + a.title + "   (" + a.points + " points)";
-                    Button b = row(head + "\n" + a.description, a.unlocked, null);
+                    // r157: unlocked = lit with the green check (no text tick)
+                    Button b = headRow(a.title + "   (" + a.points + " points)", a.description, a.unlocked, null);
+                    if (a.unlocked) markChosen(b);
                     b.setEnabled(false);
                     b.setTextColor(a.unlocked ? Color.WHITE : MUTED);
-                    SpannableString text = new SpannableString(b.getText());
-                    text.setSpan(new StyleSpan(Typeface.BOLD), 0, head.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    b.setText(text);
                     list.addView(b);
                 }
             });
@@ -1359,11 +2050,12 @@ public class LobbyActivity extends Activity {
     // own), written where the game's pause row keeps it (xr_room_options.txt "music N"); his own songs go in
     // Strikers/music (its README says so).
 
-    private String menuMusicText() {
+    /** r147: "Lofi", "My music (3)", "Both (+3)", "Off" (r157: the value pill on SETTINGS > SOUND). */
+    private String menuMusicValue() {
         final File home = StrikersHome.homeDir(this);
         final int mode = MenuMusic.readMode(home);
         final int mine = MenuMusic.mySongCount(home);
-        String s = "Menu music: " + MenuPlaylist.MODE_NAMES[mode];
+        String s = MenuPlaylist.MODE_NAMES[mode];
         if (mode == MenuPlaylist.MINE) s += mine == 0 ? " (folder empty)" : " (" + mine + ")";
         else if (mode == MenuPlaylist.BOTH && mine > 0) s += " (+" + mine + ")";
         return s;
@@ -1374,11 +2066,23 @@ public class LobbyActivity extends Activity {
         final int next = (MenuMusic.readMode(home) + 1) % MenuPlaylist.MODES;
         MenuMusic.writeMode(home, next);
         if (music != null) music.reloadSetting();
-        showHome();
-        if (next == MenuPlaylist.MINE || next == MenuPlaylist.BOTH) {
-            note("Your own songs: put .mp3 / .ogg / .m4a files in " + MenuMusic.myFolder(home).getAbsolutePath()
-                    + " (a song named theme.mp3 is your franchise theme).").setTextSize(13);
-        }
+        showSound();  // r157: the row is on SETTINGS > SOUND now
+    }
+
+    /** r157 (menu overhaul): SETTINGS > SOUND: the menu music (also in the pause menu, the same file). */
+    private void showSound() {
+        openPage(LobbyKit.SETTINGS, this::showHome, RAIL_SOUND, "SETTINGS", "SOUND");
+        final File home = StrikersHome.homeDir(this);
+        final int mode = MenuMusic.readMode(home);
+        valueRow(new LobbyKit.Icon(LobbyKit.ICON_NOTE, LobbyKit.INK_SOFT), "MENU MUSIC", menuMusicValue(),
+                mode != MenuPlaylist.OFF, v -> cycleMenuMusic());  // r147
+        line("Pull to step round: " + TextUtils.join(", ", MenuPlaylist.MODE_NAMES)
+                + " (off = the game's own). Also in the pause menu.");
+        TextView mine = note("Your own songs: put .mp3 / .ogg / .m4a files in " + MenuMusic.myFolder(home).getAbsolutePath()
+                + " (a song named theme.mp3 is your franchise theme).");
+        mine.setTextSize(MIN_SP);
+        mine.setTextColor(mode == MenuPlaylist.MINE || mode == MenuPlaylist.BOTH ? LobbyKit.INK_SOFT : MUTED);
+        line("Crowd, music, effects + voice volumes: PAUSED > SETTINGS > SOUND, in a match.").setTextColor(MUTED);
     }
 
     /** r147: the NOW PLAYING card: in over a quarter second, 4 s up, out over 0.6 s. */
@@ -1444,7 +2148,7 @@ public class LobbyActivity extends Activity {
     private void toggleVoice() {
         if (voiceOn()) {
             writeVoice(false);
-            showHome();
+            showOnline();  // r157: the row is on ONLINE now
             return;
         }
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
@@ -1461,9 +2165,9 @@ public class LobbyActivity extends Activity {
         // friend's voice): if not, the friend hears an echo. For the log, to tell from a test.
         android.util.Log.i("strikers", "voice chat on; echo canceller "
                 + (android.media.audiofx.AcousticEchoCanceler.isAvailable() ? "available" : "NOT available"));
-        showHome();
-        note("Voice chat is on: in online matches you hear each other. Turn it off here, or in the game's"
-                + " pause screen (right stick down).");
+        showOnline();  // r157: the note in the strip; the pause menu's row is under SETTINGS > SOUND now
+        notice("Voice chat is on: in online matches you hear each other. Off: here, or in the pause menu"
+                + " (PAUSED > SETTINGS > SOUND).", ACCENT);
     }
 
     @Override
@@ -1474,8 +2178,8 @@ public class LobbyActivity extends Activity {
             voiceGranted();
         } else {
             writeVoice(false);
-            showHome();
-            note("Voice chat needs the microphone. Press Voice chat again and choose Allow.").setTextColor(WARN);
+            showOnline();  // r157
+            notice("Voice chat needs the microphone. Press Voice chat again and choose Allow.", WARN);
         }
     }
 
@@ -1566,7 +2270,8 @@ public class LobbyActivity extends Activity {
             TextView n = new TextView(this);
             n.setText(names.optString(i));
             n.setTextColor(Color.WHITE);
-            n.setTextSize(14);
+            n.setTextSize(MIN_SP);
+            n.setTypeface(lucky);  // round 2
             n.setPadding(dp(5), 0, 0, 0);
             chip.addView(n, wrap());
             line.addView(chip, wrap());
@@ -1574,16 +2279,12 @@ public class LobbyActivity extends Activity {
     }
 
     private void showTourneys() {
-        leaveTourneyPage();
-        page.removeAllViews();
-        onHome = false;
-        searching = false;
-        ++quickToken;
-        title("Tournaments", 26);
-        note("4 or 8 players, knockout. It starts when it's full; each match is a Grudge Match, and you"
-                + " come back here between rounds.");
+        // r157: openPage ends the last page's link, search and countdown, as this page did itself
+        openPage(LobbyKit.ONLINE, this::showOnline, -1, "ONLINE", "TOURNAMENTS");
+        note("4 or 8 players, knockout. It starts when full; each match is a Grudge Match, back here between"
+                + " rounds.");
         // The team name, kept as typed; the hub tidies it.
-        TextView label = note("Your team name");
+        TextView label = line("Your team name");
         label.setPadding(0, dp(4), 0, dp(2));
         final EditText name = new EditText(this);
         name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
@@ -1622,14 +2323,13 @@ public class LobbyActivity extends Activity {
         page.addView(name, new LinearLayout.LayoutParams(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT));
         addStarPicker(name);
         tourneyLink = note("Connecting...");
-        tourneyLink.setTextSize(14);
+        tourneyLink.setTextSize(MIN_SP);
         tourneyLink.setTextColor(MUTED);
         tourneyBody = new LinearLayout(this);
         tourneyBody.setOrientation(LinearLayout.VERTICAL);
         tourneyBody.setGravity(Gravity.CENTER_HORIZONTAL);
         page.addView(tourneyBody, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        page.addView(button("Back", false, v -> showHome()));
         final String key = (StrikersHome.CLASSIC.equals(StrikersHome.edition(this)) ? "C" : "P") + ONLINE_PROTOCOL;
         tourney = new TourneyClient(SERVER_HOST, key, playerId(), teamName(), teamStar(), new TourneyClient.Listener() {
             @Override public void onState(org.json.JSONObject state) {
@@ -1791,8 +2491,7 @@ public class LobbyActivity extends Activity {
         if (champion >= 0) {
             TextView c = bodyNote((champion == you ? "YOU WON THE TOURNAMENT!\n" : "Champions: ")
                     + nameOf.apply(champion), ACCENT);
-            c.setTextSize(26);
-            c.setTypeface(Typeface.DEFAULT_BOLD);
+            c.setTextSize(30);
         }
         // This player's match: the ready one, or how the last one went.
         org.json.JSONObject mine = null, last = null;
@@ -1882,10 +2581,7 @@ public class LobbyActivity extends Activity {
     }
 
     private TextView bodyNote(String text, int colour) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextColor(colour);
-        t.setTextSize(17);
+        TextView t = luckyText(text, MIN_SP, colour);  // r157 round 2: the game's font, 40 px rule
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, dp(6), 0, dp(6));
         tourneyBody.addView(t, wrap());
@@ -1944,9 +2640,9 @@ public class LobbyActivity extends Activity {
         if (!StrikersHome.hasAllFilesAccess()
                 && !StrikersHome.hasGameDataInHome(StrikersHome.homeDir(this))
                 && askForFileAccess(this)) {
-            if (accessNote == null || accessNote.getParent() != page) accessNote = note("");
-            accessNote.setText("Turn on \"Allow access to manage all files\" so the game can read your"
-                    + " disc file, then come back here and press the same button again.");
+            // r157: in the notice strip, on whatever page the button was
+            notice("Turn on \"Allow access to manage all files\" so the game can read your game file, then press"
+                    + " the same button again.", WARN);
             return false;
         }
         // r41: no game file, or one the game cannot read: say so and show the list, rather than
@@ -2027,39 +2723,56 @@ public class LobbyActivity extends Activity {
         return sb.toString();
     }
 
+    /**
+     * A heading on the page. r157: Luckiest Guy, capitals; 24 sp and up = the page's own headline (cream, centred),
+     * smaller = a section label (dim, left, as VERSION in the mockups).
+     */
     private void title(String text, int sp) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextColor(Color.WHITE);
-        t.setTextSize(sp);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setGravity(Gravity.CENTER);
-        page.addView(t, wrap());
+        final boolean headline = sp >= 24;
+        TextView t = luckyText(text, headline ? 30 : MIN_SP, headline ? LobbyKit.CREAM : LobbyKit.INK_DIM);
+        t.setGravity(headline ? Gravity.CENTER : Gravity.START);
+        t.setPadding(dp(4), dp(headline ? 8 : 16), dp(4), dp(headline ? 8 : 6));
+        if (headline) t.setShadowLayer(dp(3), 0, dp(2), 0xC0000000);
+        page.addView(t, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
+    /** Body text. r157 round 2: the game's font too, at MIN_SP (the 40 px rule), the words cut short to suit. */
     private TextView note(String text) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextColor(Color.rgb(190, 200, 215));
-        t.setTextSize(16);
+        TextView t = luckyText(text, MIN_SP, LobbyKit.INK_SOFT);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(0, dp(6), 0, dp(14));
+        t.setLineSpacing(dp(3), 1f);
+        t.setPadding(dp(6), dp(6), dp(6), dp(12));
         page.addView(t, wrap());
         return t;
     }
 
+    /** r157: one short line in the game's font (a how-to cut to one line, a page's warning). */
+    private TextView line(String text) {
+        TextView t = luckyText(text, MIN_SP, LobbyKit.INK_SOFT);
+        t.setGravity(Gravity.CENTER);
+        t.setLineSpacing(dp(3), 1f);
+        t.setPadding(dp(8), dp(8), dp(8), dp(6));
+        page.addView(t, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        return t;
+    }
+
+    /** r157: gold (the page's main action) or a navy pill, in the game's font, with the gold ring on hover. */
     private Button button(String text, boolean primary, View.OnClickListener onClick) {
         Button b = new Button(this);
         b.setText(text);
-        b.setAllCaps(false);
-        b.setTextSize(20);
-        b.setTextColor(primary ? Color.BLACK : Color.WHITE);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(14));
-        bg.setColor(primary ? ACCENT : CARD);
-        b.setBackground(bg);
+        b.setTypeface(lucky);
+        b.setAllCaps(true);
+        b.setTextSize(24);
+        b.setIncludeFontPadding(false);
+        b.setPadding(dp(16), dp(4), dp(16), 0);
+        b.setTextColor(primary ? LobbyKit.NAVY_BOT : Color.WHITE);
+        b.setBackground(LobbyKit.pressable(LobbyKit.round(primary ? ACCENT : LobbyKit.PILL, dp(20)), 0, dp(20),
+                getResources().getDisplayMetrics().density, primary ? Color.WHITE : ACCENT));
+        b.setStateListAnimator(null);
         b.setOnClickListener(onClick);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(360), dp(64));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(380), dp(60));
         lp.topMargin = dp(10);
         b.setLayoutParams(lp);
         return b;
@@ -2068,18 +2781,20 @@ public class LobbyActivity extends Activity {
     /** r41: one file in the game file list; onClick null = shown but not pickable. */
     private Button row(String text, boolean usable, View.OnClickListener onClick) {
         Button b = new Button(this);
-        b.setText(text);
+        // r157 round 2: the game's font at MIN_SP; capitals by hand (setAllCaps would drop headRow's spans)
+        b.setText(text.toUpperCase(java.util.Locale.ROOT));
         b.setAllCaps(false);
-        b.setTextSize(15);
+        b.setTypeface(lucky);
+        b.setTextSize(MIN_SP);
+        b.setLineSpacing(dp(3), 1f);
         b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         b.setTextColor(usable ? Color.WHITE : MUTED);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(12));
-        bg.setColor(CARD);
-        if (usable) bg.setStroke(dp(2), ACCENT);
-        b.setBackground(bg);
-        int p = dp(14);
-        b.setPadding(p, p, p, p);
+        // r157: one focus style (the gold ring on hover / focus), so the gold edge that marked "usable" is gone
+        b.setBackground(LobbyKit.pressable(LobbyKit.round(usable ? CARD : LobbyKit.TILE, dp(16)), 0, dp(16),
+                getResources().getDisplayMetrics().density));
+        b.setStateListAnimator(null);
+        int p = dp(16);
+        b.setPadding(p, dp(12), p, dp(12));
         b.setEnabled(onClick != null);
         b.setOnClickListener(onClick);
         // r43b: the panel's width, wrapping (Lance: the Version rows ran past the panel at 620 dp).
@@ -2088,6 +2803,83 @@ public class LobbyActivity extends Activity {
         lp.topMargin = dp(8);
         b.setLayoutParams(lp);
         return b;
+    }
+
+    /** r157: row() with its first line in the game's font, larger: "PASS (GAMECUBE A)" over "A button". */
+    private Button headRow(String head, String rest, boolean usable, View.OnClickListener onClick) {
+        final String h = head.toUpperCase(java.util.Locale.ROOT);
+        Button b = row(h + "\n" + rest, usable, onClick);
+        SpannableString text = new SpannableString(b.getText());
+        text.setSpan(new RelativeSizeSpan(1.15f), 0, h.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        text.setSpan(new ForegroundColorSpan(LobbyKit.CREAM), 0, h.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        b.setText(text);
+        return b;
+    }
+
+    /** r157 (MENUS-PLAN.md rule 8): a pick in a list; the chosen one lit with a green check. */
+    private Button checkRow(String text, boolean chosen, boolean usable, View.OnClickListener onClick) {
+        Button b = row(text, usable, onClick);
+        if (chosen) markChosen(b);
+        return b;
+    }
+
+    /** r157: lit (the hub's TILE_ON blue) + the green check at the row's end. */
+    private void markChosen(Button b) {
+        b.setBackground(LobbyKit.pressable(LobbyKit.round(LobbyKit.TILE_ON, dp(16)), 0, dp(16),
+                getResources().getDisplayMetrics().density));
+        LobbyKit.Icon check = new LobbyKit.Icon(LobbyKit.ICON_CHECK, Color.WHITE);
+        check.setBounds(0, 0, dp(32), dp(32));
+        b.setCompoundDrawables(null, null, check, null);
+        b.setCompoundDrawablePadding(dp(12));
+    }
+
+    /** r157: a setting as a row: icon, its name, and its value in a pill (green when on); a pull changes it. */
+    private View valueRow(android.graphics.drawable.Drawable icon, String label, String value, boolean on,
+                          View.OnClickListener onClick) {
+        return valueRow(icon, label, value, on ? LobbyKit.CHECK : 0xFF0E1428, Color.WHITE, onClick);
+    }
+
+    /** valueRow() with the pill's own colours (round 2: CONTROLS / WHO PLAYS WHO, gold = changed); icon may be null. */
+    private View valueRow(android.graphics.drawable.Drawable icon, String label, String value, int fill, int ink,
+                          View.OnClickListener onClick) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(18), dp(10), dp(12), dp(10));
+        GradientDrawable rowBg = LobbyKit.round(LobbyKit.TILE, dp(18));
+        rowBg.setStroke(dp(2), 0x30FFFFFF);  // round 2: a faint edge, so the row reads on the lighter navy at the top
+        r.setBackground(LobbyKit.pressable(rowBg, 0, dp(18), getResources().getDisplayMetrics().density));
+        r.setClickable(true);
+        r.setFocusable(true);
+        r.setOnClickListener(onClick);
+        r.setContentDescription(label + ": " + value);
+        if (icon != null) {
+            ImageView i = new ImageView(this);
+            i.setImageDrawable(icon);
+            r.addView(i, new LinearLayout.LayoutParams(dp(30), dp(30)));
+        }
+        TextView name = luckyText(label, 24, Color.WHITE);
+        name.setPadding(dp(icon != null ? 14 : 0), dp(3), dp(10), 0);
+        r.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView v = luckyText(value, MIN_SP, ink);
+        v.setGravity(Gravity.CENTER);
+        v.setMinWidth(dp(150));
+        v.setMaxWidth(dp(360));
+        v.setMaxLines(2);
+        v.setBackground(LobbyKit.round(fill, dp(18)));
+        v.setPadding(dp(18), dp(8), dp(18), dp(5));
+        r.addView(v, wrap());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(8);
+        page.addView(r, lp);
+        return r;
+    }
+
+    /** r157: the title bar's release pill: "ALPHA 1.18" out of versionName "0.1.18-dev (r157)". */
+    private String releaseName() {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^\\d+\\.(\\d+)\\.(\\d+)").matcher(versionName());
+        return m.find() ? "ALPHA " + m.group(1) + "." + m.group(2) : "ALPHA";
     }
 
     private String versionName() {
