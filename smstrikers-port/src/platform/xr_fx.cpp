@@ -25,6 +25,8 @@
 #include "xr_goalfx.h"      // r153: the goal explosions' pieces, drawn here
 #include "xr_balls.h"       // r168: the ball skins' aura, trail and hits (and the shop's preview ball), drawn here
 #include "xr_ctrl_model.h"  // r54: the controllers in your hands
+#include "xr_room.h"        // r197: your room scan's collision model (Scene::room)
+#include "xr_snow.h"        // r214: the snow lying in your room / on the tables / the stadium's pitch, its noise
 #include "xr_fx_shaders.h"
 #include "../../include/port/xr_body.h"  // r143: the life-size scorer's posed body
 
@@ -96,7 +98,10 @@ enum Shape : uint8_t {
   kPixel8 = 147, kAlienQuad = 151, kConeQuad = 158,
   kSignQuad = 164, kMoonQuad = 165, kBannerQuad = 166, kTileQuad = 167, kFingerQuad = 168, kShirtQuad = 169,
   kBeltQuad = 170, kChessQuad = 171, kMaskQuad = 172,
-  kBeltPiece = 134  // r185: LUCHADOR's championship belt (3D: xr_fx_mesh.h kTitleBelt; xr_fx_mesh.frag 134)
+  kBeltPiece = 134,  // r185: LUCHADOR's championship belt (3D: xr_fx_mesh.h kTitleBelt; xr_fx_mesh.frag 134)
+  // r214: the weather's snow (xr_fx.frag): the snow lying as a surface (180: corner depths / trample, its mode in the glow
+  // slot), a soft falling flake (181: seed in colour 2's alpha, blur in the glow slot), your footprint (182)
+  kSnowLayer = 180, kSnowFlake = 181, kFootprint = 182
 };
 
 // The 3D mesh each piece is drawn with (xr_fx_mesh.h); sparks, flashes and the marker stay quads.
@@ -1959,7 +1964,20 @@ struct Slot {
   VkCommandBuffer cmd = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   bool pending = false;
+  bool timed = false;  // r221: its two GPU timestamps were written by its last submit (read once its fence is done)
 };
+
+// r221 (Lance: "its deffffinitely not 72FPS" in MR Jumbotron; the compositor's Stale frames follow the app's GPU time):
+// the effects layer's own GPU time per frame, from two timestamps round its command buffer (xr_quest's compositor line)
+struct GpuTiming {
+  VkQueryPool pool = VK_NULL_HANDLE;
+  double periodNs = 0.0;
+  uint64_t mask = 0;
+  uint64_t sumNs = 0, maxNs = 0;
+  uint32_t frames = 0;
+  int lastSlot = -1;  // the newest submitted slot (frame_done)
+};
+GpuTiming g_gpuT;
 
 struct Eye {
   XrSwapchain swapchain = XR_NULL_HANDLE;
@@ -2161,6 +2179,7 @@ struct State {
   VkDescriptorSetLayout charSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool charPool = VK_NULL_HANDLE;
   VkSampler charSampler = VK_NULL_HANDLE;
+  VkSampler cardSampler = VK_NULL_HANDLE;  // r210: the museum's card atlas (trilinear, up to 16x anisotropic, clamped)
   VkPipelineLayout charLayout = VK_NULL_HANDLE;
   VkPipeline charPipeline = VK_NULL_HANDLE, charSoftPipeline = VK_NULL_HANDLE;
   // r96: the evolution's theme (evo_theme): round where, how strong; no confetti until it has tapered off
@@ -2695,6 +2714,7 @@ struct RainArea {
 RainArea rain_area(const Scene& sc, const Scale& k) {
   const XrVector3f head = head_of(sc);
   RainArea r{head, sc.mr ? std::max(sc.floorY + 2.3f, head.y + 0.45f) : sc.floorY + k.rainHeight};
+  if (sc.mr && sc.room != nullptr) r.top = std::min(r.top, xrroom::ceiling_y(*sc.room) - 0.1f);  // r197: under your ceiling
   if (sc.tabletop && sc.mr) {
     r.centre.x = 0.5f * (head.x + sc.tablePos.x);
     r.centre.z = 0.5f * (head.z + sc.tablePos.z);
@@ -2747,6 +2767,13 @@ void throw_hat(const Scene& sc, const Scale& k) {
   } else {
     const float ta = frand(0.0f, 6.2831853f), tr = 2.6f * std::sqrt(frand(0.0f, 1.0f));
     from = XrVector3f{s.hatCentre.x + std::cos(ta) * tr, area.top + frand(0.0f, 0.4f), s.hatCentre.z + std::sin(ta) * tr};
+    // r197: your room scan - thrown in inside your walls (a few tries), under your ceiling
+    for (int t = 0; sc.room != nullptr && t < 4 && !xrroom::inside(*sc.room, from.x, from.z); ++t) {
+      const float a2 = frand(0.0f, 6.2831853f), r2 = 2.6f * std::sqrt(frand(0.0f, 1.0f)) * (1.0f - 0.2f * t);
+      from.x = s.hatCentre.x + std::cos(a2) * r2;
+      from.z = s.hatCentre.z + std::sin(a2) * r2;
+    }
+    if (sc.room != nullptr) from.y = std::min(from.y, xrroom::ceiling_y(*sc.room) - 0.1f);
   }
   Particle q{};
   q.p[0] = from.x;
@@ -4671,6 +4698,11 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       // r82: rain (and lasers) fly straight; a raindrop splashes where it hits the floor. r143: or the scorer.
       const float dropFrom[3] = {q.p[0], q.p[1], q.p[2]};
       for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
+      // r197: your room scan - it hits what's really under it (a table top, the couch, the floor); through a wall: gone
+      const float dropFloor = sc.mr && sc.room != nullptr && !(sc.tabletop)
+                                  ? xrroom::surface_below(*sc.room, q.p[0], dropFrom[1], q.p[2], nullptr)
+                                  : sc.floorY;
+      if (sc.mr && sc.room != nullptr && !sc.tabletop && !xrroom::inside(*sc.room, q.p[0], q.p[2])) q.life = q.age;
       BodyHit dropHit;
       if (q.trail == 3 && s.body.on && s.body.voxOk && body_hit(q.p, dropFrom, &dropHit)) {
         for (int j = 0; j < 2; ++j) {
@@ -4680,12 +4712,12 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
           add_spark(XrVector3f{dropFrom[0], dropFrom[1], dropFrom[2]}, sv, 0.006f * u, 0xFFFFFF, 0x9FD0FF, 0.25f, 1.0f, 1.0f);
         }
         keep = false;
-      } else if (q.trail == 3 && q.p[1] <= sc.floorY + 0.003f) {
+      } else if (q.trail == 3 && q.p[1] <= dropFloor + 0.003f) {
         for (int j = 0; j < 2; ++j) {
           const float sv[3] = {frand(-0.3f, 0.3f), frand(0.3f, 0.6f), frand(-0.3f, 0.3f)};
           const float u = sc.mr ? 1.0f : 3.0f;
           const float v2[3] = {sv[0] * u, sv[1] * u, sv[2] * u};
-          add_spark(XrVector3f{q.p[0], sc.floorY + 0.005f, q.p[2]}, v2, 0.006f * u, 0xFFFFFF, 0x9FD0FF, 0.25f, 1.0f, 1.0f);
+          add_spark(XrVector3f{q.p[0], dropFloor + 0.005f, q.p[2]}, v2, 0.006f * u, 0xFFFFFF, 0x9FD0FF, 0.25f, 1.0f, 1.0f);
         }
         keep = false;
       } else {
@@ -4745,6 +4777,13 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       const float prevY = q.p[1];
       for (int a = 0; a < 3; ++a) q.p[a] += q.v[a] * dt;
       float ground = sc.floorY + 0.004f;
+      if (sc.mr && sc.room != nullptr) {
+        // r197: your room scan - bounces off your walls / furniture sides, lands on what's really under it
+        const float pr[3] = {q.p[0] - q.v[0] * dt, prevY, q.p[2] - q.v[2] * dt};
+        xrroom::collide(*sc.room, q.p, q.v, pr, 0.004f, 0.35f, 0.55f, nullptr,
+                        xrroom::kCollWalls | xrroom::kCollSides | xrroom::kCollCeiling);
+        ground = xrroom::surface_below(*sc.room, q.p[0], prevY, q.p[2], nullptr) + 0.004f;
+      }
       if (sc.tabletop && sc.mr && prevY >= tableTop) {
         const float dx = (q.p[0] - sc.tablePos.x) / sc.tableScale, dz = (q.p[2] - sc.tablePos.z) / sc.tableScale;
         const float gx = dx * cs - dz * sn, gy = -(dx * sn + dz * cs);
@@ -4827,6 +4866,15 @@ void step_particles(const Scene& sc, const Scale& k, float dt) {
       const Rest rest = rest_for(q.shape);
       const float lift = rest.half * q.size;
       float landY = sc.floorY + 0.003f + lift;
+      if (sc.mr && sc.room != nullptr) {
+        // r197: your room scan - it comes to rest on what's really under it (a table top, the couch seat, a shelf, a
+        // sill) and slides down your walls instead of through them; one out past your walls (it started there) is gone
+        if (!xrroom::inside(*sc.room, q.p[0], q.p[2]) && !xrroom::inside(*sc.room, prevX, prevZ)) keep = false;
+        const float pr[3] = {prevX, prevY, prevZ};
+        xrroom::collide(*sc.room, q.p, q.v, pr, lift + 0.01f, 0.2f, 0.6f, nullptr,
+                        xrroom::kCollWalls | xrroom::kCollSides | xrroom::kCollCeiling);
+        landY = xrroom::surface_below(*sc.room, q.p[0], prevY, q.p[2], nullptr) + 0.003f + lift;
+      }
       if (sc.tabletop && sc.mr && prevY >= tableTop + lift && q.p[1] < tableTop + lift) {
         // Over the field? Back into game units, where the pitch is a plain rectangle.
         const float dx = (q.p[0] - sc.tablePos.x) / sc.tableScale, dz = (q.p[2] - sc.tablePos.z) / sc.tableScale;
@@ -5641,9 +5689,16 @@ bool make_filled_buffer(const void* data, VkDeviceSize bytes, VkBufferUsageFlags
 // level, with a sampler of its own (the etch outlines: distances, not colours).
 bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t w, uint32_t h,
               VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, VkSampler sampler = VK_NULL_HANDLE, bool mips = true,
-              uint32_t binding = 0) {  // (r169: which binding of `set`)
+              uint32_t binding = 0,  // (r169: which binding of `set`)
+              const std::vector<std::vector<uint8_t>>* given = nullptr) {  // r210: levels 1..n made ahead (RGBA), copied as they are
   uint32_t levels = 1;
   while (mips && (std::max(w, h) >> levels) > 0) ++levels;
+  if (given != nullptr) {  // (only when every level is there at its size: else the GPU filters as before)
+    bool ok = format == VK_FORMAT_R8G8B8A8_SRGB && given->size() + 1 == levels;
+    for (uint32_t i = 1; ok && i < levels; ++i)
+      ok = (*given)[i - 1].size() == static_cast<size_t>(std::max(1u, w >> i)) * std::max(1u, h >> i) * 4;
+    if (!ok) given = nullptr;
+  }
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType = VK_IMAGE_TYPE_2D;
   ii.format = format;
@@ -5676,9 +5731,26 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
   VkBuffer staging = VK_NULL_HANDLE;
   VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
   const VkDeviceSize texel = format == VK_FORMAT_R8_UNORM ? 1 : 4;  // r135: one byte a texel for R8 (the etch outlines)
-  if (!make_filled_buffer(rgba, VkDeviceSize(w) * h * texel, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &stagingMemory)) {
-    destroy_buffer(staging, stagingMemory);
-    return false;
+  std::vector<VkDeviceSize> at(levels, 0);  // r210: each given level's place in the staging buffer
+  if (given == nullptr) {
+    if (!make_filled_buffer(rgba, VkDeviceSize(w) * h * texel, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &stagingMemory)) {
+      destroy_buffer(staging, stagingMemory);
+      return false;
+    }
+  } else {
+    VkDeviceSize total = VkDeviceSize(w) * h * 4;
+    for (uint32_t i = 1; i < levels; ++i) {
+      at[i] = total;
+      total += (*given)[i - 1].size();
+    }
+    void* mapped = nullptr;
+    if (!make_host_buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &stagingMemory, &mapped)) {
+      destroy_buffer(staging, stagingMemory);
+      return false;
+    }
+    std::memcpy(mapped, rgba, size_t(w) * h * 4);
+    for (uint32_t i = 1; i < levels; ++i) std::memcpy(static_cast<uint8_t*>(mapped) + at[i], (*given)[i - 1].data(), (*given)[i - 1].size());
+    vkUnmapMemory(s.dev.device, stagingMemory);
   }
   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   ca.commandPool = s.pool;
@@ -5712,7 +5784,18 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {w, h, 1};
     vkCmdCopyBufferToImage(cmd, staging, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    for (uint32_t i = 1; i < levels; ++i) {
+    for (uint32_t i = 1; given != nullptr && i < levels; ++i) {  // r210: the levels made ahead, copied (no filtering here)
+      VkBufferImageCopy lr{};
+      lr.bufferOffset = at[i];
+      lr.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+      lr.imageExtent = {std::max(1u, w >> i), std::max(1u, h >> i), 1};
+      vkCmdCopyBufferToImage(cmd, staging, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &lr);
+    }
+    if (given != nullptr) {
+      barrier(0, levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
+    for (uint32_t i = 1; given == nullptr && i < levels; ++i) {
       barrier(i - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
               VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
               VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -5727,9 +5810,10 @@ bool make_tex(State::Tex& t, VkDescriptorSet set, const uint8_t* rgba, uint32_t 
               VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    barrier(levels - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    if (given == nullptr)
+      barrier(levels - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+              VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     vkEndCommandBuffer(cmd);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
@@ -5870,6 +5954,14 @@ bool make_flame() {
         rgba[(size_t(y) * w + x) * 4] = static_cast<uint8_t>(std::min(1.0f, a) * 240.0f);
         rgba[(size_t(y) * w + x) * 4 + 3] = 255;
       }
+  }
+  {
+    // r214: its free channels (B, A: the fire reads R / G only) carry the snow layer's surface (xr_fx.frag 180)
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<float> scratch(size_t(w) * h);
+    xrsnow::fx_noise(static_cast<int>(w), static_cast<int>(h), rgba.data(), scratch.data());
+    FXLOG("fx: r214 snow surface in the flipbook's B/A (%ux%u) in %.1f ms", w, h,
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
   }
   FXLOG("fx: r169 fire flipbook %s (%ux%u)", loaded ? "loaded" : "not there (a soft stand-in)", w, h);
   if (!make_tex(s.flameTex, s.etchSet, rgba.data(), w, h, VK_FORMAT_R8G8B8A8_UNORM, s.etchSampler, false, 1)) return false;
@@ -6138,6 +6230,14 @@ bool make_char_pipelines() {
   si.anisotropyEnable = s.dev.maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
   si.maxAnisotropy = std::min(8.0f, std::max(1.0f, s.dev.maxAnisotropy));
   if (!vk_ok(vkCreateSampler(s.dev.device, &si, nullptr, &s.charSampler), "vkCreateSampler(char)")) return false;
+  {  // r210: the museum's card atlas: its cells never repeat (clamped), anisotropy up to 16x (Adreno 740's limit) - a card is small on
+     // screen and often seen at a slant on its shelf, the extra taps are only where it is drawn
+    VkSamplerCreateInfo ci = si;
+    ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.maxAnisotropy = std::min(16.0f, std::max(1.0f, s.dev.maxAnisotropy));
+    if (!vk_ok(vkCreateSampler(s.dev.device, &ci, nullptr, &s.cardSampler), "vkCreateSampler(card)")) return false;
+    FXLOG("fx: the museum's card sampler: trilinear, anisotropy %.0f", ci.anisotropyEnable ? ci.maxAnisotropy : 0.0f);
+  }
   VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(CharPush)};
   VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   pl.setLayoutCount = 1;
@@ -6347,6 +6447,10 @@ void draw_chars(const Scene& sc, VkCommandBuffer cmd, uint32_t slotIndex, const 
       pc.look[2] = md.glow;
       // r127: w = the pass (0 solid, 1 soft) + 2 x the shine in hundredths; camPos w = seconds (the glint's sweep)
       pc.look[3] = static_cast<float>(pass) + 2.0f * std::floor(std::min(1.0f, std::max(0.0f, md.shine)) * 100.0f + 0.5f);
+      // r193: + 512 x a special card's cut (0 none, 1 + its reveal in hundredths) + 65536 x its dimming in hundredths
+      // (xr_fx_model.frag; all whole numbers under 2^24: exact in a float)
+      if (md.reveal >= 0.0f) pc.look[3] += 512.0f * (1.0f + std::floor(std::min(1.0f, md.reveal) * 100.0f + 0.5f));
+      pc.look[3] += 65536.0f * std::floor(std::min(1.0f, std::max(0.0f, md.dim)) * 100.0f + 0.5f);
       pc.camPos[3] = static_cast<float>(std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), 3600.0));
       pc.glowRgb[0] = ((md.glowRgb >> 16) & 0xFF) / 255.0f;
       pc.glowRgb[1] = ((md.glowRgb >> 8) & 0xFF) / 255.0f;
@@ -6407,6 +6511,7 @@ void shutdown() {
   if (s.charSoftPipeline) vkDestroyPipeline(s.dev.device, s.charSoftPipeline, nullptr);
   if (s.charLayout) vkDestroyPipelineLayout(s.dev.device, s.charLayout, nullptr);
   if (s.charSampler) vkDestroySampler(s.dev.device, s.charSampler, nullptr);
+  if (s.cardSampler) vkDestroySampler(s.dev.device, s.cardSampler, nullptr);  // r210
   if (s.charPool) vkDestroyDescriptorPool(s.dev.device, s.charPool, nullptr);
   if (s.charSetLayout) vkDestroyDescriptorSetLayout(s.dev.device, s.charSetLayout, nullptr);
   for (Slot& slot : s.slots) {
@@ -6551,8 +6656,10 @@ void set_model(int slot, Model&& m) {
     const uint32_t w = i < m.texW.size() ? m.texW[i] : 0, h = i < m.texH.size() ? m.texH[i] : 0;
     static const uint8_t kGrey[4] = {160, 160, 160, 255};
     const bool have = w > 0 && h > 0 && m.texRgba[i].size() >= size_t(w) * h * 4;
+    const bool sharp = i < m.texSharp.size() && m.texSharp[i] != 0 && s.cardSampler != VK_NULL_HANDLE;  // r210
+    const std::vector<std::vector<uint8_t>>* given = have && i < m.texMips.size() && !m.texMips[i].empty() ? &m.texMips[i] : nullptr;
     ok = make_tex(c.tex[i], c.sets[i], have ? m.texRgba[i].data() : kGrey, have ? w : 1, have ? h : 1,
-                  VK_FORMAT_R8G8B8A8_SRGB, s.charSampler, true);
+                  VK_FORMAT_R8G8B8A8_SRGB, sharp ? s.cardSampler : s.charSampler, true, 0, given);
   }
   ok = ok &&
        make_filled_buffer(m.uv.data(), sizeof(float) * 2 * m.vertexCount, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &c.uv,
@@ -6584,6 +6691,35 @@ void set_model(int slot, Model&& m) {
 }
 
 bool model_up(int slot) { return s.ready && slot >= 0 && slot < kModelSlots && s.charModels[slot].vertexCount > 0; }  // r131
+
+// r226: one picture swapped (see xr_fx.h): the frames in flight finished first (its descriptor set is rewritten), the new picture up
+// in the old one's place (its own set), the old let go
+bool set_model_tex(int slot, int tex, const std::vector<uint8_t>& rgba, uint32_t w, uint32_t h,
+                   const std::vector<std::vector<uint8_t>>* mips, bool sharp) {
+  if (!s.ready || slot < 0 || slot >= kModelSlots) return false;
+  State::CharModel& c = s.charModels[slot];
+  if (c.vertexCount == 0 || tex < 0 || static_cast<size_t>(tex) >= c.tex.size() || static_cast<size_t>(tex) >= c.sets.size() ||
+      c.sets[static_cast<size_t>(tex)] == VK_NULL_HANDLE || w == 0 || h == 0 || rgba.size() < size_t(w) * h * 4) {
+    return false;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  wait_frames();
+  State::Tex old = c.tex[static_cast<size_t>(tex)];
+  c.tex[static_cast<size_t>(tex)] = State::Tex{};
+  const bool useSharp = sharp && s.cardSampler != VK_NULL_HANDLE;
+  const bool ok = make_tex(c.tex[static_cast<size_t>(tex)], c.sets[static_cast<size_t>(tex)], rgba.data(), w, h, VK_FORMAT_R8G8B8A8_SRGB,
+                           useSharp ? s.cardSampler : s.charSampler, true, 0, mips != nullptr && !mips->empty() ? mips : nullptr);
+  if (!ok) {
+    destroy_tex(c.tex[static_cast<size_t>(tex)]);
+    c.tex[static_cast<size_t>(tex)] = old;  // (its old picture kept: the set still points at it)
+    FXERR("fx: slot %d picture %d: the new picture failed to go up - the old one stays", slot, tex);
+    return false;
+  }
+  destroy_tex(old);
+  FXLOG("fx: slot %d picture %d replaced (%u x %u) in %.1f ms", slot, tex, w, h,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  return true;
+}
 
 void evo_theme(const char* pack, const XrVector3f& at, float radius, float height, float intensity) {
   if (pack == nullptr || pack[0] == '\0' || !s.ready) return;
@@ -6686,6 +6822,47 @@ void card_sparkle(const XrVector3f& at, float radius, float height, float rate, 
                          frand(0.7f, 1.1f), 0.25f);
     if (q != nullptr) q->grow = -0.06f;
   }
+}
+
+// r193: an autograph's moment (xr_cards.cpp sign_air) - its light gathering, its pen tip's sparks, its landing
+void ink_gather(const XrVector3f& at, float radius, float rate, float dt, uint32_t core, uint32_t outer) {
+  static float acc = 0.0f;
+  if (!s.ready || room_full()) return;
+  for (int j = spawn_n(acc, rate, std::min(std::max(dt, 0.0f), 0.1f)); j > 0; --j) {
+    float d[3];
+    random_unit(d);
+    const float r = radius * frand(0.7f, 1.1f), life = frand(0.35f, 0.55f);
+    const XrVector3f p{at.x + d[0] * r, at.y + d[1] * r, at.z + d[2] * r};
+    const float v[3] = {-d[0] * r / life, -d[1] * r / life, -d[2] * r / life};  // (in to it as it fades)
+    add_spark(p, v, frand(0.003f, 0.006f), core, outer, life, 0.0f, 0.0f);
+  }
+}
+void ink_sparks(const XrVector3f& at, float rate, float dt, uint32_t core, uint32_t outer) {
+  static float acc = 0.0f;
+  if (!s.ready || room_full()) return;
+  for (int j = spawn_n(acc, rate, std::min(std::max(dt, 0.0f), 0.1f)); j > 0; --j) {
+    const float a = frand(0.0f, 6.2831853f), sp = frand(0.05f, 0.25f);
+    const float v[3] = {std::cos(a) * sp, frand(-0.05f, 0.2f), std::sin(a) * sp};
+    add_spark(at, v, frand(0.0025f, 0.005f), core, outer, frand(0.35f, 0.7f), 1.2f, 0.35f);
+  }
+}
+void ink_land(const XrVector3f& at, const XrVector3f& head, float size, uint32_t rgb) {
+  if (!s.ready) return;
+  Space S;
+  S.head = head;
+  S.floor = at.y - 1.0f;
+  S.top = at.y + 1.0f;
+  S.r = 1.0f;
+  S.u = 1.0f;
+  add_ring(S, at, false, 0.4f * size, 6.0f * size, 0.55f, 0xFFFFFF, rgb, 1.0f, 1.0f);
+  for (int j = 0; j < 46; ++j) {
+    float d[3];
+    random_unit(d);
+    const float sp = frand(0.25f, 0.8f);
+    const float v[3] = {d[0] * sp, d[1] * sp + 0.25f, d[2] * sp};
+    add_spark(at, v, frand(0.003f, 0.007f), 0xFFFFFF, rgb, frand(0.45f, 0.9f), 1.6f, 0.3f);
+  }
+  FXLOG("fx: autograph landed");
 }
 
 void phase(int p) {
@@ -7545,7 +7722,11 @@ static uint32_t write_leds(const Scene& sc, Instance* inst) {
 // pieces or their budget), drawn from a reserved block after the suite's LEDs with the quads' pipeline (depth-tested,
 // premultiplied). Spawn rates and caps follow the load scale; the existing quad looks only (30 streak, 32 ring,
 // 39 flake, 29 puff, 13 soft dot), so no shader change.
-constexpr uint32_t kWeatherParts = 1200;
+// r196 (WEATHER-UPGRADE.md): 1200 -> 2400 for the tiers (THUNDERSTORM ~900 streaks + their splashes round you, BLIZZARD
+// ~1100 flakes + 500 lying, the stadium's snow on the pitch, the bolt in its sky); each view's own caps keep under it.
+// r214: 2400 -> 3200: the snow lying is a surface of tiles now (your floor up to ~700 in view, the stadium's pitch up to
+// 576, your furniture tops, the table's bands, your footprints) drawn from the same block, before what falls.
+constexpr uint32_t kWeatherParts = 3200;
 constexpr uint32_t kGoalFxParts = 1500;  // r153: a goal explosion's pieces (xr_goalfx.cpp kMaxParts), after the weather's
 constexpr uint32_t kBallFxParts = 400;   // r168: the ball skins' pieces (xr_balls.cpp kMaxParts), after the goal explosion's
 extern "C" void PortWeatherSetLoad(float load);  // xr_weather.h (r148)
@@ -7553,32 +7734,379 @@ struct WxPiece {
   float p[3], v[3];
   float size, age, life, phase, yaw;
   uint8_t kind;  // 0 a raindrop, 1 its splash, 2 a snowflake falling, 3 one lying
+  uint8_t where;  // r194: kWxTable / kWxStadium / kWxRoom (which of the views it belongs to)
 };
+// r194 (Lance: a rainy night game on the Jumbotron in MR only rained inside the screen - "the match's weather OUT INTO
+// my room"): the views' weather, as bits - the Tabletop field + your table (MR Tabletop), the life-size stadium round
+// you (VR), and now your own room round you (every MR view: the Jumbotron Living Room and MR Tabletop, room scale:
+// thin streaks from about the ceiling to your floor with splashes there / on your table, snow drifting down and
+// lying a while). xr_quest.cpp gives the effects layer the match's weather in MR only while WEATHER IN MY ROOM is on
+// (xr_room_options.txt "roomweather", strikers.ini room_weather, default on); VR is the same as r137-r193.
+constexpr int kWxTable = 0, kWxStadium = 1, kWxRoom = 2;
 struct WxState {
   std::vector<WxPiece> pieces;
-  float acc = 0.0f, t = 0.0f;
-  int mode = -1;  // 0 the table (MR), 1 the stadium round you (VR)
+  float acc = 0.0f, accRoom = 0.0f, t = 0.0f;
+  int mode = -1;  // r194: bits (1 << kWx*) of the views shown (was 0 the table, 1 the stadium); -1 none yet
   float patch[30][4];  // snow lying round the table field: game x, y, size (m), seed
   bool patchesMade = false;
+  uint32_t statPieces = 0;   // r194: room pieces drawn / their overdraw (screens), largest since the last log
+  float statCoverage = 0.0f;
+  // r196: the blizzard's whiteout puffs round you (a few big soft ones drifting with the wind), the snow streaming low
+  // along your floor in its gusts, the dusting building along your play area's edges (and its amount), the life-size
+  // stadium's bolt (placed in the sky ahead of you when its strike starts)
+  struct Puff {
+    float p[3], size, age, life, a, seed;
+  };
+  Puff puffs[8];
+  int puffCount = 0;
+  float driftT = 0.0f;
+  float dust[72][4];  // along the play area's edge (0..4 round it), in from it (m), size (m), seed
+  bool dustMade = false;
+  float dustAmt = 0.0f;
+  int boltId = -1;
+  float boltYaw = 0.0f;
+  float statSoft = 0.0f;  // r196: the haze / dusting / bolt's share of the overdraw (screens), largest since the log
+  // r197: with your room scan, snow piles up where it would in a real room - drifts in your corners and along your walls,
+  // a dusting on your furniture tops, a little on the sills (xr_room.h spots): how full each is (0..1), for which model
+  float pile[xrroom::kMaxSpots] = {};
+  const xrroom::Room* pileRoom = nullptr;
+  float pileMax = 0.0f;
 } wx;
 
+// r194: bits (1 << kWx*), 0 none
 static int weather_mode(const Scene& sc) {
-  if (sc.weather == 0) return -1;
-  if (sc.tabletop && sc.mr) return 0;
-  if (!sc.mr) return 1;
-  return -1;
+  if (sc.weather == 0) return 0;
+  if (!sc.mr) return 1 << kWxStadium;
+  return (sc.tabletop ? (1 << kWxTable) : 0) | (1 << kWxRoom);
 }
-static bool weather_shown(const Scene& sc) { return !wx.pieces.empty() || weather_mode(sc) >= 0; }
+static bool field_any();  // r214: the snow lying in your room still melting (below)
+static bool weather_shown(const Scene& sc) { return !wx.pieces.empty() || weather_mode(sc) != 0 || field_any(); }
 
+// r194: the room's rain / snow is over the big screen's picture (between your eyes and it): faded there, so the match
+// stays clear. True when the line from your head through p meets the screen beyond p.
+static bool wx_over_screen(const Scene& sc, const XrVector3f& head, const XrVector3f& p) {
+  if (!sc.screenValid || sc.screenWidth <= 0.0f || sc.screenHeight <= 0.0f) return false;
+  const float nz[3] = {0.0f, 0.0f, 1.0f}, ax[3] = {1.0f, 0.0f, 0.0f}, ay[3] = {0.0f, 1.0f, 0.0f};
+  float n[3], ux[3], uy[3];
+  rotate(sc.screenPose.orientation, nz, n);
+  rotate(sc.screenPose.orientation, ax, ux);
+  rotate(sc.screenPose.orientation, ay, uy);
+  const XrVector3f& S = sc.screenPose.position;
+  const float d[3] = {p.x - head.x, p.y - head.y, p.z - head.z};
+  const float dn = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+  if (std::fabs(dn) < 1e-5f) return false;
+  const float u = ((S.x - head.x) * n[0] + (S.y - head.y) * n[1] + (S.z - head.z) * n[2]) / dn;
+  if (u < 1.0f) return false;  // (p is beyond the screen's plane, or the screen is behind you)
+  const float h[3] = {head.x + d[0] * u - S.x, head.y + d[1] * u - S.y, head.z + d[2] * u - S.z};
+  return std::fabs(h[0] * ux[0] + h[1] * ux[1] + h[2] * ux[2]) < 0.55f * sc.screenWidth &&
+         std::fabs(h[0] * uy[0] + h[1] * uy[1] + h[2] * uy[2]) < 0.55f * sc.screenHeight;
+}
+
+// r194: your room's weather (every MR view) - ONE driver for it, fed by a type and an intensity, so r195's tiers
+// (drizzle / rain / thunderstorm with lightning + thunder, flurry / blizzard) plug in here: a new type is a row in
+// kRoomWxSpec, a tier is room_wx_of's intensity (0..1: it scales the rate and the cap), lightning + its sound hang off
+// room_wx_spawn (the one place that runs each frame with the room's weather). Room scale: from about your ceiling
+// (the floor + 2.25-2.55 m, never below 35 cm over your head) round you 0.6-3.2 m out, to your floor (or your table
+// round the Tabletop field) - thin streaks + splashes for rain, soft flakes drifting down + lying a while for snow.
+enum RoomWxType { kRoomWxNone = 0, kRoomWxRain, kRoomWxSnow, kRoomWxTypes };
+struct RoomWx {
+  int type = kRoomWxNone;
+  float intensity = 0.0f;  // 0..1
+  bool night = false;
+  // r196: the tier (xr_weather.h PORT_WX_TIER_*: 1 drizzle 2 rain 3 thunderstorm 4 flurry 5 blizzard), its strength
+  // now, the wind in your room (LOCAL m/s, x / z) and its gust, the lightning's flash
+  int tier = 0;
+  float strength = 0.0f;
+  float windX = 0.0f, windZ = 0.0f, gust = 0.0f;
+  float flash = 0.0f;
+};
+struct RoomWxSpec {
+  uint8_t kind;             // the falling piece: 0 a streak, 2 a flake
+  float rate, cap;          // pieces a second / falling at once at intensity 1 (times the load scale)
+  float vMin, vMax;         // falling speed (m/s)
+  float driftX, driftZ;     // a little wind (m/s, LOCAL)
+  float sizeMin, sizeMax;   // a streak's length / a flake's size (m)
+  float aspect;             // a streak's width over its length
+  float alpha, alphaNight;  // how strong it shows over your room
+  float sway;               // a flake's side to side (m/s)
+  float splashChance;       // a streak's splash where it lands (0..1)
+  float lieCap, lieLife;    // flakes lying at once / how long each lies (s)
+};
+static const RoomWxSpec kRoomWxSpec[kRoomWxTypes] = {
+    {0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+    // rain: ~280 streaks 26-36 cm long, 5-6 mm wide, falling 6-7.5 m/s (~0.35 s each), half of them splash
+    {0, 760.0f, 280.0f, 6.0f, 7.5f, 0.25f, 0.08f, 0.26f, 0.36f, 0.018f, 0.30f, 0.38f, 0.0f, 0.5f, 0.0f, 0.0f},
+    // snow: ~360 flakes 1.2-2.2 cm drifting down at 0.4-0.55 m/s (~4-5 s each), up to 150 lying 8 s
+    {2, 75.0f, 360.0f, 0.38f, 0.56f, 0.05f, 0.02f, 0.012f, 0.022f, 1.0f, 0.80f, 0.85f, 0.12f, 0.0f, 150.0f, 8.0f},
+};
+// The match's weather -> your room's (the one mapping; r195: its tiers' intensity here). Rain wins over snow (a match
+// has one), night only tints the streaks (lit by floodlights) - no dimming of your passthrough.
+// r196: the tiers in your room (the approved preview's numbers, logs\r196-weather-preview\wx_preview.py): DRIZZLE ~130
+// thin short streaks, RAIN r194's ~280, THUNDERSTORM ~1100 heavy 34-50 cm streaks at 8-10 m/s slanted by the wind with
+// splashes; FLURRY ~140 slow fat flakes, BLIZZARD up to ~1100 small flakes blown 3-7 m/s by the gusts (FLURRY's ~10% as
+// it starts), lying 5-9 s. kind / drift / sway / lie as kRoomWxSpec's rows; caps x the strength x the load scale.
+static const RoomWxSpec kRoomTierSpec[6] = {
+    {0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+    // drizzle: fine, slower, fainter
+    {0, 520.0f, 130.0f, 5.0f, 6.2f, 0.0f, 0.0f, 0.17f, 0.25f, 0.016f, 0.24f, 0.30f, 0.0f, 0.3f, 0.0f, 0.0f},
+    // rain: r194's
+    {0, 760.0f, 280.0f, 6.0f, 7.5f, 0.0f, 0.0f, 0.26f, 0.36f, 0.018f, 0.30f, 0.38f, 0.0f, 0.5f, 0.0f, 0.0f},
+    // thunderstorm: heavy, fast, slanted (the wind), most of them splash
+    {0, 4200.0f, 1100.0f, 8.0f, 10.0f, 0.0f, 0.0f, 0.34f, 0.50f, 0.016f, 0.36f, 0.44f, 0.0f, 0.6f, 0.0f, 0.0f},
+    // flurry: few, slow, drifting
+    // r215 (Lance: r214 "looks like less snow is falling ... not falling hard like before"): 55 / 190, 0.38-0.56 m/s, 1.5-2.6 cm,
+    // alpha 0.95 (r196-r214: 32 / 140, 0.28-0.42, 1.3-2.4 cm, 0.80 / 0.85)
+    {2, 55.0f, 190.0f, 0.38f, 0.56f, 0.0f, 0.0f, 0.015f, 0.026f, 1.0f, 0.95f, 0.95f, 0.16f, 0.0f, 80.0f, 8.0f},
+    // blizzard: dense small flakes (the wind carries them), lying 5-9 s
+    // r215: 4800 / 1600, 0.6-1.9 m/s, 1.0-2.0 cm, alpha 0.95 (r196-r214: 3000 / 1100, 0.45-1.55, 0.8-1.7 cm, 0.85 / 0.88)
+    {2, 4800.0f, 1600.0f, 0.6f, 1.9f, 0.0f, 0.0f, 0.010f, 0.020f, 1.0f, 0.95f, 0.95f, 0.35f, 0.0f, 500.0f, 7.0f},
+};
+static const RoomWxSpec& room_spec(const RoomWx& rw) {
+  return rw.tier >= 1 && rw.tier <= 5 ? kRoomTierSpec[rw.tier] : kRoomWxSpec[rw.type];
+}
+// The game's wind (GAME world: x along the pitch, y across) in your room: the field's mapping (x, z, -y), turned by its yaw
+static void wind_to_room(const Scene& sc, float yaw, float* wx_, float* wz_) {
+  const float x = sc.wxWind[0], z = -sc.wxWind[1];
+  const float c = std::cos(yaw), s = std::sin(yaw);
+  *wx_ = x * c + z * s;
+  *wz_ = -x * s + z * c;
+}
+
+// The match's weather -> your room's (the one mapping; r196: its tier). Rain wins over snow (a match has one), night only
+// tints the streaks (lit by floodlights) - no dimming of your passthrough (r196: the flash / whiteout are its style,
+// xr_quest.cpp).
+static RoomWx room_wx_of(const Scene& sc) {
+  RoomWx r;
+  if (!sc.mr || sc.weather == 0) return r;
+  if (sc.weather & 1) r.type = kRoomWxRain;
+  else if (sc.weather & 2) r.type = kRoomWxSnow;
+  r.intensity = std::min(1.0f, std::max(0.0f, sc.weatherAmt));  // the match's own fade in / out
+  r.night = (sc.weather & 4) != 0;
+  r.tier = sc.wxTier;
+  // (the blizzard's own strength; the other tiers' size is in their caps)
+  r.strength = r.tier == 5 ? std::max(0.1f, sc.wxInten) : 1.0f;
+  wind_to_room(sc, sc.tableYaw, &r.windX, &r.windZ);
+  if (r.tier == 4) {  // a flurry barely drifts
+    r.windX *= 0.6f;
+    r.windZ *= 0.6f;
+  }
+  r.gust = sc.wxGust;
+  r.flash = std::min(1.0f, sc.wxFlash);
+  return r;
+}
+static void room_wx_spawn(const Scene& sc, const RoomWx& rw, float dt, int falling) {
+  if (rw.type == kRoomWxNone || rw.intensity <= 0.0f) {
+    wx.accRoom = 0.0f;
+    return;
+  }
+  const RoomWxSpec& sp = room_spec(rw);
+  const XrVector3f head = head_of(sc);
+  // r215: a blizzard is steady snow from its first second (40% of its storm), building to the full storm (r196-r214: its
+  // strength alone - its first 20 s were 12% of the cap)
+  const float amt = rw.intensity * (rw.tier == 5 ? 0.4f + 0.6f * rw.strength : rw.strength);
+  const int cap = static_cast<int>(sp.cap * amt * g_loadScale);
+  const float wind = std::sqrt(rw.windX * rw.windX + rw.windZ * rw.windZ);
+  const float ux = wind > 0.05f ? rw.windX / wind : 0.0f, uz = wind > 0.05f ? rw.windZ / wind : 0.0f;
+  // r196: 70% of it where you look (+-70 deg), the rest all round you (the same count shows much more weather)
+  float lf[3] = {0.0f, 0.0f, -1.0f};
+  {
+    const float fz[3] = {0.0f, 0.0f, -1.0f};
+    rotate(sc.views[0].pose.orientation, fz, lf);
+  }
+  const float ahead = std::atan2(lf[2], lf[0]);  // (the spawn angle a with cos(a), sin(a) = your look's x, z)
+  for (int j = spawn_n(wx.accRoom, sp.rate * amt * g_loadScale, dt);
+       j > 0 && falling < cap && wx.pieces.size() + 1000 < kWeatherParts; --j) {  // (r214: 1000 kept for the snow lying)
+    WxPiece q{};
+    q.kind = sp.kind;
+    q.where = kWxRoom;
+    q.phase = frand(0.0f, 6.2831853f);
+    q.yaw = frand(0.8f, 1.2f);  // (a falling piece's own share of the wind)
+    const float a = frand(0.0f, 1.0f) < 0.7f ? ahead + frand(-1.2f, 1.2f) : frand(0.0f, 6.2831853f);
+    const float r = std::sqrt(frand(0.6f * 0.6f, 3.4f * 3.4f));
+    q.p[0] = head.x + std::cos(a) * r;
+    q.p[1] = std::max(sc.floorY + frand(2.25f, 2.55f), head.y + 0.35f);
+    q.p[2] = head.z + std::sin(a) * r;
+    if (sp.kind == 0) {
+      // rain starts upwind by its fall's drift, so the slant lands round you
+      const float fall = (q.p[1] - sc.floorY) / (0.5f * (sp.vMin + sp.vMax));
+      q.p[0] -= rw.windX * fall;
+      q.p[2] -= rw.windZ * fall;
+      q.v[0] = rw.windX * q.yaw;
+      q.v[2] = rw.windZ * q.yaw;
+    } else {
+      // snow: in a strong wind most of it is blown in from the side it comes from, at any height
+      const float side = 0.55f / (0.55f + wind * 0.35f);
+      if (wind > 1.0f && frand(0.0f, 1.0f) > side) {
+        const float back = frand(2.2f, 3.4f), across = frand(-3.0f, 3.0f);
+        q.p[0] = head.x - ux * back - uz * across;
+        q.p[2] = head.z - uz * back + ux * across;
+        q.p[1] = sc.floorY + frand(0.05f, 2.5f);
+      }
+      q.v[0] = rw.windX;
+      q.v[2] = rw.windZ;
+    }
+    if (sc.room != nullptr) {
+      // r197: your room scan - born only inside your walls, under your ceiling, not inside tall furniture (a few tries
+      // round you; else this one isn't born)
+      const xrroom::Room& rm = *sc.room;
+      const float ceil = xrroom::ceiling_y(rm) - 0.06f;
+      bool ok = false;
+      for (int t = 0; t < 4 && !ok; ++t) {
+        if (t > 0) {
+          const float a2 = frand(0.0f, 1.0f) < 0.7f ? ahead + frand(-1.2f, 1.2f) : frand(0.0f, 6.2831853f);
+          const float r2 = std::sqrt(frand(0.6f * 0.6f, 3.4f * 3.4f)) * (1.0f - 0.15f * static_cast<float>(t));
+          q.p[0] = head.x + std::cos(a2) * r2;
+          q.p[2] = head.z + std::sin(a2) * r2;
+        }
+        if (q.p[1] > ceil) q.p[1] = ceil - frand(0.0f, 0.12f);
+        ok = xrroom::inside(rm, q.p[0], q.p[2]) && xrroom::top_at(rm, q.p[0], q.p[2]) < q.p[1] - 0.05f;
+      }
+      if (!ok) continue;
+    }
+    q.v[1] = -frand(sp.vMin, sp.vMax);
+    q.size = frand(sp.sizeMin, sp.sizeMax);
+    if (sp.kind == 2) {
+      // r214: real snow's sizes - most small, a few big clumps (log-normal); a flurry's few big lazy ones bigger still
+      const float g = frand(0.0f, 1.0f) + frand(0.0f, 1.0f) + frand(0.0f, 1.0f) - 1.5f;
+      q.size *= std::exp((rw.tier == 4 ? 0.55f : 0.42f) * g) * (rw.tier == 4 ? 1.25f : 1.0f);
+    }
+    if (sp.kind == 2 && rw.tier == 5 && frand(0.0f, 1.0f) < 0.12f) q.size *= 1.7f;  // a few bigger clumps
+    q.life = 12.0f;
+    wx.pieces.push_back(q);
+    ++falling;
+  }
+}
+
+// r214 (Lance: the snow in his room "looks like white pixels on the floor"): the snow LYING in your room is one surface
+// now (xrsnow::Field: 25 cm cells over your floor - your scan's open floor, else your play area, else a circle round you -
+// deeper by the walls and furniture, most on the side the wind blows toward, your footprints pressed into it, your
+// furniture tops with their own), drawn as xr_fx.frag's snow layer; the flakes that land only melt into it.
+xrsnow::Field g_field;
+struct FieldState {
+  int src = -1;  // 0 your scan, 1 your play area, 2 a circle round you
+  const xrroom::Room* room = nullptr;
+  float key[8] = {};
+  bool any = false;
+  bool snowing = false;  // r225: (the log: the weather starting again on the same ground)
+  float maxDepth = 0.0f;
+  int tiles = 0, prints = 0;  // drawn last frame (the log)
+} g_fs;
+// r225: the snow's ground in strikers-log.txt too (FXLOG is logcat only: r223's log couldn't say which ground it used)
+#define FXFILE(...)                                     \
+  do {                                                  \
+    char fxline_[640];                                  \
+    std::snprintf(fxline_, sizeof(fxline_), __VA_ARGS__); \
+    __android_log_write(ANDROID_LOG_INFO, "strikers_xr", fxline_); \
+    std::fprintf(stderr, "[xr] %s\n", fxline_);         \
+  } while (0)
+static void field_log(const char* what, int src, double ms) {
+  float x0, x1, z0, z1;
+  const float area = xrsnow::field_area(g_field, &x0, &x1, &z0, &z1);
+  FXFILE("fx: r225 snow surface %s: %s, %.1f m2 of floor over x %.2f..%.2f z %.2f..%.2f (LOCAL), %dx%d cells (%d open, %s), "
+         "%d furniture tops, floor y %.2f, built in %.2f ms",
+         what, src == 0 ? "YOUR ROOM SCAN's floor (the scanned room you're in)" : (src == 1 ? "YOUR PLAY AREA (no scanned room here; soft edges)" : "A CIRCLE ROUND YOU (no scan, no play area; soft edges)"),
+         static_cast<double>(area), static_cast<double>(x0), static_cast<double>(x1), static_cast<double>(z0), static_cast<double>(z1),
+         g_field.nx, g_field.ny, g_field.validN, g_field.clampA || g_field.clampB ? "cut to 12 m round you" : "whole", g_field.topN,
+         static_cast<double>(g_field.floorY), ms);
+}
+static bool field_any() { return g_fs.any; }
+static void room_field_step(const Scene& sc, const RoomWx& room, int mode, float dt, bool stopping, const XrVector3f& head) {
+  const bool snowing = room.type == kRoomWxSnow && (mode & (1 << kWxRoom)) != 0 && !stopping && sc.mr;
+  const bool starting = snowing && !g_fs.snowing;
+  g_fs.snowing = snowing;
+  if (!snowing && !g_fs.any) return;
+  int src = 2;
+  float key[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  float playYaw = 0.0f;
+  if (sc.room != nullptr) {
+    src = 0;
+    key[0] = sc.room->fc;
+    key[1] = sc.room->fs;
+    key[2] = sc.room->ft[0];
+    key[3] = sc.room->ft[1];
+    key[4] = sc.room->ft[2];
+    key[6] = static_cast<float>(sc.room->insideCells) * 0.1f;  // (r225: another room at the same address is another room)
+    key[7] = sc.room->outlineN > 0 ? sc.room->outline[0][0] + sc.room->outline[0][1] : 0.0f;
+  } else if (sc.playValid) {
+    src = 1;
+    const float ax[3] = {1.0f, 0.0f, 0.0f};
+    float w3[3];
+    rotate(sc.playPose.orientation, ax, w3);
+    playYaw = std::atan2(w3[2], w3[0]);
+    key[0] = sc.playPose.position.x;
+    key[1] = sc.playPose.position.z;
+    key[2] = playYaw;
+    key[3] = sc.playHalf[0];
+    key[4] = sc.playHalf[1];
+    key[5] = sc.floorY;
+  }
+  bool same = g_field.built && src == g_fs.src && (src != 0 || sc.room == g_fs.room);
+  for (int k = 0; k < 8 && same; ++k) same = std::fabs(key[k] - g_fs.key[k]) < 0.02f;
+  float rate = 0.0f, cap = 1.0f;
+  xrsnow::room_rate(room.tier, room.strength, room.intensity, &rate, &cap);
+  if (!same) {
+    if (!snowing) {  // (nothing to keep: what lay is gone with the old floor)
+      g_fs.any = false;
+      g_field.built = false;
+      return;
+    }
+    // r225: a new ground mid-snow (the scan finished loading after the weather began, you walked into another scanned
+    // room, or out of every one): it starts as deep as the old one lay, not bare
+    const float was = g_field.built && g_fs.any ? xrsnow::field_mean(g_field) : 0.0f;
+    const int oldSrc = g_fs.src;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (src == 0) xrsnow::field_from_scan(g_field, *sc.room, head.x, head.z, true);
+    else if (src == 1) xrsnow::field_from_play(g_field, key[0], key[1], playYaw, key[3], key[4], sc.floorY);
+    else xrsnow::field_from_disc(g_field, head.x, head.z, 2.2f, sc.floorY);
+    xrsnow::field_seed(g_field, was, cap);
+    g_fs.src = src;
+    g_fs.room = sc.room;
+    for (int k = 0; k < 8; ++k) g_fs.key[k] = key[k];
+    char what[96];
+    if (oldSrc < 0 || starting) std::snprintf(what, sizeof(what), "as the snow starts");
+    else std::snprintf(what, sizeof(what), "changed mid-snow (from %s, its snow carried over at %.2f deep)",
+                       oldSrc == 0 ? (src == 0 ? "another scanned room / a recenter" : "your room scan") : (oldSrc == 1 ? "your play area" : "a circle"),
+                       static_cast<double>(was));
+    field_log(what, src, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  } else if (starting) {
+    field_log("as the snow starts (the same ground as before)", src, 0.0);
+  }
+  float ax, az, bx, bz;
+  xrsnow::field_axes(g_field, &ax, &az, &bx, &bz);
+  const float wa = room.windX * ax + room.windZ * az, wb = room.windX * bx + room.windZ * bz;
+  xrsnow::field_step(g_field, dt, snowing ? rate : 0.0f, cap, wa, wb, !snowing, head.x, head.y, head.z);
+  float mx = 0.0f;
+  for (int j = 0; j < g_field.ny; ++j)
+    for (int i = 0; i < g_field.nx; ++i) mx = std::max(mx, g_field.depth[j * xrsnow::kFieldMax + i]);
+  for (int t = 0; t < g_field.topN; ++t) mx = std::max(mx, g_field.tops[t].depth);
+  g_fs.maxDepth = mx;
+  g_fs.any = mx > 0.003f || snowing;
+}
 static void weather_step(const Scene& sc, float dt) {
   PortWeatherSetLoad(g_loadScale);  // r148: the game-side counts follow the load scale too
   const int mode = weather_mode(sc);
-  if (mode < 0 && wx.pieces.empty()) {
+  if (mode == 0 && wx.pieces.empty()) {
     wx.mode = -1;
+    wx.dustMade = false;  // r196: a new weather starts its dusting / puffs afresh
+    wx.dustAmt = 0.0f;
+    wx.puffCount = 0;
+    wx.boltId = -1;
+    for (float& v : wx.pile) v = 0.0f;  // r197
+    wx.pileMax = 0.0f;
+    room_field_step(sc, RoomWx{}, 0, dt, true, head_of(sc));  // r214: what lies in your room melts (1.5 s)
     return;
   }
-  if (mode >= 0 && mode != wx.mode) {
-    wx.pieces.clear();  // a view change: the old view's pieces are in the wrong place
+  if (mode != 0 && mode != wx.mode) {
+    // a view change: the views gone have their pieces in the wrong place (r194: the room's stay when only the
+    // Tabletop comes or goes - it's the same room)
+    for (size_t i = 0; i < wx.pieces.size();) {
+      if ((mode & (1 << wx.pieces[i].where)) == 0) {
+        wx.pieces[i] = wx.pieces.back();
+        wx.pieces.pop_back();
+      } else {
+        ++i;
+      }
+    }
     wx.mode = mode;
   }
   if (wx.pieces.capacity() < kWeatherParts) wx.pieces.reserve(kWeatherParts);
@@ -7588,21 +8116,30 @@ static void weather_step(const Scene& sc, float dt) {
   const XrVector3f head = head_of(sc);
   const float tableTop = sc.tablePos.y + 0.002f;
   const float boxTop = sc.tablePos.y + 2.0f * sc.tableScale;
-  // spawning
-  int falling = 0, lying = 0;
+  // spawning (r194: counted per view - the room's own pieces beside the table's)
+  int fallingBy[3] = {0, 0, 0}, lyingBy[3] = {0, 0, 0};
   for (const WxPiece& q : wx.pieces) {
-    if (q.kind == 0 || q.kind == 2) ++falling;
-    if (q.kind == 3) ++lying;
+    if (q.kind == 0 || q.kind == 2) ++fallingBy[q.where];
+    if (q.kind == 3) ++lyingBy[q.where];
   }
-  if (mode >= 0 && (rain || snow)) {
+  // the table's / the stadium's (as r137-r193; `view` was r137's mode: 0 the table, 1 the stadium)
+  const int view = (mode & (1 << kWxStadium)) ? kWxStadium : ((mode & (1 << kWxTable)) ? kWxTable : -1);
+  int falling = view >= 0 ? fallingBy[view] : 0;
+  if (view >= 0 && (rain || snow)) {
     // r148: round you in the stadium 420 streaks / 450 flakes at most (were 600 / 650), times the load scale
-    const float rate = mode == 0 ? (rain ? 520.0f : 60.0f) : (rain ? 640.0f : 76.0f);
-    const int cap = static_cast<int>((mode == 0 ? (rain ? 320.0f : 260.0f) : (rain ? 420.0f : 450.0f)) * g_loadScale);
-    for (int j = spawn_n(wx.acc, rate * amt, dt); j > 0 && falling < cap && wx.pieces.size() < kWeatherParts; --j) {
+    // r196: x the tier (drizzle 0.45, storm 1.6 / flurry 0.4, the blizzard its strength 0.4 .. 1.6)
+    const float tierK = sc.wxTier == 1 ? 0.45f : (sc.wxTier == 3 ? 1.6f : (sc.wxTier == 4 ? 0.4f : (sc.wxTier == 5 ? 0.4f + 1.2f * sc.wxInten : 1.0f)));
+    const float rate = (view == kWxTable ? (rain ? 520.0f : 60.0f) : (rain ? 640.0f : 100.0f)) * tierK;
+    // r215: the stadium's snow 76 -> 100 a second, 450 -> 600 at once (rain unchanged)
+    const int cap = static_cast<int>((view == kWxTable ? (rain ? 320.0f : 260.0f) : (rain ? 420.0f : 600.0f)) * tierK * g_loadScale);
+    float swx = 0.0f, swz = 0.0f;  // r196: the stadium's wind (yaw 0) / the table's
+    wind_to_room(sc, view == kWxTable ? sc.tableYaw : 0.0f, &swx, &swz);
+    for (int j = spawn_n(wx.acc, rate * amt, dt); j > 0 && falling < cap && wx.pieces.size() + 1700 < kWeatherParts; --j) {
       WxPiece q{};
       q.kind = rain ? 0 : 2;
+      q.where = static_cast<uint8_t>(view);
       q.phase = frand(0.0f, 6.2831853f);
-      if (mode == 0) {
+      if (view == kWxTable) {
         const float gx = frand(-27.0f, 27.0f), gy = frand(-17.5f, 17.5f);
         const XrVector3f p = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, gx, gy, 0.0f);
         q.p[0] = p.x;
@@ -7616,22 +8153,32 @@ static void weather_step(const Scene& sc, float dt) {
         q.p[1] = head.y + (rain ? frand(3.5f, 6.5f) : frand(2.5f, 5.5f));
         q.p[2] = head.z + std::sin(a) * r;
         if (rain) {
-          q.v[0] = 0.6f;
-          q.v[1] = -frand(8.5f, 10.5f);
-          q.v[2] = 0.2f;
+          // r196: slanted by the match's wind (spawned upwind so it lands round you)
+          q.v[0] = 0.6f + swx;
+          q.v[1] = -frand(8.5f, 10.5f) * (sc.wxTier == 1 ? 0.8f : 1.0f);
+          q.v[2] = 0.2f + swz;
+          q.p[0] -= swx * 0.5f;
+          q.p[2] -= swz * 0.5f;
         } else {
-          q.v[1] = -frand(0.8f, 1.2f);
+          q.v[0] = swx;
+          q.v[1] = -frand(1.0f, 1.5f) * (sc.wxTier == 5 ? 0.8f + 0.9f * sc.wxInten : 1.0f);  // r215 (r137-r214 0.8-1.2)
+          q.v[2] = swz;
+          q.p[0] -= swx * 2.5f;
+          q.p[2] -= swz * 2.5f;
         }
-        q.size = rain ? frand(0.4f, 0.6f) : frand(0.03f, 0.06f);
+        q.size = rain ? frand(0.4f, 0.6f) * (sc.wxTier == 3 ? 1.15f : (sc.wxTier == 1 ? 0.7f : 1.0f)) : frand(0.03f, 0.06f);
       }
       q.life = 12.0f;
       wx.pieces.push_back(q);
       ++falling;
     }
   }
+  // r194: your room's (every MR view) - the one driver
+  const RoomWx room = (mode & (1 << kWxRoom)) ? room_wx_of(sc) : RoomWx{};
+  room_wx_spawn(sc, room, dt, fallingBy[kWxRoom]);
   // moving, landing, splashing, settling
   const float floorY = sc.floorY;
-  const bool stopping = mode < 0;
+  const bool stopping = mode == 0;
   static std::vector<WxPiece> born;  // r148: kept (no allocation a frame)
   born.clear();
   for (size_t i = 0; i < wx.pieces.size();) {
@@ -7640,11 +8187,93 @@ static void weather_step(const Scene& sc, float dt) {
     bool dead = q.age >= q.life;
     if (q.kind == 0 || q.kind == 2) {
       float sway = 0.0f;
-      if (q.kind == 2) sway = (wx.mode == 0 ? 0.02f : 0.35f) * std::sin(wx.t * 1.3f + q.phase);
+      if (q.where == kWxRoom && room.type != kRoomWxNone) {
+        // r196: carried by the room's wind (the preview's motion): rain eases to its slant, snow to the gusts, each
+        // flake its own share of them, drifting side to side more in the gusts
+        const RoomWxSpec& sp = room_spec(room);
+        const float fac = q.yaw > 0.5f ? q.yaw : 1.0f;
+        float tx, ty, tz, k;
+        if (q.kind == 0) {
+          tx = room.windX * fac;
+          tz = room.windZ * fac;
+          ty = q.v[1];
+          k = std::min(1.0f, dt * 4.0f);
+        } else {
+          const float fallV = room.tier == 5 ? (0.7f + 1.5f * room.strength) : 0.5f * (sp.vMin + sp.vMax);  // r215 (r196-r214 0.45 + 1.1 x)
+          // r214: each flake flutters at its own pace (a big one wider and slower to fall), and the gusts SWIRL - a
+          // slow eddy field through your room, not one push - so the snow eddies, lifts and drops
+          const float ff = 0.8f + 0.9f * std::fmod(q.phase * 0.61f, 1.0f);
+          const float flut = (room.tier == 4 ? 0.30f : 0.22f) * (0.5f + 25.0f * q.size);
+          const float sw = 0.35f + 0.65f * room.gust;
+          const float ex = 0.6f * sw * std::sin(1.3f * q.p[2] + 0.9f * wx.t + 0.2f * q.phase);
+          const float ez = 0.6f * sw * std::cos(1.1f * q.p[0] - 0.7f * wx.t);
+          const float ey = 0.25f * room.gust * std::sin(1.7f * q.p[0] + 1.3f * q.p[2] + wx.t);
+          tx = room.windX * fac + flut * std::sin(wx.t * ff * 3.1f + q.phase) * (0.6f + 0.6f * room.gust) + ex;
+          tz = room.windZ * fac + 0.8f * flut * std::cos(wx.t * ff * 2.3f + q.phase * 1.3f) + ez;
+          ty = -fallV * (0.75f + 0.5f * (fac - 0.8f) / 0.4f) + ey +  // (r215: r214's big-flake slow-down gone)
+               0.25f * std::sin(wx.t * 2.1f + q.phase) * room.gust;
+          k = std::min(1.0f, dt * 2.5f);
+        }
+        q.v[0] += (tx - q.v[0]) * k;
+        q.v[1] += (ty - q.v[1]) * k;
+        q.v[2] += (tz - q.v[2]) * k;
+        // blown well away from you: gone (the room's pieces stay round you)
+        const float hx = q.p[0] - head.x, hz = q.p[2] - head.z;
+        if (hx * hx + hz * hz > 4.8f * 4.8f || q.p[1] > sc.floorY + 3.0f) dead = true;
+      } else if (q.kind == 2) {
+        sway = (q.where == kWxTable ? 0.02f : (q.where == kWxStadium ? 0.35f : kRoomWxSpec[kRoomWxSnow].sway)) *
+               std::sin(wx.t * (1.0f + 0.8f * std::fmod(q.phase * 0.61f, 1.0f)) + q.phase);  // r214: each its own pace
+      }
+      const float wasY = q.p[1];  // r197: (the room scan's surface under it is the one it came down to)
       q.p[0] += (q.v[0] + sway) * dt;
       q.p[1] += q.v[1] * dt;
       q.p[2] += (q.v[2] + 0.6f * sway * std::cos(q.phase)) * dt;
-      if (wx.mode == 0) {
+      if (q.where == kWxRoom) {
+        // r194: your room's: onto your floor, or onto your table round the Tabletop field (into its box: gone)
+        float landY = floorY;
+        uint16_t landLab = xrroom::kLabFloor;
+        if (sc.room != nullptr) {
+          // r197: your room scan - onto what's really under it (a table top, the couch, a sill, a shelf, the floor);
+          // blown out through a wall: gone (never drawn over your wall)
+          if (!xrroom::inside(*sc.room, q.p[0], q.p[2])) dead = true;
+          else landY = xrroom::surface_below(*sc.room, q.p[0], wasY, q.p[2], &landLab);
+        }
+        if (sc.tabletop) {
+          const float dx = (q.p[0] - sc.tablePos.x) / sc.tableScale, dz = (q.p[2] - sc.tablePos.z) / sc.tableScale;
+          const float cs = std::cos(sc.tableYaw), sn = std::sin(sc.tableYaw);
+          const float gx = dx * cs - dz * sn, gy = -(dx * sn + dz * cs);
+          if (std::fabs(gx) < 22.5f && std::fabs(gy) < 13.5f && q.p[1] < boxTop) dead = true;
+          else if (std::fabs(gx) < 27.0f && std::fabs(gy) < 17.5f && q.p[1] > tableTop - 0.05f) landY = tableTop;
+        }
+        if (!dead && q.p[1] <= landY + 0.005f) {
+          dead = true;
+          if (!stopping && wx.pieces.size() + born.size() + 800 < kWeatherParts) {
+            WxPiece l = q;
+            l.p[1] = landY + 0.004f;
+            l.age = 0.0f;
+            const RoomWxSpec& sp =
+                room.type != kRoomWxNone ? room_spec(room) : kRoomWxSpec[q.kind == 0 ? kRoomWxRain : kRoomWxSnow];
+            if (q.kind == 0) {
+              // r197: a soft top (the couch, a bed) soaks most of it up: fewer, smaller, shorter splashes; a hard top
+              // (a table, a sill, a shelf) splashes a little smaller than the floor
+              const bool soft = (landLab & (xrroom::kLabCouch | xrroom::kLabBed)) != 0;
+              const float tight = soft ? 0.6f : (landLab != xrroom::kLabFloor ? 0.85f : 1.0f);
+              if (frand(0.0f, 1.0f) < sp.splashChance * (soft ? 0.4f : 1.0f)) {
+                l.kind = 1;
+                l.life = (room.tier == 3 ? frand(0.22f, 0.32f) : 0.22f) * (soft ? 0.7f : 1.0f);  // r196: a storm's, bigger
+                l.size = (room.tier == 3 ? frand(0.035f, 0.065f) : (room.tier == 1 ? 0.025f : 0.035f)) * tight;
+                born.push_back(l);
+              }
+            } else if (lyingBy[kWxRoom] < static_cast<int>(sp.lieCap * g_loadScale)) {
+              l.kind = 3;
+              l.life = room.tier == 4 ? frand(0.9f, 1.3f) : frand(0.5f, 0.8f);  // r214: it melts into the snow lying (was 5-9 s on its own)
+              l.yaw = frand(0.0f, 6.2831853f);
+              ++lyingBy[kWxRoom];
+              born.push_back(l);
+            }
+          }
+        }
+      } else if (q.where == kWxTable) {
         const float dx = (q.p[0] - sc.tablePos.x) / sc.tableScale, dz = (q.p[2] - sc.tablePos.z) / sc.tableScale;
         const float cs = std::cos(sc.tableYaw), sn = std::sin(sc.tableYaw);
         const float gx = dx * cs - dz * sn, gy = -(dx * sn + dz * cs);
@@ -7653,7 +8282,7 @@ static void weather_step(const Scene& sc, float dt) {
           dead = true;  // into the field's stand-in box (the game's own splashes / drifts are on the pitch)
         } else if (q.p[1] <= tableTop) {
           dead = true;
-          if (!stopping && wx.pieces.size() + born.size() < kWeatherParts) {
+          if (!stopping && wx.pieces.size() + born.size() + 800 < kWeatherParts) {
             WxPiece l = q;
             l.p[1] = tableTop + 0.0015f;
             l.age = 0.0f;
@@ -7662,18 +8291,18 @@ static void weather_step(const Scene& sc, float dt) {
               l.life = 0.22f;
               l.size = 0.004f;
               born.push_back(l);
-            } else if (lying < static_cast<int>(240 * g_loadScale)) {  // r148: 240 (was 360)
+            } else if (lyingBy[kWxTable] < static_cast<int>(240 * g_loadScale)) {  // r148: 240 (was 360)
               l.kind = 3;
-              l.life = 40.0f;
+              l.life = frand(1.0f, 1.5f);  // r214: into the table's snow (was 40 s on its own)
               l.yaw = frand(0.0f, 6.2831853f);
-              ++lying;
+              ++lyingBy[kWxTable];
               born.push_back(l);
             }
           }
         }
       } else if (q.p[1] <= floorY + 0.005f) {
         dead = true;
-        if (!stopping && wx.pieces.size() + born.size() < kWeatherParts) {
+        if (!stopping && wx.pieces.size() + born.size() + 800 < kWeatherParts) {
           WxPiece l = q;
           l.p[1] = floorY + 0.01f;
           l.age = 0.0f;
@@ -7684,11 +8313,11 @@ static void weather_step(const Scene& sc, float dt) {
               l.size = 0.06f;
               born.push_back(l);
             }
-          } else if (lying < static_cast<int>(120 * g_loadScale)) {  // r148: 120 (was 220)
+          } else if (lyingBy[kWxStadium] < static_cast<int>(120 * g_loadScale)) {  // r148: 120 (was 220)
             l.kind = 3;
-            l.life = 6.0f;
+            l.life = frand(0.6f, 0.9f);  // r214: into the pitch's snow (was 6 s on its own)
             l.yaw = frand(0.0f, 6.2831853f);
-            ++lying;
+            ++lyingBy[kWxStadium];
             born.push_back(l);
           }
         }
@@ -7704,7 +8333,71 @@ static void weather_step(const Scene& sc, float dt) {
     }
   }
   for (const WxPiece& l : born) wx.pieces.push_back(l);
-  if (snow && mode == 0 && !wx.patchesMade) {
+  // r196: the blizzard in your room - whiteout puffs (a few big soft ones, drifting with the wind; the passthrough's
+  // wash does the rest), the dusting along your play area's edges building up
+  if (room.type == kRoomWxSnow && room.tier == 5 && !stopping) {
+    for (int i = 0; i < wx.puffCount;) {
+      WxState::Puff& p = wx.puffs[i];
+      p.p[0] += room.windX * 0.8f * dt;
+      p.p[2] += room.windZ * 0.8f * dt;
+      p.age += dt;
+      const float hx = p.p[0] - head.x, hz = p.p[2] - head.z;
+      if (p.age >= p.life || hx * hx + hz * hz > 5.5f * 5.5f) {
+        wx.puffs[i] = wx.puffs[--wx.puffCount];
+      } else {
+        ++i;
+      }
+    }
+    const int want = room.strength > 0.3f ? static_cast<int>(std::lround(6.0f * room.strength * (0.6f + 0.4f * room.gust) * g_loadScale)) : 0;
+    while (wx.puffCount < std::min(want, 8)) {
+      WxState::Puff& p = wx.puffs[wx.puffCount++];
+      const float a = frand(0.0f, 6.2831853f), r = frand(2.0f, 3.6f);
+      p.p[0] = head.x + std::cos(a) * r;
+      p.p[1] = sc.floorY + frand(0.6f, 2.0f);
+      p.p[2] = head.z + std::sin(a) * r;
+      p.size = frand(1.0f, 1.5f);
+      p.age = 0.0f;
+      p.life = frand(3.0f, 6.0f);
+      p.a = frand(0.08f, 0.14f);
+      p.seed = frand(0.0f, 1.0f);
+    }
+    wx.driftT += dt;
+  } else {
+    wx.puffCount = 0;
+  }
+  if (room.type == kRoomWxSnow && !stopping) {
+    // the dusting: ~13 s of full blizzard to show, a flurry only a light one (preview: dust_int / 13)
+    wx.dustAmt = std::min(1.0f, wx.dustAmt + dt * (room.tier == 5 ? room.strength : 0.12f) / 13.0f);
+    if (!wx.dustMade) {
+      wx.dustMade = true;
+      for (int k = 0; k < 72; ++k) {
+        wx.dust[k][0] = (static_cast<float>(k) + frand(0.0f, 0.9f)) / 18.0f;  // 18 a side, 4 sides
+        wx.dust[k][1] = frand(0.02f, 0.32f);
+        wx.dust[k][2] = frand(0.25f, 0.55f);
+        wx.dust[k][3] = frand(0.0f, 1.0f);
+      }
+    }
+  }
+  // r197: the piles in your scanned room fill while it snows (a blizzard ~40 s to a full corner drift, a flurry slowly)
+  // and melt with the lying flakes once it stops; a new scan (or none) starts them afresh
+  if (sc.room != wx.pileRoom) {
+    for (float& v : wx.pile) v = 0.0f;
+    wx.pileRoom = sc.room;
+  }
+  wx.pileMax = 0.0f;
+  if (sc.room != nullptr) {
+    const float rate = room.type == kRoomWxSnow && !stopping
+                           ? (room.tier == 5 ? room.strength : (room.tier == 4 ? 0.15f : 0.5f)) * room.intensity
+                           : 0.0f;
+    for (int i = 0; i < sc.room->spotN && i < xrroom::kMaxSpots; ++i) {
+      float& v = wx.pile[i];
+      v = rate > 0.0f ? std::min(1.0f, v + dt * rate * sc.room->spots[i].weight / 40.0f) : std::max(0.0f, v - dt / 1.5f);
+      wx.pileMax = std::max(wx.pileMax, v);
+    }
+  }
+  // r214: the snow lying in your room (one surface: drifts, your footprints, your furniture tops)
+  room_field_step(sc, room, mode, dt, stopping, head);
+  if (snow && (mode & (1 << kWxTable)) != 0 && !wx.patchesMade) {
     wx.patchesMade = true;
     for (int k = 0; k < 30; ++k) {
       // round the field box's edge, on the table: along the sides more than the ends
@@ -7725,9 +8418,63 @@ static void weather_step(const Scene& sc, float dt) {
   }
 }
 
+// r197: a snow pile at your room scan's spot i, `lvl` full (0..1), as soft lumpy puffs (the r196 dusting's kPuff look):
+// lying ones mounded into a dome and leaning into the wall / corner (a drift), and 1-3 upright ones against the wall
+// giving it a face; a top's spot (a table, the couch) only a flat dusting. The PC mock draws these same puffs
+// (tools/roomscan197/test/render_mock.py pile_puffs: the same hash, sizes and alphas). Up to 11 a spot.
+struct PilePuff {
+  XrVector3f p;
+  float r, a, seed;
+  bool upright;
+};
+static float pile_h01(uint32_t k) {
+  k *= 2654435761u;
+  k ^= k >> 15;
+  k *= 2246822519u;
+  k ^= k >> 13;
+  return static_cast<float>(k & 0xFFFFFFu) / 16777216.0f;
+}
+static int room_pile_puffs(const xrroom::Room& rm, int i, float lvl, PilePuff* out, int cap) {
+  if (lvl <= 0.02f || i < 0 || i >= rm.spotN) return 0;
+  float sp[5];
+  xrroom::spot_now(rm, i, sp);
+  const xrroom::Spot& s = rm.spots[i];
+  const float R = s.size * (0.3f + 0.7f * lvl);
+  const float al = std::min(1.0f, lvl * 1.6f) * 0.92f;
+  const bool wall = s.kind != 2;
+  const int n = wall ? 3 + static_cast<int>(5.0f * lvl + 0.5f) : 3 + static_cast<int>(3.0f * lvl + 0.5f);
+  const uint32_t ui = static_cast<uint32_t>(i);
+  int m = 0;
+  for (int k = 0; k < n && m < cap; ++k) {
+    const uint32_t uk = static_cast<uint32_t>(k);
+    const float u1 = pile_h01(ui * 97u + uk * 3u + 1u), u2 = pile_h01(ui * 97u + uk * 3u + 2u), u3 = pile_h01(ui * 97u + uk * 3u + 3u);
+    const float a = 6.2831853f * u1, rad = R * 0.7f * std::sqrt(u2);
+    float ox = std::cos(a) * rad, oz = std::sin(a) * rad;
+    if (wall) {
+      ox += sp[3] * 0.35f * R;
+      oz += sp[4] * 0.35f * R;
+    }
+    const float dome = wall ? 0.22f * R * lvl * (1.0f - rad / std::max(R, 1e-3f)) : 0.0f;
+    out[m++] = PilePuff{XrVector3f{sp[0] + ox, sp[1] + 0.004f + dome, sp[2] + oz}, R * (0.42f + 0.3f * u3), al * (wall ? 0.8f : 0.7f), u3, false};
+  }
+  if (wall) {
+    const int up = 1 + static_cast<int>(2.0f * lvl + 0.5f);
+    for (int k = 0; k < up && m < cap; ++k) {
+      const float u1 = pile_h01(ui * 131u + static_cast<uint32_t>(k) + 7u);
+      const float a = (u1 - 0.5f) * 1.6f;
+      const float tx = -sp[4], tz = sp[3];  // along the wall
+      out[m++] = PilePuff{XrVector3f{sp[0] + sp[3] * 0.55f * R + tx * a * R * 0.6f, sp[1] + 0.16f * R * lvl + 0.02f,
+                                     sp[2] + sp[4] * 0.55f * R + tz * a * R * 0.6f},
+                          0.42f * R * (0.5f + 0.5f * lvl), al * 0.75f, u1, true};
+    }
+  }
+  return m;
+}
+
 static uint32_t write_weather(const Scene& sc, Instance* inst) {
   const XrVector3f head = head_of(sc);
-  const bool night = (sc.weather & 4) != 0 && weather_mode(sc) >= 0;
+  const int shown = weather_mode(sc);  // r194: bits
+  const bool night = (sc.weather & 4) != 0 && shown != 0;
   const float amt = std::min(1.0f, std::max(0.0f, sc.weatherAmt));
   uint32_t n = 0;
   auto emit = [&](const XrVector3f& p, float size, const float* quat, uint32_t c1, uint32_t c2, uint8_t shape,
@@ -7750,45 +8497,419 @@ static uint32_t write_weather(const Scene& sc, Instance* inst) {
     o.params[2] = alpha;
     o.params[3] = glow;
   };
-  const bool table = wx.mode == 0;
+  const bool tableShown = (shown & (1 << kWxTable)) != 0, stadiumShown = (shown & (1 << kWxStadium)) != 0;
+  // r196: the room's tier, the lightning lighting up what falls (brighter, whiter while it flashes)
+  const RoomWx room = (shown & (1 << kWxRoom)) ? room_wx_of(sc) : RoomWx{};
+  const RoomWxSpec& roomSp = room.type != kRoomWxNone ? room_spec(room) : kRoomWxSpec[kRoomWxRain];
+  const float lit = std::min(1.0f, sc.wxFlash);
+  const float litA = 1.0f + 1.3f * lit;
+  float softCover = 0.0f;  // r196: the haze / dusting / bolt's overdraw (screens; r180's measure)
+  // r194: the room's pieces' overdraw (each one's share of a screen: its quad's area against your view's width at its
+  // distance, squared - r180's measure), logged with their count now and then
+  float roomCover = 0.0f;
+  uint32_t roomN = 0;
+  float lookF[3] = {0.0f, 0.0f, -1.0f};
+  {
+    const float fz[3] = {0.0f, 0.0f, -1.0f};
+    rotate(sc.views[0].pose.orientation, fz, lookF);
+  }
+  // r214: THE SNOW LYING, first (under what falls) - xr_fx.frag's snow layer (180): the corners' depth in colour 2, how
+  // trampled in colour 1, its mode in the glow slot (0 your room, 1 a top, 2 the stadium, 3 the table; +4 night). Its
+  // overdraw: a flat tile's area x how squarely you see it, against your view's width at its distance (r180's measure).
+  auto corners = [](float a, float b, float c, float d) {
+    return static_cast<uint32_t>(xrsnow::byte01(a)) | (static_cast<uint32_t>(xrsnow::byte01(b)) << 8) |
+           (static_cast<uint32_t>(xrsnow::byte01(c)) << 16) | (static_cast<uint32_t>(xrsnow::byte01(d)) << 24);
+  };
+  auto flatCover = [&](const XrVector3f& p, float area) {
+    const float dx = p.x - head.x, dy = p.y - head.y, dz = p.z - head.z;
+    const float d = std::max(0.3f, std::sqrt(dx * dx + dy * dy + dz * dz));
+    if (dx * lookF[0] + dy * lookF[1] + dz * lookF[2] <= -0.2f * d) return 0.0f;
+    return std::min(1.0f, area * (std::fabs(dy) / d) / ((2.4f * d) * (2.4f * d)));
+  };
+  float layerCover = 0.0f;
+  int layerTiles = 0, layerPrints = 0;
+  if (g_fs.any && g_field.built && sc.mr) {
+    const xrsnow::Field& f = g_field;
+    const float cell = xrsnow::kFieldCell;
+    float fq[4];
+    orient_flat(fq, f.yaw);
+    const float y = f.floorY + 0.003f;
+    for (int j = 0; j < f.ny; ++j)
+      for (int i = 0; i < f.nx; ++i) {
+        if (!f.valid[j * xrsnow::kFieldMax + i]) continue;
+        const float d00 = xrsnow::field_vertex(f, f.depth, i, j), d10 = xrsnow::field_vertex(f, f.depth, i + 1, j);
+        const float d01 = xrsnow::field_vertex(f, f.depth, i, j + 1), d11 = xrsnow::field_vertex(f, f.depth, i + 1, j + 1);
+        if (std::max(std::max(d00, d10), std::max(d01, d11)) < 0.004f) continue;
+        float x, z;
+        xrsnow::field_xz(f, (static_cast<float>(i) + 0.5f) * cell, (static_cast<float>(j) + 0.5f) * cell, &x, &z);
+        const XrVector3f p{x, y, z};
+        const float dx = x - head.x, dy = y - head.y, dz = z - head.z;
+        const float dd = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dd > 9.0f || (dd > 0.8f && dx * lookF[0] + dy * lookF[1] + dz * lookF[2] < -0.35f * dd)) continue;  // (behind you)
+        const float t00 = xrsnow::field_vertex(f, f.comp, i, j), t10 = xrsnow::field_vertex(f, f.comp, i + 1, j);
+        const float t01 = xrsnow::field_vertex(f, f.comp, i, j + 1), t11 = xrsnow::field_vertex(f, f.comp, i + 1, j + 1);
+        const float fade = wx_over_screen(sc, head, p) ? 0.3f : 1.0f;
+        emit(p, cell, fq, corners(t00, t10, t01, t11), corners(d00, d10, d01, d11), kSnowLayer, 1.0f, fade, 0.0f);
+        layerCover += flatCover(p, cell * cell);
+        ++layerTiles;
+      }
+    // your furniture tops (their own snow; a couch's back and arms masked off)
+    for (int t = 0; t < f.topN; ++t) {
+      const xrsnow::Top& tp = f.tops[t];
+      if (tp.depth < 0.004f) continue;
+      float tq[4];
+      orient_flat(tq, std::atan2(tp.uz, tp.ux));
+      const float tw = 2.0f * tp.hu / static_cast<float>(tp.nu), th = 2.0f * tp.hv / static_cast<float>(tp.nv);
+      constexpr int K = xrsnow::kTopTiles + 1;
+      for (int jv = 0; jv < tp.nv; ++jv)
+        for (int iu = 0; iu < tp.nu; ++iu) {
+          // (the quad's own y runs against the top's v: its first row is the top's far one)
+          const float m00 = tp.mask[(jv + 1) * K + iu], m10 = tp.mask[(jv + 1) * K + iu + 1];
+          const float m01 = tp.mask[jv * K + iu], m11 = tp.mask[jv * K + iu + 1];
+          if (m00 + m10 + m01 + m11 < 0.5f) continue;
+          const float su = -tp.hu + (static_cast<float>(iu) + 0.5f) * tw, sv = -tp.hv + (static_cast<float>(jv) + 0.5f) * th;
+          const XrVector3f p{tp.cx + tp.ux * su - tp.uz * sv, tp.cy + 0.004f, tp.cz + tp.uz * su + tp.ux * sv};
+          const float fade = wx_over_screen(sc, head, p) ? 0.3f : 1.0f;
+          const float d = tp.depth;
+          emit(p, th, tq, 0u, corners(d * m00, d * m10, d * m01, d * m11), kSnowLayer, tw / th, fade, 1.0f);
+          layerCover += flatCover(p, tw * th);
+          ++layerTiles;
+        }
+    }
+    // your footprints (pressed into it; snowed over in time)
+    for (int k = 0; k < f.printN; ++k) {
+      const xrsnow::Footprint& fp = f.prints[k];
+      if (fp.a < 0.02f) continue;
+      const float here = xrsnow::field_depth_at(f, fp.x, fp.z);
+      const float vis = fp.a * xrsnow::clamp01((here - 0.04f) / 0.2f);
+      if (vis < 0.02f) continue;
+      const XrVector3f p{fp.x, f.floorY + 0.0035f, fp.z};
+      float pq[4];
+      orient_flat(pq, fp.yaw);
+      // (colour 1's red: the depth there - the print is only as strong as the snow it's pressed into)
+      emit(p, 0.32f, pq, static_cast<uint32_t>(xrsnow::byte01(here)) | 0xFF000000u, pack(0xFFFFFF, fp.side ? 255 : 0), kFootprint, 0.42f,
+           vis * (wx_over_screen(sc, head, p) ? 0.3f : 1.0f), 0.0f);
+      layerCover += flatCover(p, 0.32f * 0.14f);
+      ++layerPrints;
+    }
+  }
+  // the table round the Tabletop field (MR): its own snow in four bands round the field's box, deeper against the box
+  // (r137-r196: 30 soft lumps)
+  if ((shown & (1 << kWxTable)) != 0 && (sc.weather & 2) != 0 && sc.snowCover > 0.0f) {
+    const float dep = (sc.wxTier == 4 ? 0.45f : 1.0f) * xrsnow::clamp01(sc.snowCover * 1.25f) * amt;
+    float bq[4];
+    orient_flat(bq, -sc.tableYaw);  // (its x the game's x, its y the game's y)
+    // x0 x1 y0 y1 (game m), the inner side: 0 y0, 1 y1, 2 x0, 3 x1
+    const float bands[4][5] = {{-25.5f, 25.5f, 13.8f, 17.2f, 0}, {-25.5f, 25.5f, -17.2f, -13.8f, 1},
+                               {22.9f, 26.4f, -13.8f, 13.8f, 2}, {-26.4f, -22.9f, -13.8f, 13.8f, 3}};
+    for (const auto& b : bands) {
+      const XrVector3f c = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, 0.5f * (b[0] + b[1]), 0.5f * (b[2] + b[3]), 0.0f);
+      const XrVector3f p{c.x, sc.tablePos.y + 0.0025f, c.z};
+      const int in = static_cast<int>(b[4]);
+      // corners u0v0 u1v0 u0v1 u1v1 (u = game x, v = game y): the side against the box deeper
+      const float hi = dep, lo = 0.65f * dep;
+      const float d00 = (in == 0 || in == 2) ? hi : lo, d10 = (in == 0 || in == 3) ? hi : lo;
+      const float d01 = (in == 1 || in == 2) ? hi : lo, d11 = (in == 1 || in == 3) ? hi : lo;
+      const float h = (b[3] - b[2]) * sc.tableScale, w = (b[1] - b[0]) * sc.tableScale;
+      emit(p, h, bq, 0u, corners(d00, d10, d01, d11), kSnowLayer, w / h, 1.0f, 3.0f);
+    }
+  }
+  // the life-size stadium's pitch (VR): the game's snow grid (piled where nobody played, trampled where they did) as the
+  // same surface (r196: soft lumps)
+  if ((shown & (1 << kWxStadium)) != 0 && sc.wxSnowCols == 32 && sc.wxSnowRows == 18) {
+    const float hxp = 20.6f, hyp = 12.08f;
+    const float cw = 2.0f * hxp / 32.0f, ch = 2.0f * hyp / 18.0f;
+    float sq[4];
+    orient_flat(sq, 0.0f);
+    auto sv = [&](int vi, int vj) {
+      float s = 0.0f;
+      int m = 0;
+      for (int dj = -1; dj <= 0; ++dj)
+        for (int di = -1; di <= 0; ++di) {
+          const int i = vi + di, j = vj + dj;
+          if (i < 0 || j < 0 || i >= 32 || j >= 18) continue;
+          s += sc.wxSnow[j * 32 + i];
+          ++m;
+        }
+      return m > 0 ? s / static_cast<float>(m) : 0.0f;
+    };
+    for (int j = 0; j < 18; ++j)
+      for (int i = 0; i < 32; ++i) {
+        const float d00 = sv(i, j), d10 = sv(i + 1, j), d01 = sv(i, j + 1), d11 = sv(i + 1, j + 1);
+        if (std::max(std::max(d00, d10), std::max(d01, d11)) < 0.004f) continue;
+        const XrVector3f p = game_to_room(sc.stadiumScale, 0.0f, sc.stadiumOrigin, -hxp + cw * (i + 0.5f), -hyp + ch * (j + 0.5f), 0.025f);
+        const float dx = p.x - head.x, dy = p.y - head.y, dz = p.z - head.z;
+        const float dd = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dd > 2.0f * ch * sc.stadiumScale && dx * lookF[0] + dy * lookF[1] + dz * lookF[2] < -0.35f * dd) continue;
+        emit(p, ch * sc.stadiumScale, sq, 0u, corners(d00, d10, d01, d11), kSnowLayer, cw / ch, amt, night ? 6.0f : 2.0f);
+        layerCover += flatCover(p, cw * ch * sc.stadiumScale * sc.stadiumScale);
+        ++layerTiles;
+      }
+  }
+  g_fs.tiles = layerTiles;
+  g_fs.prints = layerPrints;
+  // r214: a falling flake (xr_fx.frag 181): soft and lumpy, its seed from its phase; two in five tumble (turning edge-on
+  // now and then: the flutter you see), the rest face you; within 0.9 m it softens like a flake out of focus
+  auto flake = [&](const XrVector3f& p, float size, float phase, float alpha, float dist) {
+    const float seed = std::fmod(phase * 1.114f, 1.0f);
+    const float blur = xrsnow::clamp01((0.9f - dist) / 0.6f);
+    const uint32_t c2 = pack(0xD5E0F2, static_cast<uint8_t>(seed * 255.0f));
+    if (std::fmod(phase * 1.37f, 1.0f) < 0.25f) {  // (r215: one in four tumble - r214 two in five, edge-on too often)
+      float quat[4];
+      float ax[3] = {std::sin(phase * 3.1f), 0.4f + 0.5f * std::fmod(phase * 1.7f, 1.0f), std::cos(phase * 2.3f)};
+      normalize3(ax);
+      quat_axis_angle(ax, wx.t * (1.4f + 2.2f * seed) + phase, quat);
+      emit(p, size * 1.9f, quat, pack(0xFFFFFF), c2, kSnowFlake, 1.0f, alpha, blur);  // r215: 1.9 (r214 1.6: they read small)
+    } else {
+      emit(p, size * 1.9f, nullptr, pack(0xFFFFFF), c2, kSnowFlake, 1.0f, alpha, blur);
+    }
+  };
   for (const WxPiece& q : wx.pieces) {
+    const bool table = q.where == kWxTable, inRoom = q.where == kWxRoom;
     const XrVector3f p{q.p[0], q.p[1], q.p[2]};
     const float dx = p.x - head.x, dy = p.y - head.y, dz = p.z - head.z;
     const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
     const float nearFade = std::min(1.0f, std::max(0.0f, (d - 0.35f) / 0.5f));  // nothing in your face
+    // r194: the room's: faded over the big screen's picture (the match stays clear)
+    const float roomFade = inRoom && wx_over_screen(sc, head, p) ? 0.3f : 1.0f;
+    const uint32_t before = n;
+    float area = 0.0f;  // (the room's: its quad's area, m2)
     if (q.kind == 0) {
       float quat[4];
       orient_along(quat, p, q.v, head);
-      emit(p, q.size, quat, pack(night ? 0xF2F6FF : 0xE6F0FF), pack(night ? 0xC8D8F0 : 0xA8C0E0), kStreak,
-           table ? 0.06f : 0.024f, (night ? 0.5f : 0.42f) * nearFade, 0.15f);
+      const RoomWxSpec& sp = roomSp;
+      const float aspect = inRoom ? sp.aspect : (table ? 0.06f : 0.024f);
+      // r196: the tier (drizzle fainter, a storm stronger) and the flash lighting them
+      const float tierA = inRoom ? 1.0f : (sc.wxTier == 1 ? 0.7f : (sc.wxTier == 3 ? 1.2f : 1.0f));
+      // (the room's nearest drops softer: a fat bright bar right at your face reads as a stand-in, not rain)
+      const float closeK = inRoom ? 0.5f + 0.5f * std::min(1.0f, std::max(0.0f, (d - 0.6f) / 1.2f)) : 1.0f;
+      const float alpha =
+          std::min(1.0f, (inRoom ? (night ? sp.alphaNight : sp.alpha) : (night ? 0.5f : 0.42f)) * tierA * litA) * closeK;
+      emit(p, q.size, quat, pack(lit > 0.3f ? 0xFFFFFF : (night ? 0xF2F6FF : 0xE6F0FF)), pack(night ? 0xC8D8F0 : 0xA8C0E0), kStreak,
+           aspect, alpha * nearFade * roomFade, 0.15f);
+      area = q.size * q.size * aspect;
     } else if (q.kind == 1) {
       const float t = q.age / std::max(q.life, 0.05f);
       float quat[4];
       orient_flat(quat, 0.0f);
-      emit(p, q.size * (1.0f + 3.0f * t), quat, pack(0xEAF4FF), pack(0xB8D0F0), kRingFx, 1.0f, 0.55f * (1.0f - t), 0.2f);
-    } else if (q.kind == 2) {
-      // most flakes soft dots; one in five a crystal, turning
-      if (static_cast<int>(q.phase * 10.0f) % 5 == 0) {
+      emit(p, q.size * (1.0f + 3.0f * t), quat, pack(0xEAF4FF), pack(0xB8D0F0), kRingFx, 1.0f,
+           std::min(1.0f, (inRoom ? 0.45f : 0.55f) * (1.0f - t) * roomFade * litA), 0.2f);
+      area = q.size * (1.0f + 3.0f * t) * q.size * (1.0f + 3.0f * t);
+    } else if (inRoom && q.kind == 2) {
+      // r194: the room's flakes: soft dots, one in five a turning crystal (as the stadium's); r196: the tier's, and a
+      // blown flake (a blizzard's gust) a short soft streak along its path (1/80 s of it), its head a dot
+      const RoomWxSpec& sp = room.type == kRoomWxSnow ? roomSp : kRoomWxSpec[kRoomWxSnow];
+      const float alpha = (night ? sp.alphaNight : sp.alpha) * nearFade * roomFade;
+      const float spd = std::sqrt(q.v[0] * q.v[0] + q.v[1] * q.v[1] + q.v[2] * q.v[2]);
+      if (spd > 2.5f) {
         float quat[4];
-        const float axis[3] = {std::sin(q.phase), 0.6f, std::cos(q.phase)};
-        float ax[3] = {axis[0], axis[1], axis[2]};
-        normalize3(ax);
-        quat_axis_angle(ax, wx.t * 1.5f + q.phase, quat);
-        emit(p, q.size * 1.6f, quat, pack(0xFFFFFF), pack(0xDDEBFF), kFlake, 1.0f, 0.9f * nearFade, 0.1f);
+        orient_along(quat, p, q.v, head);
+        const float len = q.size + spd / 80.0f;
+        emit(p, len, quat, pack(0xFFFFFF), pack(0xE8F0FF), kStreak, std::min(1.0f, 1.3f * q.size / len), alpha * 0.9f, 0.0f);
+        area = len * 1.3f * q.size;
       } else {
-        emit(p, q.size, nullptr, pack(0xFFFFFF), pack(0xE8F0FF), kSpark, 1.0f, 0.85f * nearFade, 0.0f);
+        flake(p, q.size, q.phase, alpha, d);  // r214 (was a soft dot, one in five a six-armed crystal)
+        area = 2.56f * q.size * q.size;
       }
-    } else {
-      // a flake lying: a small soft white spot (a dusting, never polka dots)
+    } else if (inRoom) {
+      // r214: a flake that just landed melts into the snow lying there (0.5-1.3 s; r194-r213: a white spot lying 5-9 s -
+      // Lance's "white pixels on the floor")
       const float t = q.age / std::max(q.life, 0.05f);
       float quat[4];
       orient_flat(quat, q.yaw);
-      emit(p, q.size * (table ? 1.3f : 0.8f), quat, pack(0xFFFFFF), pack(0xEEF4FF), kSpark, 1.0f,
-           (table ? 0.8f : 0.5f) * std::min(1.0f, 4.0f * (1.0f - t)), 0.0f);
+      const float seed = std::fmod(q.phase * 1.114f, 1.0f);
+      emit(p, q.size * 1.6f * (1.0f + 0.3f * t), quat, pack(0xFFFFFF), pack(0xD5E0F2, static_cast<uint8_t>(seed * 255.0f)), kSnowFlake,
+           1.0f, 0.85f * (1.0f - t) * roomFade, 0.25f + 0.5f * t);
+      area = 2.56f * q.size * q.size;
+    } else if (q.kind == 2) {
+      // r214: soft lumpy flakes (r137-r213: soft dots, one in five a crystal); a blown one a short streak (r196)
+      const float spd = std::sqrt(q.v[0] * q.v[0] + q.v[1] * q.v[1] + q.v[2] * q.v[2]);
+      if (!table && spd > 2.5f) {
+        float quat[4];
+        orient_along(quat, p, q.v, head);
+        const float len = q.size + spd / 60.0f;
+        emit(p, len, quat, pack(0xFFFFFF), pack(0xE8F0FF), kStreak, std::min(1.0f, 1.2f * q.size / len), 0.8f * nearFade, 0.0f);
+      } else {
+        flake(p, q.size, q.phase, 0.88f * nearFade, d);
+      }
+    } else {
+      // r214: a flake that just landed melts into the snow lying there (the table's bands, the stadium's pitch)
+      const float t = q.age / std::max(q.life, 0.05f);
+      float quat[4];
+      orient_flat(quat, q.yaw);
+      const float seed = std::fmod(q.phase * 1.114f, 1.0f);
+      emit(p, q.size * (table ? 1.3f : 1.0f) * (1.0f + 0.3f * t), quat, pack(0xFFFFFF), pack(0xD5E0F2, static_cast<uint8_t>(seed * 255.0f)),
+           kSnowFlake, 1.0f, 0.8f * (1.0f - t), 0.25f + 0.5f * t);
+    }
+    if (inRoom && n > before && dx * lookF[0] + dy * lookF[1] + dz * lookF[2] > -0.2f) {  // (behind you costs nothing)
+      ++roomN;
+      roomCover += area / std::max(0.01f, (2.4f * d) * (2.4f * d));
+    }
+  }
+  // r196: the blizzard's whiteout puffs round you (soft, lumpy, drifting with the wind; faded over the big screen)
+  auto coverOf = [&](const XrVector3f& p, float size) {
+    const float dx = p.x - head.x, dy = p.y - head.y, dz = p.z - head.z;
+    if (dx * lookF[0] + dy * lookF[1] + dz * lookF[2] <= -0.2f) return 0.0f;
+    const float d = std::max(0.3f, std::sqrt(dx * dx + dy * dy + dz * dz));
+    return std::min(1.0f, (size / (2.4f * d)) * (size / (2.4f * d)));
+  };
+  for (int i = 0; i < wx.puffCount; ++i) {
+    const WxState::Puff& pf = wx.puffs[i];
+    const XrVector3f p{pf.p[0], pf.p[1], pf.p[2]};
+    // (it thins out as it drifts close to you: never a sheet over your eyes - and then it costs nothing)
+    const float pd = std::sqrt((p.x - head.x) * (p.x - head.x) + (p.y - head.y) * (p.y - head.y) + (p.z - head.z) * (p.z - head.z));
+    const float a = std::sin(3.1415927f * std::min(1.0f, pf.age / pf.life)) * pf.a * room.strength *
+                    (wx_over_screen(sc, head, p) ? 0.3f : 1.0f) * std::min(1.0f, std::max(0.0f, (pd - 1.2f) / 0.8f));
+    if (a <= 0.004f) continue;
+    emit(p, pf.size, nullptr, pack(0xF0F3F8), pack(0xDCE2EC, static_cast<uint8_t>(pf.seed * 255.0f)), kPuff, 1.0f, a, 0.0f);
+    softCover += coverOf(p, pf.size);
+  }
+  // r196: in the gusts, snow streaming low along your floor with the wind
+  if (room.type == kRoomWxSnow && room.tier == 5 && room.gust > 0.45f) {
+    const float w = std::sqrt(room.windX * room.windX + room.windZ * room.windZ);
+    if (w > 0.5f) {
+      const float ux = room.windX / w, uz = room.windZ / w;
+      const int k = static_cast<int>(26.0f * (room.gust - 0.45f) / 0.55f * room.strength * g_loadScale);
+      for (int i = 0; i < k; ++i) {
+        const float ph = std::fmod(wx.driftT * 0.5f + 0.137f * i + 0.31f * std::sin(1.7f * i), 1.0f);
+        const float across = -2.6f + 5.2f * std::fmod(0.618f * i + 0.2f, 1.0f);
+        const XrVector3f p{head.x - ux * 3.2f + ux * 6.4f * ph - uz * across, sc.floorY + 0.03f + 0.2f * std::fmod(0.37f * i, 1.0f),
+                           head.z - uz * 3.2f + uz * 6.4f * ph + ux * across};
+        float quat[4];
+        const float dir[3] = {ux, 0.05f, uz};
+        orient_along(quat, p, dir, head);
+        emit(p, 0.9f, quat, pack(0xF5F8FF), pack(0xE6ECF6), kStreak, 0.06f,
+             0.28f * room.gust * std::sin(3.1415927f * ph), 0.0f);
+        softCover += 0.5f * coverOf(p, 0.25f);
+      }
+    }
+  }
+  // r196: the dusting along your play area's edges (the Guardian's rectangle on your floor - no room scan), building up
+  // over the snow game; a flurry only a light one
+  // r197: with your room scan, the piles where they'd really build (room_pile_puffs) - this dusting is for no scan
+  if (sc.room != nullptr && wx.pileRoom == sc.room && wx.pileMax > 0.02f) {
+    const XrVector3f eye = head;
+    for (int i = 0; i < sc.room->spotN && i < xrroom::kMaxSpots; ++i) {
+      PilePuff pp[16];
+      const int np = room_pile_puffs(*sc.room, i, wx.pile[i], pp, 16);
+      for (int k = 0; k < np; ++k) {
+        const PilePuff& f = pp[k];
+        const float fade = wx_over_screen(sc, eye, f.p) ? 0.3f : 1.0f;
+        const uint8_t seed = static_cast<uint8_t>(f.seed * 255.0f);
+        if (f.upright) {
+          // r214: a drift's face against the wall (the snow lying under it is the field's, deepest there)
+          emit(f.p, 2.0f * f.r, nullptr, pack(0xFFFFFF), pack(0xE6EEF8, seed), kPuff, 1.0f, 0.8f * f.a * fade, 0.0f);
+          softCover += coverOf(f.p, 2.0f * f.r);
+        } else if (sc.room->spots[i].kind == 3) {  // r214: only a sill's dusting stays lumps (floor / tops: the field)
+          float quat[4];
+          orient_flat(quat, f.seed * 6.2831853f);
+          emit(f.p, 2.0f * f.r, quat, pack(0xFFFFFF), pack(0xE6EEF8, seed), kPuff, 1.0f, f.a * fade, 0.0f);
+          softCover += 0.3f * coverOf(f.p, 2.0f * f.r);  // (lying: seen at a slant)
+        }
+      }
+    }
+  }
+  // r214: (r196's dusting along your play area's edges is the snow field now: drifts along its edges)
+  if (false && sc.room == nullptr && room.type == kRoomWxSnow && wx.dustMade && sc.playValid && wx.dustAmt > 0.02f) {
+    const float hx = sc.playHalf[0], hz = sc.playHalf[1];
+    for (int k = 0; k < 72; ++k) {
+      const float u = std::fmod(wx.dust[k][0], 4.0f);
+      const int side = static_cast<int>(u);
+      const float t = u - static_cast<float>(side), in = wx.dust[k][1];
+      float lx, lz;
+      if (side == 0) { lx = -hx + 2.0f * hx * t; lz = -hz + in; }
+      else if (side == 1) { lx = hx - in; lz = -hz + 2.0f * hz * t; }
+      else if (side == 2) { lx = hx - 2.0f * hx * t; lz = hz - in; }
+      else { lx = -hx + in; lz = hz - 2.0f * hz * t; }
+      const float local[3] = {lx, 0.0f, lz};
+      float w3[3];
+      rotate(sc.playPose.orientation, local, w3);
+      const XrVector3f p{sc.playPose.position.x + w3[0], sc.floorY + 0.004f, sc.playPose.position.z + w3[2]};
+      const float grow = std::min(1.0f, std::max(0.0f, (wx.dustAmt * (room.tier == 5 ? 1.0f : 0.45f) - 0.25f * wx.dust[k][3]) / 0.5f));
+      if (grow <= 0.0f) continue;
+      float quat[4];
+      orient_flat(quat, wx.dust[k][3] * 6.2831853f);
+      emit(p, wx.dust[k][2] * (0.6f + 0.4f * grow), quat, pack(0xFFFFFF), pack(0xE6EEF8, static_cast<uint8_t>(wx.dust[k][3] * 255.0f)),
+           kPuff, 1.6f, 0.95f * grow * amt, 0.0f);
+      softCover += 0.3f * coverOf(p, wx.dust[k][2]);
+    }
+  }
+  // r196: the life-size stadium's snow lying on the pitch (the game's grid: piled where nobody played, trampled where
+  // they did) - soft lumpy white on the ground, darker at night
+  // r214: (the stadium's snow is the snow layer now, drawn with the room's first)
+  if (false && stadiumShown && sc.wxSnowCols == 32 && sc.wxSnowRows == 18) {
+    const float hxp = 20.6f, hyp = 12.08f;
+    const float cw = 2.0f * hxp / 32.0f, ch = 2.0f * hyp / 18.0f;
+    for (int j = 0; j < 18; ++j)
+      for (int i = 0; i < 32; ++i) {
+        const float d = sc.wxSnow[j * 32 + i];
+        if (d <= 0.12f) continue;
+        const float gx = -hxp + cw * (i + 0.5f), gy = -hyp + ch * (j + 0.5f);
+        const XrVector3f p = game_to_room(sc.stadiumScale, 0.0f, sc.stadiumOrigin, gx, gy, 0.025f);
+        float quat[4];
+        const float seed = static_cast<float>((i * 7 + j * 13) % 17) / 17.0f;
+        orient_flat(quat, seed * 6.2831853f);
+        emit(p, 1.7f * cw * sc.stadiumScale, quat, pack(night ? 0xA8AEBC : 0xFFFFFF), pack(night ? 0x8A92A4 : 0xE6ECF4, static_cast<uint8_t>(seed * 255.0f)),
+             kPuff, 1.5f, std::min(0.9f, 1.1f * (d - 0.12f) / 0.88f + 0.15f) * amt, 0.0f);
+        softCover += 0.35f * coverOf(p, 1.7f * cw);
+      }
+  }
+  // r196: the bolt in the life-size stadium's sky - placed where you look when its strike starts (ahead, off to its
+  // side), far / mid / close: smaller and higher far off, the close one down to just over the stands; white-hot in a
+  // blue glow (the lightning segment quad), additive
+  if (stadiumShown && sc.wxBoltSegs > 0 && sc.wxBoltVis > 0.02f) {
+    if (sc.wxBoltId != wx.boltId) {
+      wx.boltId = sc.wxBoltId;
+      wx.boltYaw = std::atan2(lookF[0], -lookF[2]) + sc.wxBoltX * 0.75f;
+    }
+    const int kind = sc.wxBoltKind;
+    const float D = kind == 0 ? 380.0f : (kind == 1 ? 220.0f : 120.0f);
+    const float top = kind == 0 ? 170.0f : (kind == 1 ? 140.0f : 115.0f);
+    const float bot = kind == 0 ? 45.0f : (kind == 1 ? 28.0f : 10.0f);
+    const float H = top - bot;
+    const float fx = std::sin(wx.boltYaw), fz = -std::cos(wx.boltYaw);  // ahead
+    const float rx = -fz, rz = fx;                                       // its right
+    const float bw = kind == 0 ? 6.5f : (kind == 1 ? 6.0f : 6.5f);  // (its glow: the far one wider, so it reads)
+    for (int s = 0; s < sc.wxBoltSegs && s < 200; ++s) {
+      const float* g = &sc.wxBolt[5 * s];
+      const XrVector3f a{head.x + fx * D + rx * g[0] * H, sc.floorY + top - g[1] * H, head.z + fz * D + rz * g[0] * H};
+      const XrVector3f b{head.x + fx * D + rx * g[2] * H, sc.floorY + top - g[3] * H, head.z + fz * D + rz * g[2] * H};
+      const float dir[3] = {b.x - a.x, b.y - a.y, b.z - a.z};
+      const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+      if (len < 1e-3f) continue;
+      const XrVector3f mid{0.5f * (a.x + b.x), 0.5f * (a.y + b.y), 0.5f * (a.z + b.z)};
+      float quat[4];
+      orient_along(quat, mid, dir, head);
+      const float size = len * 1.25f, width = bw * g[4];
+      emit(mid, size, quat, pack(0xF6F8FF), pack(0x96AAFF), kBolt, std::min(1.0f, width / size), sc.wxBoltVis * (g[4] < 0.9f ? 0.85f : 1.0f), 1.0f);
+    }
+  }
+  if (softCover > 0.0f) wx.statSoft = std::max(wx.statSoft, softCover);
+  static float s_layerStat = 0.0f;  // r214: the snow lying's share (screens), largest since the log
+  static int s_tileStat = 0;
+  s_layerStat = std::max(s_layerStat, layerCover);
+  s_tileStat = std::max(s_tileStat, layerTiles);
+  if (roomN > 0 || softCover > 0.0f || layerTiles > 0) {  // r194: its log, now and then while it's in your room (r196: or the stadium's snow)
+    wx.statPieces = std::max(wx.statPieces, roomN);
+    wx.statCoverage = std::max(wx.statCoverage, roomCover);
+    static int logN = 0;
+    if (++logN >= 720) {
+      FXLOG("fx: r196 room weather (tier %d): up to %u pieces in view, overdraw up to %.3f screens + haze/dusting %.3f",
+            sc.wxTier, wx.statPieces, wx.statCoverage, wx.statSoft);
+      FXLOG("fx: r214 snow lying: up to %d tiles (%s), overdraw up to %.3f screens, deepest %.2f, %d footprints, %d tops",
+            s_tileStat, g_fs.src == 0 ? "room scan" : (g_fs.src == 1 ? "play area" : (g_fs.src == 2 ? "circle" : "stadium/table")),
+            s_layerStat, g_fs.maxDepth, g_fs.prints, g_field.built ? g_field.topN : 0);
+      wx.statPieces = 0;
+      wx.statCoverage = 0.0f;
+      wx.statSoft = 0.0f;
+      s_layerStat = 0.0f;
+      s_tileStat = 0;
+      logN = 0;
     }
   }
   // MR: the snow lying round the table field, growing over the match
-  if (table && (sc.weather & 2) != 0 && wx.patchesMade && sc.snowCover > 0.0f) {
+  // r214: (the table's snow is the snow layer's four bands now, drawn with the room's first)
+  if (false && tableShown && (sc.weather & 2) != 0 && wx.patchesMade && sc.snowCover > 0.0f) {
     for (int k = 0; k < 30; ++k) {
       const XrVector3f p = game_to_room(sc.tableScale, sc.tableYaw, sc.tablePos, wx.patch[k][0], wx.patch[k][1], 0.0f);
       const XrVector3f at{p.x, sc.tablePos.y + 0.0025f, p.z};
@@ -7801,8 +8922,9 @@ static uint32_t write_weather(const Scene& sc, Instance* inst) {
     }
   }
   // night: the floodlights
-  if (night) {
-    if (table) {
+  // (r196: a THUNDERSTORM has the lights on too)
+  if ((night || (sc.wxTier == 3 && shown != 0)) && (tableShown || stadiumShown)) {  // (r194: none for your room alone)
+    if (tableShown) {
       // four little ones on poles at the field's corners, their beams on the grass
       for (int k = 0; k < 4; ++k) {
         const float sx = (k & 1) ? 1.0f : -1.0f, sy = (k & 2) ? 1.0f : -1.0f;
@@ -8214,6 +9336,20 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     vkResetFences(s.dev.device, 1, &slot.fence);
     slot.pending = false;
   }
+  if (slot.timed && g_gpuT.pool != VK_NULL_HANDLE) {  // r221: its last frame's GPU time (its fence is done)
+    uint64_t ts[2] = {0, 0};
+    if (vkGetQueryPoolResults(s.dev.device, g_gpuT.pool, slotIndex * 2, 2, sizeof(ts), ts, sizeof(uint64_t),
+                              VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+      const uint64_t d = ((ts[1] - ts[0]) & g_gpuT.mask);
+      const uint64_t ns = static_cast<uint64_t>(static_cast<double>(d) * g_gpuT.periodNs);
+      if (ns < 1000000000ull) {
+        g_gpuT.sumNs += ns;
+        g_gpuT.maxNs = std::max(g_gpuT.maxNs, ns);
+        ++g_gpuT.frames;
+      }
+    }
+    slot.timed = false;
+  }
   // r143: the life-size scorer's body into this frame slot's buffers
   const uint32_t bodyIndices = body_upload(sc, slot);
   // r96: the characters' posed vertices into this frame slot's buffers
@@ -8507,6 +9643,11 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(slot.cmd, &begin);
+  const bool timeIt = g_gpuT.pool != VK_NULL_HANDLE;  // r221
+  if (timeIt) {
+    vkCmdResetQueryPool(slot.cmd, g_gpuT.pool, slotIndex * 2, 2);
+    vkCmdWriteTimestamp(slot.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_gpuT.pool, slotIndex * 2);
+  }
   for (int e = 0; e < 2; ++e) {
     VkClearValue clears[2];
     clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -8715,11 +9856,16 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
     vkCmdPipelineBarrier(slot.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
                          nullptr, 0, nullptr, 1, &back);
   }
+  if (timeIt) vkCmdWriteTimestamp(slot.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gpuT.pool, slotIndex * 2 + 1);
   vkEndCommandBuffer(slot.cmd);
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   submit.commandBufferCount = 1;
   submit.pCommandBuffers = &slot.cmd;
-  if (vk_ok(vkQueueSubmit(s.dev.queue, 1, &submit, slot.fence), "vkQueueSubmit(fx)")) slot.pending = true;
+  if (vk_ok(vkQueueSubmit(s.dev.queue, 1, &submit, slot.fence), "vkQueueSubmit(fx)")) {
+    slot.pending = true;
+    slot.timed = timeIt;
+    g_gpuT.lastSlot = static_cast<int>(slotIndex);
+  }
   if (dumping && slot.pending) {
     vkWaitForFences(s.dev.device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
     if (FILE* f = std::fopen(s.dumpPath, "wb")) {
@@ -8764,6 +9910,35 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
 
 float jumbotron_drop() { return s.drop; }
 
+// r221: the effects layer's GPU time (timestamps round its command buffer; xr_quest's compositor line)
+void set_gpu_timing(float timestampPeriodNs, uint32_t validBits) {
+  if (!s.ready || g_gpuT.pool != VK_NULL_HANDLE || validBits == 0 || timestampPeriodNs <= 0.0f) return;
+  VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  qi.queryCount = kSlots * 2;
+  if (vkCreateQueryPool(s.dev.device, &qi, nullptr, &g_gpuT.pool) != VK_SUCCESS) {
+    g_gpuT.pool = VK_NULL_HANDLE;
+    return;
+  }
+  g_gpuT.periodNs = timestampPeriodNs;
+  g_gpuT.mask = validBits >= 64 ? ~0ull : ((1ull << validBits) - 1ull);
+  FXLOG("fx: GPU timing on (timestamp period %.2f ns, %u valid bits)", timestampPeriodNs, validBits);
+}
+bool take_gpu_stats(uint64_t* sumNs, uint64_t* maxNs, uint32_t* frames) {
+  *sumNs = g_gpuT.sumNs;
+  *maxNs = g_gpuT.maxNs;
+  *frames = g_gpuT.frames;
+  g_gpuT.sumNs = g_gpuT.maxNs = 0;
+  g_gpuT.frames = 0;
+  return g_gpuT.pool != VK_NULL_HANDLE;
+}
+int last_frame_done() {
+  if (!s.ready || g_gpuT.lastSlot < 0) return -1;
+  const Slot& slot = s.slots[g_gpuT.lastSlot];
+  if (!slot.pending) return 1;
+  return vkGetFenceStatus(s.dev.device, slot.fence) == VK_SUCCESS ? 1 : 0;
+}
+
 void set_load_scale(float scale) { g_loadScale = std::max(0.25f, std::min(1.0f, scale)); }
 float load_scale() { return g_loadScale; }
 bool pieces_alive() { return !s.parts.empty(); }
@@ -8778,6 +9953,13 @@ int piece_mesh(int shape, int variant) {
   return m == kNoMesh ? -1 : static_cast<int>(m);
 }
 void hold_celebration(float seconds) { s.celebHold = std::max(s.celebHold, std::min(6.0f, std::max(0.0f, seconds))); }
+// r207: the casino party's letters + siren (xr_fx_mesh.h)
+int glyph_mesh(char ch, float* width) {
+  if (width != nullptr) *width = mesh::glyph_width(ch);
+  return mesh::glyph_id(ch);
+}
+int siren_mesh() { return static_cast<int>(mesh::kSiren); }
+int casino_coin_mesh() { return static_cast<int>(mesh::kCasCoin); }
 
 bool take_stats(uint32_t* peakParts, uint32_t* peakIndices) {
   *peakParts = s.statPeakParts;

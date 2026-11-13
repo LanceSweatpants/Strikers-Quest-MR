@@ -112,7 +112,7 @@ extern "C" float PortMenuMusicFEGain(void) { return s_feGain.load(std::memory_or
 extern "C" int PortMenuMusicTick(float dT, float gameMusicVolume) {
   if (s_ready.exchange(1, std::memory_order_relaxed) == 0) log_line("the game's audio runs: the menu music may start (setting %s)", PortMenuMusicModeName(PortMenuMusicMode()));
   s_volume.store(gameMusicVolume, std::memory_order_relaxed);
-  s_quiet.store(PortMovieActive() != 0 || PortEvoMusicPlaying() != 0 ? 1 : 0, std::memory_order_relaxed);
+  s_quiet.store(PortMovieActive() != 0 || PortEvoMusicPlaying() != 0 || PortCardGalleryQuiet() != 0 ? 1 : 0, std::memory_order_relaxed);  // (r230: + the EXQUISITE gallery)
   // The game's own front-end music: silent while the lofi is in charge of the menus (in a match there are no FE
   // tracks, so this only decides how the next menu's music starts: silent, not faded out once more)
   const float want = s_active.load(std::memory_order_relaxed) != 0 ? 0.0f : 1.0f;

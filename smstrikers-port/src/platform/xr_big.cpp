@@ -298,7 +298,9 @@ const std::string& listed_pose(const std::string& gpkPath) {
 // (the first line: how it was drawn - r144's reviewed poses, v2: + the list's own cameras ("view <yaw> <pitch>", in its
 // line, so in the stamp's "pose" line too) for the edge-on / back-turned ones; every earlier picture is drawn again - then
 // its pose)
-constexpr const char* kPoseStamp = "big r144 reviewed v2\n";
+// r218 (Lance: the card art "washed out" / "CLEAN artwork"): v3 = Big.java's hue-keeping highlight roll-off + twice the
+// light's rays, and big_poses.txt's new cameras (24 flat / turned-away ones) - every cached picture drawn again once
+constexpr const char* kPoseStamp = "big r218 clean v3\n";
 std::string src_sig(const std::pair<std::string, std::string>& s) {
   return kPoseStamp + ("pose " + listed_pose(s.first) + "\n") + file_sig(s.first) + "\n" + file_sig(s.second) + "\n";
 }
@@ -500,6 +502,22 @@ bool failed(const std::string& key, bool shiny, int size) {
 
 unsigned generation() { return g_generation.load(); }
 
+// r226: asked urgently from the last to the first, so keys[0] ends at the queue's front (ask moves a queued one up)
+void first(const std::vector<std::pair<std::string, bool>>& keys, int size) {
+  size = fit_size(size);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (auto it = keys.rbegin(); it != keys.rend(); ++it)
+    if (key_ok(it->first)) ask(it->first, it->second, size, pic_id(it->first, it->second, size), true);
+}
+
+bool ready(const std::string& key, bool shiny, int size) {
+  if (!key_ok(key)) return false;
+  size = fit_size(size);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto it = g_pics.find(pic_id(key, shiny, size));
+  return it != g_pics.end() && it->second.state == kReady;
+}
+
 }  // namespace xrbig
 
 #else  // not the Quest build: no pictures (callers keep their portraits)
@@ -509,6 +527,8 @@ bool get(const std::string&, bool, int, std::vector<uint8_t>*) { return false; }
 void prefetch(const std::string&, bool, int) {}
 bool failed(const std::string&, bool, int) { return true; }
 unsigned generation() { return 0; }
+void first(const std::vector<std::pair<std::string, bool>>&, int) {}
+bool ready(const std::string&, bool, int) { return false; }
 }  // namespace xrbig
 
 #endif

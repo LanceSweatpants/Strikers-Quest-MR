@@ -23,6 +23,7 @@
 #pragma once
 
 #include "xr_fx.h"
+#include "xr_market.h"  // r201
 #include "xr_text.h"
 
 #include <cstdint>
@@ -60,10 +61,33 @@ void poll();
 // ("SHINY CHARIZARD", a super rare or a shiny from the last week of real time; "" none).
 int packs_waiting();
 std::string magazine_pull();
+// r219 (BIG-PULLS.md 4): your big pulls of the last week of real time (a SILVER or better, a shiny, a case hit; newest first, up to 12)
+// as the market's copies - STRIKERS ILLUSTRATED's market spread shows the best of them beside the league's. Any thread.
+void magazine_pulls(std::vector<xrmarket::Variant>* out);
+// r219 (BIG-PULLS.md 2): a BLACK 1/1's build-up in the stack in your hand - the room's darkness now (0 lit .. 1 dark) and the reveal's
+// one white flash (0..1); xr_quest folds both into the passthrough's own style (any thread; 0 whenever no 1/1 is being built up)
+float room_dark();
+float room_flash();
+// r230 (LANCINI EXQUISITE): the private gallery's mood now (0 the room as it is .. 1 a warm gallery: dimmer, warmer - xr_quest folds it into the
+// passthrough's style and turns the crowd down by it; eased in as an EXQUISITE pack opens, back after its last card). Any thread
+float room_gallery();
 // r140: TIZM COINS (only to buy packs, the CARDS shop): your balance; the last played match's coins (0 none), why ("3 goals 18,
 // 2 assists 8, 14 tackles 7, win 10") and when (unix time). Any thread.
-int coins();
+// r208: 64-bit (xrcoin::Coins), held at xrcoin::kMax - every add saturates, never wrapping
+long long coins();
 int last_coins(std::string* why, long long* when);
+// r199: TIZM SPORTSBOOK (xr_book.cpp) - the wallet is this binder's: the career whose binder is loaded (0 none); a stake
+// taken (false: not that career's binder / not enough coins - nothing taken), a payout / refund added; both saved at once.
+// A sound from STRIKERS_HOME/franchise/cardsounds/<name>.wav (false: not there). Any thread.
+unsigned wallet_career();
+bool spend_coins(unsigned career, long long coins, const char* why);
+bool add_coins(unsigned career, long long coins, const char* why);
+// r202: TIZM CASINO's MEGA JACKPOT: free packs into the loaded career's binder (rolled now, the shop's odds); false: not
+// this career / no room
+bool grant_packs(unsigned career, int packs, const char* why);
+bool play_sound(const char* name, float gain);
+// r202: the casino's win / lose music (cardsounds/<name>.wav) at the SOUND > EFFECTS volume; false: no such clip
+bool play_music(const char* name, float gain);
 
 // The hub's CARDS page (drawing thread): pieces for xrtext::board over the hub's middle (top .. bottom, w x h the
 // hub's picture), the button hints, and what the pieces' pictures live in (keep it until the board is drawn).
@@ -84,8 +108,15 @@ struct HubPage {
 };
 HubPage hub_page(float w, float h, float top, float bottom);
 // r157: the CARDS section's rail: BINDER, SHOP, EXPLOSIONS, TRADE-INS, SETS, GRADING (the page showing; set: another,
-// its cursor kept). Any thread. r160: + LOOKS after EXPLOSIONS (binder skins, card sleeves).
-constexpr int kRailPages = 7;
+// its cursor kept). Any thread. r160: + LOOKS after EXPLOSIONS (binder skins, card sleeves). r201: + MARKET after the BINDER (the
+// TIZM CARD MARKET, xr_market.h), + MUSEUM after LOOKS (the CARD MUSEUM, xr_museum.h).
+// r236 (LOOK B, the sitemap - Lance 11-12: "the card tab should ONLY have card shit"): one rail of 11 pages shown as two hub sections -
+// CARDS 0-6 (PACKS = the old SHOP + opening, BINDER (its SETS inside: Y), MARKET, COLLECTORS, GRADING, TRADE-INS, MUSEUM) and LOCKER
+// 7-10 (BALLS and BINDERS = the old LOOKS' two shelves, GOAL FX and TAKEOVERS = the old EXPLOSIONS grid split)
+constexpr int kRailPages = 11;  // (r213: + COLLECTORS, the 3rd; r236: 11)
+constexpr int kCardsRail = 7;   // r236: CARDS' pages (then LOCKER's)
+constexpr int kRailPacks = 0, kRailBinder = 1, kRailMarket = 2, kRailCollectors = 3, kRailGrading = 4, kRailTrade = 5, kRailMuseum = 6,
+              kRailBalls = 7, kRailGoalFx = 8, kRailTakeovers = 9, kRailCovers = 10;
 int rail_page();
 void set_rail_page(int i);
 const char* rail_name(int i);
@@ -111,6 +142,8 @@ bool wants_y();
 bool busy();
 // Its redraw counter (the hub's picture is drawn again when it moves: a pack earned, cards added, a page turned).
 int generation();
+// r221: the frame thread's room-takeover coin payments since the last call (ns spent, how many) - xr_quest's goal probe
+void take_coin_probe(long long* ns, int* pays);
 
 // The hands (game thread, sync_input, before anything else takes the grips): grips as held, the hands' places (grip
 // pose positions) and their pointers (aim poses, null when not tracked); r142: the hands' whole grip poses (null when
@@ -155,6 +188,14 @@ void binder_turn(int how);
 void binder_put_away();
 void binder_toggle();
 int binder_state();
+// r201: the CARD MUSEUM's card atlas for a piece (xr_quest.cpp, on a worker thread): its items' fronts in 3 x 3 cells of 341 x 476
+// at the top of a 1024 x 2048 RGBA picture, a slab's label in 3 x 3 cells of 341 x 97 under them (y 1428), the card back at
+// (0, 1719) 236 x 329; r210: clear (alpha 0) everywhere else, an empty slot clear but for a dashed card outline + EMPTY SPOT. Waits
+// up to 2 s for a card's big picture. Any thread.
+bool museum_atlas(const std::vector<xrmarket::Variant>& items, std::vector<uint8_t>* out);
+// r210: a straight-RGBA sRGB picture's mip chain (levels 1..n down to 1 x 1): 2 x 2 averaged in linear light, weighted by alpha. Any
+// thread (the museum's worker; the PC proof).
+std::vector<std::vector<uint8_t>> mip_chain_srgb(const std::vector<uint8_t>& rgba, int w, int h);
 // A buzz for the controllers asked for since the last call: its strength (0 none) and length.
 float take_buzz(float* seconds);
 

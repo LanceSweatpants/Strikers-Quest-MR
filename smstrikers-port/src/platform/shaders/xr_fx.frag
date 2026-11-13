@@ -1030,6 +1030,90 @@ void main() {
             col *= 0.8 + 0.25 * (1.0 - length(p * vec2(1.0, 0.8)));
             shade = 0.85 + 0.15 * vShade;
         }
+    } else if (shape == 180) {
+        // r214 (Lance: the snow "looks like white pixels on the floor"): SNOW LYING - your room's floor, a furniture top,
+        // the table round the Tabletop field, the life-size stadium's pitch. Its depth at the quad's 4 corners in colour 2
+        // (r g b a = u0v0 u1v0 u0v1 u1v1), how trampled in colour 1 (the same order), the glow slot its mode (0 room, 1 a
+        // top, 2 the stadium, 3 the table; +4 night). Its surface is the fire flipbook's free channels at this spot in the
+        // world (xr_snow.h fx_noise: B the height, equalized; A a grain): the deeper the snow, the more of it is covered -
+        // a powder first, patches from its high points, then the blanket - lit from above with blue snow shadows, glints
+        // that come and go as your head moves, pressed grey-blue where it's trampled. (tools/outside/snow214 mirrors this.)
+        vec2 q = vUv;
+        float dpt = mix(mix(vColor2.r, vColor2.g, q.x), mix(vColor2.b, vColor2.a, q.x), q.y);
+        float trm = mix(mix(vColor1.r, vColor1.g, q.x), mix(vColor1.b, vColor1.a, q.x), q.y);
+        int mode = int(vParams.w + 0.5);
+        int kind = mode & 3;
+        float tpm = kind == 2 ? 33.0 : (kind == 3 ? 330.0 : 100.0);  // texels a metre (xr_snow.h k*TexelsPerM)
+        vec2 ts = vec2(textureSize(flameTex, 0));
+        vec2 uvn = vQuat.xy * tpm / ts;
+        vec4 s0 = texture(flameTex, fract(uvn));
+        float hx = texture(flameTex, fract(uvn + vec2(1.5 / ts.x, 0.0))).b;
+        float hz = texture(flameTex, fract(uvn + vec2(0.0, 1.5 / ts.y))).b;
+        float H = s0.b, G = s0.a;
+        float thr = 1.0 - clamp(dpt * 1.3, 0.0, 1.0);
+        float cov = smoothstep(thr - 0.10, thr + 0.05, H);
+        float powder = smoothstep(0.02, 0.30, dpt) * (0.18 + 0.18 * G);
+        float A = (cov + powder * (1.0 - cov)) * (1.0 - 0.30 * trm);
+        float relief = mix(10.0, 5.0, clamp(dpt, 0.0, 1.0)) * (1.0 - 0.75 * trm) * cov;
+        vec3 n = normalize(vec3(-(hx - H) * relief, 1.0, -(hz - H) * relief));
+        float lam = clamp(dot(n, normalize(vec3(0.32, 0.86, 0.40))), 0.0, 1.0);
+        vec3 col = mix(vec3(0.72, 0.79, 0.93), vec3(1.0), smoothstep(0.55, 0.98, lam));
+        float edge = 1.0 - smoothstep(thr, thr + 0.14, H);
+        col = mix(col, vec3(0.80, 0.86, 0.97), 0.45 * max(edge, 1.0 - cov));
+        col *= 0.965 + 0.06 * G;
+        col = mix(col, vec3(0.62, 0.67, 0.75), 0.70 * trm);
+        if (mode >= 4) col *= vec3(0.62, 0.66, 0.82);
+        vec2 gc = floor(uvn * ts * 0.5);
+        float gh = bsHash(ivec3(int(gc.x), int(gc.y), 214));
+        float tw = fract(gh * 37.0 + dot(vRight, vec3(1.7, 0.9, 2.3)) * 1.6 + dot(vUp, vec3(0.6, 2.1, 1.1)) * 1.1);
+        vec2 gf = fract(uvn * ts * 0.5) - 0.5;  // (a round point in its cell, never a square)
+        float glint = step(0.99, gh) * pow(max(0.0, 1.0 - abs(tw - 0.5) * 6.0), 3.0) * cov * (1.0 - trm) * exp(-dot(gf, gf) * 24.0);
+        float al = clamp(A, 0.0, 1.0) * vParams.z;
+        outColor = vec4(lin(col) * al + vec3(glint * 1.4 * vParams.z), al);
+        return;
+    } else if (shape == 181) {
+        // r214: a falling snowflake (xr_snow.h flake_alpha: keep the two line for line): a soft lumpy clump, denser in its
+        // middle, its underside colour 2 (a touch blue); colour 2's alpha its seed, the glow slot its blur (0 crisp .. 1 a
+        // soft out-of-focus disc)
+        float r = length(p);
+        float ang = atan(p.y, p.x);
+        float seed = vColor2.a;
+        float blur = vParams.w;
+        float lump = 1.0 + 0.12 * sin(3.0 * ang + seed * 6.2832) + 0.08 * sin(5.0 * ang - seed * 10.7) +
+                     0.05 * sin(8.0 * ang + seed * 14.4) * (1.0 - blur);
+        float rr = r / (0.60 * lump);
+        float sft = 0.12 + 0.55 * blur;
+        float a = 1.0 - smoothstep(1.0 - sft, 1.0 + 0.5 * sft, rr);
+        a *= 0.72 + 0.28 * exp(-rr * rr * 2.2);
+        float fe = (1.0 - blur) * 0.22 * smoothstep(0.35, 0.95, rr) * (0.5 + 0.5 * cos(6.0 * ang + seed * 3.0));
+        a *= 1.0 - fe;
+        a *= 1.0 - smoothstep(0.92, 1.0, r);
+        vec3 fc = mix(c1, c2, clamp(0.5 - 0.5 * p.y, 0.0, 1.0));
+        outColor = soft(fc, clamp(a, 0.0, 1.0) * vParams.z, 0.0);
+        return;
+    } else if (shape == 182) {
+        // r214: your footprint in the snow, lying along your step (+y the toe; colour 2's alpha 0 left / 1 right): the boot
+        // pressed in - blue-grey, deepest in the middle, a tread - and a lit rim of the snow it pushed up round it
+        vec2 f = p;
+        if (vColor2.a > 0.5) f.x = -f.x;
+        float sole = sdEllipse(f - vec2(0.06, 0.30), vec2(0.78, 0.62));
+        float heel = sdEllipse(f - vec2(-0.02, -0.55), vec2(0.62, 0.38));
+        float dd = min(sole, heel);
+        float aa = max(fwidth(dd), 1e-3);
+        float inside = clamp(0.5 - dd / aa, 0.0, 1.0);
+        float deep = smoothstep(0.0, 0.22, -dd);
+        vec3 inCol = mix(vec3(0.80, 0.85, 0.95), vec3(0.58, 0.66, 0.82), deep);
+        inCol *= 0.96 + 0.05 * sin(f.y * 34.0);
+        float rim = exp(-pow((dd - 0.06) / 0.05, 2.0)) * (1.0 - inside);
+        vec3 rimCol = mix(vec3(0.86, 0.90, 0.98), vec3(1.0), clamp(0.5 + 0.5 * f.y, 0.0, 1.0));
+        float a = (inside * 0.62 + rim * 0.5) * vParams.z;
+        // only as strong as the snow it's pressed into: the snow layer's own coverage at this spot (colour 1's red = the depth there)
+        vec2 tsf = vec2(textureSize(flameTex, 0));
+        float hf = texture(flameTex, fract(vQuat.xy * 100.0 / tsf)).b;
+        float thf = 1.0 - clamp(vColor1.r * 1.3, 0.0, 1.0);
+        a *= 0.2 + 0.8 * smoothstep(thf - 0.10, thf + 0.05, hf);
+        outColor = vec4(lin(mix(rimCol, inCol, inside)) * a, a);
+        return;
     } else if (shape == 163) {
         // r169: a real-fire flipbook flame (xr_balls.cpp): its frame in colour 2's alpha (0-15, +16 mirrored), its
         // temperature (colour 1 red: 1 hot .. 0 cooled to smoke), how smoky (green), how bright (blue x 2); its smoke's

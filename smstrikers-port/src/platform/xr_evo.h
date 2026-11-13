@@ -50,4 +50,12 @@ const std::vector<Segment>& segments(const Figure* f);
 float fps(const Figure* f);
 bool looks(const Figure* f);
 
+// r193 (Lance: a SILVER Croconaw "stuttered like 5 times before running in place on the card"; its celebration file's
+// cheer jumps 13 times - the game's cut-scene cuts / teleports - and runs across the floor, which a card pins in place):
+// the longest clean stretch of a move - cut where a frame-to-frame step of its fastest node is over 5x the move's median
+// step and over 6% of its height - at least `minFrames` long and crossing the floor no faster than `maxTravel` of its
+// height a second (< 0: any). False: none (no good stretch in it). tools/outside/clean193.py: the same on the PC.
+bool clean_stretch(const Figure* f, uint32_t start, uint32_t frames, uint32_t minFrames, float maxTravel, uint32_t* outStart,
+                   uint32_t* outFrames, float* travel = nullptr);
+
 }  // namespace xrevo

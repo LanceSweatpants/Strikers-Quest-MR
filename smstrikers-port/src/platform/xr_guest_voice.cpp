@@ -20,6 +20,7 @@
 #include "Game/Audio/WorldAudio.h"
 
 #include <algorithm>
+#include <atomic>  // r230
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -438,6 +439,14 @@ void PortGuestVoiceStopAll()
 
 // r138: a trading card's own sound (xr_cards.cpp: a special card's chime as it's turned over), a mono 32 kHz clip played
 // centred at the game's voice volume x volume. Four kept in turn (one still playing is let go first).
+// r202: the casino's win / lose music rides the SOUND > EFFECTS volume (the SFX group) instead of the voices'
+static thread_local bool s_cardSfx = false;
+void PortCardSoundSfx(const short* pcm, int frames, float volume)
+{
+    s_cardSfx = true;
+    PortCardSound(pcm, frames, volume);
+    s_cardSfx = false;
+}
 void PortCardSound(const short* pcm, int frames, float volume)
 {
     static Clip s_clips[4];
@@ -445,7 +454,8 @@ void PortCardSound(const short* pcm, int frames, float volume)
     static int s_owner;
     if (pcm == NULL || frames <= 0)
         return;
-    const float gain = Audio::MasterVolume::GetVoiceVolume() * volume;
+    const float gain = (s_cardSfx ? Audio::MasterVolume::GetVolume(Audio::MasterVolume::VG_SFX)
+                                  : Audio::MasterVolume::GetVoiceVolume()) * volume;
     if (!(gain > 0.001f))
         return;
     // r161 (the goal explosions' room takeovers play short hit sounds over a longer one): a clip no longer playing is
@@ -554,6 +564,13 @@ extern "C" int PortEvoMusicPlaying(void)
 {
     return s_evoPlaying >= 0 ? 1 : 0;
 }
+
+// r230 (LANCINI EXQUISITE's private gallery, xr_cards.cpp gallery_frame): its mood level; the lofi menu music fades out under it
+// (port/menu_music.h) and xr_quest.cpp turns the crowd down by it
+static std::atomic<float> s_cardGallery{0.0f};
+void PortCardGallerySet(float level) { s_cardGallery.store(level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level)); }
+float PortCardGallery() { return s_cardGallery.load(); }
+extern "C" int PortCardGalleryQuiet(void) { return s_cardGallery.load() > 0.05f ? 1 : 0; }
 
 extern "C" void PortGuestVoiceMix(int* left, int* right, int frames)
 {

@@ -256,6 +256,15 @@ list(REMOVE_ITEM PLATFORM_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_goalfx.cpp" # r153: goal explosions
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_binderfx.cpp" # r163: the 3D binder's living skins
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_balls.cpp" # r168: ball skins (the headset's side)
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_room.cpp"  # r197: your room scan's collision model
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_scene.cpp" # r197: your room scan (XR_FB_scene)
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_book.cpp"  # r199: the TIZM SPORTSBOOK
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_casino.cpp"  # r202: the machine's SLOTS + ROULETTE
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_machine.cpp"  # r203: the machine's controls
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_screen.cpp"  # r205: the machine's screen off the frame thread
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_market.cpp"  # r201: the TIZM CARD MARKET
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_museum.cpp"  # r201: the CARD MUSEUM
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_trade.cpp"  # r213: COLLECTOR TRADES
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_menu.cpp" # r157: the menus' kit
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_league.cpp" # r100: online franchise leagues
      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_net.cpp"
@@ -714,6 +723,15 @@ if(STRIKERS_AURORA)
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_goalfx.cpp"  # r153: goal explosions
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_binderfx.cpp"  # r163: the 3D binder's living skins
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_balls.cpp"  # r168: ball skins (the headset's side)
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_room.cpp"  # r197: your room scan's collision model
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_scene.cpp"  # r197: your room scan (XR_FB_scene)
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_book.cpp"  # r199: the TIZM SPORTSBOOK
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_casino.cpp"  # r202: the machine's SLOTS + ROULETTE
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_machine.cpp"  # r203: the machine's controls
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_screen.cpp"  # r205: the machine's screen off the frame thread
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_market.cpp"  # r201: the TIZM CARD MARKET
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_museum.cpp"  # r201: the CARD MUSEUM
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_trade.cpp"  # r213: COLLECTOR TRADES
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_menu.cpp"  # r157: the menus' kit
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_league.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/xr_net.cpp"

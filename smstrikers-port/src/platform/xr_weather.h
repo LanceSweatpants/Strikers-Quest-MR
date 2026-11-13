@@ -38,7 +38,23 @@ enum {
   PORT_WX_MODE_SNOW = 3,
   PORT_WX_MODE_NIGHT = 4,
   PORT_WX_MODE_OFF = 5,
-  PORT_WX_MODES = 6,
+  // r196: one tier picked for sure (RAIN / SNOW pick their tier at random, as RANDOM does)
+  PORT_WX_MODE_DRIZZLE = 6,
+  PORT_WX_MODE_STORM = 7,
+  PORT_WX_MODE_FLURRY = 8,
+  PORT_WX_MODE_BLIZZARD = 9,
+  PORT_WX_MODES = 10,
+};
+// r196 (WEATHER-UPGRADE.md, LOOKS AND SOUND ONLY): the match's tier, random per match like the weather itself (rain:
+// DRIZZLE 30% / RAIN 40% / THUNDERSTORM 30%; snow: FLURRY 40% / BLIZZARD 60%, the blizzard ramping in from a flurry).
+// r198: rain DRIZZLE 35 / RAIN 45 / THUNDERSTORM 20, snow FLURRY 65 / BLIZZARD 35 (xr_weather_cal.h rain_tier / snow_tier).
+enum {
+  PORT_WX_TIER_NONE = 0,
+  PORT_WX_TIER_DRIZZLE = 1,
+  PORT_WX_TIER_RAIN = 2,
+  PORT_WX_TIER_STORM = 3,
+  PORT_WX_TIER_FLURRY = 4,
+  PORT_WX_TIER_BLIZZARD = 5,
 };
 
 // The setting (the pause row; xr_room_options.txt "weather", default strikers.ini `weather`).
@@ -56,8 +72,39 @@ float PortWeatherSnowCover(void);
 // r148: the effects layer's load scale (xr_fx, 0.25..1, down while the headset misses frames): the game-side counts
 // (the camera's flakes / streaks, the pitch's splashes) follow it too.
 void PortWeatherSetLoad(float load);
-// "RAIN", "SNOW GAME", "UNDER THE LIGHTS", "RAIN UNDER THE LIGHTS", "SNOW UNDER THE LIGHTS" ("" for clear).
+// r198: "RAIN GAME", "SNOW GAME", "NIGHT GAME", "RAIN NIGHT GAME", "SNOW NIGHT GAME" ("" for clear).
 const char* PortWeatherLabel(int bits);
+
+// ---- r196: tiers, wind, lightning, thunder, snow piling up (all looks / sound only) ----
+// The tier (PORT_WX_TIER_*), and how strong it falls now 0..1 (DRIZZLE 0.35, RAIN 0.7, THUNDERSTORM 1, FLURRY 0.14,
+// BLIZZARD ramping 0.14 -> 1 over its first ~70 s, then gusting 0.85..1). Includes nothing of the fade.
+int PortWeatherTier(void);
+float PortWeatherIntensity(void);
+// The match card's words: r198 = PortWeatherLabel of the match (no tier names: RAIN GAME / SNOW GAME / NIGHT GAME).
+const char* PortWeatherMatchLabel(void);
+// The wind (GAME world: m/s along x = the pitch's length, y = across) and its gust 0..1. Rain slants with it, snow is
+// blown by it, the howl pans with it.
+void PortWeatherWind(float* vx, float* vy, float* gust);
+// Lightning: the flash now (0 .. ~1.3; it lights the stadium, the Jumbotron picture, the room), and the bolt showing
+// (returns 0 none): its strike number (a new one = a new bolt), how much it shows 0..1, kind 0 far 1 mid 2 close, x
+// -1..1 across the view it is placed in, and its shape's seed.
+float PortWeatherFlash(void);
+int PortWeatherBolt(int* id, float* vis, int* kind, float* x, unsigned* seed);
+// The bolt showing's shape: up to max segments (x0 y0 x1 y1 w each; x across from its top, y 0 the cloud .. 1 its
+// end, w 1 the main channel / ~0.5 a branch); returns the count (0 none).
+int PortWeatherBoltShape(float* xyw, int max);
+// Snow lying on the pitch (GAME world): a cols x rows grid over x -kHalfX..kHalfX, y -kHalfY..kHalfY, 0..1 each,
+// piling up where nobody has played for a while, trampled where the players / the ball go. Copies up to max cells,
+// returns cols * rows (0 none).
+int PortWeatherSnowGrid(float* out, int max, int* cols, int* rows);
+// Online (xr_net.cpp): the host's weather setting + the match's shared seed, so both headsets pick the same weather,
+// tier, wind and lightning (on=0 forgets it). Read by the next PortWeatherNewMatch while PortNetOnline().
+void PortWeatherSetShared(int on, unsigned seed, int hostMode);
+// The headset's listener for the weather's sound: your head's right (LOCAL x, z) and the room's wind turn (the game's
+// x axis in LOCAL: its yaw) - the howl and the rain pan with the wind as you turn.
+void PortWeatherSetListener(float rightX, float rightZ, float worldYaw);
+// The port mixer (audio_mix.cpp, 32 kHz stereo, s16 scale into s32): the rain / wind beds and the thunder.
+void PortWeatherAudioMix(int* left, int* right, int frames);
 
 // The game's renderer, once per game frame (GameRenderTask::Run, after the world): the game-side looks. dt = the
 // frame's game time (0 while paused).

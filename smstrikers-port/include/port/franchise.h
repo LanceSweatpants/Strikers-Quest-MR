@@ -144,8 +144,16 @@ struct PortFranchiseView
         char name[48];
         int club, goals, form;  // form -3 (slump) .. +3 (on fire)
         char key[48];           // r113: its portrait (guests/portraits/<key>.png)
+        int assists;            // r232: its assists this season (as goals: the playoffs too)
     } leaders[10], hot[5], cold[5];
     int leaderCount, hotCount, coldCount;
+    // r232 (Lance: "you defff need to add assists into the equation"): the ASSISTS leaders and the POINTS (goals + assists)
+    // leaders this season, as `leaders` (the GOLDEN BOOT race); the week's PLAYMAKER (the most assists in the last week's /
+    // game day's games: "" none)
+    Leader astLeaders[10], ptsLeaders[10];
+    int astLeaderCount, ptsLeaderCount;
+    char playmaker[48], playmakerKey[48];
+    int playmakerClub, playmakerAssists, playmakerGoals;
     char feed[8][128];           // "@NAME: ..." (last week's posts)
     int feedCount;
     char awards[8][112];         // this season's awards night (once crowned), else last season's
@@ -154,6 +162,7 @@ struct PortFranchiseView
     char history[16][112];       // the hall of fame: champions, MVPs, Golden Boots, records
     int historyCount;
     int captainGoals, backupGoals, sidekickGoals[3], sidekickAge[3];  // your players this season
+    int captainAssists, backupAssists, sidekickAssists[3];            // r232: ... their assists this season
     int captainForm, backupForm;
     bool tradeDeadlinePassed;
     // r72: your nemeses (hottest first; active ones before the cooled), and the next match's
@@ -349,6 +358,10 @@ void PortFranchiseRenderPitch();         // GameRenderTask::Run: the round's log
 void PortFranchiseIntroBegin();          // cGame::BeginGame: a franchise match's intro starts
 // r71: a goal in a franchise match (side 0 home / 1 away; who: 0 the captain, 1-3 a sidekick, -1 none)
 void PortFranchiseGoal(int side, int who, int goals);
+// r232: that goal's assister (the goal event's own, as the goal celebration shows it): who as PortFranchiseGoal's (0 the captain,
+// 1-3 a sidekick, 4 the co-captain; -1 none - no pass, a keeper, the other side); never the scorer (scorerWho). Kept per player per
+// match like the goals: the franchise's assists (league leaders, the market, awards night's PLAYMAKER OF THE YEAR).
+void PortFranchiseAssist(int side, int who, int scorerWho);
 // r72: a hit in a franchise match (sides 0/1; who: 0 the captain, else the sidekick's m_ID)
 void PortFranchiseHit(int attackerSide, int attacker, int victimSide, int victim);
 // r73: how hard a CPU side hunts your captain (0 none: not a franchise match against your nemesis's
@@ -462,6 +475,9 @@ const char* PortFranchiseSidekickName(int side, int playerId);
 // win, +1 a playoff series won, +1 a trophy), and what earned them (*flags: 1 a win, 2 a series won, 4 a trophy).
 // The headset takes them every frame (src/platform/xr_cards.cpp rolls and keeps them).
 int PortFranchiseTakeCardPacks(unsigned* flags);
+// r217 (Lance 11-11): the LANCINI TIZM JAM '96 packs earned since the last call - 1 a franchise WIN (PortFranchiseTakeCardPacks then
+// gives that win's LANCINI TIZM pack: a win = 1 + 1 JAM '96, a loss = 1; +1 LANCINI TIZM a series won / a trophy, as before).
+int PortFranchiseTakeJamPacks(void);
 // r140: TIZM COINS your played franchise matches earned since the last call (your side's goals, Super Strikes, assists,
 // tackles, steals, item hits, a win, a shutout; simmed games none), and the last match's breakdown into why ("3 goals 18,
 // 2 assists 8, 14 tackles 7, win 10"). The headset takes them every frame (xr_cards.cpp keeps them, for its shop).
@@ -580,5 +596,111 @@ int PortFranchiseFormsList(PortFranchiseForms* out, int max);
 bool PortFranchiseSetForm(int slot, const char* key);
 // r167: that slot's evolution when it's ready (postponed too): the selector's EVOLVE! tile opens the EVO page with it
 bool PortFranchiseReadyEvolutionFor(int slot, PortFranchiseEvolution* out);
+
+// r199 (Lance: "TIZM SPORTSBOOK", SPORTSBOOK.md): what the sportsbook prices the matchday from - the loaded career's
+// games of the day not played yet (week == the career's week), each with the numbers sim_game itself would use (both
+// clubs' strength + the nemesis edge + the difficulty push, the goal rates) and their form (the club streaks). Nothing here
+// touches the career's random numbers: the bets never change a result. Game thread.
+struct PortFranchiseBookGame
+{
+    int home, away;
+    bool mine;               // your club's game (WIN BY)
+    double sh, sa;           // strengths as sim_game takes them
+    double lamH, lamA;       // its goal rates (poisson means: home, away)
+    int streakH, streakA;    // + wins in a row / - losses in a row
+    int series;              // a playoff series' index, -1 a regular-season game
+};
+struct PortFranchiseBookDay
+{
+    bool valid;              // a career loaded with games today
+    unsigned seed;           // the career's id (its sportsbook file)
+    int season, week;        // the matchday (week 21+ the playoffs' game days)
+    int phase;
+    bool locked;             // kicked off: a match of this career on / starting, or a game of the day already played
+    bool league, coop;       // an online league / co-op career (bets stay on this headset)
+    int myClub;
+    int count;
+    PortFranchiseBookGame games[16];
+    int myMargins[24];       // your played games' margins this season (yours - theirs), newest first
+    int myMarginCount;
+    char roundName[48];
+};
+bool PortFranchiseBookDayGet(PortFranchiseBookDay* out);
+// r207 (Lance: CRAZY PARLAYS - legs from the upcoming matchdays): an upcoming regular-season matchday's games (week after the
+// career's week, at most PORT_FR_WEEKS), with the same numbers DayGet gives today's (the clubs as they stand now; locked false).
+// False: not the regular season / no such week. Read only. Game thread.
+bool PortFranchiseBookWeekGet(int week, PortFranchiseBookDay* out);
+// A game's result: 1 played (*hg / *ag its score, OT's golden goal counted), 0 not yet, -1 not in this career's season any more.
+int PortFranchiseBookResult(int season, int week, int home, int away, int* hg, int* ag);
+// A line for the league news (a big sportsbook win). Not in co-op / an online league (their news is shared).
+void PortFranchiseBookNews(const char* line);
+const char* PortFranchiseBookClubPlace(int club);  // "DEATH MOUNTAIN" (upper case)
+// r229: text saved before the 32 new clubs with each old club name / place in it renamed ("MUTE CITY ML -150" -> "STARK TOWER
+// ML -150"); unchanged until the clubs are read. Any thread; the pointer lasts until this thread's next call.
+const char* PortFranchiseRenameOldClubs(const char* text);
+// r199 round 3 (Lance: FUTURES): the season's races as they stand, for the sportsbook's futures (CHAMPION, MVP, GOLDEN BOOT,
+// ROOKIE OF THE YEAR - awards night's own picks: the regular season only, r165) - every club's table and strength, and every
+// player who could win one (captains, backups, named sidekicks) with the numbers awards night scores them by; the winners,
+// picked exactly as awards_night picks them, as soon as each is known. Read only. Game thread.
+struct PortFranchiseBookCand
+{
+    char id[56];       // "c:<key>" a captain / backup, "s:<club>:<slot>" a sidekick
+    char name[48];
+    int club;
+    int goals;         // regular-season goals
+    int form;          // regular-season form
+    bool rookie, captain;
+};
+struct PortFranchiseBookFutures
+{
+    bool valid;
+    int season, week, phase;
+    struct Club
+    {
+        int wins, losses, goalsFor, goalsAgainst;
+        double strength;
+    } clubs[PORT_FR_CLUBS];
+    int candCount;
+    PortFranchiseBookCand cands[200];
+    // the results as soon as they exist: the champion (phase DONE, else -1); the regular-season awards' winners (the playoffs
+    // or DONE: fixed once the regular season ends), else ""
+    int champion;
+    char mvp[56], boot[56], rookie[56];
+};
+bool PortFranchiseBookFuturesGet(PortFranchiseBookFutures* out);
+
+// r201 (Lance: TIZM CARD MARKET, COIN-SINKS.md 1): what the card market prices from - every player in the league as it stands
+// (captains, backups, named sidekick members, each club's generic sidekick kind as one row), its character line (char_id: an
+// evolution's forms share it), its numbers (season / regular-season / career goals, form, level), its club's record and
+// streak, this season's award winners once known and every retired line. Read only (nothing here touches the career or its
+// random numbers). Game thread. `key` is the player's own key (the market maps it to a card key as the card bonuses do).
+struct PortFranchiseMarketRow
+{
+    char key[48];
+    char line[48];
+    int club;
+    int role;            // 0 captain, 1 backup, 2 a sidekick member, 3 a club's generic sidekick kind
+    int level, seasonGoals, regGoals, careerGoals, games, form;
+    bool mine, shiny, rookie;
+    int seasonAssists, regAssists, careerAssists;  // r232: its assists (as its goals); 0 before r232's matches
+};
+struct PortFranchiseMarketState
+{
+    bool valid;
+    unsigned seed;
+    int season, week, phase, champion, myClub;
+    bool league, coop;
+    int count;
+    PortFranchiseMarketRow rows[200];
+    int clubWins[PORT_FR_CLUBS], clubLosses[PORT_FR_CLUBS], clubStreak[PORT_FR_CLUBS];
+    char mvp[48], boot[48], rookie[48];  // this season's award winners' keys (once the regular season is over), else ""
+    char playmaker[48];                  // r232: ... PLAYMAKER OF THE YEAR's (the most regular-season assists), else ""
+    int retiredCount;
+    char retired[64][48];                // retired lines (char_id) and the season they retired in
+    int retiredSeason[64];
+};
+bool PortFranchiseMarketGet(PortFranchiseMarketState* out);
+// A card key's character line (char_id: "n:charizard" for pk_charmander's whole line; a generic kind: the key itself)
+void PortFranchiseMarketLine(const char* key, char* out, int size);
 
 #endif // PORT_FRANCHISE_H

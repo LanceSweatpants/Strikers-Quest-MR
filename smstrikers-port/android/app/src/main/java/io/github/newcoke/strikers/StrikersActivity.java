@@ -387,6 +387,20 @@ public class StrikersActivity extends SDLActivity {
         }, "strikers-end").start();
     }
 
+    /**
+     * strikers-quest r197: YOUR ROOM SCAN's permission (spatial data), asked by the game (xr_scene.cpp, PAUSED >
+     * SETTINGS > ROOM > USE MY ROOM SCAN, A) on the UI thread. The game sees the answer by itself (it checks again).
+     */
+    public void requestScenePermission() {
+        runOnUiThread(() -> {
+            try {
+                requestPermissions(new String[] {"com.oculus.permission.USE_SCENE"}, 197);
+            } catch (RuntimeException e) {
+                android.util.Log.w("strikers", "could not ask for the room scan permission", e);
+            }
+        });
+    }
+
     /** strikers-quest r39b: waits for a closing game thread, up to GAME_THREAD_GRACE_MS. */
     private static void waitForGameThread(Thread game) {
         if (game == null) return;

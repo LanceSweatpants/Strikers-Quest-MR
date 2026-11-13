@@ -3,12 +3,14 @@
 # r188 (Lance on r187: "LUCHADOR is waaaay too puny, GRAVES too"): the ORIGINALS' own sizes (tools/outside/
 # origsizes188.py, logs/r188-sizes): each at least its host class's height (bind and standing), each evolution
 # form 6%+ taller than the one before, a single's 3 uniforms the same size. Never below 1.
+# r194 refit (tools/outside/origsizes194.py, logs/r194-refit): MASCOT x3 + REDLINE x3 now on Waluigi, TATAMI on Mario.
+# r195 (tools/outside/origsizes195.py, logs/r195a-anim): REDLINE x3 back on their r193 Peach-fit bodies at their r193 size (they play as Luigi); MASCOT x3 refitted on Mario (rule size 1.00).
 orig_highscore size 1.08
 orig_gameover size 1.28
 orig_rookie size 1.16
 orig_gambit size 1.41
 orig_checkmate size 1.60
-orig_tatami size 1.12
+orig_tatami size 1.08
 orig_nightstep size 1.25
 orig_overclock size 1.20
 orig_tincan size 1.17
@@ -26,9 +28,6 @@ orig_racedriver_c size 1.36
 orig_goalie size 1.28
 orig_goalie_b size 1.28
 orig_goalie_c size 1.28
-orig_mascot size 1.11
-orig_mascot_b size 1.11
-orig_mascot_c size 1.11
 orig_redline size 1.19
 orig_redline_b size 1.19
 orig_redline_c size 1.19

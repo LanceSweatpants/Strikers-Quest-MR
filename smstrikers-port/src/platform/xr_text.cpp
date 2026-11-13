@@ -16,9 +16,29 @@
 #include "imstb_truetype.h"
 
 #include "xr_font_luckiest.h"
+#include "xr_font_karla.h"  // r230
+#include "xr_font_roboto.h"  // r236 (LOOK B: the hub's face)
 
 namespace xrtext {
 namespace {
+
+// r236: the face (and letter tracking, a share of px) the text routines below rasterise / measure in on this thread - board()
+// sets it for each text piece (kFaceLucky outside one: every other picture as before)
+thread_local int t_face = kFaceLucky;
+thread_local float t_track = 0.0f;
+thread_local int t_measure = kFaceLucky;  // board_text_width's (set_measure_face)
+struct RasterFace {
+  int face;
+  float track;
+  RasterFace(int f, float tr) : face(t_face), track(t_track) {
+    t_face = f;
+    t_track = tr;
+  }
+  ~RasterFace() {
+    t_face = face;
+    t_track = track;
+  }
+};
 
 struct Color {
   float r, g, b, a;  // straight alpha; sRGB-encoded values, composited as they are (UI art)
@@ -35,12 +55,16 @@ float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 // Premultiplied RGBA, float.
 struct Canvas {
   int w, h;
+  int oy = 0;  // r205: a band of a bigger picture - its rows oy .. oy + h (board_band); 0 for a whole picture
   std::vector<float> px;
   Canvas(int width, int height) : w(width), h(height), px(static_cast<size_t>(width) * height * 4, 0.0f) {}
+  Canvas(int width, int rows, int originY) : w(width), h(rows), oy(originY), px(static_cast<size_t>(width) * rows * 4, 0.0f) {}
+  int top() const { return oy; }
+  int bot() const { return oy + h; }  // (one past the last row)
   void over(int x, int y, const Color& c, float cover) {
-    if (x < 0 || y < 0 || x >= w || y >= h || cover <= 0.0f) return;
+    if (x < 0 || y < oy || x >= w || y >= oy + h || cover <= 0.0f) return;
     const float a = c.a * clamp01(cover);
-    float* p = &px[(static_cast<size_t>(y) * w + x) * 4];
+    float* p = &px[(static_cast<size_t>(y - oy) * w + x) * 4];
     p[0] = c.r * a + p[0] * (1.0f - a);
     p[1] = c.g * a + p[1] * (1.0f - a);
     p[2] = c.b * a + p[2] * (1.0f - a);
@@ -52,10 +76,39 @@ struct Canvas {
 };
 
 // Set up once, thread-safely (the banner is drawn off the game thread). Only read after that.
-stbtt_fontinfo& font() {
+stbtt_fontinfo& lucky_font() {
   static stbtt_fontinfo f = [] {
     stbtt_fontinfo info;
     stbtt_InitFont(&info, kLuckiestGuy, stbtt_GetFontOffsetForIndex(kLuckiestGuy, 0));
+    return info;
+  }();
+  return f;
+}
+// r236: Roboto Bold Italic / Bold (xr_font_roboto.h, SIL OFL 1.1)
+stbtt_fontinfo& roboto_font(bool italic) {
+  static stbtt_fontinfo bi = [] {
+    stbtt_fontinfo info;
+    stbtt_InitFont(&info, kRobotoBoldItalic, stbtt_GetFontOffsetForIndex(kRobotoBoldItalic, 0));
+    return info;
+  }();
+  static stbtt_fontinfo b = [] {
+    stbtt_fontinfo info;
+    stbtt_InitFont(&info, kRobotoBold, stbtt_GetFontOffsetForIndex(kRobotoBold, 0));
+    return info;
+  }();
+  return italic ? bi : b;
+}
+stbtt_fontinfo& font() {
+  if (t_face == kFaceBroadcast) return roboto_font(true);
+  if (t_face == kFaceBroadcastUp) return roboto_font(false);
+  return lucky_font();
+}
+
+// r230: Karla (LANCINI EXQUISITE's wide-tracked caps; xr_font_karla.h)
+stbtt_fontinfo& karla_font() {
+  static stbtt_fontinfo f = [] {
+    stbtt_fontinfo info;
+    stbtt_InitFont(&info, kKarlaRegular, stbtt_GetFontOffsetForIndex(kKarlaRegular, 0));
     return info;
   }();
   return f;
@@ -71,6 +124,7 @@ float text_width(const char* text, float px) {
     x += advance * scale;
     if (c[1] != '\0') {
       x += scale * stbtt_GetCodepointKernAdvance(&f, static_cast<unsigned char>(c[0]), static_cast<unsigned char>(c[1]));
+      x += t_track * px;  // r236: tracking (0 but for a tracked label)
     }
   }
   return x;
@@ -124,7 +178,7 @@ Mask text_mask(const char* text, float px, int pad) {
       }
     }
     x += advance * scale;
-    if (c[1] != '\0') x += scale * stbtt_GetCodepointKernAdvance(&f, cp, static_cast<unsigned char>(c[1]));
+    if (c[1] != '\0') x += scale * stbtt_GetCodepointKernAdvance(&f, cp, static_cast<unsigned char>(c[1])) + t_track * px;  // (r236: + tracking)
   }
   return m;
 }
@@ -750,7 +804,7 @@ void text_left(Canvas& cv, const std::string& text, float x, float cy, float px,
 
 // A filled rounded rectangle.
 void fill_rounded(Canvas& cv, float x0, float y0, float x1, float y1, float r, Color c) {
-  for (int y = static_cast<int>(y0) - 1; y <= static_cast<int>(y1) + 1; ++y) {
+  for (int y = std::max(cv.top(), static_cast<int>(y0) - 1); y <= std::min(cv.bot() - 1, static_cast<int>(y1) + 1); ++y) {
     for (int x = static_cast<int>(x0) - 1; x <= static_cast<int>(x1) + 1; ++x) {
       const float sd = rounded_rect_sd(x + 0.5f, y + 0.5f, x0, y0, x1, y1, r);
       cv.over(x, y, c, 0.5f - sd);
@@ -780,6 +834,7 @@ void blit_fit(Canvas& cv, const uint8_t* img, int iw, int ih, float bx, float by
     *a += pa;
   };
   for (int y = 0; y < dh; ++y) {
+    if (oy + y < cv.top() || oy + y >= cv.bot()) continue;  // (r205: a band - its rows only)
     for (int x = 0; x < dw; ++x) {
       float r = 0, g = 0, b = 0, a = 0;
       if (s < 1.0f) {
@@ -872,7 +927,7 @@ void blit_ex(Canvas& cv, const uint8_t* img, int iw, int ih, float bx, float by,
     *a += pa;
   };
   const int px0 = std::max(0, static_cast<int>(std::floor(cx0))), px1 = std::min(cv.w, static_cast<int>(std::ceil(cx1)));
-  const int py0 = std::max(0, static_cast<int>(std::floor(cy0))), py1 = std::min(cv.h, static_cast<int>(std::ceil(cy1)));
+  const int py0 = std::max(cv.top(), static_cast<int>(std::floor(cy0))), py1 = std::min(cv.bot(), static_cast<int>(std::ceil(cy1)));
   const int n = std::max(1, std::min(4, static_cast<int>(std::ceil(step))));
   for (int y = py0; y < py1; ++y) {
     for (int x = px0; x < px1; ++x) {
@@ -975,7 +1030,7 @@ void draw_text_affine(Canvas& cv, const char* text, float cx, float cy, const Te
     const float ox = pass == 0 ? s.shadowX : 0.0f, oy = pass == 0 ? s.shadowY : 0.0f;
     const int y0 = static_cast<int>(std::floor(by0 + oy)) - 1, y1 = static_cast<int>(std::ceil(by1 + oy)) + 1;
     const int x0 = static_cast<int>(std::floor(bx0 + ox)) - 1, x1 = static_cast<int>(std::ceil(bx1 + ox)) + 1;
-    for (int y = std::max(0, y0); y <= std::min(cv.h - 1, y1); ++y) {
+    for (int y = std::max(cv.top(), y0); y <= std::min(cv.bot() - 1, y1); ++y) {
       for (int x = std::max(0, x0); x <= std::min(cv.w - 1, x1); ++x) {
         const float dx = x + 0.5f - (cx + ox), dy = y + 0.5f - (cy + oy);
         const float u2 = dx * ca + dy * sa, v = -dx * sa + dy * ca;
@@ -1441,42 +1496,130 @@ void character_select(uint8_t* rgba, int w, int h, const char* title, const Sele
   cv.write(rgba);
 }
 
-// r113: see xr_text.h.
-float board_text_width(const std::string& text, float px) { return text_width(caps(text.c_str()).c_str(), px); }
+// r113: see xr_text.h. r236: in the face set for this thread (set_measure_face)
+float face_text_width(const std::string& text, float px, int face, float track) {
+  if (face == kFaceBroadcast || face == kFaceBroadcastUp) {
+    const RasterFace rf(face, track);
+    return text_width(caps(text.c_str()).c_str(), px * kBroadcastPx) * kBroadcastXs;
+  }
+  const RasterFace rf(kFaceLucky, track);
+  return text_width(caps(text.c_str()).c_str(), px);
+}
+float board_text_width(const std::string& text, float px) { return face_text_width(text, px, t_measure); }
+void set_measure_face(int face) { t_measure = face; }
+int measure_face() { return t_measure; }
 
-void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
-  Canvas cv(w, h);
+// r236: a box's shape - rounded (radius), its corners cut (cut, cuts), leaning (lean: a parallelogram) - signed distance (< 0 inside)
+static float piece_sd(const BoardPiece& p, float x, float y) {
+  float px = x;
+  if (p.lean != 0.0f) {  // (sheared back to the upright box: the top edge sits `lean` right of the bottom)
+    const float h = std::max(1.0f, p.y1 - p.y0);
+    px -= p.lean * (p.y1 - y) / h;
+  }
+  float sd = rounded_rect_sd(px, y, p.x0, p.y0, p.x1, p.y1, p.radius);
+  if (p.cut > 0.0f) {
+    constexpr float kR2 = 0.70710678f;
+    if (p.cuts & 1) sd = std::max(sd, (p.cut - ((px - p.x0) + (y - p.y0))) * kR2);
+    if (p.cuts & 2) sd = std::max(sd, (p.cut - ((p.x1 - px) + (y - p.y0))) * kR2);
+    if (p.cuts & 4) sd = std::max(sd, (p.cut - ((p.x1 - px) + (p.y1 - y))) * kR2);
+    if (p.cuts & 8) sd = std::max(sd, (p.cut - ((px - p.x0) + (p.y1 - y))) * kR2);
+  }
+  return sd;
+}
+
+// r205: the rows a piece can touch (conservative: a text's mask is its px tall + its outline's pad round it, wherever its ink
+// sits, + its shadow; a turned / leaning text its half-diagonal) - xrscreen's dirty bands and board_band's skipping
+void piece_rows(const BoardPiece& p, float* y0, float* y1) {
+  switch (p.kind) {
+    case BoardPiece::kText:
+    case BoardPiece::kTextLeft:
+    case BoardPiece::kTextRight: {
+      const bool rob = p.face == kFaceBroadcast || p.face == kFaceBroadcastUp;  // r236
+      const RasterFace rf(rob ? p.face : kFaceLucky, p.track);
+      const float px = std::max(0.0f, p.y1) * (rob ? kBroadcastPx : 1.0f);
+      const float pad = std::ceil(std::max(0.0f, p.outline)) + 3.0f;
+      const float sh = std::fabs(p.shadow) + 2.0f;
+      float half = px + 2.0f * pad + sh + 4.0f;
+      if (p.slant != 0.0f || p.angle != 0.0f) {
+        const float xs = p.xscale > 0.05f ? p.xscale : 1.0f;
+        const float wd = (p.x1 > 0.0f ? std::min(p.x1, text_width(caps(p.text.c_str()).c_str(), px) * xs)
+                                      : text_width(caps(p.text.c_str()).c_str(), px) * xs) +
+                         std::fabs(p.slant) * (px + 2.0f * pad);
+        half = 0.5f * std::sqrt(wd * wd + (px + 2.0f * pad) * (px + 2.0f * pad)) + sh + 6.0f;
+      }
+      *y0 = p.y0 - half;
+      *y1 = p.y0 + half;
+      return;
+    }
+    case BoardPiece::kPoly: {
+      float a = 1e9f, b = -1e9f;
+      for (size_t i = 1; i < p.pts.size(); i += 2) a = std::min(a, p.pts[i]), b = std::max(b, p.pts[i]);
+      *y0 = a - 3.0f;
+      *y1 = b + 3.0f;
+      return;
+    }
+    default:
+      *y0 = std::min(p.y0, p.y1) - 3.0f;
+      *y1 = std::max(p.y0, p.y1) + 3.0f;
+      return;
+  }
+}
+
+static void board_into(Canvas& cv, const std::vector<BoardPiece>& pieces, bool band) {
   for (const BoardPiece& p : pieces) {
+    if (band) {  // r205: a band - pieces nowhere near its rows are skipped (a text's mask costs)
+      float a = 0.0f, b = 0.0f;
+      piece_rows(p, &a, &b);
+      if (b < static_cast<float>(cv.top()) - 1.0f || a > static_cast<float>(cv.bot()) + 1.0f) continue;
+    }
     const Color c = rgb(p.rgb, p.alpha);
     switch (p.kind) {
       case BoardPiece::kBox: {
-        if (p.rgb2 == 0 && p.alpha2 < 0.0f) {
+        const bool shaped = p.cut > 0.0f || p.lean != 0.0f;  // r236: cut corners / a parallelogram
+        if (p.rgb2 == 0 && p.alpha2 < 0.0f && !shaped) {
           fill_rounded(cv, p.x0, p.y0, p.x1, p.y1, p.radius, c);
           break;
         }
         // r131: alpha2 >= 0 fades to it (rgb2 0 then: the same colour)
         const Color c2 = rgb(p.rgb2 != 0 ? p.rgb2 : p.rgb, p.alpha2 >= 0.0f ? p.alpha2 : p.alpha);
+        const bool fade = p.rgb2 != 0 || p.alpha2 >= 0.0f;
         const float span = std::max(1.0f, p.y1 - p.y0);
-        for (int y = static_cast<int>(p.y0) - 1; y <= static_cast<int>(p.y1) + 1; ++y) {
-          const Color f = mix(c, c2, clamp01((y - p.y0) / span));
-          for (int x = static_cast<int>(p.x0) - 1; x <= static_cast<int>(p.x1) + 1; ++x)
-            cv.over(x, y, f, 0.5f - rounded_rect_sd(x + 0.5f, y + 0.5f, p.x0, p.y0, p.x1, p.y1, p.radius));
+        const int xa = std::max(0, static_cast<int>(std::floor(p.x0 + std::min(0.0f, p.lean))) - 1);
+        const int xb = std::min(cv.w - 1, static_cast<int>(p.x1 + std::max(0.0f, p.lean)) + 1);
+        for (int y = std::max(cv.top(), static_cast<int>(p.y0) - 1); y <= std::min(cv.bot() - 1, static_cast<int>(p.y1) + 1); ++y) {
+          const Color f = fade ? mix(c, c2, clamp01((y - p.y0) / span)) : c;
+          for (int x = xa; x <= xb; ++x)
+            cv.over(x, y, f, 0.5f - (shaped ? piece_sd(p, x + 0.5f, y + 0.5f) : rounded_rect_sd(x + 0.5f, y + 0.5f, p.x0, p.y0, p.x1, p.y1, p.radius)));
         }
         break;
       }
       case BoardPiece::kRing: {
         const float wd = std::max(1.0f, p.outline);
-        for (int y = static_cast<int>(p.y0) - 2; y <= static_cast<int>(p.y1) + 2; ++y)
-          for (int x = static_cast<int>(p.x0) - 2; x <= static_cast<int>(p.x1) + 2; ++x) {
-            const float sd = rounded_rect_sd(x + 0.5f, y + 0.5f, p.x0, p.y0, p.x1, p.y1, p.radius);
+        const int xa = std::max(0, static_cast<int>(std::floor(p.x0 + std::min(0.0f, p.lean))) - 2);
+        const int xb = std::min(cv.w - 1, static_cast<int>(p.x1 + std::max(0.0f, p.lean)) + 2);
+        for (int y = std::max(cv.top(), static_cast<int>(p.y0) - 2); y <= std::min(cv.bot() - 1, static_cast<int>(p.y1) + 2); ++y)
+          for (int x = xa; x <= xb; ++x) {
+            const float sd = piece_sd(p, x + 0.5f, y + 0.5f);
             cv.over(x, y, c, std::min(0.5f - sd, 0.5f + sd + wd));
+          }
+        break;
+      }
+      case BoardPiece::kStripes: {  // r236: the broadcast package's diagonal sweep (one pass over the box)
+        const float period = std::max(4.0f, p.radius), half = 0.5f * std::max(0.5f, p.outline);
+        const float nrm = 1.0f / std::sqrt(1.0f + p.slant * p.slant);
+        for (int y = std::max(cv.top(), static_cast<int>(p.y0)); y <= std::min(cv.bot() - 1, static_cast<int>(p.y1)); ++y)
+          for (int x = std::max(0, static_cast<int>(p.x0)); x <= std::min(cv.w - 1, static_cast<int>(p.x1)); ++x) {
+            float u = (x + 0.5f + p.slant * (y + 0.5f)) / period;
+            u -= std::floor(u);
+            const float d = std::fabs(u - 0.5f) * period * nrm;  // (px to the line in the middle of each period)
+            cv.over(x, y, c, half + 0.5f - d);
           }
         break;
       }
       case BoardPiece::kGlow: {
         const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
         const float rx = std::max(1.0f, 0.5f * (p.x1 - p.x0)), ry = std::max(1.0f, 0.5f * (p.y1 - p.y0));
-        for (int y = static_cast<int>(p.y0); y <= static_cast<int>(p.y1); ++y)
+        for (int y = std::max(cv.top(), static_cast<int>(p.y0)); y <= std::min(cv.bot() - 1, static_cast<int>(p.y1)); ++y)
           for (int x = static_cast<int>(p.x0); x <= static_cast<int>(p.x1); ++x) {
             const float dx = (x + 0.5f - cx) / rx, dy = (y + 0.5f - cy) / ry;
             const float d = std::sqrt(dx * dx + dy * dy);
@@ -1499,8 +1642,10 @@ void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
       case BoardPiece::kTextRight: {
         if (p.text.empty()) break;
         const std::string s = caps(p.text.c_str());
-        const float xs = p.xscale > 0.05f ? p.xscale : 1.0f;  // r131: condensed
-        float px = p.y1;
+        const bool rob = p.face == kFaceBroadcast || p.face == kFaceBroadcastUp;  // r236: the hub's face
+        const RasterFace rf(rob ? p.face : kFaceLucky, p.track);
+        const float xs = (p.xscale > 0.05f ? p.xscale : 1.0f) * (rob ? kBroadcastXs : 1.0f);  // r131: condensed
+        float px = p.y1 * (rob ? kBroadcastPx : 1.0f);
         const float wide = text_width(s.c_str(), px) * xs;
         if (p.x1 > 0.0f && wide > p.x1) px *= p.x1 / wide;
         const float wd = text_width(s.c_str(), px) * xs;
@@ -1539,7 +1684,7 @@ void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
           edge[3 * i + 1] = -sgn * ex / len;
           edge[3 * i + 2] = ax * edge[3 * i] + ay * edge[3 * i + 1];
         }
-        for (int y = std::max(0, static_cast<int>(std::floor(minY)) - 1); y <= std::min(cv.h - 1, static_cast<int>(maxY) + 1); ++y)
+        for (int y = std::max(cv.top(), static_cast<int>(std::floor(minY)) - 1); y <= std::min(cv.bot() - 1, static_cast<int>(maxY) + 1); ++y)
           for (int x = std::max(0, static_cast<int>(std::floor(minX)) - 1); x <= std::min(cv.w - 1, static_cast<int>(maxX) + 1); ++x) {
             float sd = -1e9f;
             for (size_t i = 0; i < n; ++i)
@@ -1552,7 +1697,7 @@ void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
         const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
         const float rx = std::max(1.0f, 0.5f * (p.x1 - p.x0)), ry = std::max(1.0f, 0.5f * (p.y1 - p.y0));
         const float rmin = std::min(rx, ry), seg = 6.2831853f / std::max(3, p.points), rot = p.angle * 0.017453293f;
-        for (int y = std::max(0, static_cast<int>(std::floor(p.y0)) - 1); y <= std::min(cv.h - 1, static_cast<int>(p.y1) + 1); ++y)
+        for (int y = std::max(cv.top(), static_cast<int>(std::floor(p.y0)) - 1); y <= std::min(cv.bot() - 1, static_cast<int>(p.y1) + 1); ++y)
           for (int x = std::max(0, static_cast<int>(std::floor(p.x0)) - 1); x <= std::min(cv.w - 1, static_cast<int>(p.x1) + 1); ++x) {
             const float u = (x + 0.5f - cx) / rx, v = (y + 0.5f - cy) / ry;
             const float r = std::sqrt(u * u + v * v);
@@ -1565,7 +1710,7 @@ void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
       }
       case BoardPiece::kDots: {  // r131: halftone, the dots growing (or shrinking) top to bottom
         const float cell = std::max(2.0f, p.radius), span = std::max(1.0f, p.y1 - p.y0);
-        for (int y = std::max(0, static_cast<int>(std::floor(p.y0))); y <= std::min(cv.h - 1, static_cast<int>(p.y1)); ++y) {
+        for (int y = std::max(cv.top(), static_cast<int>(std::floor(p.y0))); y <= std::min(cv.bot() - 1, static_cast<int>(p.y1)); ++y) {
           const float py = y + 0.5f;
           if (py < p.y0 || py > p.y1) continue;
           const float ccy = p.y0 + (std::floor((py - p.y0) / cell) + 0.5f) * cell;
@@ -1582,7 +1727,23 @@ void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
       }
     }
   }
+}
+
+void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces) {
+  Canvas cv(w, h);
+  board_into(cv, pieces, false);
   cv.write(rgba);
+}
+
+// r205: rows y0 .. y1 of the w x h picture only (rgba: the WHOLE picture's buffer; those rows written, the rest untouched) -
+// exactly what board() puts there (the same pieces, in order, from clear), for the pieces that reach them
+void board_band(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces, int y0, int y1) {
+  y0 = std::max(0, y0);
+  y1 = std::min(h, y1);
+  if (y1 <= y0 || w <= 0) return;
+  Canvas cv(w, y1 - y0, y0);
+  board_into(cv, pieces, true);
+  cv.write(rgba + static_cast<size_t>(y0) * w * 4);
 }
 
 // r70: see xr_text.h.
@@ -2026,6 +2187,82 @@ void evolution_scene(uint8_t* rgba, int w, int h, const EvoImage& from, const Ev
     text_left(cv, hh, 0.5f * w - 0.5f * hw, 0.93f * h, hp, 0.92f * w, rgb(0xB8C2D6), rgb(0x9AA6BE), 2.0f);
   }
   cv.write(rgba);
+}
+
+// r230 (LANCINI EXQUISITE): Karla, wide-tracked - the mockups' (tools/outside/exquisite229 xkit.text_mask) spacing: `track` in their units
+// (the gap between letters = track x 0.45 % of the size); `px` the em's height (PIL's font size). Upper / lower case as given.
+// r230: a UTF-8 string's code points (Karla has Latin-1: the middle dot)
+std::vector<int> utf8_cps(const std::string& s) {
+  std::vector<int> o;
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) o.push_back(c), ++i;
+    else if ((c & 0xE0) == 0xC0 && i + 1 < s.size()) o.push_back(((c & 0x1F) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F)), i += 2;
+    else if ((c & 0xF0) == 0xE0 && i + 2 < s.size())
+      o.push_back(((c & 0x0F) << 12) | ((static_cast<unsigned char>(s[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(s[i + 2]) & 0x3F)), i += 3;
+    else o.push_back(' '), ++i;
+  }
+  return o;
+}
+float karla_width(const std::string& text, float px, float track) {  if (!(px > 0.0f) || !(px < 16384.0f)) return 0.0f;
+  stbtt_fontinfo& f = karla_font();
+  const float scale = stbtt_ScaleForMappingEmToPixels(&f, px), tr = track * 0.45f * px / 100.0f;
+  float x = 0.0f;
+  const std::vector<int> cps = utf8_cps(text);
+  for (size_t i = 0; i < cps.size(); ++i) {
+    const int cp = cps[i];
+    int advance = 0, lsb = 0;
+    stbtt_GetCodepointHMetrics(&f, cp, &advance, &lsb);
+    x += advance * scale;
+    if (i + 1 < cps.size()) x += scale * stbtt_GetCodepointKernAdvance(&f, cp, cps[i + 1]) + tr;
+  }
+  return x;
+}
+KarlaMask karla_mask(const std::string& text, float px, float track, int pad) {
+  KarlaMask m;
+  if (!(px > 0.0f) || !(px < 4096.0f) || pad < 0 || pad > 2048 || text.empty()) return m;
+  stbtt_fontinfo& f = karla_font();
+  const float scale = stbtt_ScaleForMappingEmToPixels(&f, px), tr = track * 0.45f * px / 100.0f;
+  int ascent = 0, descent = 0, gap = 0;
+  stbtt_GetFontVMetrics(&f, &ascent, &descent, &gap);
+  const float tw = karla_width(text, px, track);
+  if (!(tw >= 0.0f) || !(tw < 16384.0f)) return m;
+  m.pad = pad;
+  m.width = tw;
+  m.w = static_cast<int>(std::ceil(tw)) + 2 * pad;
+  m.h = static_cast<int>(std::ceil((ascent - descent) * scale)) + 2 * pad;
+  m.base = pad + std::round(ascent * scale);
+  int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+  stbtt_GetCodepointBox(&f, 'H', &cx0, &cy0, &cx1, &cy1);
+  m.capTop = m.base - cy1 * scale;
+  m.capBot = m.base - cy0 * scale;
+  m.a.assign(static_cast<size_t>(m.w) * m.h, 0.0f);
+  float x = static_cast<float>(pad);
+  std::vector<unsigned char> glyph;
+  const std::vector<int> cps = utf8_cps(text);
+  for (size_t i = 0; i < cps.size(); ++i) {
+    const int cp = cps[i];
+    int advance = 0, lsb = 0;
+    stbtt_GetCodepointHMetrics(&f, cp, &advance, &lsb);
+    const float shift = x - std::floor(x);
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    stbtt_GetCodepointBitmapBoxSubpixel(&f, cp, scale, scale, shift, 0.0f, &x0, &y0, &x1, &y1);
+    const int gw = x1 - x0, gh = y1 - y0;
+    if (gw > 0 && gh > 0) {
+      glyph.assign(static_cast<size_t>(gw) * gh, 0);
+      stbtt_MakeCodepointBitmapSubpixel(&f, glyph.data(), gw, gh, gw, scale, scale, shift, 0.0f, cp);
+      for (int yy = 0; yy < gh; ++yy)
+        for (int xx = 0; xx < gw; ++xx) {
+          const int mx = static_cast<int>(std::floor(x)) + x0 + xx, my = static_cast<int>(m.base) + y0 + yy;
+          if (mx < 0 || my < 0 || mx >= m.w || my >= m.h) continue;
+          float& d = m.a[static_cast<size_t>(my) * m.w + mx];
+          d = std::max(d, glyph[static_cast<size_t>(yy) * gw + xx] / 255.0f);
+        }
+    }
+    x += advance * scale;
+    if (i + 1 < cps.size()) x += scale * stbtt_GetCodepointKernAdvance(&f, cp, cps[i + 1]) + tr;
+  }
+  return m;
 }
 
 }  // namespace xrtext

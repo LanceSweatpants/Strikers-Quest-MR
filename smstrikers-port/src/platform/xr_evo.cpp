@@ -400,6 +400,61 @@ const std::vector<Segment>& segments(const Figure* f) {
 float fps(const Figure* f) { return f != nullptr ? f->fps : 30.0f; }
 bool looks(const Figure* f) { return f != nullptr && f->head >= 0; }
 
+bool clean_stretch(const Figure* f, uint32_t start, uint32_t frames, uint32_t minFrames, float maxTravel, uint32_t* outStart,
+                   uint32_t* outFrames, float* travel) {
+  if (f == nullptr || frames < 2 || f->nodes == 0 || start + frames > f->frames) return false;
+  const uint32_t n = f->nodes;
+  auto at = [&](uint32_t fr, uint32_t node) { return &f->pose[(size_t(fr) * n + node) * 12 + 9]; };  // (its place: Z up)
+  float zlo = 1e9f, zhi = -1e9f;  // (its height: its first frame's)
+  for (uint32_t k = 0; k < n; ++k) zlo = std::min(zlo, at(0, k)[2]), zhi = std::max(zhi, at(0, k)[2]);
+  const float H = std::max(1e-4f, zhi - zlo);
+  std::vector<float> step(frames - 1), mx(frames), my(frames);
+  for (uint32_t i = 0; i < frames; ++i) {
+    double sx = 0.0, sy = 0.0;
+    for (uint32_t k = 0; k < n; ++k) sx += at(start + i, k)[0], sy += at(start + i, k)[1];
+    mx[i] = static_cast<float>(sx / n);
+    my[i] = static_cast<float>(sy / n);
+    if (i + 1 < frames) {
+      float m = 0.0f;
+      for (uint32_t k = 0; k < n; ++k) {
+        const float* a = at(start + i, k);
+        const float* b = at(start + i + 1, k);
+        const float dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+        m = std::max(m, dx * dx + dy * dy + dz * dz);
+      }
+      step[i] = std::sqrt(m);
+    }
+  }
+  std::vector<float> sorted = step;
+  std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+  float med = sorted[sorted.size() / 2];
+  if (sorted.size() % 2 == 0 && sorted.size() >= 2) {  // (numpy's median: the two middle ones' mean)
+    const float hi = med;
+    std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2 - 1, sorted.end());
+    med = 0.5f * (hi + sorted[sorted.size() / 2 - 1]);
+  }
+  bool found = false;
+  uint32_t a = 0;
+  for (uint32_t i = 0; i <= frames - 1; ++i) {
+    const bool cut = i == frames - 1 || (step[i] > 5.0f * med && step[i] > 0.06f * H);
+    if (!cut) continue;
+    const uint32_t e = i + 1, len = e - a;  // (a stretch: frames a .. e - 1)
+    if (len >= minFrames) {
+      double path = 0.0;
+      for (uint32_t j = a + 1; j < e; ++j) path += std::sqrt((mx[j] - mx[j - 1]) * (mx[j] - mx[j - 1]) + (my[j] - my[j - 1]) * (my[j] - my[j - 1]));
+      const float tr = static_cast<float>(path / H / std::max(1u, len - 1) * f->fps);
+      if ((maxTravel < 0.0f || tr <= maxTravel) && (!found || len > *outFrames)) {
+        found = true;
+        *outStart = start + a;
+        *outFrames = len;
+        if (travel != nullptr) *travel = tr;
+      }
+    }
+    a = e;
+  }
+  return found;
+}
+
 void pose(const Figure* f, float t, const XrVector3f& feet, float yaw, float scale, float lift, std::vector<float>* out,
           float lookYaw, float lookPitch) {
   if (f == nullptr) return;

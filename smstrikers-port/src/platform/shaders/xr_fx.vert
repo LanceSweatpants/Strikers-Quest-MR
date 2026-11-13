@@ -57,6 +57,9 @@ void main() {
         vec3 n = qrot(inQuat, vec3(0.0, 0.0, 1.0));
         shade = abs(dot(n, normalize(vec3(0.3, 1.0, 0.4))));
     }
+    // r214: the snow layer / footprints (xr_fx.frag 180, 182) read their spot in your room (LOCAL x, z, y): its surface's
+    // noise lies in the world, so it runs on unbroken from one tile to the next
+    if (shapeId == 180 || shapeId == 182) vQuat = vec4(world.x, world.z, world.y, 0.0);
     gl_Position = pc.viewProj * vec4(world, 1.0);
     vColor1 = inColor1;
     vColor2 = inColor2;

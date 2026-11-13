@@ -114,6 +114,12 @@
 # pad_rumble = 1          ; 0 turns rumble off on every port
 # pad_rumble_strength = 100   ; 0..100
 
+# Quest 3 Strikers: the RIGHT thumbstick at the STRIKERZ machine (franchise: the sportsbook / slots /
+# roulette cabinet in your room). 1 = it moves the machine's cursor like the left one (default);
+# 0 = it does nothing there (for a drifting right stick) - the left stick, the buttons, both
+# triggers, the laser pointer on the screen and the 3D joystick still work. This headset only.
+# machine_right_stick = 1
+
 [paths]
 # Where the game data is: either the `files` folder of an extracted disc, or a disc image.
 # data = C:/games/strikers/files
@@ -140,6 +146,11 @@
 # (60% clear, 15% rain, 10% snow, 15% night), clear, rain, snow, night, or off (off also turns
 # the franchise calendar's weather off). The pause menu's WEATHER row replaces this once used.
 # weather = random
+
+# Quest 3 Strikers: the match's rain and snow in your own room too (MR: the Jumbotron Living Room
+# and MR Tabletop), 1 = on (default) or 0 = off (then only the game's picture has its weather).
+# This headset only. The pause menu's SETTINGS > ROOM > WEATHER IN MY ROOM row replaces this once used.
+# room_weather = 1
 
 # Quest 3 Strikers: the music outside matches (the launcher panel, the game's menus, the franchise
 # hub): both (the CC0 lofi playlist + your own songs in Strikers/music), lofi, mine (only your

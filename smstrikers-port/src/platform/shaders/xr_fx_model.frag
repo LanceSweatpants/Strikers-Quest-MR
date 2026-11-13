@@ -591,7 +591,321 @@ void bfx_main() {
     }
     outColor = o * pc.look.y;
 }
+// r193 (Lance: "the ink needs to SHINE - that was the most dull inked signature ever"): an autograph's ink as polished
+// metal foil in its own colour (its hue held, as r179's: gold stays gold, burnt orange burnt orange): a bead of ink shaded
+// by its own thickness (the slope of its picture's ink: a lit edge, a shaded edge), a sharp highlight from a light that
+// drifts (it glints as it hangs), foil streaks, glitter flecks twinkling, a white-hot glint riding the pen tip as it
+// writes, a bright light sweep over it once it's written (and again as it lands), then a gentle one now and then; a
+// luminous halo in its colour round it, with a touch of dark behind (it reads on a bright room in passthrough). `ap` how
+// far it's written, `since` seconds since it was written / landed (< 0 still writing); air: its big copy in the air (a
+// fuller halo, sweeps every 1.6 s), else on the card (softer, a slow shimmer for good). tools/outside/ink193.py: the same.
+float ink_hash(vec2 c) { return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
+vec4 foil_ink(vec4 t, vec2 uv, vec3 hue, float tm, float ap, float since, bool air) {
+    vec2 d = vec2(1.5 / 840.0, 1.5 / 420.0);
+    // (its bead: the ink's own edge, and its glow's slope - a dome across each stroke, so the light rolls over it)
+    vec2 sx = texture(uTex, uv + vec2(d.x, 0.0)).rg - texture(uTex, uv - vec2(d.x, 0.0)).rg;
+    vec2 sy = texture(uTex, uv + vec2(0.0, d.y)).rg - texture(uTex, uv - vec2(0.0, d.y)).rg;
+    float gx = sx.y * 1.8 + sx.x * 4.0, gy = sy.y * 1.8 + sy.x * 4.0;
+    vec3 n = normalize(vec3(-gx, gy, 1.0));
+    vec3 L = normalize(vec3(0.55 * cos(tm * 0.8), 0.55 + 0.25 * sin(tm * 0.55), 0.7));
+    float lam = max(dot(n, L), 0.0);
+    float spec = pow(max(dot(reflect(-L, n), vec3(0.0, 0.0, 1.0)), 0.0), 14.0);
+    vec3 deep = hue * 0.42, mid = hue * 0.95, hi = mix(hue, vec3(1.0), 0.72);
+    vec3 col = mix(deep, mid, smoothstep(0.25, 0.95, lam));
+    col *= 0.9 + 0.12 * sin(uv.y * 70.0 + uv.x * 9.0 + 0.6 * sin(uv.x * 23.0));  // (foil streaks)
+    col += hi * spec * 1.1;
+    float h = ink_hash(floor(uv * vec2(260.0, 130.0)));  // (glitter flecks)
+    col += vec3(1.0, 0.97, 0.9) * step(0.9, h) * pow(max(0.0, sin(tm * 3.1 + h * 60.0)), 10.0) * 0.9;
+    float sw = -1.0, swk = 0.0;  // (its light sweep)
+    if (since >= 0.0) {
+        if (since < 0.9) {
+            sw = since / 0.9;
+            swk = 1.0;
+        } else {
+            float per = air ? 1.6 : 3.6;
+            sw = fract((since - 0.9) / per) * per / 0.9;
+            swk = air ? 0.55 : 0.35;
+        }
+    }
+    float bx = uv.x * 1.15 - (1.0 - uv.y) * 0.25 - (sw * 1.6 - 0.3);
+    float band = swk * exp(-bx * bx / 0.004);
+    col += mix(hue, vec3(1.0), 0.8) * band * 1.2;
+    float tip = since < 0.0 ? smoothstep(ap - 0.035, ap, t.b) : 0.0;  // (the pen tip, white-hot)
+    col = mix(col, vec3(1.0, 0.98, 0.92), tip * 0.85);
+    float core = t.g;
+    float breath = 0.85 + 0.15 * sin(tm * 2.3);
+    float halo = t.r * (1.0 - core) * (air ? 0.85 : 0.55) * breath + t.r * tip * 0.9 + t.r * band * 0.5;
+    vec3 rgb = col * core + hue * halo;
+    float a = core + (1.0 - core) * t.r * (air ? 0.3 : 0.2);
+    return vec4(min(rgb, vec3(1.0)), clamp(a, 0.0, 1.0));
+}
+// r199: the TIZM SPORTSBOOK cabinet (xr_quest.cpp book_cabinet; tools/outside/sportsbook199/cabinet199.py): its picture is
+// its light, baked in Blender (its own bulbs, neon and screen lighting it, a dim room's light, contact shadows), so it is
+// drawn as it is, plus what changes live: the bulbs chasing round the marquee (each bulb's place in the chase in its
+// normal's length), their halos, the buttons lit while pressed, the neon breathing, the coin slot pulsing, a gloss on the
+// chrome / metal / clear-coated art from a light above, and the light shows (glowRgb.g: a bet placed / the payout's).
+// glowRgb.r = the pressed buttons (bits / 255), .b = flags (1 winnings waiting: the chase runs gold and fast, 2 someone
+// at it), camPos.w = seconds. Codes: 1 body, 1.5 lit by the screen, 1.6 the marquee, 2 chrome, 3 metal, 4.xx a bulb,
+// 5.k a button, 6 the stick, 7 the coin slot, 8 / 8.5 neon, 9 the floor round it (soft: light added + its contact
+// shadow), 10 the screen (nothing: the quad layer behind shows through), 11.xx a bulb's halo (soft, added), 12 a
+// printed ticket's paper (lit softly, faded by look.y)
+float cab_chase(int i, float tsec, int flags, float show) {
+    int ph = int(floor(tsec * ((flags & 1) != 0 ? 14.0 : 7.0)));
+    int k = (i + ph) % ((flags & 1) != 0 ? 3 : 4);
+    float lit = k == 0 ? 1.0 : (k == 1 ? 0.4 : 0.1);
+    if (show > 0.02) {  // the light show: every bulb strobing, out of step round the marquee
+        float s = step(0.45, fract(tsec * 9.0 + float(i) * 0.137));
+        lit = mix(lit, s, min(1.0, show * 1.5));
+    }
+    return lit;
+}
+// r202 (Lance: "looks flat as hell, not shiny"; ALL-22's cabinet + the jukebox reflect an analytic room): the room the cabinet
+// reflects - a dark floor, dim walls, a soft bright ceiling, a key light's sharp lobe (sharper the smoother the surface), the
+// casino's own neon (pink left, cyan right) low on the sides. r = the reflected direction (the cabinet's space: y up)
+vec3 cab_env(vec3 r, float rough) {
+    vec3 floorC = vec3(0.035, 0.03, 0.04), wall = vec3(0.13, 0.11, 0.15), ceil = vec3(0.46, 0.44, 0.52);
+    vec3 c = r.y < 0.0 ? mix(wall, floorC, smoothstep(0.0, 0.45, -r.y)) : mix(wall, ceil, smoothstep(0.05, 0.85, r.y));
+    vec3 key = normalize(vec3(0.35, 0.85, 0.40));
+    float k = max(dot(r, key), 0.0);
+    c += vec3(1.0, 0.93, 0.84) * pow(k, mix(500.0, 24.0, rough)) * mix(3.2, 0.5, rough);
+    vec3 fill = normalize(vec3(-0.6, 0.5, 0.6));
+    c += vec3(0.85, 0.9, 1.0) * pow(max(dot(r, fill), 0.0), mix(160.0, 12.0, rough)) * mix(0.9, 0.15, rough);
+    // four tall softbox strips round the room (the long highlights down glossy panels as you walk round the cabinet)
+    vec2 hz = normalize(r.xz + vec2(1e-4));
+    float band = smoothstep(-0.35, 0.05, r.y) * (1.0 - smoothstep(0.55, 0.9, r.y));
+    float e = mix(90.0, 10.0, rough);
+    float sx = pow(max(dot(hz, vec2(0.7071, 0.7071)), 0.0), e) + pow(max(dot(hz, vec2(-0.7071, 0.7071)), 0.0), e) +
+               pow(max(dot(hz, vec2(0.7071, -0.7071)), 0.0), e) + pow(max(dot(hz, vec2(-0.7071, -0.7071)), 0.0), e);
+    c += vec3(0.95, 0.92, 1.0) * sx * band * mix(1.1, 0.25, rough);
+    c += vec3(1.0, 0.18, 0.53) * 0.09 * max(-r.x, 0.0) * (1.0 - abs(r.y)) + vec3(0.18, 0.95, 1.0) * 0.09 * max(r.x, 0.0) * (1.0 - abs(r.y));
+    return c;
+}
+void cab_main() {
+    vec4 t = texture(uTex, vUv);
+    float code = length(vNrm);
+    vec3 n = code > 1e-4 ? vNrm / code : vec3(0.0, 1.0, 0.0);
+    vec3 v = normalize(pc.camPos.xyz - vPos);
+    // r204: a ticket's two faces are 0.4 mm apart and both drawn (no culling): seen from either side the far face fought the
+    // near one in the depth test - the plain back's white came through the print in patches (Lance: "semi see-through at
+    // points, impossible to read"). Each face now draws only from its own side (its normal as stored: + the front, - the back).
+    bool backside = dot(n, v) < 0.0;
+    if (code > 11.9 && code < 12.1 && backside) discard;
+    if (backside) n = -n;
+    float tsec = pc.camPos.w;
+    int bits = int(pc.glowRgb.r * 255.0 + 0.5);
+    float show = pc.glowRgb.g;
+    int flags = int(pc.glowRgb.b * 255.0 + 0.5);
+    float alpha = pc.look.y;
+    if (code > 9.5 && code < 10.5) {  // the screen: its depth keeps the cabinet's inside off the screen; r202: the glass over it
+        // reflects the room a little (added over the quad layer behind: premultiplied, alpha 0)
+        float fg = 0.025 + 0.975 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+        outColor = vec4(cab_env(reflect(-v, n), 0.02) * fg * 0.6 * alpha, 0.0);
+        return;
+    }
+    if (code > 8.8 && code < 9.2) {  // the floor round it: its spill (added, brighter in a show) and contact shadow
+        outColor = vec4(t.rgb * (1.0 + 1.8 * show), t.a) * alpha;
+        return;
+    }
+    if (code > 10.9 && code < 11.6) {  // a bulb's halo
+        int i = int(floor((code - 11.0) * 100.0 + 0.5));
+        float lit = cab_chase(i, tsec, flags, show);
+        vec3 c = (flags & 1) != 0 ? vec3(1.0, 0.82, 0.35) : vec3(1.0, 0.88, 0.62);
+        outColor = vec4(c * t.r * lit * (0.75 + 0.6 * show), 0.0) * alpha;
+        return;
+    }
+    if (mod(pc.look.w, 2.0) < 0.5 && t.a < 0.3) discard;
+    vec3 col = t.rgb;
+    vec3 L = normalize(vec3(0.25, 0.9, 0.45));
+    vec3 h = normalize(L + v);
+    float nh = max(dot(n, h), 0.0), fres = pow(1.0 - max(dot(n, v), 0.0), 4.0);
+    if (code > 11.9 && code < 12.1) {  // a ticket's paper
+        // r204: thick matte card stock, opaque: the print sampled half a mip level sharper (its page is minified ~2x at a
+        // hand's length), lit evenly (a soft key + a high ambient: the print reads the same at any angle), no light through
+        // it, no crinkle over the text, a faint sheen only at grazing angles
+        col = texture(uTex, vUv, -0.5).rgb;
+        float front = max(dot(n, L), 0.0);
+        col *= 0.86 + 0.14 * front;
+        col += vec3(0.05) * pow(1.0 - max(dot(n, v), 0.0), 4.0);
+        outColor = vec4(col * alpha, alpha);
+        return;
+    }
+    // r202: the room reflected (cab_env) - mirror chrome, brushed metal, a clear coat on everything painted, glossy buttons and
+    // balls; the baked light stays under it. f5: Schlick's fresnel
+    vec3 rr = reflect(-v, n);
+    float f5 = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    if (code > 12.9 && code < 13.1) {  // the SLOTS handle's chrome (nothing baked: it moves)
+        col = cab_env(rr, 0.03) * vec3(0.92, 0.94, 1.0) * 1.2 + vec3(0.025);
+    } else if (code > 13.9 && code < 14.1) {  // its ball: glossy pink, clear-coated
+        col = vec3(1.0, 0.18, 0.53) * (0.22 + 0.5 * max(dot(n, L), 0.0)) + cab_env(rr, 0.02) * (0.06 + 0.94 * f5) * 1.5;
+    } else if (code > 1.9 && code < 2.1) {  // chrome: a mirror of the room, its own neon / bulbs (the bake) under it
+        col = col * 0.35 + cab_env(rr, 0.04) * vec3(0.9, 0.92, 1.0) * (0.95 + 0.3 * f5);
+    } else if (code > 2.9 && code < 3.1) {  // brushed metal: the room blurred
+        col = col * 0.62 + cab_env(rr, 0.42) * (0.42 + 0.4 * f5);
+    } else if (code > 3.95 && code < 4.6) {  // a bulb: lit in the chase, its filament glowing low between
+        int i = int(floor((code - 4.0) * 100.0 + 0.5));
+        float lit = cab_chase(i, tsec, flags, show);
+        col = (flags & 1) != 0 ? mix(col * vec3(0.3, 0.22, 0.1), vec3(1.0, 0.85, 0.4) * 1.3, lit) : mix(col * 0.22, col * 1.3, lit);
+    } else if (code > 4.95 && code < 5.45) {  // a button: pressed, it lights up; idle, it breathes
+        int k = int(floor((code - 5.0) * 10.0 + 0.5));
+        bool pressed = ((bits >> k) & 1) != 0;
+        col = pressed ? col * 2.1 + vec3(0.22) : col * (0.88 + 0.14 * sin(tsec * 3.0 + float(k) * 1.3));
+        col += cab_env(rr, 0.04) * (0.06 + 0.94 * f5) * 1.1 + vec3(1.0) * pow(nh, 140.0) * 0.5;  // (r202: a glossy cap)
+    } else if (code > 5.9 && code < 6.1) {  // the stick (its ball clear-coated); r202: it glows while a hand has it
+        col += cab_env(rr, 0.03) * (0.07 + 0.93 * f5) * 1.2 + vec3(1.0) * pow(nh, 160.0) * 0.6;
+        if ((flags & 2) != 0) col += vec3(1.0, 0.35, 0.7) * (0.35 + 0.2 * sin(tsec * 6.0));
+    } else if (code > 6.9 && code < 7.1) {  // the TIZM coin slot
+        col *= 0.65 + 0.35 * (0.5 + 0.5 * sin(tsec * 3.1)) + 1.2 * show + ((flags & 1) != 0 ? 0.35 : 0.0);
+    } else if (code > 7.9 && code < 8.6) {  // neon: breathing, a rare stutter, up in a show
+        float ph = code > 8.25 ? 1.7 : 0.0;
+        float stutter = fract(tsec * 0.11 + ph) > 0.985 ? 0.55 : 1.0;
+        col *= (0.86 + 0.14 * sin(tsec * 2.2 + ph)) * stutter * (1.0 + 0.9 * show);
+    } else {  // the painted body / art (clear-coated): a soft gloss; the screen's own light on its surround, the marquee breathing
+        // r202: a real clear coat - the room in it (strong at grazing angles), the key light's tight glint - over the baked art
+        float coat = code > 1.45 ? 0.85 : 0.65;
+        float fc = (0.1 + 0.9 * f5) * coat;
+        col = col * (1.0 - 0.5 * fc) + cab_env(rr, 0.08) * fc * 1.6 + vec3(1.0, 0.95, 0.9) * pow(nh, 220.0) * 0.35 * coat;
+        if (code > 1.45 && code < 1.55) col *= 1.0 + 0.45 * show;
+        if (code > 1.55 && code < 1.65) col *= 1.0 + 0.04 * sin(tsec * 1.7) + 0.7 * show;
+    }
+    outColor = vec4(col * alpha, alpha);
+}
+
+// r201: the CARD MUSEUM's pieces (xr_quest.cpp museum_frame; tools/outside/museum201/museum201.py): their light baked in
+// Blender (their spotlights, LED strips, picture light, a dim room, contact shadows) into one atlas, drawn as it is, plus what
+// lives: gloss on brass / gold / chrome (a tight highlight, the room in its edges), the lacquer's and the mirror's reflections
+// (soft vertical light bands sliding as you move), the LEDs breathing, the glass (soft: clear, its fresnel + light streaks
+// sliding over it), the spotlight's beam (soft, added: dust drifting in it), the floor / wall round it (its spill added, its
+// contact shadow), the cards (the CARD ATLAS: tex 2, a glossy sheen sweeping over them). Codes (normal length): 1 body, 1.6 a
+// lit sign, 2 brass / gold / chrome, 3 lacquer / steel, 4 LED / lamp, 5 glass, 6 a card, 7 a beam, 8 the floor / wall, 9 a
+// mirror. camPos is in the piece's own space; camPos.w = seconds; look.y = alpha; glowRgb.r = a new card's glow (0..1).
+float mus_bands(vec3 r, float t) {  // a room's soft light bands reflected (windows, a lamp): from the reflected direction
+    float a = atan(r.x, r.z) * 3.0 + 0.4 * sin(t * 0.21);
+    float b = r.y * 2.2;
+    return pow(max(0.0, sin(a)), 8.0) * smoothstep(-0.2, 0.6, b) + 0.35 * pow(max(0.0, sin(a * 0.5 + 1.3)), 16.0);
+}
+void mus_main() {
+    vec4 t = texture(uTex, vUv);
+    float code = length(vNrm);
+    vec3 n = code > 1e-4 ? vNrm / code : vec3(0.0, 1.0, 0.0);
+    vec3 v = normalize(pc.camPos.xyz - vPos);
+    // r210 (Lance 11-10: "the cards are like realllllly fuzzy far away from it but are kinda clear when youre close"): each card's
+    // FRONT and its BACK are two quads 0.5-0.8 mm apart (museum201.py), both drawn (no culling), the back after the front, LESS_OR_EQUAL
+    // on the effects layer's 16-bit depth (near 0.05 m: one step = z^2 x 0.31 mm - 1.2 mm at 2 m): from ~1.3 m on the two land on the
+    // same depth step and the BACK (the TIZM back's logo + text lines) wins over the face in patches, then everywhere - the "grey
+    // cards with smeared text lines" of his clip. A card face is drawn only from its own side now (its stored normal; r204's ticket
+    // fix): the face from the front, the back from behind, never both - at any distance.
+    if (code > 5.8 && code < 6.2 && dot(vNrm, pc.camPos.xyz - vPos) < 0.0) discard;
+    if (dot(n, v) < 0.0) n = -n;
+    float tsec = pc.camPos.w;
+    float alpha = pc.look.y;
+    vec3 L = normalize(vec3(0.15, 0.95, 0.3));
+    vec3 h = normalize(L + v);
+    float nh = max(dot(n, h), 0.0), nv = max(dot(n, v), 0.0);
+    float fres = pow(1.0 - nv, 4.0);
+    vec3 r = reflect(-v, n);
+    if (code > 7.8 && code < 8.2) {  // the floor / wall round it: its spill (added) and its contact shadow
+        outColor = vec4(t.rgb, t.a) * alpha;
+        return;
+    }
+    if (code > 6.8 && code < 7.2) {  // the spotlight's beam: soft, added, a little dust drifting in it
+        float dust = 0.85 + 0.15 * sin(vUv.y * 40.0 - tsec * 0.7 + sin(vUv.x * 30.0 + tsec * 0.3) * 2.0);
+        float edge = pow(nv, 1.5);  // (its middle, seen through, brighter than its rim)
+        outColor = vec4(vec3(1.0, 0.9, 0.72) * t.a * 0.22 * dust * edge, 0.0) * alpha;
+        return;
+    }
+    if (code > 4.8 && code < 5.2) {  // glass: clear, its edges catching the room, streaks of light sliding over it
+        float streak = mus_bands(r, tsec);
+        float a = 0.05 + 0.55 * fres + 0.30 * streak;
+        vec3 c = vec3(0.86, 0.92, 1.0) * (0.25 + 0.75 * streak) + vec3(1.0) * pow(nh, 120.0) * 0.8;
+        outColor = vec4(c * a, a * 0.85) * alpha;
+        return;
+    }
+    if (mod(pc.look.w, 2.0) < 0.5 && t.a < 0.3) discard;
+    vec3 col = t.rgb;
+    if (code > 5.8 && code < 6.2) {  // a card: its own picture, a clear-coat sheen sweeping over it now and then
+        float sweep = fract(tsec * 0.08 + vPos.x * 0.6 + vPos.y * 0.4);
+        col *= 0.92;
+        col += vec3(1.0) * pow(nh, 60.0) * 0.25 + vec3(0.9, 0.95, 1.0) * exp(-pow((sweep - 0.5) * 9.0, 2.0)) * 0.12;
+        col += vec3(1.0, 0.85, 0.4) * pc.glowRgb.r * (0.15 + 0.1 * sin(tsec * 4.0));
+    } else if (code > 1.9 && code < 2.1) {  // brass / gold / chrome
+        col += t.rgb * pow(nh, 40.0) * 0.9 + vec3(1.0, 0.92, 0.75) * mus_bands(r, tsec) * 0.25 * (0.4 + fres);
+    } else if (code > 2.9 && code < 3.1) {  // lacquer / steel: a mirror-smooth coat, the room's light in it
+        col += vec3(0.85, 0.88, 1.0) * mus_bands(r, tsec) * (0.06 + 0.35 * fres) + vec3(1.0) * pow(nh, 90.0) * 0.2;
+    } else if (code > 8.8 && code < 9.2) {  // the mirror at the back
+        col = col * 0.8 + vec3(0.7, 0.75, 0.85) * mus_bands(r, tsec) * 0.22;
+    } else if (code > 3.9 && code < 4.1) {  // an LED strip / a lamp: breathing a touch
+        col *= 0.94 + 0.06 * sin(tsec * 1.3 + vPos.x * 3.0);
+    } else {  // the body (+ 1.6 a lit sign breathing)
+        col += vec3(1.0) * pow(nh, 70.0) * 0.06 + vec3(0.6, 0.6, 0.75) * fres * 0.04;
+        if (code > 1.55 && code < 1.65) col *= 1.0 + 0.06 * sin(tsec * 1.1);
+    }
+    outColor = vec4(col * alpha, alpha);
+}
+
+// r230 (Lance 11-12): THE VAULT - LANCINI EXQUISITE's case (xr_vault.h, xr_cards_vault.inc; glowRgb.w -11, its own frame: ModelDraw::local).
+// Codes (normal length): 1 pebbled black leather (a soft sheen), 2 polished brass (the room's warm gallery light in it, a tight glint), 3
+// black velvet (its sheen at grazing angles), 4 the lid's satin, 5 a pack (soft-touch black; its gold foil where the picture's alpha < 1),
+// 6 the light spilling out (soft, added: look.z its strength). Anything with alpha < 1 in its picture is metal there (gold corners, plates).
+// The case's inside (velvet, packs) lit warm by its own light as the lid opens.
+vec3 vault_env(vec3 r) {
+    float a = atan(r.x, r.z);
+    float top = smoothstep(-0.1, 0.8, r.y);
+    float bands = pow(max(0.0, sin(a * 2.0 + 0.6)), 10.0) * smoothstep(-0.2, 0.5, r.y) + 0.5 * pow(max(0.0, sin(a * 5.0 - 1.1)), 18.0);
+    return vec3(0.05, 0.04, 0.035) + vec3(1.0, 0.82, 0.55) * (0.35 * top + 0.9 * bands);
+}
+void vault_main() {
+    vec4 t = texture(uTex, vUv);
+    float code = length(vNrm);
+    vec3 n = code > 1e-4 ? vNrm / code : vec3(0.0, 1.0, 0.0);
+    vec3 v = normalize(pc.camPos.xyz - vPos);
+    float alpha = pc.look.y;
+    float glow = pc.look.z;
+    if (code > 5.5) {  // its light, added (a soft pool over the velvet, shafts rising): warm gold
+        float a = t.a * glow;
+        outColor = vec4(vec3(1.0, 0.86, 0.58) * a * 0.8 * alpha, 0.0);
+        return;
+    }
+    if (dot(n, v) < 0.0) n = -n;
+    vec3 L = normalize(vec3(0.25, 0.9, 0.45));
+    vec3 h = normalize(L + v);
+    float nh = max(dot(n, h), 0.0), nl = max(dot(n, L), 0.0), nv = max(dot(n, v), 0.0);
+    float fres = pow(1.0 - nv, 5.0);
+    vec3 r = reflect(-v, n);
+    vec3 col;
+    float metal = t.a < 0.985 ? clamp((0.985 - t.a) * 2.0, 0.0, 1.0) : 0.0;
+    if (code > 1.5 && code < 2.5) metal = 1.0;
+    vec3 base = t.rgb;
+    if (code < 1.5) {          // leather: matte, a broad soft sheen, its pebbles' light baked in
+        col = base * (0.42 + 0.62 * nl) + vec3(0.9, 0.85, 0.8) * pow(nh, 22.0) * 0.06 + vault_env(r) * 0.05 * (0.3 + fres);
+    } else if (code < 3.5 && code > 2.5) {  // velvet: dark, its sheen at grazing angles
+        col = base * (0.45 + 0.4 * nl) + base * 2.4 * pow(1.0 - nv, 2.5) * 0.5;
+    } else if (code < 4.5 && code > 3.5) {  // satin: a soft lustre
+        col = base * (0.5 + 0.42 * nl) + vec3(0.32, 0.28, 0.24) * pow(nh, 10.0) * 0.45;
+    } else {                    // a pack: soft-touch black
+        col = base * (0.5 + 0.5 * nl) + vec3(0.06) * pow(nh, 8.0);
+    }
+    if (metal > 0.0) {          // polished brass / gold: the room's warm light in it, a tight glint
+        vec3 m = base * (0.22 + 0.3 * nl) + base * vault_env(r) * 1.35 + vec3(1.0, 0.93, 0.78) * pow(nh, 90.0) * 1.3 + base * fres * 0.4;
+        col = mix(col, m, metal);
+    }
+    bool inside = (code > 2.5 && code < 3.5) || (code > 4.5 && code < 5.5);
+    if (inside) col += glow * vec3(1.0, 0.84, 0.55) * (0.18 + 0.55 * base + 0.25 * metal);
+    if (code > 3.5 && code < 4.5) col += glow * vec3(1.0, 0.8, 0.5) * 0.10;  // (the satin catching it)
+    outColor = vec4(col * alpha, alpha);
+}
+
 void main() {
+    if (pc.glowRgb.w < -10.5 && pc.glowRgb.w > -11.5) {  // r230: THE VAULT (its own mode, first)
+        vault_main();
+        return;
+    }    if (pc.glowRgb.w < -8.5 && pc.glowRgb.w > -9.5) {  // r199: the TIZM SPORTSBOOK cabinet (its own mode, first)
+        cab_main();
+        return;
+    }
+    if (pc.glowRgb.w < -9.5 && pc.glowRgb.w > -10.5) {  // r201: the CARD MUSEUM's pieces
+        mus_main();
+        return;
+    }
     if (pc.glowRgb.w < -5.0) {  // r160: the binder (its own mode, before anything else); r163: sleeves gone, its effects -7.5
         if (pc.glowRgb.w < -7.0) bfx_main();
         else binder_main(length(vNrm));
@@ -604,7 +918,11 @@ void main() {
     // -0.75 overshoots (aliasing) when it is held close. Everything else as before (bias 0).
     vec4 t = texture(uTex, vUv, pc.glowRgb.w < -0.5 ? -0.5 : 0.0);
     bool soft = mod(pc.look.w, 2.0) > 0.5;
-    float shine = floor(pc.look.w * 0.5) / 100.0;  // r127: a shiny one's glint (0..1)
+    float shine = floor(mod(pc.look.w, 512.0) * 0.5) / 100.0;  // r127: a shiny one's glint (0..1)
+    // r193 (xr_fx.cpp): a special card's cut (0 none; else 1 + how far its 3D on top has risen, in hundredths) and its
+    // figure's dimming (hundredths)
+    float cutCode = floor(mod(pc.look.w, 65536.0) / 512.0);
+    float dimK = floor(pc.look.w / 65536.0) / 100.0;
     if (!soft && t.a < 0.3) discard;
     vec3 v = normalize(pc.camPos.xyz - vPos);
     vec3 n = vNrm;
@@ -662,30 +980,43 @@ void main() {
             // floating signature"): its copy in the air (x = 10 + how far it's written): a neon tube in its ink - a hot
             // near-white core where its ink is, its colour glowing round it, a faint flicker / hum; the line simply grows,
             // no bright writing tip
-            if (prog > 9.5) {
-                float ap = prog - 10.0;
+            // its ink's colour (xr_cards.cpp sign_ink): y = red + green / 256, z = 3 + blue / 256; none = gold. Its HUE held
+            // (the ink at its brightest: its largest channel 1), so burnt orange stays burnt orange
+            float rg2 = floor(vNrm.y * 256.0 + 0.5), bl2 = floor((vNrm.z - 3.0) * 256.0 + 0.5);
+            vec3 inkN = rg2 + bl2 < 0.5 ? vec3(1.0, 0.74, 0.30) : vec3(floor(rg2 / 256.0), mod(rg2, 256.0), bl2) / 255.0;
+            vec3 hueC = inkN / max(max(inkN.r, inkN.g), max(inkN.b, 0.001));
+            float tm = pc.camPos.w;
+            // r193 (xr_cards.cpp sign_air): its copy in the air - x 9.45 .. 9.95 gathering, 10 + how far it's written, 11.05
+            // + seconds since it was written - in foil ink (foil_ink)
+            if (prog > 9.4) {
+                if (prog < 9.98) {  // gathering: the whole of it a faint shimmer ghosting in, a bright point where its pen starts
+                    float b = clamp((prog - 9.45) / 0.5, 0.0, 1.0);
+                    float ghost = t.r * 0.16 * b * b * (0.7 + 0.3 * sin(tm * 9.0 + vUv.x * 20.0));
+                    float start = smoothstep(0.06, 0.0, t.b) * t.r * b * (1.2 + 0.4 * sin(tm * 20.0));
+                    outColor = vec4((hueC * ghost + mix(hueC, vec3(1.0), 0.6) * start) * pc.look.y, 0.0);  // (light, added)
+                    return;
+                }
+                float ap = min(prog - 10.0, 1.05), since = prog >= 11.05 ? prog - 11.05 : -1.0;
                 if (t.b > ap || t.a < 0.01) discard;
-                float rg2 = floor(vNrm.y * 256.0 + 0.5), bl2 = floor((vNrm.z - 3.0) * 256.0 + 0.5);
-                vec3 inkN = rg2 + bl2 < 0.5 ? vec3(1.0, 0.74, 0.30) : vec3(floor(rg2 / 256.0), mod(rg2, 256.0), bl2) / 255.0;
-                float tm = pc.camPos.w;
-                float hum = 0.93 + 0.05 * sin(tm * 37.0) + 0.02 * sin(tm * 113.0) + (fract(sin(floor(tm * 9.0) * 12.9898) * 43758.5) > 0.97 ? -0.25 : 0.0);
-                // (its HUE held: the ink at its brightest (its largest channel 1) - core and glow one colour, only how bright
-                // differs, never past 1 - so burnt orange stays burnt orange, never washing to yellow / white)
-                vec3 hueC = inkN / max(max(inkN.r, inkN.g), max(inkN.b, 0.001));
-                float inten = clamp(t.g * 1.0 + t.r * 0.85, 0.0, 1.0);
-                float a2 = clamp(max(t.r * 0.75, t.g), 0.0, 1.0) * pc.look.y * hum;
-                outColor = vec4(hueC * inten * pc.look.y * hum, a2);
+                outColor = foil_ink(t, vUv, hueC, tm, ap, since, true) * pc.look.y;
                 return;
             }
-            if (t.b > prog || t.a < 0.01) discard;
-            float pen = smoothstep(prog - 0.05, prog, t.b) * step(prog, 1.0);
-            // its ink's colour (xr_cards.cpp sign_ink): y = red + green / 256, z = 3 + blue / 256; none = gold
-            float rg = floor(vNrm.y * 256.0 + 0.5), bl = floor((vNrm.z - 3.0) * 256.0 + 0.5);
-            vec3 inkC = rg + bl < 0.5 ? vec3(1.0, 0.74, 0.30) : vec3(floor(rg / 256.0), mod(rg, 256.0), bl) / 255.0;
-            vec3 ink = mix(inkC, mix(inkC, vec3(1.0), 0.6), t.g) + pen * mix(inkC, vec3(1.0), 0.5);
-            float a = max(t.r * 0.6, t.g) * pc.look.y;
-            outColor = vec4(ink * (t.r * 0.9 + t.g * 1.1) * pc.look.y, a);
+            // on the card: nothing until it lands (< 0), then 1.05 + seconds since it landed; never from behind the card
+            if (prog < 0.0 || t.a < 0.01) discard;
+            if (cutCode > 0.5 && pc.camPos.z <= 0.0) discard;
+            outColor = foil_ink(t, vUv, hueC, tm, 1.05, max(prog - 1.05, 0.0), false) * pc.look.y;
             return;
+        }
+        // r193 (Lance on his 1/1: "The platform they stand on, on the card, was visible before I flipped the card over -
+        // looked dumb"): a special card's 3D (its throne, its figure, its room, its pop-outs, its diorama) only on its
+        // face's side - nothing while your eye is behind its face (turned over, or held round by the wrist) - and what
+        // stands on its top edge rising out of it as it's turned to you (a thin line of light where it's coming through)
+        float riseEdge = 0.0;
+        if (cutCode > 0.5 && nl <= 1.5) {
+            if (pc.camPos.z <= 0.0) discard;
+            float rise = (cutCode - 1.0) / 100.0, topY = 0.7 * pc.look.x, over = vPos.y - topY;
+            if (over > 0.0 && rise < 0.999 && over > rise * 0.3) discard;
+            if (over > 0.0 && rise < 0.999) riseEdge = smoothstep(0.006, 0.0, rise * 0.3 - over);
         }
         if (nl > 1.5) {
             if (dot(vNrm, pc.camPos.xyz - vPos) < 0.0) discard;
@@ -765,6 +1096,7 @@ void main() {
                 colIn *= 1.0 + 0.45 * spot;
                 if (above) colIn += spot * vec3(1.0, 0.94, 0.82) * rimIn * 0.55;  // r141: the throne's figure, under the spotlight
             }
+            colIn = colIn * (1.0 - dimK) + riseEdge * vec3(1.0, 0.9, 0.7);  // r193: dimmed for its autograph; rising
             float aIn = (soft ? t.a : 1.0) * pc.look.y;
             outColor = vec4(colIn * aIn, aIn);
             return;
@@ -795,7 +1127,44 @@ void main() {
             return;
         }
         if (foil > 0.0) {
-            float tilt = dot(r, vec3(0.62, 0.48, 0.62));
+            // r230 (Lance 11-12: "make the EMERALD and the SAPPHIRE parallels actually SHIMMER and SPARKLE the way a Topps Chrome Sapphire would"):
+            // an EXQUISITE EMERALD / SAPPHIRE (its front's normals kJewelCode long: 7 emerald, 8 sapphire - xr_cards jewel_code) - where its jewel
+            // stock is (foil 0.25 .. 0.75: the field, never its window / character / words) a deep jewel-tone MIRROR CHROME: the room's light bands
+            // reflected in the jewel colour as it tilts, a refractor's rainbow sliding across it with the tilt, and fine glitter - each fleck its own
+            // facet, flashing white when the light catches it at your angle (two sizes), a slow sweep of light over it
+            if (nl > 6.5 && nl < 8.5 && foil > 0.25 && foil < 0.75) {
+                bool sapph = nl > 7.5;
+                vec3 gem = sapph ? vec3(0.16, 0.36, 1.0) : vec3(0.06, 0.82, 0.42);
+                vec3 deep = sapph ? vec3(0.015, 0.04, 0.22) : vec3(0.008, 0.16, 0.07);
+                float ja = atan(r.x, r.z);
+                float sky = smoothstep(-0.25, 0.85, r.y);
+                float bands = pow(max(0.0, sin(ja * 3.0 + r.y * 4.0 + 1.3)), 6.0) + 0.6 * pow(max(0.0, sin(ja * 7.0 - r.y * 3.0)), 12.0);
+                vec3 env = mix(deep, gem * 1.15, clamp(0.22 + 0.5 * sky + 0.6 * bands, 0.0, 1.25));
+                float tiltJ = dot(r, vec3(0.62, 0.48, 0.62));
+                float hueJ = fract(tiltJ * 2.3 + vUv.x * 1.1 + vUv.y * 1.6 + pc.camPos.w * 0.03) * 6.0;
+                vec3 rbJ = clamp(vec3(abs(hueJ - 3.0) - 1.0, 2.0 - abs(hueJ - 2.0), 2.0 - abs(hueJ - 4.0)), 0.0, 1.0);
+                float rbK = pow(0.5 + 0.5 * sin(tiltJ * 14.0 + (vUv.x + vUv.y) * 9.0 - pc.camPos.w * 0.3), 3.0);
+                float sweep = fract(tiltJ * 0.9 + vUv.x * 0.4 - vUv.y * 0.2 - pc.camPos.w * 0.10) - 0.5;
+                vec3 chrome = env * (0.6 + 0.8 * gloss) + rbJ * rbK * 0.45 + mix(gem, vec3(1.0), 0.4) * gloss * 1.1 +
+                              vec3(0.9, 0.95, 1.0) * exp(-sweep * sweep / 0.002) * 0.35;
+                float spark = 0.0;
+                for (int s = 0; s < 2; ++s) {
+                    vec2 grid = s == 0 ? vec2(260.0, 364.0) : vec2(120.0, 168.0);
+                    vec2 cellJ = floor(vUv * grid);
+                    vec2 fj = fract(vUv * grid) - 0.5;
+                    float h1 = fract(sin(dot(cellJ + float(s) * 17.0, vec2(12.9898, 78.233))) * 43758.5453);
+                    float h2 = fract(sin(dot(cellJ + float(s) * 31.0, vec2(39.3468, 11.135))) * 24634.6345);
+                    float face = sin(h1 * 80.0 + tiltJ * (s == 0 ? 46.0 : 30.0) + dot(r, vec3(h2 - 0.5, 0.6, h1 - 0.5)) * 22.0 + pc.camPos.w * 0.7);
+                    float on = step(s == 0 ? 0.80 : 0.90, h2) * pow(max(0.0, face), 36.0);
+                    spark += on * smoothstep(0.5, 0.05, length(fj)) * (s == 0 ? 1.0 : 1.4);
+                }
+                vec3 jewelCol = chrome + mix(vec3(1.0), gem, 0.25) * spark * 1.6;
+                col = mix(col, jewelCol * shade, foil > 0.5 ? 1.0 : smoothstep(0.25, 0.5, foil));
+                col *= 1.0 + 0.55 * spot;
+                float aJ = (soft ? t.a : 1.0) * pc.look.y;
+                outColor = vec4(col * aJ, aJ);
+                return;
+            }            float tilt = dot(r, vec3(0.62, 0.48, 0.62));
             float hue = fract(tilt * 1.7 + vUv.x * 0.9 + vUv.y * 1.3 + pc.camPos.w * 0.035) * 6.0;
             vec3 rainbow = clamp(vec3(abs(hue - 3.0) - 1.0, 2.0 - abs(hue - 2.0), 2.0 - abs(hue - 4.0)), 0.0, 1.0);
             vec2 cell = floor(vUv * vec2(160.0, 224.0));

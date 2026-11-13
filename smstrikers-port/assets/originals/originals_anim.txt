@@ -1,0 +1,15 @@
+# r195 ORIGINALS: BODY FIT apart from the MOVES (Lance on r194: male originals fitted on Peach played Peach's runs,
+# slides, celebrations and card moves). "<pack> fit <class> anim <class>":
+#   fit  = the Strikers class skeleton the body was fitted on (the pack's skeleton + mesh, its r188 size rule host);
+#   anim = the class whose clips it plays EVERYWHERE: originals183.py writes it as originals.txt's "plays as" column
+#          (match play, Super Strike, goal celebration, card cel loops / Silver / Gold / 1/1 / HOMETOWN figures, EVO page,
+#          select preview, hub / awards / magazine, big pictures) and tools/outside/origanim195.py re-bakes the pack's
+#          own_idle from it (the stance every move is turned from), mesh / skeleton / textures byte for byte the same.
+# A pack not listed: fit = anim = its fitted host. Shipped in assets/originals (staged with the folder; the converter
+# never writes it). Hand-edited only, then: origanim195.py on the pack + originals183.py + build.
+orig_gameover fit peach anim luigi
+orig_nightstep fit peach anim luigi
+orig_overclock fit peach anim luigi
+orig_redline fit peach anim luigi
+orig_redline_b fit peach anim luigi
+orig_redline_c fit peach anim luigi

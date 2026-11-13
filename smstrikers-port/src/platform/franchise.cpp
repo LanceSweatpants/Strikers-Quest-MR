@@ -8,6 +8,7 @@
 #include "port/xr_league.h"  // r100: online leagues
 #include "xr_weather.h"      // r137: weather (looks only)
 #include "xr_weather_cal.h"
+#include "franchise_stadium.h"  // r221: every game at a random stadium of the 7
 
 #include "Game/GameInfo.h"
 #include "Game/GameSceneManager.h"
@@ -27,6 +28,7 @@
 #include <deque>
 #include <functional>
 #include <string>
+#include <mutex>  // r221 (game_stadium's cache)
 #include <unordered_map>
 #include <vector>
 
@@ -365,6 +367,10 @@ struct PStats
     // r165 (Lance: "post season success or failure doesnt make or break someones seasonal awards, it felt like whoever
     // made it furthest in the playoffs won the most awards"): the regular season's goals and form alone, for awards night
     int regGoals, regForm;
+    // r232 (Lance: "you defff need to add assists into the equation"): assists - career, this season, the regular season. A
+    // played match's from its goal events (the assister the goal celebration shows), a worked-out one's made up with its goals
+    // (distribute_assists). A career saved before r232 has none so far ("lifeast" lines: 0 when missing - no made-up history).
+    int assists, seasonAssists, regAssists;
 };
 struct ClubState
 {
@@ -502,6 +508,15 @@ struct Career
     std::vector<std::string> retireWarn;
     std::vector<std::pair<std::string, int> > returning;
     std::vector<std::pair<std::string, int> > rookieOf;
+    // r229: the club names its saved text uses (229 = r229's 32 new clubs; 0 = a save from before: renamed once at load)
+    int clubNames = 229;
+    // r232: the career keeps assists (a "lifeast" line was read, or a new career): false = a copy written by a build from before
+    // r232 (an older friend's league / co-op upload) - its players' assists are 0 there (keep_assists keeps this headset's)
+    bool astKnown = true;
+    // r232: the week's PLAYMAKER (the most assists in the last week's / game day's games; ties: more goals, then the first): its
+    // name, portrait key, club, assists and goals ("" none) - cleared with the week's news
+    std::string pmName, pmKey;
+    int pmClub = -1, pmAst = 0, pmGoals = 0;
 };
 
 Career s_career;
@@ -603,6 +618,20 @@ int s_lifeScorers[2][kScorerSlots];
 // anyone)
 int s_matchSS[2], s_matchCapHits[2], s_matchAnyHits[2];
 int s_lifeSS[2], s_lifeCapHits[2], s_lifeAnyHits[2];
+// r232: the match's assists by the same slots as its scorers (the goal events' assisters: PortFranchiseAssist), and the
+// played game's for the week's A-Life
+int s_matchAst[2][kScorerSlots];
+int s_lifeAst[2][kScorerSlots];
+
+// r232: one goal's assist into a match's tally: `who` as the scorer slots (0 captain, 1-3 sidekicks, 4 co-captain), never the
+// scorer's own slot, -1 / out of range none. True when it counted.
+bool record_assist(int tally[2][kScorerSlots], int side, int who, int scorerWho)
+{
+    if (side < 0 || side > 1 || who < 0 || who >= kScorerSlots || who == scorerWho)
+        return false;
+    tally[side][who]++;
+    return true;
+}
 
 // r100: a played match as it ended (its game, the score, everyone's goals, Super Strikes, hits, assists, and
 // whether each side fielded a co-captain): an online league's result goes into the shared career with it, again
@@ -616,13 +645,42 @@ struct PlayedResult
     int ss[2], capHits[2], anyHits[2];
     int assists[2][4];
     bool co[2];
+    int ast[2][kScorerSlots];  // r232: the goal events' assisters by scorer slot (the franchise's assists; `assists` stays the XP's)
 };
 
 void init_stats(PStats& s, int personality)
 {
     s.goals = s.games = s.seasonGoals = s.form = 0;
     s.regGoals = s.regForm = 0;  // r165
+    s.assists = s.seasonAssists = s.regAssists = 0;  // r232
     s.personality = personality;
+}
+
+// r232: a shared career's copy written by a build from before r232 (an older friend's league upload / co-op career: no "lifeast"
+// lines, so every player's assists read 0 there) - this headset's own assists kept for the same players (the same club, the
+// same character / sidekick in the same spot); its other numbers are the copy's. A copy that has them: nothing to do.
+void keep_assists(const Career& from, Career& to)
+{
+    if (to.astKnown || !from.astKnown)
+        return;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        const ClubState& a = from.clubs[i];
+        ClubState& b = to.clubs[i];
+        const bool same[5] = {a.captain == b.captain, !a.backup.empty() && a.backup == b.backup,
+                              a.mem[0] == b.mem[0] && a.names[0] == b.names[0], a.mem[1] == b.mem[1] && a.names[1] == b.names[1],
+                              a.mem[2] == b.mem[2] && a.names[2] == b.names[2]};
+        const PStats* src[5] = {&a.capSt, &a.bkSt, &a.sk[0], &a.sk[1], &a.sk[2]};
+        PStats* dst[5] = {&b.capSt, &b.bkSt, &b.sk[0], &b.sk[1], &b.sk[2]};
+        for (int k = 0; k < 5; k++)
+            if (same[k])
+            {
+                dst[k]->assists = src[k]->assists;
+                dst[k]->seasonAssists = to.season == from.season ? src[k]->seasonAssists : 0;
+                dst[k]->regAssists = to.season == from.season ? src[k]->regAssists : 0;
+            }
+    }
+    to.astKnown = true;
 }
 
 void init_life(Career& c)
@@ -801,7 +859,14 @@ bool write_career(const Career& c, const std::string& path)
         for (int k = 0; k < 5; k++)
             fprintf(f, " %d %d", st[k]->regGoals, st[k]->regForm);
         fprintf(f, "\n");
+        // r232: assists - career, season, regular season (a build from before r232 skips the line: its players 0 there)
+        fprintf(f, "lifeast %d", i);
+        for (int k = 0; k < 5; k++)
+            fprintf(f, " %d %d %d", st[k]->assists, st[k]->seasonAssists, st[k]->regAssists);
+        fprintf(f, "\n");
     }
+    if (!c.pmName.empty())  // r232: the week's playmaker
+        fprintf(f, "playmaker %d %d %d %s\t%s\n", c.pmClub, c.pmAst, c.pmGoals, c.pmKey.empty() ? "-" : c.pmKey.c_str(), c.pmName.c_str());
     for (size_t i = 0; i < c.feed.size(); i++)
         fprintf(f, "feed %s\n", c.feed[i].c_str());
     for (size_t i = 0; i < c.awards.size(); i++)
@@ -863,9 +928,11 @@ bool write_career(const Career& c, const std::string& path)
     for (size_t i = 0; i < c.fa.size(); i++)
     {
         const FreeAgent& a = c.fa[i];
-        fprintf(f, "fa %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s\n", a.fresh ? 1 : 0, a.from, a.since, a.decide,
+        // r232: + its assists after the key (career, season, regular season; a build from before r232 stops at the key)
+        fprintf(f, "fa %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s %d %d %d\n", a.fresh ? 1 : 0, a.from, a.since, a.decide,
                 a.prog.level, a.prog.xp, a.prog.shiny ? 1 : 0, a.prog.declinedAt, a.prog.startLevel, a.st.goals, a.st.games,
-                a.st.seasonGoals, a.st.form, a.st.personality, a.st.regGoals, a.st.regForm, a.key.c_str());
+                a.st.seasonGoals, a.st.form, a.st.personality, a.st.regGoals, a.st.regForm, a.key.c_str(), a.st.assists,
+                a.st.seasonAssists, a.st.regAssists);
     }
     for (size_t i = 0; i < c.bids.size(); i++)
     {
@@ -883,6 +950,7 @@ bool write_career(const Career& c, const std::string& path)
         fprintf(f, "rookieof %d %s\n", c.rookieOf[i].second, c.rookieOf[i].first.c_str());
     if (!c.faLast.empty())
         fprintf(f, "falast %s\n", c.faLast.c_str());
+    fprintf(f, "clubnames %d\n", c.clubNames);  // r229: 229 = its text names the new clubs (renamed once at load)
     fclose(f);
     remove(path.c_str());
     return rename(tmp.c_str(), path.c_str()) == 0;
@@ -903,6 +971,127 @@ void coop_shared(const Career& c, const std::string& path)
     const std::string text = read_text(path);
     if (!text.empty())
         PortNetCoopSendCareer(text.data(), (int)text.size(), c.seed, c.version);
+}
+
+// r229 (Lance OK'd 11-12, logs/r229-teams/NAMES.md): the 32 clubs renamed in clubs.txt - ids, rows, conferences, divisions and
+// home stadiums unchanged, so careers and online leagues keep working. Text a career saved before r229 names the old ones
+// ("MVP: X (DEATH MOUNTAIN)", "Death Mountain Dodongos win the Super Strike Series!", "@Name: ... Mute City"): each old full name
+// and each old place that changed -> the club's name now (as written and in capitals; whole words only, longest first, one
+// pass, so a renamed bit is never renamed again). The r228 names by id (its clubs.txt):
+const char* const kOldClubs[PORT_FR_CLUBS][3] = {
+    {"deathmountain", "Death Mountain", "Dodongos"},       {"cinnabar", "Cinnabar Island", "Volcanoes"},
+    {"norfair", "Norfair", "Lava Divers"},                 {"archanea", "Archanea", "Fire Emblems"},
+    {"thunderisland", "Thunder Island", "Storm"},          {"mutecity", "Mute City", "Blue Falcons"},
+    {"vermilion", "Vermilion City", "Thunderbolts"},       {"mauville", "Mauville City", "Dynamos"},
+    {"konga", "Konga Coliseum", "Barrels"},                {"pewter", "Pewter City", "Boulders"},
+    {"pyrite", "Pyrite Town", "Miners"},                   {"onett", "Onett", "Meteorites"},
+    {"pipelinecentral", "Pipeline Central", "Warp Pipes"}, {"lakehylia", "Lake Hylia", "Zoras"},
+    {"cerulean", "Cerulean City", "Cascades"},             {"phenac", "Phenac City", "Fountains"},
+    {"lavender", "Lavender Town", "Ghosts"},               {"mtpyre", "Mt. Pyre", "Spirits"},
+    {"realgar", "Realgar Tower", "Shadows"},               {"underground", "The Underground", "Lurkers"},
+    {"corneria", "Corneria", "Arwings"},                   {"galactic", "Galactic Stadium", "Comets"},
+    {"dreamland", "Dream Land", "Warp Stars"},             {"fortree", "Fortree City", "Flyers"},
+    {"infiniteglacier", "Infinite Glacier", "Climbers"},   {"crystalcanyon", "Crystal Canyon", "Shards"},
+    {"icepath", "Ice Path", "Avalanche"},                  {"snowpeak", "Snowpeak", "Freezards"},
+    {"mushroomkingdom", "Mushroom Kingdom", "Super Stars"}, {"celadon", "Celadon City", "Gardens"},
+    {"agate", "Agate Village", "Groves"},                  {"lostwoods", "Lost Woods", "Wanderers"},
+};
+std::string caps(const std::string& s)
+{
+    std::string o = s;
+    for (size_t i = 0; i < o.size(); i++)
+        if (o[i] >= 'a' && o[i] <= 'z')
+            o[i] = (char)(o[i] - 'a' + 'A');
+    return o;
+}
+bool word_char(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'); }
+// old -> new, longest first ("" when clubs.txt isn't the 32 clubs: nothing renamed). Any thread (the sportsbook's loads).
+const std::vector<std::pair<std::string, std::string> >& club_renames()
+{
+    static std::mutex s_m;
+    static std::vector<std::pair<std::string, std::string> > s_list;
+    std::lock_guard<std::mutex> lock(s_m);
+    if (!s_list.empty() || (int)s_clubs.size() != PORT_FR_CLUBS)
+        return s_list;
+    std::vector<std::pair<std::string, std::string> > l;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        const Club& now = s_clubs[i];
+        if (now.id != kOldClubs[i][0])
+            return s_list;  // (not the clubs this table knows: leave the text alone)
+        const std::string oldFull = std::string(kOldClubs[i][1]) + " " + kOldClubs[i][2], newFull = now.place + " " + now.mascot;
+        const std::string from[2] = {oldFull, kOldClubs[i][1]}, to[2] = {newFull, now.place};
+        for (int k = 0; k < 2; k++)
+            if (from[k] != to[k])
+            {
+                l.push_back(std::make_pair(from[k], to[k]));
+                l.push_back(std::make_pair(caps(from[k]), caps(to[k])));
+            }
+    }
+    std::stable_sort(l.begin(), l.end(), [](const std::pair<std::string, std::string>& a,
+                                            const std::pair<std::string, std::string>& b) { return a.first.size() > b.first.size(); });
+    s_list.swap(l);
+    return s_list;
+}
+std::string rename_old_clubs(const std::string& s, int* hits)
+{
+    const std::vector<std::pair<std::string, std::string> >& l = club_renames();
+    if (l.empty() || s.empty())
+        return s;
+    std::string out;
+    out.reserve(s.size() + 16);
+    size_t i = 0;
+    while (i < s.size())
+    {
+        const std::pair<std::string, std::string>* m = NULL;
+        if (i == 0 || !word_char(s[i - 1]))
+            for (size_t k = 0; k < l.size() && m == NULL; k++)
+            {
+                const size_t n = l[k].first.size(), e = i + n;
+                if (s.compare(i, n, l[k].first) == 0 && (e >= s.size() || !word_char(s[e])))
+                    m = &l[k];
+            }
+        if (m != NULL)
+        {
+            out += m->second;
+            i += m->first.size();
+            if (hits != NULL)
+                ++*hits;
+        }
+        else
+            out += s[i++];
+    }
+    return out;
+}
+// A career's saved text renamed (headline, results, news, posts, awards, hall of fame, record, nemesis logs, free agency's
+// line); false when the clubs aren't ready (left as it is, unmarked: tried again next load)
+bool rename_career_clubs(Career& c, const std::string& path)
+{
+    if (club_renames().empty())
+        return false;
+    int hits = 0, lines = 0;
+    auto one = [&](std::string& s) {
+        const int was = hits;
+        s = rename_old_clubs(s, &hits);
+        lines += hits != was ? 1 : 0;
+    };
+    auto all = [&](std::vector<std::string>& v) {
+        for (size_t i = 0; i < v.size(); i++)
+            one(v[i]);
+    };
+    one(c.headline);
+    all(c.results);
+    all(c.news);
+    all(c.feed);
+    all(c.awards);
+    all(c.history);
+    one(c.recordName);
+    for (size_t i = 0; i < c.nems.size(); i++)
+        all(c.nems[i].log);
+    one(c.faLast);
+    fprintf(stderr, "[franchise] r229 club names: %s - %d old name(s) in %d line(s) renamed\n", path.c_str(), hits, lines);
+    fflush(stderr);
+    return true;
 }
 
 bool load_path(const std::string& path, int slot, Career* out);  // below
@@ -934,7 +1123,9 @@ bool load_path(const std::string& path, int slot, Career* out)
             init_prog(c.clubs[i].mp[k]);
     }
     init_life(c);
+    c.astKnown = false;  // r232: until a "lifeast" line says so (a save from before r232: every player 0 assists so far)
     bool hadLife = false;
+    int namesV = 0;  // r229: no "clubnames" line = saved before the new clubs
     bool hadMprog[PORT_FR_CLUBS] = {};  // r130: older saves: members start at the sidekicks' level
     char line[512];
     bool ok = false;
@@ -1127,6 +1318,49 @@ bool load_path(const std::string& path, int slot, Career* out)
                 }
             }
         }
+        else if (strncmp(line, "lifeast ", 8) == 0)  // r232
+        {
+            int v[16];
+            int n = 0;
+            const char* p = line + 8;
+            while (n < 16)
+            {
+                char* end = NULL;
+                const long x = strtol(p, &end, 10);
+                if (end == p)
+                    break;
+                v[n++] = (int)x;
+                p = end;
+            }
+            if (n == 16 && v[0] >= 0 && v[0] < PORT_FR_CLUBS)
+            {
+                ClubState& s = c.clubs[v[0]];
+                PStats* st[5] = {&s.capSt, &s.bkSt, &s.sk[0], &s.sk[1], &s.sk[2]};
+                for (int k = 0; k < 5; k++)
+                {
+                    st[k]->assists = std::max(0, v[1 + k * 3]);
+                    st[k]->seasonAssists = std::max(0, v[2 + k * 3]);
+                    st[k]->regAssists = std::max(0, v[3 + k * 3]);
+                }
+                c.astKnown = true;
+            }
+        }
+        else if (strncmp(line, "playmaker ", 10) == 0)  // r232
+        {
+            int club = -1, ast = 0, goals = 0, used = 0;
+            char key[96];
+            if (sscanf(line + 10, "%d %d %d %95s%n", &club, &ast, &goals, key, &used) == 4 && used > 0)
+            {
+                const char* name = line + 10 + used;
+                if (*name == '\t')
+                    name++;
+                c.pmClub = club >= 0 && club < PORT_FR_CLUBS ? club : -1;
+                c.pmAst = std::max(0, ast);
+                c.pmGoals = std::max(0, goals);
+                c.pmKey = strcmp(key, "-") == 0 ? std::string() : std::string(key);
+                c.pmName = name;
+            }
+        }
         else if (strncmp(line, "nem ", 4) == 0)
         {
             Nemesis n;
@@ -1240,9 +1474,13 @@ bool load_path(const std::string& path, int slot, Career* out)
         {
             int v[16];
             char key[96];
-            if (sscanf(line + 3, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %95s", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
-                       &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], key) == 17)
+            int used = 0;
+            if (sscanf(line + 3, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %95s%n", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+                       &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], key, &used) == 17)
             {
+                int ast[3] = {0, 0, 0};  // r232: its assists after the key (none in a save from before r232)
+                if (used > 0 && sscanf(line + 3 + used, "%d %d %d", &ast[0], &ast[1], &ast[2]) != 3)
+                    ast[0] = ast[1] = ast[2] = 0;
                 FreeAgent a;
                 a.key = key;
                 a.fresh = v[0] != 0;
@@ -1262,6 +1500,9 @@ bool load_path(const std::string& path, int slot, Career* out)
                 a.st.form = v[12];
                 a.st.regGoals = v[14];
                 a.st.regForm = v[15];
+                a.st.assists = std::max(0, ast[0]);
+                a.st.seasonAssists = std::max(0, ast[1]);
+                a.st.regAssists = std::max(0, ast[2]);
                 c.fa.push_back(a);
             }
         }
@@ -1296,10 +1537,21 @@ bool load_path(const std::string& path, int slot, Career* out)
             c.retireWarn.push_back(line + 8);
         else if (strncmp(line, "falast ", 7) == 0)  // r167
             c.faLast = line + 7;
+        else if (strncmp(line, "clubnames ", 10) == 0)  // r229
+            namesV = atoi(line + 10);
     }
     fclose(f);
     if (!ok || c.games.empty())
         return false;
+    // r229: a save from before the new clubs: its saved text renamed once (clubs stay keyed by their row / id); one of this
+    // headset's own careers is written back marked, so it never runs again (a co-op / league copy: marked by its next save)
+    c.clubNames = namesV;
+    if (namesV < 229 && rename_career_clubs(c, path))
+    {
+        c.clubNames = 229;
+        if (slot >= 0 && slot < PORT_FR_SLOTS)
+            write_career(c, path);
+    }
     for (int i = 0; i < PORT_FR_CLUBS; i++)  // r130
         if (!hadMprog[i])
             for (int k = 0; k < 3; k++)
@@ -2010,6 +2262,84 @@ void distribute_goals(Career& c, const Game& g, int out[2][kScorerSlots])
     }
 }
 
+// r232 (Lance: "you defff need to add assists into the equation especially bc i actually count the assists even if the game
+// dont via the goal celebration stats"): a worked-out game's assists, made up with its goals (scorers from distribute_goals):
+// each goal assisted 70% of the time (a played match's goal events assist ~2 in 3), by a teammate on the field - never the
+// scorer - picked by position (the sidekicks feed the captains: 1.15 a sidekick, 1.0 the co-captain, 0.8 the captain) x how good
+// he is (his rating, e^((rating - 75) / 25), x 1% a level over 8). Its own random numbers from the career's seed, the season,
+// the game and its week (never c.rng: the results, the scorers and everything after them stay exactly what they were), so the
+// same career works out the same assists on every headset (co-op, an online league) and in every re-run.
+const double kAssistedShare = 0.70;
+void distribute_assists(const Career& c, const Game& g, int gameIndex, const int scorers[2][kScorerSlots], int out[2][kScorerSlots])
+{
+    memset(out, 0, sizeof(int) * 2 * kScorerSlots);
+    for (int side = 0; side < 2; side++)
+    {
+        const int club = side == 0 ? g.home : g.away;
+        if (club < 0 || club >= PORT_FR_CLUBS)
+            continue;
+        const ClubState& s = c.clubs[club];
+        const bool two = !s.backup.empty();
+        const bool bs = s.startsBackup && two;
+        unsigned r = c.seed * 2654435761u ^ (unsigned)c.season * 0x85EBCA6Bu ^ (unsigned)(gameIndex + 1) * 0xC2B2AE35u ^
+                     (unsigned)g.week * 0x27D4EB2Fu ^ (unsigned)(side + 1) * 0x165667B1u;
+        r = r != 0 ? r : 0x9E3779B9u;
+        for (int k = 0; k < 4; k++)  // (warm the generator: nearby seeds part ways)
+            next_rand(r);
+        // who's on the field in each scorer slot (as life_game: two captains -> slot 1's sidekick sits out; else no slot 4)
+        double w[kScorerSlots] = {0, 0, 0, 0, 0};
+        for (int k = 0; k < kScorerSlots; k++)
+        {
+            if (two ? k == 1 : k == 4)
+                continue;
+            std::string key;
+            int level = 8;
+            double pos = 1.15;
+            if (k == 0)
+            {
+                key = bs ? s.backup : s.captain;
+                level = (bs ? s.bk : s.cap).level;
+                pos = 0.8;
+            }
+            else if (k == 4)
+            {
+                key = bs ? s.captain : s.backup;
+                level = (bs ? s.cap : s.bk).level;
+                pos = 1.0;
+            }
+            else
+            {
+                key = s.mem[k - 1].empty() ? s.kind : s.mem[k - 1];
+                level = s.mem[k - 1].empty() ? s.side.level : s.mp[k - 1].level;
+            }
+            w[k] = pos * exp((rating(key) - 75) / 25.0) * (1.0 + 0.01 * std::max(0, level - 8));
+        }
+        for (int k = 0; k < kScorerSlots; k++)
+            for (int n = 0; n < scorers[side][k]; n++)
+            {
+                if (rand01(r) >= kAssistedShare)
+                    continue;
+                double tot = 0.0;
+                for (int j = 0; j < kScorerSlots; j++)
+                    tot += j == k ? 0.0 : w[j];
+                if (tot <= 0.0)
+                    continue;
+                double u = rand01(r) * tot;
+                int pick = -1;
+                for (int j = 0; j < kScorerSlots; j++)
+                {
+                    if (j == k || w[j] <= 0.0)
+                        continue;
+                    pick = j;
+                    u -= w[j];
+                    if (u <= 0.0)
+                        break;
+                }
+                record_assist(out, side, pick, k);
+            }
+    }
+}
+
 // The players' posts (Lance: "players posting social-media style"; PG-13, no swearing), by personality
 // (PERS_* + 1; 0 = neutral) and what happened. %s = the other club / place.
 enum
@@ -2086,7 +2416,9 @@ std::string upper(const std::string& s);
 
 // One game's A-Life: the scorers' records, form (+1 a win, -1 a loss, +1 more for 2+ goals), each
 // club's streak, the news (hat tricks, streaks, on fire / slumps) and a few posts.
-void life_game(Career& c, const Game& g, const int scorers[2][kScorerSlots])
+// r232: + each player's assists (`ast`, the same slots; null none) - his record, and the week's PLAYMAKER (the most assists in
+// one of the week's games; ties: more goals, then the first seen)
+void life_game(Career& c, const Game& g, const int scorers[2][kScorerSlots], const int ast[2][kScorerSlots])
 {
     for (int side = 0; side < 2; side++)
     {
@@ -2109,15 +2441,30 @@ void life_game(Career& c, const Game& g, const int scorers[2][kScorerSlots])
                 continue;
             PStats& p = *who[k];
             const int goals = scorers[side][k];
+            const int assists = ast != NULL ? std::max(0, ast[side][k]) : 0;  // r232
             p.games++;
             p.goals += goals;
             p.seasonGoals += goals;
+            p.assists += assists;
+            p.seasonAssists += assists;
             const int before = p.form;
             p.form = std::max(-3, std::min(3, p.form + (won ? 1 : -1) + (goals >= 2 ? 1 : 0)));
             if (g.series < 0)  // r165: a regular-season game: what awards night counts
             {
                 p.regGoals += goals;
+                p.regAssists += assists;  // r232
                 p.regForm = std::max(-3, std::min(3, p.regForm + (won ? 1 : -1) + (goals >= 2 ? 1 : 0)));
+            }
+            if (assists > 0 && (assists > c.pmAst || (assists == c.pmAst && goals > c.pmGoals)))  // r232: the week's playmaker
+            {
+                c.pmAst = assists;
+                c.pmGoals = goals;
+                c.pmClub = club;
+                c.pmName = names[k];
+                if (k == 0 || k == 4)
+                    c.pmKey = (k == 0) == !backupStarts ? s.captain : s.backup;
+                else
+                    c.pmKey = s.mem[k - 1].empty() ? kind_portrait(s.kind) : s.mem[k - 1];
             }
             if (goals >= 3)
             {
@@ -2914,6 +3261,13 @@ void awards_night(Career& c)
     // r80 (Lance: a "sidekick of the year" award, "basically a 6th man of the year"): the best of the
     // league's named sidekicks: its goals, its form, how its club did
     Pick sixth = {"", -1, 0, -1e9, ""};
+    // r232: PLAYMAKER OF THE YEAR - the most regular-season assists (ties: more goals); goals = its assists here
+    Pick playmaker = {"", -1, 0, -1e9, ""};
+    auto playmaker_pick = [&](const PStats& p, const std::string& name, int club, const std::string& key) {
+        const double score = p.regAssists + 0.001 * p.regGoals;
+        if (p.regAssists > 0 && score > playmaker.score)
+            playmaker = Pick{name, club, p.regAssists, score, key};
+    };
     for (int i = 0; i < PORT_FR_CLUBS; i++)
     {
         const ClubState& s = c.clubs[i];
@@ -2924,6 +3278,7 @@ void awards_night(Career& c)
             if (capKeys[b].empty())
                 continue;
             const PStats& p = *caps[b];
+            playmaker_pick(p, name_of(capKeys[b]), i, capKeys[b]);  // r232
             // r165: the regular season only - its goals, its wins (s.wins is the table's), its form; no champion's bonus
             const double score = p.regGoals * 3.0 + s.wins * 2.0 + p.regForm;
             if (score > mvp.score)
@@ -2937,6 +3292,7 @@ void awards_night(Career& c)
         for (int k = 0; k < 3; k++)
         {
             const std::string face = s.mem[k].empty() ? kind_portrait(s.kind) : s.mem[k];  // r131: a member's own
+            playmaker_pick(s.sk[k], sk_name(s, k), i, face);  // r232
             if (s.sk[k].regGoals > boot.goals)
                 boot = Pick{sk_name(s, k), i, s.sk[k].regGoals, 0.0, face};
             // r177: a named member is a rookie in its first season (rookieOf); a generic sidekick at age 0 as before
@@ -2981,6 +3337,13 @@ void awards_night(Career& c)
     c.awards.push_back("BEST KEEPER: " + upper(s_clubs[keeper].place) + " (" + std::to_string(c.clubs[keeper].goalsAgainst) +
                        " CONCEDED)");
     c.awardKeys.push_back("club_" + s_clubs[keeper].id);
+    // r232: after the keeper (the room's six award standees stay as they were; HOME > HISTORY and the hall of fame list it)
+    if (playmaker.club >= 0)
+    {
+        c.awards.push_back("PLAYMAKER OF THE YEAR: " + upper(playmaker.name) + " (" + upper(s_clubs[playmaker.club].place) + "), " +
+                           std::to_string(playmaker.goals) + (playmaker.goals == 1 ? " ASSIST" : " ASSISTS"));
+        c.awardKeys.push_back(playmaker.key);
+    }
     if (boot.club >= 0 && boot.goals > c.recordGoals)
     {
         c.awards.push_back("NEW RECORD: " + std::to_string(boot.goals) + " GOALS IN A SEASON (" + upper(boot.name) + ")");
@@ -3094,6 +3457,7 @@ void off_season(Career& c)
             all[k]->seasonGoals = 0;
             all[k]->form /= 2;
             all[k]->regGoals = 0;  // r165
+            all[k]->seasonAssists = all[k]->regAssists = 0;  // r232
             all[k]->regForm = all[k]->form;
         }
         s.streak = 0;
@@ -3389,6 +3753,10 @@ void finish_week(Career& c)
     {
         c.news.clear();
         c.feed.clear();
+        c.pmName.clear();  // r232: the week's playmaker starts over with its news
+        c.pmKey.clear();
+        c.pmClub = -1;
+        c.pmAst = c.pmGoals = 0;
     }
     for (size_t i = 0; i < c.games.size(); i++)
     {
@@ -3402,17 +3770,22 @@ void finish_week(Career& c)
         {
             // r71: the game's A-Life: a played match's real scorers, a simulated one's worked out
             int scorers[2][kScorerSlots];
+            int ast[2][kScorerSlots];  // r232: a played match's goal events' assisters, a simulated one's worked out
             int ss[2] = {0, 0}, capHits[2] = {0, 0}, anyHits[2] = {0, 0};
             if ((int)i == s_lifeGame)
             {
                 memcpy(scorers, s_lifeScorers, sizeof scorers);
+                memcpy(ast, s_lifeAst, sizeof ast);
                 memcpy(ss, s_lifeSS, sizeof ss);
                 memcpy(capHits, s_lifeCapHits, sizeof capHits);
                 memcpy(anyHits, s_lifeAnyHits, sizeof anyHits);
             }
             else
+            {
                 distribute_goals(c, g, scorers);
-            life_game(c, g, scorers);
+                distribute_assists(c, g, (int)i, scorers, ast);
+            }
+            life_game(c, g, scorers, ast);
             // r72: beef; r100: every person's in the game (an online league can have two)
             for (int side = 0; side < 2; side++)
             {
@@ -3571,18 +3944,32 @@ std::string fa_home(const std::string& key, int* club)
             fclose(f);
         }
     }
+    // r230 (r229's new club names; Lance via the coordinator: re-match each character's home club to the best-fitting NEW club, still
+    // by club id so saves keep working - logs\r229-teams\NAMES.md's inspirations): Mario's world -> MUSHROOM KINGDOM, Yoshi -> YOSHI'S
+    // ISLAND, the Kongs -> KONGA COLISEUM, Bowser + Dry Bones -> LAVA PIT, Bowser Jr. -> STORMSHIP (his airships), Petey -> PIPELINE
+    // CENTRAL, Wario -> SAND TOMB (the Wario desert ground), Boo -> LAVENDER TOWN BOOS; Melee: Captain Falcon -> BIG BLUE, Fox / Falco /
+    // Samus / Mr. Game & Watch -> GALACTIC STADIUM (space / pixels), Kirby -> FORTREE CITY TAILWINDS, Link / Young Link / Zelda / Sheik ->
+    // VIRIDIAN FOREST, Ganondorf -> LAVA PIT, Marth / Roy -> CINNABAR ISLAND FIRESTARTERS, Ness -> MAUVILLE CITY (PK Thunder), the Ice
+    // Climbers -> ICICLE MOUNTAIN; Marvel: Thor -> ASGARD, Iron Man -> STARK TOWER, Black Panther -> WAKANDA, Dr. Doom -> LATVERIA, Ghost
+    // Rider -> MEPHISTO'S REALM, Hawkeye -> OMEGA BASE; ORIGINALS: the arcade three -> GALACTIC STADIUM PIXEL INVADERS, the racers -> BIG BLUE
+    // REDLINERS, Gambit -> PYRITE TOWN BIT DIGGERS. (r229-: Fox -> OMEGA BASE, Ness -> SAND TOMB, Samus -> MANDARIN PALACE, Marth / Roy ->
+    // MEPHISTO'S REALM, Kirby -> BIG BLUE, Zelda / Sheik -> ATLANTIS, Falcon -> STARK TOWER - the old worlds' ids.)
     static const char* const kPlace[][2] = {
         {"strikers_mario", "mushroomkingdom"}, {"strikers_luigi", "mushroomkingdom"}, {"strikers_peach", "mushroomkingdom"},
-        {"strikers_daisy", "mushroomkingdom"}, {"strikers_yoshi", "mushroomkingdom"}, {"strikers_waluigi", "mushroomkingdom"},
-        {"strikers_wario", "mushroomkingdom"}, {"strikers_donkeykong", "konga"},     {"diddykong", "konga"},
-        {"drmario", "mushroomkingdom"},        {"boo", "mushroomkingdom"},          {"drybones", "mushroomkingdom"},
-        {"shyguy", "mushroomkingdom"},         {"montymole", "mushroomkingdom"},    {"bowser", "pipelinecentral"},
-        {"bowserjr", "pipelinecentral"},       {"petey", "pipelinecentral"},        {"fox", "corneria"},
-        {"falco", "corneria"},                 {"falcon", "mutecity"},              {"kirby", "dreamland"},
-        {"link", "lostwoods"},                 {"younglink", "lostwoods"},          {"zelda", "lakehylia"},
-        {"sheik", "lakehylia"},                {"ganondorf", "deathmountain"},      {"samus", "norfair"},
-        {"marth", "archanea"},                 {"roy", "archanea"},                 {"ness", "onett"},
+        {"strikers_daisy", "mushroomkingdom"}, {"strikers_yoshi", "agate"},           {"strikers_waluigi", "mushroomkingdom"},
+        {"strikers_wario", "onett"},           {"strikers_donkeykong", "konga"},     {"diddykong", "konga"},
+        {"drmario", "mushroomkingdom"},        {"boo", "lavender"},                 {"drybones", "deathmountain"},
+        {"shyguy", "mushroomkingdom"},         {"montymole", "mushroomkingdom"},    {"bowser", "deathmountain"},
+        {"bowserjr", "vermilion"},             {"petey", "pipelinecentral"},        {"fox", "galactic"},
+        {"falco", "galactic"},                 {"falcon", "dreamland"},             {"kirby", "fortree"},
+        {"link", "lostwoods"},                 {"younglink", "lostwoods"},          {"zelda", "lostwoods"},
+        {"sheik", "lostwoods"},                {"ganondorf", "deathmountain"},      {"samus", "galactic"},
+        {"marth", "cinnabar"},                 {"roy", "cinnabar"},                 {"ness", "mauville"},
         {"popo", "infiniteglacier"},           {"nana", "infiniteglacier"},         {"gamewatch", "galactic"},
+        {"mua_thor", "thunderisland"},         {"mua_ironman", "mutecity"},         {"mua_blackpanther", "celadon"},
+        {"mua_drdoom", "realgar"},             {"mua_ghostrider", "archanea"},      {"mua_hawkeye", "corneria"},
+        {"orig_quarterbyte", "galactic"},      {"orig_highscore", "galactic"},      {"orig_gameover", "galactic"},
+        {"orig_redline", "dreamland"},         {"orig_racedriver", "dreamland"},    {"orig_gambit", "pyrite"},
     };
     static const char* const kHero[][2] = {
         {"ghostrider", "Inferno"},  {"humantorch", "Inferno"},   {"thor", "Thunder"},          {"storm", "Thunder"},
@@ -4876,6 +5263,46 @@ bool on_main_menu()
            nlTaskManager::m_pInstance != NULL && nlTaskManager::m_pInstance->m_CurrState == 4;
 }
 
+// r221 (Lance 11-12: "franchise games at a RANDOM stadium out of all 7"): the stadium a game is played at
+// (franchise_stadium.h: the career's seed, the season, the week and the game's index; never the same stadium twice in a
+// row for a club when another is free; every stadium, none locked). Worked out for the whole season at once and kept
+// until the season's games change. Not saved: an old save's games get theirs the same way. The home ground / trophy room
+// keep the club's own stadium (s_clubs[].stadium). A game that isn't one of c's: its home club's own, as before r221.
+static std::mutex s_stadiumM;
+static int game_stadium(const Career& c, const Game& g)
+{
+    const uintptr_t at = reinterpret_cast<uintptr_t>(&g), base = reinterpret_cast<uintptr_t>(c.games.data());
+    const int n = (int)c.games.size();
+    if (n == 0 || at < base || at >= base + sizeof(Game) * (size_t)n || (at - base) % sizeof(Game) != 0)
+        return g.home >= 0 && g.home < (int)s_clubs.size() ? s_clubs[g.home].stadium : 0;
+    const int idx = (int)((at - base) / sizeof(Game));
+    uint32_t key = frstadium::mix(c.seed ^ ((uint32_t)c.season * 2654435761u) ^ (uint32_t)n);
+    for (const Game& h : c.games)
+        key = frstadium::mix(key ^ (uint32_t)(h.week * 65536 + (h.home & 255) * 256 + (h.away & 255)));
+    std::lock_guard<std::mutex> lock(s_stadiumM);
+    static std::vector<int8_t> s_out;
+    static std::vector<int> s_w, s_h, s_a, s_ord;
+    static uint32_t s_key = 0;
+    if ((int)s_out.size() != n || s_key != key)
+    {
+        s_key = key;
+        s_out.assign(n, 0);
+        s_w.resize(n);
+        s_h.resize(n);
+        s_a.resize(n);
+        s_ord.resize(n);
+        for (int i = 0; i < n; i++)
+        {
+            s_w[i] = c.games[i].week;
+            s_h[i] = c.games[i].home;
+            s_a[i] = c.games[i].away;
+        }
+        frstadium::pick_all(c.seed, c.season, n, s_w.data(), s_h.data(), s_a.data(), s_out.data(), s_ord.data());
+    }
+    const int s = s_out[idx];
+    return s >= 0 && s < MAX_STADIUMS ? s : 0;
+}
+
 // Both clubs' captains in Strikers captain slots (two can't share one): Strikers captains in their own,
 // guests in their base, or the nearest free one.
 void start_match()
@@ -5009,7 +5436,7 @@ void start_match()
     // captains and the co-captains; one whose class is taken this match plays the club's sidekick class (logged). The CPU
     // clubs (no members: their slot picks cleared by the sidekick pick above) keep their generic sidekicks.
     PortApplySlotCaptains();
-    const int stadium = s_clubs[g->home].stadium;
+    const int stadium = game_stadium(c, *g);  // r221 (Lance): a random stadium of the 7 (was the home club's own)
     gi->SetStadium((eStadiumID)(stadium >= 0 && stadium < MAX_STADIUMS ? stadium : 0));
     // r70b: watching a CPU v CPU game: no pad on either side (both AI; Start still pauses, A ends it)
     const int mySide = watching ? -1 : (g->home == c.myClub ? 0 : 1);
@@ -5019,6 +5446,7 @@ void start_match()
     s_matchClub[0] = g->home;
     s_matchClub[1] = g->away;
     memset(s_matchGoals, 0, sizeof s_matchGoals);  // r71
+    memset(s_matchAst, 0, sizeof s_matchAst);      // r232
     memset(s_matchSS, 0, sizeof s_matchSS);        // r72
     memset(s_matchCapHits, 0, sizeof s_matchCapHits);
     memset(s_matchAnyHits, 0, sizeof s_matchAnyHits);
@@ -5773,6 +6201,7 @@ bool PortFranchiseGetView(PortFranchiseView* v)
         std::string name;
         int club, goals, form;
         std::string key;  // r113: its portrait
+        int assists;      // r232
     };
     std::vector<Who> all;
     const std::vector<Captain> caps = captains();
@@ -5787,15 +6216,16 @@ bool PortFranchiseGetView(PortFranchiseView* v)
     {
         const ClubState& s = c.clubs[i];
         const Captain* cp = find_captain(caps, s.captain);
-        all.push_back(Who{cp != NULL ? cp->name : s.captain, i, s.capSt.seasonGoals, s.capSt.form, s.captain});
+        all.push_back(Who{cp != NULL ? cp->name : s.captain, i, s.capSt.seasonGoals, s.capSt.form, s.captain, s.capSt.seasonAssists});
         if (!s.backup.empty())
         {
             const Captain* bp = find_captain(caps, s.backup);
-            all.push_back(Who{bp != NULL ? bp->name : s.backup, i, s.bkSt.seasonGoals, s.bkSt.form, s.backup});
+            all.push_back(Who{bp != NULL ? bp->name : s.backup, i, s.bkSt.seasonGoals, s.bkSt.form, s.backup, s.bkSt.seasonAssists});
         }
         for (int k = 0; k < 3; k++)
             all.push_back(Who{sk_name(s, k), i, s.sk[k].seasonGoals, s.sk[k].form,
-                              s.mem[k].empty() ? kind_portrait(s.kind) : s.mem[k]});  // r131: a member's own portrait
+                              s.mem[k].empty() ? kind_portrait(s.kind) : s.mem[k],  // r131: a member's own portrait
+                              s.sk[k].seasonAssists});
     }
     auto fill = [&](PortFranchiseView::Leader* out, int max, int* count, bool (*keep)(const Who&),
                     bool (*before)(const Who&, const Who&)) {
@@ -5812,10 +6242,28 @@ bool PortFranchiseGetView(PortFranchiseView* v)
             out[i].goals = l[i].goals;
             out[i].form = l[i].form;
             copy_str(out[i].key, sizeof out[i].key, l[i].key);
+            out[i].assists = l[i].assists;  // r232
         }
     };
     fill(v->leaders, 10, &v->leaderCount, [](const Who& w) { return w.goals > 0; },
          [](const Who& a, const Who& b) { return a.goals > b.goals; });
+    // r232: the ASSISTS leaders (ties: more goals) and the POINTS leaders (goals + assists; ties: more goals)
+    fill(v->astLeaders, 10, &v->astLeaderCount, [](const Who& w) { return w.assists > 0; },
+         [](const Who& a, const Who& b) { return a.assists != b.assists ? a.assists > b.assists : a.goals > b.goals; });
+    fill(v->ptsLeaders, 10, &v->ptsLeaderCount, [](const Who& w) { return w.goals + w.assists > 0; },
+         [](const Who& a, const Who& b) {
+             return a.goals + a.assists != b.goals + b.assists ? a.goals + a.assists > b.goals + b.assists : a.goals > b.goals;
+         });
+    if (!c.pmName.empty() && c.pmAst > 0)  // r232: the week's playmaker
+    {
+        copy_str(v->playmaker, sizeof v->playmaker, c.pmName);
+        copy_str(v->playmakerKey, sizeof v->playmakerKey, c.pmKey);
+        v->playmakerClub = c.pmClub;
+        v->playmakerAssists = c.pmAst;
+        v->playmakerGoals = c.pmGoals;
+    }
+    else
+        v->playmakerClub = -1;
     fill(v->hot, 5, &v->hotCount, [](const Who& w) { return w.form >= 2; },
          [](const Who& a, const Who& b) { return a.form > b.form; });
     fill(v->cold, 5, &v->coldCount, [](const Who& w) { return w.form <= -2; },
@@ -5835,11 +6283,14 @@ bool PortFranchiseGetView(PortFranchiseView* v)
         copy_str(v->history[i], sizeof v->history[i], c.history[i]);
     v->captainGoals = me.capSt.seasonGoals;
     v->backupGoals = me.bkSt.seasonGoals;
+    v->captainAssists = me.capSt.seasonAssists;  // r232
+    v->backupAssists = me.bkSt.seasonAssists;
     v->captainForm = me.capSt.form;
     v->backupForm = me.bkSt.form;
     for (int k = 0; k < 3; k++)
     {
         v->sidekickGoals[k] = me.sk[k].seasonGoals;
+        v->sidekickAssists[k] = me.sk[k].seasonAssists;  // r232
         v->sidekickAge[k] = me.skAge[k];
     }
     v->tradeDeadlinePassed = c.phase != PHASE_REGULAR || c.week > 12;
@@ -6165,7 +6616,8 @@ bool PortFranchisePlayoffMatch(int* round, int* conf, int* gameNo, int winsBefor
 }
 
 // r137 (Lance: weather + night games, looks only; src/platform/xr_weather.h): the calendar. A club's regular season
-// (xr_weather_cal.h): the last 7 games 3 snowy, 2-3 rain games before, night for derbies (the second meeting with a
+// (xr_weather_cal.h; r198: a varied mix every season - 2-4 rain, 2-3 snow mostly late, no streaks - see wxcal::season)
+// was: the last 7 games 3 snowy, 2-3 rain games before, night for derbies (the second meeting with a
 // division rival) + 2 more; the nemesis games and every playoff game at night; one snowy playoff game at most, at a
 // cold home. Stable across reloads: the career's seed, the season and the club's own schedule only.
 static int wx_climate(int club)
@@ -6181,9 +6633,19 @@ static int wx_climate(int club)
     return wxcal::kClimateNormal;
 }
 
+// r221: a game's climate follows the stadium it is actually played at (game_stadium): the Forbidden Dome (6) is covered
+// wherever the home club is from; elsewhere the home club's region (Inferno hot, Glacier cold) as before
+static int wx_climate_game(const Career& c, const Game& g)
+{
+    if (game_stadium(c, g) == 6)
+        return wxcal::kClimateCovered;
+    const int k = wx_climate(g.home);
+    return k == wxcal::kClimateCovered ? wxcal::kClimateNormal : k;  // (a Dome club playing at an open stadium)
+}
+
 static int wx_game(const Career& c, const Game& g, int club)
 {
-    const int where = wx_climate(g.home);
+    const int where = wx_climate_game(c, g);
     if (g.series >= 0)
     {
         bool earlier = false;
@@ -6191,7 +6653,7 @@ static int wx_game(const Career& c, const Game& g, int club)
         {
             const Game& h = c.games[i];
             if (h.series >= 0 && h.week < g.week && (h.home == club || h.away == club) &&
-                wx_climate(h.home) == wxcal::kClimateCold)
+                wx_climate_game(c, h) == wxcal::kClimateCold)
                 earlier = true;
         }
         return wxcal::filter(wxcal::playoff(c.seed, c.season, where, earlier), where);
@@ -6214,7 +6676,7 @@ static int wx_game(const Career& c, const Game& g, int club)
                 met++;
         const bool division = club >= 0 && club < (int)s_clubs.size() && opp >= 0 && opp < (int)s_clubs.size() &&
                               s_clubs[club].div == s_clubs[opp].div;
-        cal[i].climate = wx_climate(h.home);
+        cal[i].climate = wx_climate_game(c, h);  // r221: the stadium it's played at
         cal[i].derby = division && met >= 1 ? 1 : 0;
         if (&h == &g)
             at = (int)i;
@@ -6258,8 +6720,8 @@ int PortFranchiseMatchWeather(void)
         fprintf(stderr, "[franchise] weather calendar, season %d, weeks 1-%d:%s\n", s_career.season, PORT_FR_WEEKS,
                 line.c_str());
     }
-    fprintf(stderr, "[franchise] weather, season %d week %d (%s at home): %s\n", s_career.season, g.week,
-            g.home >= 0 && g.home < (int)s_clubs.size() ? s_clubs[g.home].place.c_str() : "?",
+    fprintf(stderr, "[franchise] weather, season %d week %d (%s at home, played at stadium %d): %s\n", s_career.season, g.week,
+            g.home >= 0 && g.home < (int)s_clubs.size() ? s_clubs[g.home].place.c_str() : "?", game_stadium(s_career, g),
             bits == 0 ? "clear" : PortWeatherLabel(bits));
     fflush(stderr);
     return bits;
@@ -6387,6 +6849,7 @@ PlayedResult capture_played(int game, int hg, int ag, bool ot)
     r.ag = ag;
     r.ot = ot;
     memcpy(r.goals, s_matchGoals, sizeof r.goals);
+    memcpy(r.ast, s_matchAst, sizeof r.ast);  // r232
     memcpy(r.ss, s_matchSS, sizeof r.ss);
     memcpy(r.capHits, s_matchCapHits, sizeof r.capHits);
     memcpy(r.anyHits, s_matchAnyHits, sizeof r.anyHits);
@@ -6492,6 +6955,8 @@ void take_coop_career(const char* text, size_t size, unsigned id, unsigned versi
         Career c;
         if (load_slot(PORT_FR_COOP_SLOT, &c))
         {
+            if (s_active && s_career.coop && s_career.seed == c.seed)
+                keep_assists(s_career, c);  // r232: an older friend's copy carries no assists - ours kept
             s_career = c;
             s_active = true;
             ++s_changeSerial;
@@ -6696,6 +7161,10 @@ bool league_apply_played(Career& c, const PlayedResult& r)
         c.news.clear();
         c.feed.clear();
         c.newsWeek = c.week;
+        c.pmName.clear();  // r232
+        c.pmKey.clear();
+        c.pmClub = -1;
+        c.pmAst = c.pmGoals = 0;
     }
     g.homeGoals = r.hg;
     g.awayGoals = r.ag;
@@ -6704,7 +7173,7 @@ bool league_apply_played(Career& c, const PlayedResult& r)
     g.overtime = r.ot;
     apply_result(c, g);
     personal_xp_from(c, g, r);
-    life_game(c, g, r.goals);
+    life_game(c, g, r.goals, r.ast);  // r232: + its goal events' assists (both headsets: the same goal events)
     for (int side = 0; side < 2; side++)
     {
         const int club = side == 0 ? g.home : g.away;
@@ -6815,6 +7284,7 @@ void league_frame()
             fresh.myClub = st.myClub >= 0 ? st.myClub : c.myClub;
             fresh.humans = hs;
             fresh.leagueV = tv;
+            keep_assists(c, fresh);  // r232: an older friend's upload carries no assists - ours kept
             s_career = fresh;
             // this headset's actions since, again on the newest (each checks it still applies)
             s_lgReplaying = true;
@@ -7271,12 +7741,16 @@ void PortFranchiseFrame()
 // playoff series won, +1 a trophy (the Super Strike Series). The headset takes them (xr_cards.cpp: rolled and saved there).
 static int s_cardPacks = 0;
 static unsigned s_cardFlags = 0;
+// r217 (Lance 11-11): a WIN = 1 LANCINI TIZM pack + 1 JAM '96 pack (its premium pack), a LOSS = 1 LANCINI TIZM pack (r137-r216: a win 2
+// packs, a loss 1); a playoff series / the trophy won still +1 LANCINI TIZM pack each
+static int s_jamPacks = 0;
 static void card_packs_earned(bool won, bool seriesWon, bool trophy)
 {
-    const int n = 1 + (won ? 1 : 0) + (seriesWon ? 1 : 0) + (trophy ? 1 : 0);
+    const int n = 1 + (seriesWon ? 1 : 0) + (trophy ? 1 : 0);
     s_cardPacks += n;
+    s_jamPacks += won ? 1 : 0;
     s_cardFlags |= (won ? 1u : 0u) | (seriesWon ? 2u : 0u) | (trophy ? 4u : 0u);
-    fprintf(stderr, "[franchise] cards: %d pack%s earned\n", n, n == 1 ? "" : "s");
+    fprintf(stderr, "[franchise] cards: %d pack%s + %d JAM '96 earned\n", n, n == 1 ? "" : "s", won ? 1 : 0);
     fflush(stderr);
 }
 int PortFranchiseTakeCardPacks(unsigned* flags)
@@ -7286,6 +7760,12 @@ int PortFranchiseTakeCardPacks(unsigned* flags)
         *flags = s_cardFlags;
     s_cardPacks = 0;
     s_cardFlags = 0;
+    return n;
+}
+int PortFranchiseTakeJamPacks(void)
+{
+    const int n = s_jamPacks;
+    s_jamPacks = 0;
     return n;
 }
 
@@ -7413,7 +7893,7 @@ static void card_coins_earned(int me, int mine, int theirs)
         why += "; card XP: " + xpLine;
     s_cardCoins += total;
     s_cardCoinWhy = why;
-    fprintf(stderr, "[franchise] cards: %d TIZM coins (%s) - stats: %d-%d, %d SS, %d assists, %d hits, %d steals, %d item hits\n",
+    fprintf(stderr, "[franchise] cards: %d BIT coins (%s) - stats: %d-%d, %d SS, %d assists, %d hits, %d steals, %d item hits\n",
             total, why.c_str(), mine, theirs, ss, assists, hits, steals, items);
     fflush(stderr);
 }
@@ -7476,6 +7956,7 @@ void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
     personal_xp(c, g);  // r77: the players' own goals and assists
     // r71: the match's real scorers for the week's A-Life (finish_week); r72: its Super Strikes and hits
     memcpy(s_lifeScorers, s_matchGoals, sizeof s_lifeScorers);
+    memcpy(s_lifeAst, s_matchAst, sizeof s_lifeAst);  // r232: its goal events' assisters
     memcpy(s_lifeSS, s_matchSS, sizeof s_lifeSS);
     memcpy(s_lifeCapHits, s_matchCapHits, sizeof s_lifeCapHits);
     memcpy(s_lifeAnyHits, s_matchAnyHits, sizeof s_lifeAnyHits);
@@ -8075,6 +8556,16 @@ void PortFranchiseGoal(int side, int who, int goals)
         s_matchSS[side]++;  // r72: a Super Strike
     if (who >= 0 && who < kScorerSlots)  // r78: 4 = the co-captain
         s_matchGoals[side][who] += goals;
+}
+void PortFranchiseAssist(int side, int who, int scorerWho)
+{
+    if (s_match != MATCH_PLAYING)
+        return;
+    if (record_assist(s_matchAst, side, who, scorerWho))  // r232
+    {
+        fprintf(stderr, "[franchise] assist: side %d slot %d (scorer slot %d)\n", side, who, scorerWho);
+        fflush(stderr);
+    }
 }
 
 float PortFranchiseHunt(int side, bool isCaptain)
@@ -8750,4 +9241,388 @@ bool PortFranchiseSetForm(int slot, const char* key)
         return s_done;
     });
     return s_done;
+}
+// ================================================================================================ r199: TIZM SPORTSBOOK
+// (SPORTSBOOK.md) The sportsbook (xr_book.cpp) prices the day from these numbers; they are sim_game's own (its strengths,
+// nemesis edge, difficulty push and goal rates), read only: nothing here draws from the career's rng or changes a game.
+namespace
+{
+void book_rates(const Career& c, const Game& g, PortFranchiseBookGame& o)
+{
+    double sh = strength(c.clubs[g.home]) + nemesis_edge(c, g, 0), sa = strength(c.clubs[g.away]) + nemesis_edge(c, g, 1);
+    const int k = diff_k(c);
+    if (is_human(c, g.home))
+        sh -= 2.5 * k;
+    if (is_human(c, g.away))
+        sa -= 2.5 * k;
+    const double base = 2.1 + (!is_human(c, g.home) && !is_human(c, g.away) ? 0.2 * k : 0.0);
+    const double d = (sh - sa) / 10.0;
+    o.sh = sh;
+    o.sa = sa;
+    o.lamH = base * exp(0.3 * d) * 1.06;
+    o.lamA = base * exp(-0.3 * d) * 0.96;
+}
+}  // namespace
+
+bool PortFranchiseBookDayGet(PortFranchiseBookDay* out)
+{
+    if (out == NULL)
+        return false;
+    memset(out, 0, sizeof *out);
+    if (!s_active)
+        return false;
+    const Career& c = s_career;
+    out->seed = c.seed;
+    out->season = c.season;
+    out->week = c.week;
+    out->phase = c.phase;
+    out->league = !c.league.empty();
+    out->coop = c.coop;
+    out->myClub = c.myClub;
+    out->locked = s_match != MATCH_NONE;
+    snprintf(out->roundName, sizeof out->roundName, "%s",
+             c.phase == PHASE_PLAYOFFS ? upper(round_name(c.round, c.round == 4 ? -1 : (c.myClub < 16 ? 0 : 1))).c_str() : "");
+    for (size_t i = 0; i < c.games.size(); i++)
+    {
+        const Game& g = c.games[i];
+        if (g.week != c.week)
+            continue;
+        if (g.played)
+        {
+            out->locked = true;  // (a game of the day in already: the day has kicked off)
+            continue;
+        }
+        if (out->count >= 16)
+            continue;
+        PortFranchiseBookGame& o = out->games[out->count++];
+        o.home = g.home;
+        o.away = g.away;
+        o.mine = g.home == c.myClub || g.away == c.myClub;
+        o.series = g.series;
+        o.streakH = c.clubs[g.home].streak;
+        o.streakA = c.clubs[g.away].streak;
+        book_rates(c, g, o);
+    }
+    // your margins this season, newest first (the WIN BY lines lean on how you've really been winning)
+    for (size_t i = c.games.size(); i-- > 0 && out->myMarginCount < 24;)
+    {
+        const Game& g = c.games[i];
+        if (!g.played || (g.home != c.myClub && g.away != c.myClub))
+            continue;
+        out->myMargins[out->myMarginCount++] = g.home == c.myClub ? g.homeGoals - g.awayGoals : g.awayGoals - g.homeGoals;
+    }
+    out->valid = out->count > 0 && c.phase != PHASE_DONE;
+    return out->valid;
+}
+
+// r207 (CRAZY PARLAYS): an upcoming regular-season matchday, priced from the clubs as they stand now (DayGet's numbers)
+bool PortFranchiseBookWeekGet(int week, PortFranchiseBookDay* out)
+{
+    if (out == NULL)
+        return false;
+    memset(out, 0, sizeof *out);
+    if (!s_active)
+        return false;
+    const Career& c = s_career;
+    if (c.phase != PHASE_REGULAR || week <= c.week || week > PORT_FR_WEEKS)
+        return false;
+    out->seed = c.seed;
+    out->season = c.season;
+    out->week = week;
+    out->phase = c.phase;
+    out->league = !c.league.empty();
+    out->coop = c.coop;
+    out->myClub = c.myClub;
+    out->locked = false;
+    for (size_t i = 0; i < c.games.size(); i++)
+    {
+        const Game& g = c.games[i];
+        if (g.week != week || g.played || out->count >= 16)
+            continue;
+        PortFranchiseBookGame& o = out->games[out->count++];
+        o.home = g.home;
+        o.away = g.away;
+        o.mine = g.home == c.myClub || g.away == c.myClub;
+        o.series = g.series;
+        o.streakH = c.clubs[g.home].streak;
+        o.streakA = c.clubs[g.away].streak;
+        book_rates(c, g, o);
+    }
+    out->valid = out->count > 0;
+    return out->valid;
+}
+
+int PortFranchiseBookResult(int season, int week, int home, int away, int* hg, int* ag)
+{
+    if (!s_active || season != s_career.season)
+        return s_active && season < s_career.season ? -1 : 0;
+    for (size_t i = 0; i < s_career.games.size(); i++)
+    {
+        const Game& g = s_career.games[i];
+        if (g.week != week || g.home != home || g.away != away)
+            continue;
+        if (!g.played)
+            return 0;
+        if (hg != NULL)
+            *hg = g.homeGoals;
+        if (ag != NULL)
+            *ag = g.awayGoals;
+        return 1;
+    }
+    return week < s_career.week ? -1 : 0;  // (a day gone by without that game: refunded)
+}
+
+void PortFranchiseBookNews(const char* line)
+{
+    if (!s_active || line == NULL || line[0] == '\0' || !s_career.league.empty() || s_career.coop)
+        return;
+    s_career.news.insert(s_career.news.begin(), std::string(line));
+    if (s_career.news.size() > 8)
+        s_career.news.resize(8);
+    save();
+}
+
+const char* PortFranchiseBookClubPlace(int club)
+{
+    static std::string s_buf[4];
+    static int s_at = 0;
+    if (club < 0 || club >= (int)s_clubs.size())
+        return "";
+    std::string& b = s_buf[s_at++ & 3];
+    b = upper(s_clubs[club].place);
+    return b.c_str();
+}
+// r229: text saved before the new clubs (the sportsbook's biggest-win words) with the old club names renamed (as a career's
+// at load: rename_old_clubs); the text as it is until the clubs are read. Any thread; the pointer lasts until this thread's
+// next call.
+const char* PortFranchiseRenameOldClubs(const char* text)
+{
+    thread_local std::string s_out;
+    s_out = rename_old_clubs(text != NULL ? std::string(text) : std::string(), NULL);
+    return s_out.c_str();
+}
+bool PortFranchiseBookFuturesGet(PortFranchiseBookFutures* out)
+{
+    if (out == NULL)
+        return false;
+    memset(out, 0, sizeof *out);
+    out->champion = -1;
+    if (!s_active)
+        return false;
+    const Career& c = s_career;
+    out->season = c.season;
+    out->week = c.week;
+    out->phase = c.phase;
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        const ClubState& s = c.clubs[i];
+        out->clubs[i].wins = s.wins;
+        out->clubs[i].losses = s.losses;
+        out->clubs[i].goalsFor = s.goalsFor;
+        out->clubs[i].goalsAgainst = s.goalsAgainst;
+        out->clubs[i].strength = strength(s);
+    }
+    // the candidates, and the winners picked exactly as awards_night picks them (its loop, its order, its comparisons)
+    double mvpScore = -1e9;
+    int bootGoals = -1, rookieGoals = 0;
+    std::string mvpId, bootId, rookieId;
+    auto add = [&](const std::string& id, const std::string& name, int club, int goals, int form, bool rookie, bool captain) {
+        if (out->candCount >= 200)
+            return;
+        PortFranchiseBookCand& k = out->cands[out->candCount++];
+        snprintf(k.id, sizeof k.id, "%s", id.c_str());
+        snprintf(k.name, sizeof k.name, "%s", upper(name).c_str());
+        k.club = club;
+        k.goals = goals;
+        k.form = form;
+        k.rookie = rookie;
+        k.captain = captain;
+    };
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        const ClubState& s = c.clubs[i];
+        const PStats* caps[2] = {&s.capSt, &s.bkSt};
+        const std::string capKeys[2] = {s.captain, s.backup};
+        for (int b = 0; b < 2; b++)
+        {
+            if (capKeys[b].empty())
+                continue;
+            const PStats& p = *caps[b];
+            const bool rk = rookie_season(c, capKeys[b]);
+            add("c:" + capKeys[b], name_of(capKeys[b]), i, p.regGoals, p.regForm, rk, true);
+            const double score = p.regGoals * 3.0 + s.wins * 2.0 + p.regForm;
+            if (score > mvpScore)
+                mvpScore = score, mvpId = "c:" + capKeys[b];
+            if (p.regGoals > bootGoals)
+                bootGoals = p.regGoals, bootId = "c:" + capKeys[b];
+            if (rk && p.regGoals > rookieGoals)
+                rookieGoals = p.regGoals, rookieId = "c:" + capKeys[b];
+        }
+        for (int k = 0; k < 3; k++)
+        {
+            const std::string id = "s:" + std::to_string(i) + ":" + std::to_string(k);
+            const bool rk = s.mem[k].empty() ? s.skAge[k] == 0 : rookie_season(c, s.mem[k]);
+            if (!s.names[k].empty() || !s.mem[k].empty())
+                add(id, sk_name(s, k), i, s.sk[k].regGoals, s.sk[k].regForm, rk, false);
+            if (s.sk[k].regGoals > bootGoals)
+                bootGoals = s.sk[k].regGoals, bootId = id;
+            if (rk && s.sk[k].regGoals > rookieGoals)
+                rookieGoals = s.sk[k].regGoals, rookieId = id;
+        }
+    }
+    // each future settles the moment its result exists: the regular-season awards (MVP, GOLDEN BOOT, ROOKIE OF THE YEAR:
+    // regular-season numbers only, r165) are fixed once the regular season ends - the playoffs change none of them - and the
+    // champion once the final is won (awards night is only announced then)
+    if (c.phase == PHASE_DONE)
+        out->champion = c.champion;
+    if (c.phase != PHASE_REGULAR)
+    {
+        snprintf(out->mvp, sizeof out->mvp, "%s", mvpId.c_str());
+        snprintf(out->boot, sizeof out->boot, "%s", bootId.c_str());
+        snprintf(out->rookie, sizeof out->rookie, "%s", rookieId.c_str());
+    }
+    out->valid = true;
+    return true;
+}
+
+// r201: the TIZM CARD MARKET's numbers (franchise.h PortFranchiseMarketGet). Read only.
+void PortFranchiseMarketLine(const char* key, char* out, int size)
+{
+    if (out == NULL || size <= 0)
+        return;
+    out[0] = '\0';
+    if (key == NULL || key[0] == '\0')
+        return;
+    std::string k(key);
+    if (k.compare(0, 9, "strikers_") == 0)
+        k = "cap_" + k.substr(9);  // (a Strikers card: its captain's line)
+    std::string id = char_id(k);
+    if (id.empty())
+        id = key;  // (a generic sidekick kind: its own)
+    snprintf(out, size, "%s", id.c_str());
+}
+
+bool PortFranchiseMarketGet(PortFranchiseMarketState* out)
+{
+    if (out == NULL)
+        return false;
+    memset(out, 0, sizeof *out);
+    out->champion = -1;
+    if (!s_active)
+        return false;
+    const Career& c = s_career;
+    out->seed = c.seed;
+    out->season = c.season;
+    out->week = c.week;
+    out->phase = c.phase;
+    out->myClub = c.myClub;
+    out->league = !c.league.empty();
+    out->coop = c.coop;
+    if (c.phase == PHASE_DONE)
+        out->champion = c.champion;
+    double mvpScore = -1e9;
+    int bootGoals = -1, rookieGoals = 0;
+    std::string mvpKey, bootKey, rookieKey;
+    double pmScore = -1e9;  // r232: PLAYMAKER OF THE YEAR as awards night picks it (a generic sidekick: its kind's card)
+    std::string pmKey;
+    auto pm_pick = [&](const PStats& p, const std::string& key) {
+        const double score = p.regAssists + 0.001 * p.regGoals;
+        if (p.regAssists > 0 && score > pmScore)
+            pmScore = score, pmKey = key;
+    };
+    auto add = [&](const std::string& key, int club, int role, const Prog* pr, const PStats& st, bool rookie) -> PortFranchiseMarketRow* {
+        if (out->count >= 200 || key.empty())
+            return NULL;
+        PortFranchiseMarketRow& r = out->rows[out->count++];
+        snprintf(r.key, sizeof r.key, "%s", key.c_str());
+        std::string id = char_id(key);
+        snprintf(r.line, sizeof r.line, "%s", (id.empty() ? key : id).c_str());
+        r.club = club;
+        r.role = role;
+        r.level = pr != NULL ? pr->level : 8;
+        r.shiny = pr != NULL && pr->shiny;
+        r.seasonGoals = st.seasonGoals;
+        r.regGoals = st.regGoals;
+        r.careerGoals = st.goals;
+        r.seasonAssists = st.seasonAssists;  // r232
+        r.regAssists = st.regAssists;
+        r.careerAssists = st.assists;
+        r.games = st.games;
+        r.form = st.form;
+        r.mine = club == c.myClub;
+        r.rookie = rookie;
+        return &r;
+    };
+    for (int i = 0; i < PORT_FR_CLUBS; i++)
+    {
+        const ClubState& s = c.clubs[i];
+        out->clubWins[i] = s.wins;
+        out->clubLosses[i] = s.losses;
+        out->clubStreak[i] = s.streak;
+        const std::string capKeys[2] = {s.captain, s.backup};
+        const PStats* caps[2] = {&s.capSt, &s.bkSt};
+        const Prog* progs[2] = {&s.cap, &s.bk};
+        for (int b = 0; b < 2; b++)
+        {
+            if (capKeys[b].empty())
+                continue;
+            const bool rk = rookie_season(c, capKeys[b]);
+            add(capKeys[b], i, b, progs[b], *caps[b], rk);
+            const PStats& p = *caps[b];
+            pm_pick(p, capKeys[b]);  // r232
+            const double score = p.regGoals * 3.0 + s.wins * 2.0 + p.regForm;  // (awards night's)
+            if (score > mvpScore)
+                mvpScore = score, mvpKey = capKeys[b];
+            if (p.regGoals > bootGoals)
+                bootGoals = p.regGoals, bootKey = capKeys[b];
+            if (rk && p.regGoals > rookieGoals)
+                rookieGoals = p.regGoals, rookieKey = capKeys[b];
+        }
+        // the members (a character of their own), and the club's generic sidekicks as one row: their kind's card
+        PStats kindSt = PStats();
+        bool anyKind = false;
+        for (int k = 0; k < 3; k++)
+        {
+            pm_pick(s.sk[k], s.mem[k].empty() ? s.kind : s.mem[k]);  // r232
+            if (!s.mem[k].empty())
+            {
+                const bool rk = rookie_season(c, s.mem[k]);
+                add(s.mem[k], i, 2, &s.mp[k], s.sk[k], rk);
+                if (s.sk[k].regGoals > bootGoals)
+                    bootGoals = s.sk[k].regGoals, bootKey = s.mem[k];
+            }
+            else
+            {
+                anyKind = true;
+                kindSt.goals += s.sk[k].goals;
+                kindSt.games = std::max(kindSt.games, s.sk[k].games);
+                kindSt.seasonGoals += s.sk[k].seasonGoals;
+                kindSt.regGoals += s.sk[k].regGoals;
+                kindSt.assists += s.sk[k].assists;  // r232
+                kindSt.seasonAssists += s.sk[k].seasonAssists;
+                kindSt.regAssists += s.sk[k].regAssists;
+                kindSt.form += s.sk[k].form;
+            }
+        }
+        if (anyKind && !s.kind.empty())
+        {
+            kindSt.form = std::max(-3, std::min(3, kindSt.form));
+            add(s.kind, i, 3, &s.side, kindSt, false);
+        }
+    }
+    if (c.phase != PHASE_REGULAR)
+    {
+        snprintf(out->mvp, sizeof out->mvp, "%s", mvpKey.c_str());
+        snprintf(out->boot, sizeof out->boot, "%s", bootKey.c_str());
+        snprintf(out->rookie, sizeof out->rookie, "%s", rookieKey.c_str());
+        snprintf(out->playmaker, sizeof out->playmaker, "%s", pmKey.c_str());  // r232
+    }
+    // every retired line (its id and the season it retired: r177's returning list holds the season it comes back, + 1)
+    for (size_t i = 0; i < c.returning.size() && out->retiredCount < 64; i++)
+    {
+        snprintf(out->retired[out->retiredCount], sizeof out->retired[0], "%s", c.returning[i].first.c_str());
+        out->retiredSeason[out->retiredCount++] = c.returning[i].second - 1;
+    }
+    out->valid = true;
+    return true;
 }

@@ -1,0 +1,5 @@
+# r201 museum201.py's constants for the vault (the model's own space: x right, y up, z toward you; metres at size 1)
+foot 0.3000 0.3000
+height 2.1000
+wall 0
+fig 0.0000 1.0100 0.1000 0.3000 0.1200

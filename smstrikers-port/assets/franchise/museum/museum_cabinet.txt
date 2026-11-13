@@ -1,0 +1,10 @@
+# r201 museum201.py's constants for the cabinet (the model's own space: x right, y up, z toward you; metres at size 1)
+foot 0.5200 0.2400
+height 2.0000
+wall 0
+fig -0.1400 0.7120 0.0400 0.2400 0.0850
+fig 0.1400 0.7120 0.0400 0.2400 0.0850
+fig -0.1400 1.0700 0.0400 0.2400 0.0850
+fig 0.1400 1.0700 0.0400 0.2400 0.0850
+fig -0.1400 1.4200 0.0400 0.2400 0.0850
+fig 0.1400 1.4200 0.0400 0.2400 0.0850

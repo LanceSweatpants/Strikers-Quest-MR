@@ -34,3 +34,5 @@ __pycache__/
 *.bak-r9*
 *.bak-r8*
 
+*.bak-r2*
+*.bak-r223pub

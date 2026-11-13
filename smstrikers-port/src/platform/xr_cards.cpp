@@ -22,6 +22,13 @@
 #include "xr_pageturn.h"  // r160 round 2: STRIKERS ILLUSTRATED's page-turn rules (the 3D binder turns by them)
 #include "xr_binderfx.h"  // r163: the 3D binder's living skins (halos, light, particles, fur that moves)
 #include "xr_balls.h"  // r168: BALL SKINS (the LOOKS page's top row: bought here, saved in looks.txt)
+#include "xr_market.h"  // r201: the TIZM CARD MARKET (its MARKET page, the binder's values)
+#include "xr_museum.h"  // r201: the CARD MUSEUM (its page; its pieces' card pictures)
+#include "xr_trade.h"   // r213: COLLECTOR TRADES (its page; the collectors' 1/1s the packs respect)
+#include "xr_menu.h"    // r236: LOOK B (the hub's broadcast kit: CARDS > PACKS, the LOCKER pages)
+#include "xr_pulls.h"   // r219: BIG PULLS (a hit's slow-mo build-up, the dark room for a 1/1, its party's tier + word)
+#include "xr_exq.h"     // r230: LANCINI EXQUISITE (its tiers, runs, rates, prices, its show)
+#include "xr_vault.h"   // r230: THE VAULT (its case: mesh, moves, sounds)
 
 // stb_image (public domain / MIT), PNG (the portraits) and JPEG (r138: the evolution rooms' pictures), its functions
 // private to this file.
@@ -36,6 +43,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>  // r221: the collection's background saver
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -107,13 +115,16 @@ double rand01(uint64_t& s) { return static_cast<double>(mix64(s) >> 11) * (1.0 /
 // parody brand, our own drawing): 2026-27 LANCINI TIZM STRIKERS. Two things make a card rare:
 //  - who it is: common / rare / super rare by kind and franchise rating (cardset.txt); slots 1-4 common 74% / rare 22% /
 //    super rare 4%, slot 5 rare or better (rare 82% / super rare 18%): a super rare about every 3 packs
-//  - its finish, any card (the parallels): BASE chrome; SILVER TIZM refractor 1 in 8 cards; GOLD TIZM numbered /10, 1 in
-//    50 (ten of each card at most, each its own number); BLACK TIZM 1/1, 1 in 300 (one of each card, ever); and a Pokemon
-//    card shiny on top, 1 in 128 (franchise.cpp kShinyOdds: an evolution's luck; its shiny model)
-// tools\outside\cards_preview.py simulates 10,000 packs of these.
+//  - its finish, any card (the parallels): BASE chrome; SILVER TIZM refractor 1 in 50 cards; GOLD TIZM numbered /10, 1 in
+//    250 (ten of each card at most, each its own number); BLACK TIZM 1/1, 1 in 2,500 = 1 in 500 packs (one of each card,
+//    ever); and a Pokemon card shiny on top, 1 in 512 (its shiny model; r211: the packs' own odds - franchise.cpp's
+//    kShinyOdds, an evolution's luck, stays its own)
+//  r211 (Lance 11-10, his new pull rates; were 1 in 8 / 50 / 300, shiny 1 in 128): every card still its own roll (pure odds -
+//    a 1/1 can come in any pack)
+// tools\outside\cards_preview.py simulates 10,000 packs of these; tools\outside\odds211 1,000,000 with this file's own code.
 constexpr double kSlotSR = 0.04, kSlotR = 0.22, kLastSR = 0.18;
-constexpr int kShinyOdds = 128;
-constexpr int kSilverOdds = 8, kGoldOdds = 50, kBlackOdds = 300;
+constexpr int kShinyOdds = 512;
+constexpr int kSilverOdds = 50, kGoldOdds = 250, kBlackOdds = 2500;
 constexpr int kGoldRun = 10;  // GOLD TIZM: numbered /10
 constexpr int kPackCards = 5;
 constexpr int kSheets = 2 * kPackCards;  // r146: the cards in your room at once (a trade-in's ten)
@@ -144,14 +155,33 @@ struct Card {
   // (franchise/costume_names.txt) - `name` then its title ("Beta Ray Bill"; a look of the hero's, "Ultimate Thor"), `sub`
   // the hero under it ("Thor"), `signAs` who signs it (Beta Ray Bill himself; Thor in his Ultimate look); "" none
   std::string sub, signAs;
+  // r217 (Lance 11-11: "go with A but also go with B!!! we will add B as a new pack!!!"): which set it's in - 0 LANCINI TIZM (the
+  // main set, "PRIZM CHROME"), 1 LANCINI TIZM JAM '96 (the premium pack: every character its own Jam card, after the main set in
+  // g_set); `id` its own name in saves / the market / trades / the museum (a main card: its key; a Jam card: key + kJamSuffix) -
+  // `key` stays the character's (its pictures, model, autograph, home); `twin` the other set's card of the same character
+  int set = 0, twin = -1;
+  std::string id;
+  // r230: set 2 = LANCINI EXQUISITE (key + "_exq", its checklist's characters only: `num` its number on the checklist, `twin` its LANCINI
+  // TIZM card); a LANCINI TIZM card's `exq` its Exquisite card (-1 not on the checklist)
+  int exq = -1;
 };
+constexpr const char* kJamSuffix = "_j96";
+constexpr unsigned kJamPack = 64;  // r217: a pack's flags - a JAM '96 pack (its cards Jam cards; none: a LANCINI TIZM pack)
+constexpr const char* kJamSetName = "2026-27 LANCINI TIZM JAM '96";
+int g_setN = 0;  // r217: the cards in each set (the main set's count; the Jam set the same) - a card's "NNN/total"
+// r230: a LANCINI EXQUISITE pack (its 3 cards Exquisite cards: shop only), one of a VAULT case of five (kExqBox; its place in the case in
+// bits 9-11: 0 the case's first)
+constexpr unsigned kExqPack = 128, kExqBox = 256;
+constexpr int kExqBoxShift = 9;
+int g_exqN = 0;  // r230: the LANCINI EXQUISITE checklist's count (150)
 // A card in a pack / out of the binder: which (its index in the set), its finish, shiny, its number in its run (GOLD
 // 1-10, BLACK 1).
 // r149 (Lance's CASE HITS, rare inserts on top of the finishes, their own odds): TIZM BOOM (a comic-book explosion popping
 // out of the card), HOMETOWN (the card a window into their home turf), SIGNED (their autograph, writing itself on);
 // never traded in. (Every BLACK 1/1 is signed too: its own, not a case hit.)
 enum { kHitNone = 0, kHitBoom, kHitHome, kHitSigned };
-constexpr double kHitOdds[4] = {0.0, 1.0 / 300.0, 1.0 / 350.0, 1.0 / 450.0};  // a card's chance of each
+constexpr int kHitIn[4] = {0, 1500, 1200, 2000};  // r211: 1 in N cards (TIZM BOOM, HOMETOWN, SIGNED; were 300 / 350 / 450)
+constexpr double kHitOdds[4] = {0.0, 1.0 / kHitIn[1], 1.0 / kHitIn[2], 1.0 / kHitIn[3]};  // a card's chance of each
 const char* const kHitName[4] = {"", "TIZM BOOM", "HOMETOWN", "SIGNED"};
 struct Ref {
   int card = -1;
@@ -239,12 +269,19 @@ std::atomic<int> g_packCount{0};
 // r140: TIZM COINS (franchise.cpp: from the matches you play; only to buy packs here): the balance, all ever earned / spent,
 // the last match's (how many, when, why: "3 goals 18, 2 assists 8, ..."); the CARDS shop (shown instead of the binder's
 // pages; 0 a pack, 1 a box of five); its prices
-int g_coins = 0, g_coinsEarned = 0, g_coinsSpent = 0, g_lastCoins = 0;
+// r208 (Lance: 1,000,000 WAGERS): the balance + its totals 64-bit, every change through coins_add / coins_take (held at xrcoin::kMax)
+long long g_coins = 0, g_coinsEarned = 0, g_coinsSpent = 0;
+int g_lastCoins = 0;
 long long g_lastCoinsWhen = 0;
 std::string g_lastCoinsWhy;
 std::atomic<int> g_shopPick{0};
+std::atomic<bool> g_packsOnOpen{true};  // r236: CARDS > PACKS - the ring on the hero's OPEN (else on a product)
+std::atomic<int> g_openSet{0};  // r217: the pack being opened's set (the hub's OPENING A ... PACK)
 std::string g_shopSay;  // (the shop's last word: "NOT ENOUGH COINS" ...)
 constexpr int kPackPrice = 50, kBoxPrice = 200, kBoxPacks = 5;
+// r217: a JAM '96 pack / box of five (PACKS-AB.md: 5x - its cards price ~3-9x their LANCINI TIZM twins on the market; the median
+// pack still under its price sold at once, as the main pack's)
+constexpr int kJamPackPrice = 250, kJamBoxPrice = 1000;
 constexpr unsigned kBought = 8;  // (a pack's flags: bought in the shop)
 // r141: the BLACK 1/1s whose life-size cameo you've seen (it plays the first time each is turned over, never again)
 std::unordered_set<std::string> g_cameoSeen;
@@ -263,15 +300,31 @@ std::unordered_set<std::string> g_cameoSeen;
 //    this headset's own: never co-op, an online league or a quick match). Trading online: next round.
 constexpr int kTradeFor = 10;
 constexpr unsigned kTraded = 16;  // (a pack's flags: traded for)
+// r226 (Lance 11-12: his 97 JAM '96 cards, nothing to trade in): JAM '96 spares trade in too - kJamTradeFor JAM '96 BASE spares = 1 JAM '96
+// pack (its own trade: never mixed with LANCINI TIZM spares). The same count as the main set's: measured (logs\r226-cards\trade, the
+// shipping market): a JAM '96 spare traded in sells at once for 3.3x a LANCINI TIZM one (15.4 / 4.6 coins) and a JAM '96 pack's median
+// sold at once is 3.3x a LANCINI TIZM pack's (102 / 31) - pack median / its 10 spares' median: JAM '96 0.73 (100 cards) - 1.16 (300 cards),
+// LANCINI TIZM 0.72 - 1.15: the same deal, so a Jam trade-in prints no more than the main set's always has
+constexpr int kJamTradeFor = 10;
+constexpr int trade_for(int set) { return set == 1 ? kJamTradeFor : kTradeFor; }
+int g_tradeSet = 0;          // r226: the TRADE-INS page's set (0 LANCINI TIZM, 1 JAM '96)
+bool g_tradeOnSets = false;  // r226: the cursor on the page's two set panels (stick up from the cards' top row)
 constexpr int kLevelCopies[5] = {1, 2, 3, 5, 10};
 constexpr int kLevelXp = 10, kLineXp = 15, kTypeXp = 10, kXpCap = 60, kLineShinyOdds = 96, kPageCoins = 2, kPageCoinsCap = 20;
 // the CARDS tab's pages (LT: the next, RT: back): the binder, the shop, r153: GOAL EXPLOSIONS (the shop's other shelf),
 // the trade-ins, the sets, the grading
-enum { kPageBinder = 0, kPageShop, kPageTrade, kPageSets, kPageGrading, kPageExplosions, kPageLooks };
+enum { kPageBinder = 0, kPageShop, kPageTrade, kPageSets, kPageGrading, kPageExplosions, kPageLooks, kPageMarket, kPageMuseum, kPageCollectors,
+       kPageTakeovers, kPageCovers };  // (r201: + MARKET, MUSEUM; r213: + COLLECTORS; r236: + TAKEOVERS, COVERS - LOCKER's; LOOKS = its BALLS)
 // r157 (menu overhaul): the pages are a rail on the hub's CARDS section now (no LT / RT chain): its order and names
 // r160: + LOOKS after EXPLOSIONS (binder skins + card sleeves)
-constexpr int kRailOrder[7] = {kPageBinder, kPageShop, kPageExplosions, kPageLooks, kPageTrade, kPageSets, kPageGrading};
-constexpr const char* kRailNames[7] = {"BINDER", "SHOP", "EXPLOSIONS", "LOOKS", "TRADE-INS", "SETS", "GRADING"};
+// r213: + COLLECTORS under MARKET (COLLECTOR TRADES, xr_trade.cpp: not "TRADES" - the club's player trades - nor "TRADE-INS")
+// r236 (LOOK B, the sitemap): CARDS = PACKS (the shop + opening), BINDER (SETS inside it: Y), MARKET, COLLECTORS, GRADING, TRADE-INS,
+// MUSEUM; LOCKER = BALLS (LOOKS' ball shelf), GOAL FX (EXPLOSIONS without the takeovers), TAKEOVERS, BINDERS (LOOKS' binder covers)
+constexpr int kRailOrder[11] = {kPageShop, kPageBinder, kPageMarket, kPageCollectors, kPageGrading, kPageTrade, kPageMuseum,
+                                kPageLooks, kPageExplosions, kPageTakeovers, kPageCovers};
+constexpr const char* kRailNames[11] = {"PACKS", "BINDER", "MARKET", "COLLECTORS", "GRADING", "TRADE-INS", "MUSEUM",
+                                        "BALLS", "GOAL FX", "TAKEOVERS", "BINDERS"};
+static_assert(sizeof(kRailOrder) / sizeof(kRailOrder[0]) == kRailPages, "the rail's pages (xr_cards.h kRailPages)");
 // r157: where the hub draws the cards' pieces (x' = ox + x * k ...): its page area right of the rail
 std::atomic<float> g_fitOx{0.0f}, g_fitOy{0.0f}, g_fitK{1.0f};
 // r153: the EXPLOSIONS page: its cursor, a buy armed (X again on the same one buys it: which, when), a preview of ours
@@ -283,7 +336,104 @@ bool g_fxPreviewing = false;
 std::string g_fxSay;
 constexpr int kFxCols = 4;
 constexpr int kFxRowsShown = 4;  // r161: rows of EXPLOSIONS in view at once (they scroll)
+// r236 (LOCKER, LOOK B): its four pages are 3 x 2 grids (scrolling a row at a time) with the focused item's panel at the right;
+// GOAL FX / TAKEOVERS each keep the ring's place in their own list (catalogue indices; GOAL FX's last: NO EXPLOSION, -1)
+constexpr int kLkGridCols = 3, kLkGridRows = 2;
+int g_fxPos[2] = {0, 0};
+std::vector<int> fx_list(bool takeovers) {
+  std::vector<int> out;
+  const std::vector<xrgoalfx::Item>& cat = xrgoalfx::catalogue();
+  for (size_t i = 0; i < cat.size(); ++i)
+    if ((cat[i].seconds > 5.0f) == takeovers) out.push_back(static_cast<int>(i));
+  if (!takeovers) out.push_back(-1);
+  return out;
+}
 std::atomic<int> g_page{kPageBinder};
+
+// r237 THE HUB WATCHDOG (Lance's r236 freeze: the game stopped on CARDS > MARKET > BUY and the log just ended - nothing said where). The
+// hub's work on the game thread (hub_input, poll: the market / museum / collectors' frames, a career's load) and its picture on the drawing
+// thread (hub_page) run inside a WdScope naming the step and the page. A step that takes 250 ms or more says so when it ends ("took N ms in
+// MARKET input, page MARKET"); one still running after 250 ms - a hang that never ends - is told by a small thread that looks every 0.1 s
+// ("STILL BUSY after 250 ms in MARKET picture"), again every 5 s while it stays stuck. Only the innermost slow step speaks. Nothing waits on it.
+constexpr uint64_t kWdMs = 250;
+struct WdSlot {
+  std::atomic<uint64_t> since{0};          // its outermost step's start (0: free)
+  std::atomic<const char*> what{nullptr};  // the step it is in now (the innermost)
+  std::atomic<const char*> thread{nullptr};
+  std::atomic<int> page{-1};
+  std::atomic<uint64_t> told{0};  // the start last told about
+  std::atomic<int> tells{0};
+};
+WdSlot g_wd[6];
+thread_local int t_wdSlot = -1, t_wdDepth = 0;
+thread_local bool t_wdSaid = false;
+const char* wd_page_name(int p) {
+  static const char* const kName[12] = {"BINDER", "PACKS", "TRADE-INS", "SETS", "GRADING", "GOAL FX", "BALLS", "MARKET", "MUSEUM", "COLLECTORS", "TAKEOVERS", "BINDERS"};
+  return p >= 0 && p < 12 ? kName[p] : "?";
+}
+void wd_thread_start() {
+  static std::atomic<bool> s_on{false};
+  if (s_on.exchange(true)) return;
+  std::thread([]() {
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const uint64_t now = mono_ns();
+      for (WdSlot& s : g_wd) {
+        const uint64_t t0 = s.since.load();
+        if (t0 == 0 || now <= t0) continue;
+        const uint64_t ms = (now - t0) / 1000000ull;
+        if (ms < kWdMs) continue;
+        const int n = s.told.load() == t0 ? s.tells.load() : 0;
+        if (n > 0 && ms < 5000ull * static_cast<uint64_t>(n)) continue;
+        s.told = t0;
+        s.tells = n + 1;
+        const char* w = s.what.load();
+        const char* th = s.thread.load();
+        CLOG("WATCHDOG (r237): the hub's %s is STILL BUSY after %llu ms - in %s, page %s%s", th != nullptr ? th : "?", static_cast<unsigned long long>(ms),
+             w != nullptr ? w : "?", wd_page_name(s.page.load()), n > 0 ? " (STUCK - a hang)" : "");
+      }
+    }
+  }).detach();
+}
+class WdScope {
+ public:
+  WdScope(const char* thread, const char* what) : thread_(thread), what_(what), t0_(mono_ns()) {
+    wd_thread_start();
+    if (t_wdDepth++ == 0) {
+      t_wdSaid = false;
+      for (int i = 0; i < 6 && t_wdSlot < 0; ++i) {
+        uint64_t free = 0;
+        if (g_wd[i].since.compare_exchange_strong(free, t0_)) t_wdSlot = i;
+      }
+      if (t_wdSlot >= 0) g_wd[t_wdSlot].thread = thread;
+    }
+    if (t_wdSlot >= 0) {
+      prev_ = g_wd[t_wdSlot].what.exchange(what);
+      g_wd[t_wdSlot].page = g_page.load();
+    }
+  }
+  ~WdScope() {
+    const uint64_t ms = (mono_ns() - t0_) / 1000000ull;
+    if (ms >= kWdMs && !t_wdSaid) {
+      t_wdSaid = true;  // (the innermost slow step speaks; the steps round it stay quiet)
+      CLOG("WATCHDOG (r237): the hub's %s took %llu ms in %s, page %s", thread_, static_cast<unsigned long long>(ms), what_, wd_page_name(g_page.load()));
+    }
+    if (t_wdSlot >= 0) g_wd[t_wdSlot].what = prev_;
+    if (--t_wdDepth == 0 && t_wdSlot >= 0) {
+      g_wd[t_wdSlot].since = 0;
+      t_wdSlot = -1;
+    }
+  }
+  WdScope(const WdScope&) = delete;
+  WdScope& operator=(const WdScope&) = delete;
+
+ private:
+  const char* thread_;
+  const char* what_;
+  const char* prev_ = nullptr;
+  uint64_t t0_;
+};
+
 std::unordered_set<std::string> g_keep;  // cards you keep out of trade-ins (X)
 // r149 (Lance: it "took me farrrr too long to find that damn card i just got"): the cards packs gave you that you haven't
 // looked at in the binder yet (the cursor resting on its pocket, or taking it out): NEW on their pockets
@@ -321,6 +471,7 @@ constexpr int kGradeMatches = 2, kDisplaySlabs = 6;
 constexpr int kGradeOdds[11] = {0, 4, 6, 10, 20, 40, 80, 200, 340, 240, 60};
 const char* const kGradeName[11] = {"", "POOR", "GOOD", "VG", "VG-EX", "EX", "EX-MT", "NM", "NM-MT", "MINT", "GEM MINT"};
 int grade_cost(const Ref& r) {  // its TIZM COINS
+  if (r.serial >= 1000 && r.serial < 11000) return xrexq::tier_of(r.serial) >= xrexq::kGoldLeaf ? 600 : 300;  // r230: an EXQUISITE copy (numbered)
   if (r.parallel == kBlack || r.hit != kHitNone) return 300;
   if (r.parallel == kGoldTizm) return 150;
   if (r.parallel == kSilver || r.shiny) return 100;
@@ -493,14 +644,55 @@ void load_set() {
     }
     std::fclose(f);
   }
+  // r217: the JAM '96 set - every card again, its own (after the main set: the main cards' indexes never move)
+  const size_t mainN = set.size();
+  for (size_t i = 0; i < mainN; ++i) {
+    set[i].id = set[i].key;
+    set[i].twin = static_cast<int>(mainN + i);
+  }
+  for (size_t i = 0; i < mainN; ++i) {
+    Card j = set[i];
+    j.set = 1;
+    j.id = set[i].key + kJamSuffix;
+    j.twin = static_cast<int>(i);
+    set.push_back(j);
+  }
+  // r230: the LANCINI EXQUISITE set - its checklist's characters (STRIKERS_HOME/franchise/exquisite.txt: its number, the card key), after
+  // the Jam set (no index of either set moves); a key not in the main set is left out (logged)
+  int exqN = 0;
+  if (FILE* f = std::fopen((fr + "exquisite.txt").c_str(), "r")) {
+    char line[256], key[128];
+    int no = 0;
+    std::unordered_map<std::string, size_t> mainAt;
+    for (size_t i = 0; i < mainN; ++i) mainAt[set[i].key] = i;
+    while (std::fgets(line, sizeof(line), f) != nullptr) {
+      if (line[0] == '#' || std::sscanf(line, "%d %127s", &no, key) != 2) continue;
+      auto it = mainAt.find(key);
+      if (it == mainAt.end()) {
+        CLOG("exquisite.txt: %s isn't in the set (left out)", key);
+        continue;
+      }
+      Card x = set[it->second];
+      x.set = 2;
+      x.num = no;
+      x.id = std::string(key) + xrexq::kSuffix;
+      x.twin = static_cast<int>(it->second);
+      set[it->second].exq = static_cast<int>(set.size());
+      set.push_back(x);
+      ++exqN;
+    }
+    std::fclose(f);
+  }
   std::lock_guard<std::mutex> lock(g_mutex);
   g_set = std::move(set);
+  g_setN = static_cast<int>(mainN);
+  g_exqN = exqN;  // r230
   g_byKey.clear();
-  for (size_t i = 0; i < g_set.size(); ++i) g_byKey[g_set[i].key] = static_cast<int>(i);
+  for (size_t i = 0; i < g_set.size(); ++i) g_byKey[g_set[i].id] = static_cast<int>(i);  // (r217: by its id - a Jam card its own)
   g_owned.assign(g_set.size(), Owned{});
   int here = 0;
   for (const Card& c : g_set) here += c.here ? 1 : 0;
-  CLOG("the set: %d cards, %d on this headset", static_cast<int>(g_set.size()), here);
+  CLOG("the set: %d cards, %d on this headset (r230: %d LANCINI EXQUISITE)", static_cast<int>(g_set.size()), here, g_exqN);
   g_loaded = true;
 }
 
@@ -521,6 +713,10 @@ std::string legacy_coll_path() { return home_dir() + "/cards/collection.txt"; }
 bool parse_ref(const char* s, Ref* r) {
   char key[128];
   int par = 0, sh = 0, num = 0, hit = 0;
+  if (s[0] == '-' && (s[1] == '\0' || s[1] == ' ' || s[1] == '\n')) {  // r230: an empty place (an EXQUISITE pack's 3 cards of 5)
+    *r = Ref{};
+    return true;
+  }
   if (std::sscanf(s, "%127[^:]:%d:%d:%d:%d", key, &par, &sh, &num, &hit) < 3) return false;
   auto it = g_byKey.find(key);
   if (it == g_byKey.end()) return false;
@@ -532,14 +728,17 @@ bool parse_ref(const char* s, Ref* r) {
   return true;
 }
 std::string ref_text(const Ref& r) {
-  return g_set[r.card].key + ":" + std::to_string(r.parallel) + ":" + (r.shiny ? "1" : "0") + ":" + std::to_string(r.serial) +
+  if (r.card < 0 || r.card >= static_cast<int>(g_set.size())) return "-";  // r230: an empty place
+  return g_set[r.card].id + ":" + std::to_string(r.parallel) + ":" + (r.shiny ? "1" : "0") + ":" + std::to_string(r.serial) +
          (r.hit != kHitNone ? ":" + std::to_string(r.hit) : std::string());
 }
 
 void add_owned(const Ref& r, int delta) {  // (g_mutex held)
   if (r.card < 0) return;
   Owned& o = g_owned[r.card];
-  if (r.hit != kHitNone) {  // r149: a case hit, kept whole
+  // r230: every LANCINI EXQUISITE copy is numbered: kept whole with the case hits (its tier + number in its serial; never a trade-in's spare)
+  const bool exq = g_set[static_cast<size_t>(r.card)].set == 2;
+  if (r.hit != kHitNone || exq) {  // r149: a case hit, kept whole
     if (delta > 0) {
       o.hits.push_back(r);
     } else {
@@ -553,7 +752,7 @@ void add_owned(const Ref& r, int delta) {  // (g_mutex held)
     int& n = o.n[r.parallel][r.shiny ? 1 : 0];
     n = std::max(0, n + delta);
   }
-  if (r.parallel == kGoldTizm && r.serial > 0) {
+  if (r.parallel == kGoldTizm && r.serial > 0 && !exq) {  // (r230: an Exquisite number isn't a GOLD /10's)
     auto it = std::find(o.golds.begin(), o.golds.end(), r.serial);
     if (delta > 0 && it == o.golds.end()) o.golds.push_back(r.serial);
     if (delta < 0 && it != o.golds.end()) o.golds.erase(it);
@@ -575,8 +774,13 @@ void load_collection() {  // (g_mutex held, the set loaded)
     } else if (std::sscanf(line, "opened %63s", a) == 1) {
       g_opened = std::atoi(a);
     } else if (std::strncmp(line, "coins ", 6) == 0) {  // r140
-      std::sscanf(line, "coins %d %d %d", &g_coins, &g_coinsEarned, &g_coinsSpent);
-      g_coins = std::max(0, g_coins);
+      // r208: 64-bit (strtoll: an r140-r207 file's 32-bit numbers read the same); the balance held to 0..kMax
+      const char* p = line + 6;
+      long long v = 0;
+      if (xrcoin::parse(p, &v, &p)) g_coins = v;
+      if (xrcoin::parse(p, &v, &p)) g_coinsEarned = v;
+      if (xrcoin::parse(p, &v, &p)) g_coinsSpent = v;
+      g_coins = xrcoin::clamp(g_coins);
     } else if (std::strncmp(line, "lastcoins ", 10) == 0) {
       int used = 0;
       if (std::sscanf(line, "lastcoins %d %lld %n", &g_lastCoins, &g_lastCoinsWhen, &used) >= 2 && used > 0) {
@@ -591,7 +795,7 @@ void load_collection() {  // (g_mutex held, the set loaded)
       g_newCards.insert(b);
     } else if (std::sscanf(line, "hit %127s", b) == 1) {  // r149: a case hit you have
       Ref h;
-      if (parse_ref(b, &h) && h.hit != kHitNone) add_owned(h, +1);
+      if (parse_ref(b, &h) && h.card >= 0 && (h.hit != kHitNone || g_set[static_cast<size_t>(h.card)].set == 2)) add_owned(h, +1);  // (r230: + Exquisite)
     } else if (std::strncmp(line, "godpacks ", 9) == 0) {  // r149
       std::sscanf(line, "godpacks %d %lld", &g_godPacks, &g_godWhen);
     } else if (std::strncmp(line, "graded ", 7) == 0) {  // r152
@@ -672,15 +876,94 @@ void load_collection() {  // (g_mutex held, the set loaded)
   CLOG("collection: %d different cards, %d packs waiting, %d opened", owned, static_cast<int>(g_packs.size()), g_opened);
 }
 
+#ifdef HARNESS_REAL_CARDS
+std::string g_h217Saved;
+#endif
+std::string collection_text();  // r221 (below)
+// r221: the collection file's own lock (a leaf: taken under g_mutex by save_collection, alone by the background saver -
+// never g_mutex under it) and the newest snapshot on disk (an older one is never written over a newer)
+std::mutex g_collIoM;
+unsigned long long g_collSeq = 0;      // (g_mutex) snapshots made
+unsigned long long g_collWritten = 0;  // (g_collIoM)
+void write_collection_file(const std::string& path, const std::string& out, unsigned long long seq) {
+  std::lock_guard<std::mutex> io(g_collIoM);
+  if (seq <= g_collWritten) return;
+  const std::string tmp = path + ".tmp";
+  FILE* f = std::fopen(tmp.c_str(), "w");
+  if (f == nullptr) {
+    CLOG("collection: can't write %s", tmp.c_str());
+    return;
+  }
+  const bool ok = std::fwrite(out.data(), 1, out.size(), f) == out.size() && std::fflush(f) == 0;
+  ::fsync(fileno(f));
+  std::fclose(f);
+  if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) CLOG("collection: writing it failed");
+  else g_collWritten = seq;
+}
 void save_collection() {  // (g_mutex held)
   const std::string dir = home_dir() + "/cards";
   ::mkdir(dir.c_str(), 0775);
+  const std::string out = collection_text();
+  write_collection_file(coll_path(), out, ++g_collSeq);
+}
+// r221 (Lance's r220 log, MR Jumbotron: ~20 takeover catches a goal, each a whole collection file written + fsync'd on the
+// frame thread, under g_mutex): the room takeover's coins are paid at once (the balance) and the file is written by ONE
+// background saver - the latest state each time it runs (asks while it writes: one more run after, never a pile).
+std::mutex g_saverM;
+std::condition_variable g_saverCv;
+bool g_saverWanted = false, g_saverStarted = false;
+std::atomic<int> g_saverRuns{0};
+std::atomic<long long> g_saverNs{0}, g_saverMaxNs{0};
+std::atomic<long long> g_coinPayNs{0};  // r221: the frame thread's time paying takeover coins (xr_quest's goal probe)
+std::atomic<int> g_coinPays{0};
+void saver_main() {
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lk(g_saverM);
+      g_saverCv.wait(lk, [] { return g_saverWanted; });
+      g_saverWanted = false;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string out, path;
+    unsigned long long seq = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      if (g_careerSeed == 0) continue;
+      const std::string dir = home_dir() + "/cards";
+      ::mkdir(dir.c_str(), 0775);
+      out = collection_text();
+      path = coll_path();
+      seq = ++g_collSeq;
+    }
+    write_collection_file(path, out, seq);
+    const long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    g_saverNs.fetch_add(ns);
+    if (ns > g_saverMaxNs.load()) g_saverMaxNs.store(ns);
+    g_saverRuns.fetch_add(1);
+  }
+}
+void save_collection_soon() {  // (any thread; g_mutex held or not)
+#if defined(__wasm__)
+  save_collection();  // (the PC proof's WebAssembly has no threads: written at once there)
+#else
+  {
+    std::lock_guard<std::mutex> lk(g_saverM);
+    g_saverWanted = true;
+    if (!g_saverStarted) {
+      g_saverStarted = true;
+      std::thread(saver_main).detach();
+    }
+  }
+  g_saverCv.notify_one();
+#endif
+}
+std::string collection_text() {  // (g_mutex held)
   std::string out =
       "# 2026-27 LANCINI TIZM STRIKERS (r137): this career's trading cards (r153: a binder per career). Written by the game (xr_cards.cpp).\n"
       "#   card <key> <finish 0 base, 1 silver, 2 gold /10, 3 black 1/1> <shiny 0|1> <count> [gold numbers 3,7]\n"
       "#   pack <serial> <flags> <key>:<finish>:<shiny>:<number> x5   a pack waiting, rolled the moment it was earned\n"
       "#   pull <unix time> <key>:<finish>:<shiny>:<number>            a big pull (STRIKERS ILLUSTRATED's cover line)\n"
-      "#   coins <balance> <ever earned> <ever spent>                  r140: TIZM COINS (franchise matches you play)\n"
+      "#   coins <balance> <ever earned> <ever spent>                  r140: BIT COINS (franchise matches you play)\n"
       "#   lastcoins <coins> <unix time> <why>                          the last match's\n"
       "#   cameo <key>                                                  r141: a BLACK 1/1's life-size cameo, seen\n"
       "#   traded <cards> <packs>                                       r146: spare base cards traded in, packs got for them\n"
@@ -693,9 +976,11 @@ void save_collection() {  // (g_mutex held)
       "#                                                                r152: a TIZM GRADING slab (its copy sealed: not in card / hit)\n"
       "#   graded <slabs ever sent>                                     r152\n"
       "#   (a pack's / a pull's cards: <key>:<finish>:<shiny>:<number>[:<hit>])\n"
+      "#   r230: a LANCINI EXQUISITE copy <key>_exq:<finish>:0:<its tier x 1000 + its number>:<hit> - every one a hit line (each numbered);\n"
+      "#         an EXQUISITE pack's 3 cards + '-' for its two empty places\n"
       "version 2\n";
   char buf[256];
-  std::snprintf(buf, sizeof(buf), "salt %016llx\nserial %d\nopened %d\ncoins %d %d %d\n", static_cast<unsigned long long>(g_salt),
+  std::snprintf(buf, sizeof(buf), "salt %016llx\nserial %d\nopened %d\ncoins %lld %lld %lld\n", static_cast<unsigned long long>(g_salt),  // r208: 64-bit
                 g_serial, g_opened, g_coins, g_coinsEarned, g_coinsSpent);
   out += buf;
   if (g_lastCoins > 0) out += "lastcoins " + std::to_string(g_lastCoins) + " " + std::to_string(g_lastCoinsWhen) + " " + g_lastCoinsWhy + "\n";
@@ -729,7 +1014,7 @@ void save_collection() {  // (g_mutex held)
       for (int sh = 0; sh < 2; ++sh) {
         const int n = g_owned[i].n[p][sh];
         if (n <= 0) continue;
-        out += "card " + g_set[i].key + " " + std::to_string(p) + " " + std::to_string(sh) + " " + std::to_string(n);
+        out += "card " + g_set[i].id + " " + std::to_string(p) + " " + std::to_string(sh) + " " + std::to_string(n);
         // (a card's GOLD numbers once, on its first GOLD line)
         if (p == kGoldTizm && (sh == 0 || g_owned[i].n[kGoldTizm][0] == 0) && !g_owned[i].golds.empty()) {
           std::string nums;
@@ -745,16 +1030,10 @@ void save_collection() {  // (g_mutex held)
   }
   const size_t first = g_pulls.size() > 40 ? g_pulls.size() - 40 : 0;
   for (size_t i = first; i < g_pulls.size(); ++i) out += "pull " + std::to_string(g_pulls[i].when) + " " + ref_text(g_pulls[i].ref) + "\n";
-  const std::string path = coll_path(), tmp = path + ".tmp";
-  FILE* f = std::fopen(tmp.c_str(), "w");
-  if (f == nullptr) {
-    CLOG("collection: can't write %s", tmp.c_str());
-    return;
-  }
-  const bool ok = std::fwrite(out.data(), 1, out.size(), f) == out.size() && std::fflush(f) == 0;
-  ::fsync(fileno(f));
-  std::fclose(f);
-  if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) CLOG("collection: writing it failed");
+#ifdef HARNESS_REAL_CARDS
+  g_h217Saved = out;  // (r217's PC proof: the file as written, for its reload check)
+#endif
+  return out;
 }
 
 // How big a pull is (the opening shows the biggest last): who it is, then its finish, shiny on top.
@@ -763,14 +1042,52 @@ int pull_score(const Ref& r) {
   // means you're about to have a crazy pack"): strict tiers - BASE < SILVER < GOLD < a case hit < BLACK 1/1 (the top) -, a
   // shiny above the rest of its tier, then who it is: the biggest is always the last card
   const int tier = r.parallel == kBlack ? 4 : (r.hit != kHitNone ? 3 : (r.parallel == kGoldTizm ? 2 : (r.parallel == kSilver ? 1 : 0)));
+  if (r.card >= 0 && r.card < static_cast<int>(g_set.size()) && g_set[static_cast<size_t>(r.card)].set == 2) {  // r230: an EXQUISITE copy
+    return 1000 + xrexq::rank(xrexq::tier_of(r.serial)) * 10 + g_set[r.card].rarity;
+  }
   return tier * 100 + (r.shiny ? 10 : 0) + (r.card >= 0 ? g_set[r.card].rarity : 0);
 }
 bool big_pull(const Ref& r) {
+  if (r.card >= 0 && r.card < static_cast<int>(g_set.size()) && g_set[static_cast<size_t>(r.card)].set == 2)  // r230: GOLD LEAF+ / a hit
+    return xrexq::tier_of(r.serial) >= xrexq::kGoldLeaf;
   return r.card >= 0 && (r.parallel >= kGoldTizm || r.shiny || r.hit != kHitNone || g_set[r.card].rarity == kSuper);
+}
+
+// r213 (Lance: one BLACK 1/1 per card ever - "whoever holds a grail 1/1 sets the price"): the cards whose 1/1 a CPU collector holds
+// (COLLECTOR TRADES, xr_trade.cpp tells them; a career it hasn't told yet: its world11-<career>.txt) - a pack gives a GOLD instead.
+// Its own lock (a leaf: taken under g_mutex, never the other way).
+std::mutex g_worldM;
+unsigned g_worldCareer = 0;
+std::vector<std::string> g_worldKeys;  // (sorted)
+void world_set(unsigned career, const std::vector<std::string>& keys) {
+  std::lock_guard<std::mutex> lock(g_worldM);
+  g_worldCareer = career;
+  g_worldKeys = keys;
+  std::sort(g_worldKeys.begin(), g_worldKeys.end());
+}
+bool world_black(int card) {  // (g_mutex held: g_set, g_careerSeed)
+  if (card < 0 || card >= static_cast<int>(g_set.size()) || g_careerSeed == 0) return false;
+  std::lock_guard<std::mutex> lock(g_worldM);
+  if (g_worldCareer != g_careerSeed) {  // (not told for this career yet: its file)
+    g_worldCareer = g_careerSeed;
+    g_worldKeys.clear();
+    if (FILE* f = std::fopen((home_dir() + "/cards/world11-" + std::to_string(g_careerSeed) + ".txt").c_str(), "r")) {
+      char line[160];
+      while (std::fgets(line, sizeof(line), f) != nullptr) {
+        std::string k(line);
+        while (!k.empty() && (k.back() == '\n' || k.back() == '\r' || k.back() == ' ')) k.pop_back();
+        if (!k.empty() && k.compare(0, 7, "world11") != 0) g_worldKeys.push_back(k);
+      }
+      std::fclose(f);
+      std::sort(g_worldKeys.begin(), g_worldKeys.end());
+    }
+  }
+  return std::binary_search(g_worldKeys.begin(), g_worldKeys.end(), g_set[static_cast<size_t>(card)].id);
 }
 
 // A card's finish: BLACK 1/1 one of each card ever (one you have, or one waiting in a pack: a GOLD instead), GOLD /10 a
 // number of the ten no copy of yours has (all ten taken: a SILVER).  (g_mutex held)
+// r213: + a 1/1 a CPU collector holds (world_black): a GOLD instead too
 void roll_parallel(uint64_t& rng, Ref* r, const std::vector<Ref>& also) {
   const double x = rand01(rng);
   int par = x < 1.0 / kBlackOdds ? kBlack
@@ -779,6 +1096,7 @@ void roll_parallel(uint64_t& rng, Ref* r, const std::vector<Ref>& also) {
   auto taken = [&](int parallel, int serial) {
     const Owned& o = g_owned[r->card];
     if (parallel == kBlack && (o.n[kBlack][0] + o.n[kBlack][1] > 0 || o.blackAny())) return true;  // (r149: a case hit's too)
+    if (parallel == kBlack && world_black(r->card)) return true;  // r213: a collector holds it
     if (parallel == kGoldTizm && std::find(o.golds.begin(), o.golds.end(), serial) != o.golds.end()) return true;
     for (const Ref& s : o.sealed)  // r152: one in a slab still yours
       if (s.parallel == parallel && (parallel == kBlack || s.serial == serial)) return true;
@@ -803,22 +1121,24 @@ void roll_parallel(uint64_t& rng, Ref* r, const std::vector<Ref>& also) {
 }
 
 // A pack: four cards of the common slots and one rare or better, never the same card twice; each its finish; a Pokemon
-// shiny 1 in 128; ordered for the opening (the biggest last).
+// shiny 1 in kShinyOdds; ordered for the opening (the biggest last).
 // r149 (Lance: "a crazy, greek mythology ass "celebration" graphic that happens if you ever get a "god pack" in which ALL
 // ... cards ... are silver or above!"): a GOD PACK - every card SILVER or better (or a case hit). By chance it would almost
-// never happen (about 1 in 10,000 packs), so a pack is rolled as one 1 in kGodOdds (every card's finish at least SILVER);
-// either way flagged kGodPack (its rip and its last card: the show)
-constexpr int kGodOdds = 400;
+// never happen (r211's odds: about 1 in 80 million packs), so a pack is rolled as one 1 in kGodOdds (every card's finish at
+// least SILVER); either way flagged kGodPack (its rip and its last card: the show). r211 (Lance): 1 in 2,000 (was 400).
+constexpr int kGodOdds = 2000;
 constexpr unsigned kGodPack = 32;  // (a pack's flags)
 bool god_cards(const Pack& p) {
   for (const Ref& r : p.cards)
     if (r.card >= 0 && r.parallel < kSilver && r.hit == kHitNone) return false;
   return true;
 }
-Pack roll_pack(uint64_t& rng, const std::vector<Ref>& earlier, bool god = false) {  // (g_mutex held)
+// r217: `set` 0 a LANCINI TIZM pack (its cards), 1 a JAM '96 pack (Jam cards) - the same odds, the same roll, each set its own pools
+// and its own 1/1s (roll_parallel: per card)
+Pack roll_pack(uint64_t& rng, const std::vector<Ref>& earlier, bool god = false, int set = 0) {  // (g_mutex held)
   std::vector<int> pool[3];
   for (size_t i = 0; i < g_set.size(); ++i)
-    if (g_set[i].here) pool[g_set[i].rarity].push_back(static_cast<int>(i));
+    if (g_set[i].here && g_set[i].set == set) pool[g_set[i].rarity].push_back(static_cast<int>(i));
   Pack p;
   std::vector<Ref> also = earlier;
   for (int slot = 0; slot < kPackCards; ++slot) {
@@ -840,7 +1160,7 @@ Pack roll_pack(uint64_t& rng, const std::vector<Ref>& earlier, bool god = false)
     roll_parallel(rng, &r, also);
     if (god && r.parallel == kBase) r.parallel = kSilver;  // r149: a god pack's: SILVER at least
     r.shiny = pk_key(g_set[pick].key) && mix64(rng) % kShinyOdds == 0;
-    {  // r149: a case hit, on top of its finish (about 1 in 24 packs has one: tools/outside/cards149.py)
+    {  // r149: a case hit, on top of its finish (r211's odds: about 1 in 100 packs has one; r149-r210 1 in 24)
       const double x = r.parallel == kBlack ? 1.0 : rand01(rng);  // (a BLACK 1/1 is its own showpiece, signed already)
       r.hit = x < kHitOdds[kHitBoom] ? kHitBoom
             : x < kHitOdds[kHitBoom] + kHitOdds[kHitHome] ? kHitHome
@@ -852,10 +1172,15 @@ Pack roll_pack(uint64_t& rng, const std::vector<Ref>& earlier, bool god = false)
   return p;
 }
 
+// r230: LANCINI EXQUISITE (its set, packs, numbers, words)
+#include "xr_cards_exq.inc"
+
 // "BLACK TIZM 1/1 CHARIZARD", "GOLD TIZM MEWTWO 07/10", "SHINY GENGAR", "SUPER RARE BLASTOISE", "MARIO"
 std::string pull_text(const Ref& r) {
+  if (exq_card(r.card)) return exq_pull_text(r);  // r230
   const Card& c = g_set[r.card];
   std::string s = upper(c.name);
+  if (c.set == 1) s = "JAM '96 " + s;  // r217
   if (r.shiny) s = "SHINY " + s;
   if (r.hit != kHitNone) {  // r149: "TIZM BOOM CHARIZARD", "HOMETOWN MARIO", "SIGNED GOLD TIZM LINK 03/10"
     Ref plain = r;
@@ -884,10 +1209,43 @@ int level_xp(int lv) { return lv > 1 ? (lv - 1) * kLevelXp : 0; }
 // Its spare copies a trade-in can take: its plain BASE copies (no SILVER / GOLD / BLACK, no shiny), never its last copy of
 // any kind. r147 (Lance: "when i said "common" i suuuuper meant "Base" cards"): any character's, common, rare or super rare.
 // (g_mutex held)
+// r210: your copies listed on the TIZM CARD MARKET (LIST FOR SALE: xrmarket tells mk_listed whenever they change) - kept out of
+// TRADE-INS and GRADING while listed. Its own lock (a leaf: taken under g_mutex or the market's, never the other way).
+std::mutex g_listedM;
+std::vector<xrmarket::Variant> g_listedV;
+int listed_n(int card, int parallel, bool shiny, int hit, int serial, int grade) {
+  std::lock_guard<std::mutex> lock(g_listedM);
+  int n = 0;
+  for (const xrmarket::Variant& v : g_listedV)
+    n += v.card == card && v.parallel == parallel && v.shiny == shiny && v.hit == hit && (parallel != kGoldTizm || v.serial == serial) && v.grade == grade ? 1 : 0;
+  return n;
+}
+int listed_raw(int card) {  // (every raw copy of a card listed, any finish)
+  std::lock_guard<std::mutex> lock(g_listedM);
+  int n = 0;
+  for (const xrmarket::Variant& v : g_listedV) n += v.card == card && v.grade == 0 ? 1 : 0;
+  return n;
+}
+// r226: your copies in a CARD MUSEUM piece (shown or put away) - kept out of TRADE-INS like a listed one. A copy of the museum's list
+// (xrmuseum::items: its own lock, taken before g_mutex - never under it), refreshed on the game thread when the museum changes. Leaf lock.
+std::mutex g_museumM;
+std::vector<xrmarket::Variant> g_museumV;
+int museum_base_n(int card) {  // (its plain BASE copies in the museum: not shiny, no hit, raw)
+  std::lock_guard<std::mutex> lock(g_museumM);
+  int n = 0;
+  for (const xrmarket::Variant& v : g_museumV) n += v.card == card && v.parallel == kBase && !v.shiny && v.hit == kHitNone && v.grade == 0 ? 1 : 0;
+  return n;
+}
+// r226 (Lance 11-12: "how do i have 97 '96 jam cards but nothing to trade in yet ... are you not including base cards for the '96 jam
+// cards???"): JAM '96 BASE spares trade in too - for a JAM '96 pack, never mixed with LANCINI TIZM spares (trade_pick(set)). The same
+// rules as the main set's: plain BASE copies only (no SILVER / GOLD / BLACK, no shiny, never a case hit: hits aren't in n), never your
+// last copy, never a listed / held one (r210 / r213), r226: never one in the museum; r152's slabs (graded / at grading) aren't in n.
+// (r217-r225: a JAM '96 card was never a spare.)
 int spare_of(int card) {
   if (card < 0 || card >= static_cast<int>(g_set.size())) return 0;
   const Owned& o = g_owned[card];
-  return std::max(0, std::min(o.n[kBase][0], o.total() - 1));
+  // (r210: a listed BASE copy is no spare: never traded in under its listing)
+  return std::max(0, std::min(o.n[kBase][0] - listed_n(card, kBase, false, kHitNone, 0, 0) - museum_base_n(card), o.total() - 1 - listed_raw(card)));
 }
 // The TRADE-INS page's order, and the next trade's: commons before rares before super rares (the best stay longest), the
 // most duplicated first among them, then by number
@@ -898,15 +1256,18 @@ bool trade_before(int x, int sx, int y, int sy) {
 }
 // The next trade-in's cards (card, how many), kTradeFor of them, one at a time by trade_before (with the spares left), not
 // the ones kept; empty when there aren't kTradeFor. (g_mutex held)
-std::vector<std::pair<int, int>> trade_pick() {
+// r226: `set` 0 LANCINI TIZM spares (for a LANCINI TIZM pack), 1 JAM '96 spares (for a JAM '96 pack) - never both in one
+std::vector<std::pair<int, int>> trade_pick(int set) {
+  const int need = trade_for(set);
   std::vector<std::pair<int, int>> left;  // (card, spares left)
   for (size_t i = 0; i < g_set.size(); ++i) {
+    if (g_set[i].set != set) continue;
     const int sp = spare_of(static_cast<int>(i));
-    if (sp > 0 && g_keep.count(g_set[i].key) == 0) left.push_back({static_cast<int>(i), sp});
+    if (sp > 0 && g_keep.count(g_set[i].id) == 0) left.push_back({static_cast<int>(i), sp});
   }
   std::vector<std::pair<int, int>> out;
   int got = 0;
-  for (; got < kTradeFor; ++got) {
+  for (; got < need; ++got) {
     int best = -1;
     for (size_t k = 0; k < left.size(); ++k)
       if (left[k].second > 0 &&
@@ -922,13 +1283,13 @@ std::vector<std::pair<int, int>> trade_pick() {
       }
     if (!found) out.push_back({left[best].first, 1});
   }
-  if (got < kTradeFor) out.clear();
+  if (got < need) out.clear();
   return out;
 }
-int spare_total(bool keptToo) {  // (g_mutex held)
+int spare_total(bool keptToo, int set = 0) {  // (g_mutex held; r226: one set's)
   int n = 0;
   for (size_t i = 0; i < g_set.size(); ++i)
-    if (keptToo || g_keep.count(g_set[i].key) == 0) n += spare_of(static_cast<int>(i));
+    if (g_set[i].set == set && (keptToo || g_keep.count(g_set[i].id) == 0)) n += spare_of(static_cast<int>(i));
   return n;
 }
 
@@ -1024,7 +1385,7 @@ void build_sets() {  // (g_mutex held, the set loaded)
     o.name = "ORIGINALS";
     o.rgb = kSeriesRgb[5];
     for (int i = 0; i < n; ++i)
-      if (g_set[i].here && PortOriginalKey(g_set[i].key.c_str())) o.cards.push_back(i);
+      if (g_set[i].here && g_set[i].set == 0 && PortOriginalKey(g_set[i].key.c_str())) o.cards.push_back(i);  // (r217: the main set's)
     if (!o.cards.empty()) g_types.push_back(o);
   }
   CLOG("sets: %d evolution lines, %d types", static_cast<int>(g_lines.size()), 18);
@@ -1065,7 +1426,19 @@ int card_bonus(int card, std::string* why, int* shinyOdds) {
     xp += pct;
     w += (w.empty() ? "" : ", ") + what + " +" + std::to_string(pct) + "%";
   };
-  const int lv = card_level(g_owned[card]);
+  // r217: the character's level - its LANCINI TIZM and JAM '96 copies together (one bonus a character, never two)
+  // r230: + its LANCINI EXQUISITE copies
+  int lv = card_level(g_owned[card]);
+  {
+    const Card& cc = g_set[static_cast<size_t>(card)];
+    if (cc.twin >= 0 && cc.twin < static_cast<int>(g_owned.size())) {
+      Owned both = g_owned[card];
+      int extra = g_owned[static_cast<size_t>(cc.twin)].total();
+      if (cc.exq >= 0 && cc.exq < static_cast<int>(g_owned.size())) extra += g_owned[static_cast<size_t>(cc.exq)].total();
+      both.n[kBase][0] += extra;
+      lv = card_level(both);
+    }
+  }
   if (lv > 1) add(level_xp(lv), "LV" + std::to_string(lv));
   if (shinyOdds != nullptr) *shinyOdds = 0;
   for (const CardSet& s : g_lines)
@@ -1085,6 +1458,7 @@ void bonuses_update() {
   std::vector<PortFranchiseCardBonus> list;
   int withXp = 0, best = 0;
   for (size_t i = 0; i < g_set.size(); ++i) {
+    if (g_set[i].set != 0) continue;  // r217: a character once (its Jam card's copies count in its level, card_bonus)
     std::string why;
     int odds = 0;
     const int xp = card_bonus(static_cast<int>(i), &why, &odds);
@@ -1140,16 +1514,20 @@ ImgP portrait(const std::string& key) {
 
 // A card's big picture (xr_big: its own 3D model rendered big and sharp; a shiny Pokemon's shiny one), waited for up to
 // `waitS` seconds; else its portrait (the shiny one's for a shiny Pokemon).
-ImgP card_art(const Card& c, bool shiny, float waitS) {
+// r226: `urgent` false - the queue's order is the caller's (xrbig::first: a pack's cards in turn order; get() would move each one asked to
+// the front, the last asked first); *big: true when it is the big picture (false: the portrait in its place - drawn again when it's in)
+ImgP card_art(const Card& c, bool shiny, float waitS, bool urgent = true, bool* big = nullptr) {
   const bool sh = shiny && pk_key(c.key);
   std::vector<uint8_t> px;
+  if (big != nullptr) *big = false;
   xrbig::prefetch(c.key, sh, kArt);
   const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(waitS * 1000.0f));
   for (;;) {
-    if (xrbig::get(c.key, sh, kArt, &px) && px.size() >= static_cast<size_t>(kArt) * kArt * 4) {
+    if ((urgent || xrbig::ready(c.key, sh, kArt)) && xrbig::get(c.key, sh, kArt, &px) && px.size() >= static_cast<size_t>(kArt) * kArt * 4) {
       auto img = std::make_shared<Img>();
       img->rgba = std::move(px);
       img->w = img->h = kArt;
+      if (big != nullptr) *big = true;
       return img;
     }
     if (xrbig::failed(c.key, sh, kArt) || std::chrono::steady_clock::now() >= until) break;
@@ -1767,7 +2145,7 @@ void card_front(Pc& P, const Card& c, const Ref& r, const ImgP& art, const ImgP&
 }
 
 // The card's back, 768 x 1075 (drawn in the front's 1080 x 1512, scaled): black chrome and its prism, LANCINI TIZM's
-// mark big, the set, its number stamped. (No name: the backs show while a pack's cards wait to be turned over.)
+// mark big, the set. (No name, no number (r212): the backs show while a pack's cards wait to be turned over.)
 // (r147, Lance: "i dont like the fact that you added the "level 2" shit on the BACK of the card, meaning i see it FIRST":
 // the back is the plain LANCINI TIZM back again - nothing of its level / copies before it's turned over; that's shown by
 // its front's stars and level_tag's moment as it turns over)
@@ -1782,10 +2160,11 @@ void card_back(Pc& P, const Card& c, int total) {
   P.text("2026-27", W / 2, 720, 70, 600, kGold, 4);
   P.text("LANCINI TIZM STRIKERS", W / 2, 810, 72, W - 140, 0xFFFFFF, 4);
   P.text("SERIES 1  -  " + std::to_string(total) + " CARDS", W / 2, 890, 44, W - 200, 0xB8C2D6, 2);
-  P.box(250, 1060, 830, 1260, 30, 0xE9EDF4, 1.0f, 0x9AA4B6);
-  P.ring(250, 1060, 830, 1260, 30, 5, 0x111111);
-  P.text("NO. " + num3(c.num), W / 2, 1130, 92, 540, 0x111111);
-  P.text("OF " + std::to_string(total), W / 2, 1212, 48, 400, 0x333A48);
+  // r212 (Lance: "i was starting to pick up on the order of the characters"): no card number on the back - a waiting
+  // card gives nothing away; its number is on its front
+  (void)c;
+  P.glow(220, 1070, W - 220, 1250, kGold, 0.18f);
+  P.text("CHASE THE 1/1", W / 2, 1160, 74, W - 220, kGold, 4);
   P.text("A STRIKERS SUPER LEAGUE COLLECTION", W / 2, 1380, 40, W - 160, 0x8A94AA, 2);
 }
 
@@ -2277,20 +2656,27 @@ void pack_back(Pc& P, int total, bool mask) {
   logo(P, 220, 150, 1.25f, false);
   P.text(std::string(kSetName) + "  -  " + std::to_string(total) + " CARDS", W / 2, 330, 40, W - 120, 0xFFFFFF, 2);
   P.box(60, 380, W - 60, 1060, 30, kNavy, 0.9f);
-  P.text("IN EVERY PACK", W / 2, 432, 50, W - 200, kGold, 3);
+  P.text("IN EVERY PACK", W / 2, 426, 50, W - 200, kGold, 3);
   const double srPerPack = (kPackCards - 1) * kSlotSR + kLastSR;
-  const std::string rows[7][2] = {{"CARDS", "5"},
-                                  {"RARE OR BETTER", "EVERY PACK"},
-                                  {"SUPER RARE", "ABOUT 1 IN " + std::to_string(static_cast<int>(std::lround(1.0 / srPerPack))) + " PACKS"},
-                                  {"SILVER TIZM", "1 IN " + std::to_string(kSilverOdds) + " CARDS"},
-                                  {"GOLD TIZM /10", "1 IN " + std::to_string(kGoldOdds) + " CARDS"},
-                                  {"BLACK TIZM 1/1", "1 IN " + std::to_string(kBlackOdds) + " CARDS"},
-                                  {"SHINY POKEMON", "1 IN " + std::to_string(kShinyOdds)}};
-  for (int i = 0; i < 7; ++i) {
-    const float y = 510 + i * 78.0f;
-    P.left(rows[i][0], 100, y, 40, 400, 0xE8ECF5, 2);
-    P.right(rows[i][1], W - 100, y, 40, 400, i >= 3 ? 0xFFF2A0 : 0xFFFFFF, 2);
-    if (i < 6) P.box(100, y + 36, W - 100, y + 40, 2, 0x2A3354);
+  // r211 (Lance's new pull rates): + the case hits and the GOD PACK, plain "1 IN N CARDS / PACKS"; eleven rows in r210's panel
+  auto in = [](int n, const char* what) { return "1 IN " + xrcoin::text(n) + " " + what; };
+  constexpr int kRows = 11;
+  const std::string rows[kRows][2] = {{"CARDS", "5"},
+                                      {"RARE OR BETTER", "EVERY PACK"},
+                                      {"SUPER RARE", "ABOUT 1 IN " + std::to_string(static_cast<int>(std::lround(1.0 / srPerPack))) + " PACKS"},
+                                      {"SILVER TIZM", in(kSilverOdds, "CARDS")},
+                                      {"GOLD TIZM /10", in(kGoldOdds, "CARDS")},
+                                      {"BLACK TIZM 1/1", in(kBlackOdds / kPackCards, "PACKS")},
+                                      {"TIZM BOOM", in(kHitIn[kHitBoom], "CARDS")},
+                                      {"HOMETOWN", in(kHitIn[kHitHome], "CARDS")},
+                                      {"SIGNED", in(kHitIn[kHitSigned], "CARDS")},
+                                      {"SHINY POKEMON", in(kShinyOdds, "POKEMON")},
+                                      {"GOD PACK", in(kGodOdds, "PACKS")}};
+  for (int i = 0; i < kRows; ++i) {
+    const float y = 492 + i * 52.0f;
+    P.left(rows[i][0], 100, y, 32, 380, 0xE8ECF5, 2);
+    P.right(rows[i][1], W - 100, y, 32, 400, i >= 3 ? 0xFFF2A0 : 0xFFFFFF, 2);
+    if (i < kRows - 1) P.box(100, y + 24, W - 100, y + 27, 2, 0x2A3354);
   }
   P.text("EARN THEM IN FRANCHISE MATCHES", W / 2, 1130, 46, W - 140, kGold, 3);
   P.text("1 A MATCH  -  2 FOR A WIN", W / 2, 1192, 42, W - 160, 0xFFFFFF, 2);
@@ -2352,67 +2738,119 @@ void card_stats(Pc& P, const Card& c, float x0, float y0, float x1, float y1, fl
 
 ImgP home_picture(const std::string& name);  // (below)
 #if __has_include("xr_sign.h")
-void bake_signature(std::vector<uint8_t>& px, int w, int h, const Card& c);  // (below)
+void bake_signature(std::vector<uint8_t>& px, int w, int h, const Card& c, float foot = 0.0f);  // (below)
 #endif
 
-std::vector<uint8_t> draw_front(const Card& c, const Ref& r, int total, float waitS, int special = kSpNone, int level = 0) {
+// r217: the two sets' looks (A PRIZM CHROME, B TIZM JAM '96) - their pixel kit and their pictures
+#include "xr_cards_look.inc"
+#include "xr_cards_look_ab.inc"
+#include "xr_cards_look_exq.inc"  // r230: LANCINI EXQUISITE (NOIR + THE VAULT)
+
+// r230: an EXQUISITE EMERALD / SAPPHIRE's front normals' length (xr_fx_model.frag kJewelCode: its jewel chrome refractor + sparkle), 0 any other
+constexpr float kJewelCode = 7.0f;
+float jewel_code(const Ref& r) {
+  if (r.card < 0 || r.card >= static_cast<int>(g_set.size()) || g_set[static_cast<size_t>(r.card)].set != 2) return 0.0f;
+  const int t = xrexq::tier_of(r.serial);
+  return t == xrexq::kEmerald ? kJewelCode : (t == xrexq::kSapphire ? kJewelCode + 1.0f : 0.0f);
+}
+// r220: a JAM '96 card's die (lk::jam_shape: its rarest feature; 0 the crest) and how far it moves the name / sticker up (its foot);
+// an A card: -1 / 0
+int jam_shape_of(const Card& c, const Ref& r) { return c.set == 1 ? lk::jam_shape(r) : -1; }
+float jam_foot(const Ref& r) {
+  const int s = lk::jam_shape(r);
+  return s != 0 ? lk::jam_layout(s).foot : 0.0f;
+}
+
+// r226: `artUrgent` / *bigArt as card_art's (*bigArt true too for a front with no picture of the character: nothing to wait for)
+std::vector<uint8_t> draw_front(const Card& c, const Ref& r, int total, float waitS, int special = kSpNone, int level = 0,
+                                bool artUrgent = true, bool* bigArt = nullptr) {
+  if (c.set == 2) {  // r230: LANCINI EXQUISITE - the NOIR front (lk::xq), every tier; always flat (its autograph / patch printed on it)
+    lk::xq::XIn xin;
+    xin.art = card_art(c, false, waitS, artUrgent, bigArt);
+    xin.no = c.num;
+    xin.total = g_exqN;
+    xin.rookie = exq_rookie(c);
+    exq_club(c, &xin.club1, &xin.club2);
+    (void)total, (void)special, (void)level;
+    return lk::xq::x_front(c, r, xin);
+  }
   // r147 (Lance, his GOLD Scyther: "they need a static image of the character on the card AS WELL AS the 3D body on top of the
   // card"): a GOLD's pop-out front keeps its picture too (its figure still stands on its top edge)
   const bool flat = special == kSpNone;
   // (r150: a TIZM BOOM's character printed on its clean face on show too - only its bursts and words pop out)
-  const ImgP art = flat || special == kSpPop || special == kSpSign || special == kSpBoom ? card_art(c, r.shiny, waitS) : ImgP(),
-             badge = emblem(c);
-  Pc P, M;
-  if (r.hit == kHitHome) {  // r149: HOMETOWN - drawn landscape, turned onto the card
-    std::string place;
-    const std::string file = home_backdrop(c, &place);
-    const ImgP home = flat ? home_picture(file) : ImgP();
-    home_front(P, c, r, art, badge, home, place, total, false, !flat, level);
-    home_front(M, c, r, art, badge, home, place, total, true, !flat, level);
-    return turn_ccw(render(kHomeW, kHomeH, P.v, &M.v), kHomeW, kHomeH);
-  }
+  // r217 (Lance 11-11: A for the main set, B the new JAM '96 pack): every front in its set's look (lk::a_front / b_front, the
+  // mockups' pixel kit; a HOMETOWN landscape, turned onto the card) - the same finishes, specials' windows, case hits, stars
+  lk::FrontIn in;
+  const bool wantArt = flat || special == kSpPop || special == kSpSign || special == kSpBoom;
+  if (bigArt != nullptr) *bigArt = true;
+  in.art = wantArt ? card_art(c, r.shiny, waitS, artUrgent, bigArt) : ImgP();
+  in.total = total;
+  in.special = special;
+  in.level = level;
   std::vector<uint8_t> px;
-  if (r.hit == kHitBoom) {  // r149: TIZM BOOM
-    boom_front(P, c, r, art, badge, total, false, flat, level);
-    boom_front(M, c, r, art, badge, total, true, flat, level);
-    px = render(kFrontW, kFrontH, P.v, r.parallel != kBase ? &M.v : nullptr);
-  } else {
-    card_front(P, c, r, art, badge, total, false, special, level);
-    card_front(M, c, r, art, badge, total, true, special, level);
-    // r138: BASE no foil at all (a window still cut through a shiny's); r149: a SIGNED's sticker is foil
-    const bool masked = r.parallel != kBase || special == kSpWindow || special == kSpGlass || r.hit == kHitSigned;
-    px = render(kFrontW, kFrontH, P.v, masked ? &M.v : nullptr);
+  if (r.hit == kHitHome) {  // r149: HOMETOWN - drawn landscape, turned onto the card
+    const std::string file = home_backdrop(c, &in.place);
+    if (flat) in.home = home_picture(file);
+    return turn_ccw(lk::home_front_lk(c, r, in, !flat), kHomeW, kHomeH);
   }
+  if (r.hit == kHitBoom) in.boomPage = pp_page(), in.boomBadge = pp_badge();  // r149 / r166: TIZM BOOM's printed page
+  px = c.set == 1 ? lk::b_front(c, r, in) : lk::a_front(c, r, in);
 #if __has_include("xr_sign.h")
   // r149: a SIGNED card / every BLACK 1/1, flat: its autograph on it (on show, its own writes itself on: special_up)
-  if (flat && (r.hit == kHitSigned || r.parallel == kBlack)) bake_signature(px, kFrontW, kFrontH, c);
+  // (r220: a Jam die's sticker sits up its foot)
+  if (flat && (r.hit == kHitSigned || r.parallel == kBlack)) bake_signature(px, kFrontW, kFrontH, c, c.set == 1 ? jam_foot(r) : 0.0f);
 #endif
   return px;
 }
-std::vector<uint8_t> draw_back(const Card& c, int total) {  // (r147: the plain back, always)
-  Pc P;
-  P.k = static_cast<float>(kBackW) / kCW;
-  card_back(P, c, total);
-  return render(kBackW, kBackH, P.v, nullptr);
+// r217: a set's back (every card of a set the same: drawn once a set, kept - 3.3 MB each)
+// r220: `shape` a JAM '96 card's own die (lk::jam_shape: its back once it's turned over / out of the binder / in a slab; 0 the crest a
+// face-down card shows) - the last few drawn kept (3.3 MB each, at most kBackKeep)
+std::vector<uint8_t> draw_back(const Card& c, int total, int shape = 0) {  // (r147: the plain back, always)
+  (void)total;
+  static std::mutex m;
+  static std::vector<uint8_t> done[3];  // (r230: + LANCINI EXQUISITE's)
+  static std::vector<std::pair<int, std::vector<uint8_t>>> cut;  // (newest last)
+  constexpr size_t kBackKeep = 3;
+  const int set = c.set == 1 ? 1 : (c.set == 2 ? 2 : 0);
+  if (set == 1 && shape > 0) {
+    {
+      std::lock_guard<std::mutex> lock(m);
+      for (size_t i = 0; i < cut.size(); ++i)
+        if (cut[i].first == shape) {
+          auto e = std::move(cut[i]);
+          cut.erase(cut.begin() + static_cast<long>(i));
+          cut.push_back(std::move(e));
+          return cut.back().second;
+        }
+    }
+    std::vector<uint8_t> px = lk::shrink(lk::b_back_cv(shape), kBackW, kBackH, true);
+    std::lock_guard<std::mutex> lock(m);
+    cut.push_back({shape, px});
+    while (cut.size() > kBackKeep) cut.erase(cut.begin());
+    return px;
+  }
+  std::lock_guard<std::mutex> lock(m);
+  if (done[set].empty()) done[set] = lk::shrink(set == 2 ? lk::xq::x_back_cv() : (set == 1 ? lk::b_back_cv() : lk::a_back_cv()), kBackW, kBackH, true);
+  return done[set];
 }
 std::vector<uint8_t> draw_tag(int level, int copies, bool up) {  // r147
   Pc P;
   level_tag(P, level, copies, up);
   return render(kTagW, kTagH, P.v, nullptr);
 }
-std::vector<uint8_t> draw_pack(bool back, int total) {
-  ImgP stars[3] = {portrait("strikers_mario"), portrait("pk_charizard"), portrait("mua_spiderman")};
-  if (stars[1]->empty()) stars[1] = portrait("strikers_peach");
-  if (stars[2]->empty()) stars[2] = portrait("strikers_wario");
-  Pc P, M;
-  if (back) {
-    pack_back(P, total, false);
-    pack_back(M, total, true);
-  } else {
-    pack_front(P, stars, false);
-    pack_front(M, stars, true);
-  }
-  return render(kPackW, kPackH, P.v, &M.v);
+// r217: `set` 0 the LANCINI TIZM wrapper (mockup A), 1 the JAM '96 one (mockup B); their stars placed so no face is covered
+// (lk::trio_layout - logged)
+std::vector<uint8_t> draw_pack(bool back, int total, int set = 0) {
+  if (set == 2) return lk::bytes(back ? lk::xq::x_pack_back_cv() : lk::xq::x_pack_cv(), true);  // r230: LANCINI EXQUISITE
+  if (back) return lk::bytes(lk::pack_back_cv(set, total), true);
+  ImgP mario = portrait("strikers_mario"), chari = portrait("pk_charizard"), spidey = portrait("mua_spiderman");
+  if (chari->empty()) chari = portrait("strikers_peach");
+  if (spidey->empty()) spidey = portrait("strikers_wario");
+  lk::Star st[3];
+  lk::pack_stars(mario, chari, spidey, st);
+  std::vector<uint8_t> px = lk::bytes(set == 1 ? lk::b_pack_cv(st) : lk::a_pack_cv(st), true);
+  CLOG("pack wrapper %s: stars placed, faces covered at most %.1f%%", set == 1 ? "JAM '96" : "LANCINI TIZM", 100.0f * lk::g_trioWorst[set]);
+  return px;
 }
 
 // ------------------------------------------------------------------------------------- the binder (the hub)
@@ -2559,8 +2997,78 @@ ImgP sign_pic(const Card& c) {
 // in the binder yet). r149 (Lance: "never display if you have a shiny or not or silver or whatever tf at the trade in"):
 // `baseOnly` (the TRADE-INS page) the plain BASE card whatever else you have of it - BASE stock, no finish, no shiny, its
 // corner BASE
+void mini_card0(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x1, float y1, const ImgP& pic, bool baseOnly,
+                bool isNew);
+// r217: a pocket - its card as before; a JAM '96 card die-cut (its crest's shoulders cut from the pocket's top corners) and its '96
+// sticker, so the binder's Jam pages read as the other set from across the page
+std::vector<uint8_t> board_px(int w, int h, const Pc& P);  // (below)
+void mini_exq(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x1, float y1, const ImgP& pic, bool isNew);  // r230 (below)
 void mini_card(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x1, float y1, const ImgP& pic, bool baseOnly = false,
                bool isNew = false) {
+  struct ArtFrom {  // r236: card art keeps its own look in the hub (xr_text.h BoardPiece::art)
+    std::vector<xrtext::BoardPiece>& v;
+    size_t at;
+    ~ArtFrom() {
+      for (size_t i = at; i < v.size(); ++i) v[i].art = true;
+    }
+  } artFrom{P.v, P.v.size()};
+  if (c.set == 2 && (baseOnly || o.bestGrade <= 0)) {  // r230: a LANCINI EXQUISITE pocket (NOIR's black + gold)
+    mini_exq(P, c, o, x0, y0, x1, y1, pic, isNew);
+    return;
+  }
+  if (c.set != 1 || (!baseOnly && o.bestGrade > 0)) {  // (a slab's pocket: its case)
+    mini_card0(P, c, o, x0, y0, x1, y1, pic, baseOnly, isNew);
+    return;
+  }
+  const float w = x1 - x0, h = y1 - y0;
+  // r220: its best copy's own die (lk::jam_shape: the crest, a crown, the star crown ...)
+  Ref best;
+  best.parallel = baseOnly ? kBase : std::max(0, o.best());
+  best.hit = baseOnly || best.parallel == kBlack ? kHitNone : o.hitBest();
+  best.shiny = !baseOnly && o.shinyAny();
+  // r223 (Lance 11-12 on the JAM '96 cards: "the tips up top are like invisible with a black outline"): r220 painted the HUB's page navy
+  // (0x10131C) over what the die cuts away - right on the hub's page, but the 3D binder's pages are white pockets (and TIZM GRADING's
+  // page another blue): dark wedges at every Jam pocket's top inside the pocket's outline. Now the pocket is drawn into its own picture
+  // (the pocket + its halo round it, on the page's own pixel grid) and cut to its die there: what the die cuts away is see-through, so
+  // whatever page it's on shows - the hub's exactly as before
+  constexpr float kHalo = 26.0f;  // (mini_card0's halos reach 24 past the pocket)
+  const float fx0 = std::floor(P.ox + (x0 - kHalo) * P.k), fy0 = std::floor(P.oy + (y0 - kHalo) * P.k);
+  const float fx1 = std::ceil(P.ox + (x1 + kHalo) * P.k), fy1 = std::ceil(P.oy + (y1 + kHalo) * P.k);
+  const int iw = static_cast<int>(fx1 - fx0), ih = static_cast<int>(fy1 - fy0);
+  const int shape = lk::jam_shape(best);
+  if (iw > 0 && ih > 0 && iw <= 2048 && ih <= 2048 && P.k > 1e-4f) {
+    Pc Q;
+    Q.k = P.k;
+    Q.ox = P.ox - fx0, Q.oy = P.oy - fy0;
+    Q.tSlant = P.tSlant, Q.tXscale = P.tXscale, Q.tAngle = P.tAngle, Q.tShadow = P.tShadow, Q.tShadowA = P.tShadowA;
+    Q.tShadowRgb = P.tShadowRgb, Q.tRim = P.tRim;
+    mini_card0(Q, c, o, x0, y0, x1, y1, pic, baseOnly, isNew);
+    auto img = std::make_shared<Img>();
+    img->w = iw, img->h = ih;
+    img->rgba = board_px(iw, ih, Q);
+    // its die over the pocket (box-filtered, the pocket's size in the page's pixels); its halo outside the pocket as it was
+    const float px0 = P.ox + x0 * P.k - fx0, py0 = P.oy + y0 * P.k - fy0, pw = w * P.k, ph = h * P.k;
+    const int dw = std::max(16, std::min(kFrontW, static_cast<int>(std::lround(pw)))), dh = std::max(16, std::min(kFrontH, static_cast<int>(std::lround(ph))));
+    const ImgP die = lk::cut_small(shape, 0.0f, dw, dh, 0xFFFFFF, false);
+    for (int y = 0; y < ih; ++y)
+      for (int x = 0; x < iw; ++x) {
+        const float u = (x + 0.5f - px0) / pw, v = (y + 0.5f - py0) / ph;
+        if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) continue;
+        const int sx = std::min(dw - 1, static_cast<int>(u * dw)), sy = std::min(dh - 1, static_cast<int>(v * dh));
+        uint8_t& a = img->rgba[(static_cast<size_t>(y) * iw + x) * 4 + 3];
+        a = static_cast<uint8_t>((a * die->rgba[(static_cast<size_t>(sy) * dw + sx) * 4 + 3] + 127) / 255);
+      }
+    P.image(img, (fx0 - P.ox) / P.k, (fy0 - P.oy) / P.k, (fx1 - P.ox) / P.k, (fy1 - P.oy) / P.k, false);
+  } else {  // (never on a page; as r220)
+    mini_card0(P, c, o, x0, y0, x1, y1, pic, baseOnly, isNew);
+    const int iw2 = std::max(16, std::min(400, static_cast<int>(std::lround(w)))), ih2 = std::max(16, std::min(560, static_cast<int>(std::lround(h))));
+    P.image(lk::cut_small(shape, 0.0f, iw2, ih2, 0x10131C, true), x0 - 0.5f, y0 - 0.5f, x1 + 0.5f, y1 + 0.5f, false);
+  }
+  P.box(x0 + 0.33f * w, y0 + 2, x1 - 0.33f * w, y0 + 0.07f * h, 0.035f * h, 0x0C0814);
+  P.text("'96", 0.5f * (x0 + x1), y0 + 0.037f * h, 0.055f * h, 0.3f * w, 0xFFD400, 0);
+}
+void mini_card0(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x1, float y1, const ImgP& pic, bool baseOnly,
+                bool isNew) {
   const float w = x1 - x0, h = y1 - y0, cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
   if (!baseOnly && o.bestGrade > 0) {  // r152: a card with a TIZM GRADING slab back: its best slab
     void slab_pocket(Pc & P, const Card& c, const Ref& r, int grade, uint32_t cert, int left, float x0, float y0, float x1, float y1,
@@ -2749,6 +3257,58 @@ void mini_card(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x
   P.poly({x0 + 4, y0 + h * 0.36f, x1 - 4, y0 + h * 0.06f, x1 - 4, y0 + h * 0.2f, x0 + 4, y0 + h * 0.5f}, 0xFFFFFF, 0.06f);  // the sleeve
 }
 
+// r230: a LANCINI EXQUISITE pocket - NOIR in small: matte black, a gold hairline, an arched window spotlit in its colour with its portrait,
+// its name in gold, its best copy's tier + number on a pill in the tier's colour (EMERALD green, SAPPHIRE blue ...), RC for a rookie; a
+// card you don't have: a dark silhouette and its checklist number
+uint32_t exq_tier_rgb(int t) {
+  switch (t) {
+    case xrexq::kSilverLeaf: case xrexq::kPatch: return 0xC9CED6;
+    case xrexq::kGoldLeaf: case xrexq::kAuto: case xrexq::kRpa: case xrexq::kPatchAuto: return 0xE6C774;
+    case xrexq::kEmerald: return 0x2FC07E;
+    case xrexq::kSapphire: return 0x4A7CF0;
+    case xrexq::kMasterpiece: return 0xFFD86A;
+    default: return 0xCDBB95;
+  }
+}
+void mini_exq(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x1, float y1, const ImgP& pic, bool isNew) {
+  const float w = x1 - x0, h = y1 - y0, cx = 0.5f * (x0 + x1);
+  const Ref best = exq_best(o, true);
+  const int t = best.card >= 0 ? xrexq::tier_of(best.serial) : 0;
+  if (t == 0) {
+    P.box(x0, y0, x1, y1, 14, 0x0C0C0E);
+    P.ring(x0 + 5, y0 + 5, x1 - 5, y1 - 5, 10, 2, 0x3A3426);
+    P.centred(pic, x0 + 14, y0 + 30, x1 - 14, y1 - 64, 0.9f, 0x1E1C18);
+    P.text("#" + num3(c.num), cx, y1 - 36, 40, w - 20, 0x5A5240, 2);
+    return;
+  }
+  const uint32_t tc = exq_tier_rgb(t);
+  P.glow(x0 - 22, y0 - 22, x1 + 22, y1 + 22, tc, t >= xrexq::kGoldLeaf ? 0.75f : 0.45f);
+  P.box(x0, y0, x1, y1, 14, t == xrexq::kEmerald ? 0x07281B : (t == xrexq::kSapphire ? 0x0A1A3C : 0x0E0E10));
+  P.ring(x0 + 4, y0 + 4, x1 - 4, y1 - 4, 11, t == xrexq::kMasterpiece || t == xrexq::kGoldLeaf ? 6 : 3, tc);
+  P.box(x0 + 14, y0 + 30, x1 - 14, y1 - 92, 0.42f * (w - 28), dark(c.c1, 0.55f), 1.0f, dark(c.c1, 0.85f));  // (its arched window)
+  P.glow(x0 + 20, y0 + 40, x1 - 20, y1 - 96, light(c.c1, 0.3f), 0.35f);
+  P.centred(pic, x0 + 16, y0 + 36, x1 - 16, y1 - 94, 0.92f);
+  P.text(upper(c.name), cx, y1 - 74, 26, w - 24, 0xE6C774, 2);
+  const std::string tag = std::string(xrexq::short_name(t, exq_rookie(c))) + " " + xrexq::num_text(best.serial);
+  const float tw = std::min(w - 16, P.width(tag, 22) + 20);
+  P.box(cx - tw / 2, y1 - 52, cx + tw / 2, y1 - 20, 16, tc);
+  P.text(tag, cx, y1 - 36, 22, tw - 10, t == xrexq::kSapphire || t == xrexq::kEmerald ? 0xFFFFFF : 0x1A1206);
+  P.left("EXQ", x0 + 12, y0 + 22, 22, 80, 0xE6C774, 2);
+  if (exq_rookie(c)) {
+    P.box(x1 - 56, y0 + 8, x1 - 10, y0 + 44, 10, 0xE6C774);
+    P.text("RC", x1 - 33, y0 + 26, 24, 40, 0x1A1206);
+  }
+  if (o.total() > 1) {
+    P.box(x0 + 8, y1 - 132, x0 + 70, y1 - 98, 17, 0xD3202A);
+    P.text("X" + std::to_string(o.total()), x0 + 39, y1 - 115, 24, 54, 0xFFFFFF, 2);
+  }
+  if (isNew) {
+    P.box(x0 + 4, y0 + 40, x0 + 86, y0 + 82, 21, 0xFF3B30);
+    P.ring(x0 + 4, y0 + 40, x0 + 86, y0 + 82, 21, 3, 0xFFFFFF);
+    P.text("NEW", x0 + 45, y0 + 61, 28, 74, 0xFFFFFF, 2);
+  }
+  P.poly({x0 + 4, y0 + h * 0.36f, x1 - 4, y0 + h * 0.06f, x1 - 4, y0 + h * 0.2f, x0 + 4, y0 + h * 0.5f}, 0xFFFFFF, 0.05f);  // the sleeve
+}
 // r152: a TIZM GRADING slab's label (w x h, ~3.5 : 1): LANCINI TIZM GRADING, its card's name and number, its finish /
 // shiny / case hit, its set, its cert; its grade huge on the right with its words (GEM MINT, MINT, NM-MT ...). A GEM
 // MINT 10's label gold and holographic. grade 0: at grading (no grade yet)
@@ -2756,6 +3316,47 @@ std::string ref_words(const Ref& r);  // (below)
 void slab_label(Pc& P, const Card& c, const Ref& r, int grade, uint32_t cert, float w, float h) {
   const bool gem = grade == 10;
   const float k = h / 274.0f;  // (drawn for 960 x 274)
+  if (c.set == 2) {  // r230: a LANCINI EXQUISITE slab's label: matte black, gold hairlines, the gold name, its tier + number, a gold grade disc
+    P.box(0, 0, w, h, 18 * k, 0x0C0C0E);
+    P.ring(8 * k, 8 * k, w - 8 * k, h - 8 * k, 12 * k, 3 * k, 0xC9A04A);
+    P.left("LANCINI TIZM GRADING  -  EXQUISITE", 34 * k, 52 * k, 30 * k, w * 0.6f, 0xEDE6D3, 2 * k);
+    P.left(upper(c.name) + "  #" + num3(c.num), 30 * k, 122 * k, 48 * k, w * 0.64f, 0xE6C774, 3 * k);
+    P.left(xrexq::words(r.serial, exq_rookie(c)), 30 * k, 176 * k, 30 * k, w * 0.64f, 0xFFFFFF, 2 * k);
+    P.left(std::string(xrexq::kSetName) + "   CERT #" + std::to_string(cert), 30 * k, 226 * k, 22 * k, w * 0.64f, 0xB8A57A, 0);
+    const float gcx = w - 150 * k, gcy = 0.5f * h, gr = 112 * k;
+    P.box(gcx - gr, gcy - gr, gcx + gr, gcy + gr, gr, 0xC9A04A);
+    P.box(gcx - gr + 8 * k, gcy - gr + 8 * k, gcx + gr - 8 * k, gcy + gr - 8 * k, gr, 0x0C0C0E);
+    if (grade > 0) {
+      P.text(std::to_string(grade), gcx, gcy - 18 * k, 120 * k, 2 * gr, 0xE6C774, 3 * k);
+      P.text(kGradeName[grade], gcx, gcy + 70 * k, 28 * k, 2 * gr - 30 * k, 0xEDE6D3, 2 * k);
+    } else {
+      P.text("AT GRADING", gcx, gcy, 30 * k, 2 * gr - 30 * k, 0xEDE6D3, 2 * k);
+    }
+    return;
+  }
+  if (c.set == 1) {  // r217: a JAM '96 slab's label (mockup B): ink, a purple-teal marble field, the name in yellow, a yellow grade disc
+    P.box(0, 0, w, h, 18 * k, 0x0C0814);
+    P.box(8 * k, 8 * k, w - 8 * k, h - 8 * k, 12 * k, 0x4A1A8A, 1.0f, 0x1A6AAA);
+    P.glow(w * 0.1f, -h * 0.4f, w * 0.7f, h * 0.9f, 0xE0218A, 0.35f);
+    P.dots(8 * k, 8 * k, w - 8 * k, h - 8 * k, 16 * k, 0.05f, 0.3f, 0x0C0814, 0.25f);
+    hexagon(P, 52 * k, 58 * k, 30 * k, 0x0C0814);
+    hexagon(P, 52 * k, 58 * k, 22 * k, 0xE8ECF5);
+    P.left("LANCINI TIZM GRADING  -  JAM '96", 96 * k, 58 * k, 32 * k, w * 0.6f, 0xFFFFFF, 2 * k);
+    P.left(upper(c.name) + "  #" + num3(c.num), 30 * k, 128 * k, 48 * k, w * 0.64f, 0xFFD400, 3 * k);
+    P.left(ref_words(r), 30 * k, 182 * k, 30 * k, w * 0.64f, 0xFFFFFF, 2 * k);
+    P.left("2026-27 STRIKERS   CERT #" + std::to_string(cert), 30 * k, 230 * k, 24 * k, w * 0.64f, 0xB8A8E8, 0);
+    const float gcx = w - 150 * k, gcy = 0.5f * h, gr = 112 * k;
+    P.box(gcx - gr, gcy - gr, gcx + gr, gcy + gr, gr, 0x0C0814);
+    P.box(gcx - gr + 12 * k, gcy - gr + 12 * k, gcx + gr - 12 * k, gcy + gr - 12 * k, gr - 12 * k, gem ? 0xFFD400 : 0xFFE680);
+    if (grade > 0) {
+      P.text(kGradeName[grade], gcx, gcy - 62 * k, 26 * k, 1.5f * gr, 0x0C0814, 0);
+      P.text(std::to_string(grade), gcx, gcy + 18 * k, 120 * k, 1.5f * gr, 0xFFFFFF, 6 * k);
+    } else {
+      P.text("AT GRADING", gcx, gcy - 62 * k, 24 * k, 1.5f * gr, 0x0C0814, 0);
+      P.text("?", gcx, gcy + 18 * k, 110 * k, 1.5f * gr, 0xFFFFFF, 6 * k);
+    }
+    return;
+  }
   P.box(0, 0, w, h, 18 * k, gem ? 0xFFF1B0 : 0xF7F8FA, 1.0f, gem ? 0xE2AE3A : 0xE3E7EE);
   if (gem) holo_bands(P, 4 * k, 4 * k, w - 4 * k, h - 4 * k, 34 * k, 0.16f, 0.15f);
   P.ring(0, 0, w, h, 18 * k, 5 * k, gem ? 0x9A6A10 : 0x1A2233);
@@ -2791,6 +3392,13 @@ void mini_card(Pc& P, const Card& c, const Owned& o, float x0, float y0, float x
                bool isNew);
 void slab_pocket(Pc& P, const Card& c, const Ref& r, int grade, uint32_t cert, int left, float x0, float y0, float x1, float y1,
                  const ImgP& pic, bool shown, bool isNew, int count) {
+  struct ArtFrom {  // r236: card art keeps its own look in the hub (xr_text.h BoardPiece::art)
+    std::vector<xrtext::BoardPiece>& v;
+    size_t at;
+    ~ArtFrom() {
+      for (size_t i = at; i < v.size(); ++i) v[i].art = true;
+    }
+  } artFrom{P.v, P.v.size()};
   const float w = x1 - x0, h = y1 - y0, cx = 0.5f * (x0 + x1);
   if (grade == 10 && left == 0) P.glow(x0 - 22, y0 - 22, x1 + 22, y1 + 22, 0xFFD24A, 0.8f);
   P.box(x0, y0, x1, y1, 12, 0xC9D6E6, 0.42f);  // (the clear acrylic)
@@ -2853,7 +3461,16 @@ void slab_pocket(Pc& P, const Card& c, const Ref& r, int grade, uint32_t cert, i
 }
 
 // A small pack (the side panel's stack, the opening page): chrome, crimped, the gem and TIZM.
+// r217: the CARD SHOP's pictures (below): each pack's own wrapper (small) / its box of five (3/4 view); null while being drawn
+ImgP shop_pic(int set, bool box);
 void mini_pack(Pc& P, float x0, float y0, float x1, float y1, bool plainBack = false) {
+  struct ArtFrom {  // r236: card art keeps its own look in the hub (xr_text.h BoardPiece::art)
+    std::vector<xrtext::BoardPiece>& v;
+    size_t at;
+    ~ArtFrom() {
+      for (size_t i = at; i < v.size(); ++i) v[i].art = true;
+    }
+  } artFrom{P.v, P.v.size()};
   const float w = x1 - x0, cx = 0.5f * (x0 + x1);
   P.box(x0, y0, x1, y1, 10, 0xDCE1EA, 1.0f, 0x7E889A);
   P.box(x0, y0, x1, y0 + 18, 4, 0xEEF1F6, 1.0f, 0x8E97A8);
@@ -2869,25 +3486,24 @@ void mini_pack(Pc& P, float x0, float y0, float x1, float y1, bool plainBack = f
   P.box(x0, y0 + 0.68f * (y1 - y0), x1, y0 + 0.78f * (y1 - y0), 0, 0x0E1220);
 }
 
-// r140: a TIZM COIN: chrome round the brand's gem, at (cx, cy), r its radius
+// r140: the coin, at (cx, cy), r its radius. r216 (Lance 11-11: TIZM COINS -> BIT COINS): the BIT COIN everywhere coins show -
+// the sportsbook / casino / market's gold coin with the 8-bit B (xrcoin::bit_face); r140-r215 here: chrome round the TIZM gem
 void coin_icon(Pc& P, float cx, float cy, float r) {
-  P.box(cx - r, cy - r, cx + r, cy + r, r, 0xF4F6FA, 1.0f, 0x7C8698);  // its chrome rim
-  const float f = 0.84f * r;
-  P.box(cx - f, cy - f, cx + f, cy + f, f, 0x2A3354, 1.0f, 0x0B1022);  // its face
-  static const uint32_t kFacet[6] = {0xFFFFFF, 0xD9E0EE, 0x8E9BB4, 0x5A6682, 0xA6B3CC, 0xEEF2FA};
-  const float g = 0.58f * r;
-  for (int i = 0; i < 6; ++i) {
-    const float a0 = -1.5707963f + 1.0471976f * i, a1 = a0 + 1.0471976f;
-    P.poly({cx, cy, cx + g * std::cos(a0), cy + g * std::sin(a0), cx + g * std::cos(a1), cy + g * std::sin(a1)}, kFacet[i]);
-  }
+  P.box(cx - r, cy - r, cx + r, cy + r, r, 0xB8860B);  // its rim
+  const float f = 0.86f * r;
+  P.box(cx - f, cy - f, cx + f, cy + f, f, 0xFFD23F, 1.0f, 0xE0A800);  // its gold face
+  xrcoin::bit_face([&](float x0, float y0, float x1, float y1, uint32_t rgb) { P.box(x0, y0, x1, y1, 0, rgb); }, cx, cy, r);
 }
 
 struct BinderView {
   std::vector<int> list;
+  std::vector<long long> values;  // r201: the spread's cards' market values (TIZM CARD MARKET; -1 none; r210: 64-bit)
   std::vector<Card> cards;  // the spread's
   std::vector<Owned> owned;
   std::vector<bool> isNew;  // r149: NEW (a pack's, not looked at yet)
   int spread = 0, spreads = 1, cursor = 0, total = 0, here = 0, have = 0, packs = 0, mode = 0;
+  int jamHere = 0, jamHave = 0;  // r217: the JAM '96 set's progress (here / have: the LANCINI TIZM set's)
+  int exqHere = 0, exqHave = 0;  // r230: LANCINI EXQUISITE's
   int haveTier[3] = {0, 0, 0}, hereTier[3] = {0, 0, 0}, shinies = 0, finishes[4] = {0, 0, 0, 0};
   int hits[4] = {0, 0, 0, 0}, godPacks = 0;  // r149: case hits by kind, GOD PACKs opened
   // r152: TIZM GRADING - your slabs (at grading first, then the best), the cards you can send (their copy, its cost), the
@@ -2917,6 +3533,9 @@ struct BinderView {
   std::vector<FxTile> fx;
   int fxCursor = 0, fxArmed = -1;
   int fxTop = 0;  // r161: the first row in view (20 explosions + NO EXPLOSION: 6 rows, 4 at a time)
+  std::vector<int> fxList;  // r236: GOAL FX / TAKEOVERS: the page's catalogue indices (-1 NO EXPLOSION), the ring's place in it
+  int fxPos = 0;
+  bool packsOnOpen = true;  // r236: CARDS > PACKS - the ring on OPEN
   bool fxPreviewing = false, fxNone = false;
   std::string fxSay;
   // r160: binder skins + card sleeves - the one you have on of each (the binder page's frame, its pockets' sleeves), the
@@ -2931,7 +3550,8 @@ struct BinderView {
   bool lkBallFocus = true, ballPreview = false;
   int lkBall = 0, ballOn = 0, lkBallFirst = 0;  // (r170: the first ball in view)
   std::vector<bool> ballOwned;
-  int coins = 0, lastCoins = 0, pick = 0;  // r140
+  long long coins = 0;  // r140; r208: 64-bit
+  int lastCoins = 0, pick = 0;
   long long lastWhen = 0;
   std::string lastWhy, say;
   bool shop = false;
@@ -2949,6 +3569,10 @@ struct BinderView {
   std::vector<Tile> tiles;
   int spareAll = 0, spareFree = 0, tradedCards = 0, tradedPacks = 0, tradeCursor = 0, tradeTop = 0;
   std::string tradeSay;
+  // r226: the page's set (its tiles / spareAll / spareFree are that set's), each set's spares (all / not kept), the cursor on the set panels
+  int tradeSet = 0;
+  int setSpareAll[2] = {0, 0}, setSpareFree[2] = {0, 0};
+  bool tradeOnSets = false;
   // r146: SETS: the evolution lines (done first, then nearest), the types, the binder's pages
   struct SetRow {
     std::string name;
@@ -3009,18 +3633,39 @@ void trade_tile_rect(int k, float cx, float y0, float* tx0, float* ty0) {  // k:
 void trade_page(Pc& P, const BinderView& b) {
   const float x0 = kAreaX0, x1 = kAreaX1, y0 = kAreaY0, cx = 0.5f * (x0 + x1);
   P.box(x0, y0, x1, 1180, 26, 0x1A2140, 1.0f, 0x0A0E1C);  // (r157 round 2: down to the page area's foot)
-  P.text("TRADE-INS", cx, y0 + 62, 70, 900, kGold, 5);
-  P.text("10 SPARE BASE CARDS = 1 FREE PACK", cx, y0 + 122, 40, x1 - x0 - 60, 0xB8C2D6, 2);
-  P.right(std::to_string(b.spareFree), cx - 30, y0 + 182, 76, 300, 0xFFFFFF, 5);
-  P.left(b.spareFree == 1 ? "SPARE BASE CARD" : "SPARE BASE CARDS", cx - 10, y0 + 172, 40, 520, 0xE8ECF5, 3);
-  const int packs = b.spareFree / kTradeFor;
-  P.left(packs > 0 ? "= " + std::to_string(packs) + (packs == 1 ? " PACK" : " PACKS") : "10 MAKE A PACK", cx - 10, y0 + 214, 40, 520,
-         packs > 0 ? kGold : 0x8A94AA, 2);
-  if (b.spareAll > b.spareFree)
-    P.right(std::to_string(b.spareAll - b.spareFree) + " KEPT", x1 - 50, y0 + 196, 40, 300, 0xFF9A8A, 2);
+  P.text("TRADE-INS", cx, y0 + 50, 70, 900, kGold, 5);
+  // r230: LANCINI EXQUISITE has none - every card of it is numbered (no spares: each copy its own number)
+  // (r236: "EXQUISITE: NO TRADE-INS - EVERY CARD IS NUMBERED" gone - 24-26 px and always on)
+  
+  // r226 (Lance 11-12: JAM '96 spares trade in too): the two sets side by side - each its own spares and its own pack (its real wrapper,
+  // the shop's picture); the one picked (stick up from the cards, left / right) is the grid below and what A trades. (r146-r225: one
+  // count, LANCINI TIZM spares only.)
+  for (int set = 0; set < 2; ++set) {
+    const float px0 = set == 0 ? x0 + 30 : cx + 10, px1 = set == 0 ? cx - 10 : x1 - 30, py0 = y0 + 96, py1 = y0 + 206;
+    const bool on = b.tradeSet == set;
+    const uint32_t head = set == 0 ? kGold : 0xFFD400;
+    P.box(px0, py0, px1, py1, 24, on ? (set == 0 ? 0x24305C : 0x34185A) : 0x121830);
+    if (on) P.ring(px0 - 6, py0 - 6, px1 + 6, py1 + 6, 30, b.tradeOnSets ? 7 : 4, b.tradeOnSets ? head : (set == 0 ? 0x8A94B8 : 0xE0218A));
+    const ImgP pic = shop_pic(set, false);
+    const float ph = py1 - py0 - 16;
+    float tx = px0 + 100;
+    if (pic) {
+      const float pw = ph * static_cast<float>(pic->w) / pic->h;
+      P.image(pic, px0 + 14, py0 + 8, px0 + 14 + pw, py0 + 8 + ph, false);
+      tx = px0 + 30 + pw;
+    } else {
+      mini_pack(P, px0 + 16, py0 + 8, px0 + 80, py0 + 8 + ph);
+    }
+    const int free = b.setSpareFree[set], packs = free / trade_for(set);
+    P.left(set == 0 ? "LANCINI TIZM" : "JAM '96", tx, py0 + 30, 40, px1 - tx - 16, on ? head : 0xB8C2D6, 3);
+    P.left(std::to_string(free) + (free == 1 ? " SPARE" : " SPARES") + (packs > 0 ? "  =  " + std::to_string(packs) + (packs == 1 ? " PACK" : " PACKS") : ""),
+           tx, py0 + 76, 40, px1 - tx - 16, packs > 0 ? 0xFFFFFF : 0x8A94AA, 2);
+    if (b.setSpareAll[set] > free)
+      P.right(std::to_string(b.setSpareAll[set] - free) + " KEPT", px1 - 18, py0 + 30, 32, 200, 0xFF9A8A, 2);
+  }
   if (b.tiles.empty()) {
     P.box(x0 + 60, y0 + 240, x1 - 60, y0 + 740, 26, 0x121830);
-    P.text("NO SPARE BASE CARDS YET", cx, y0 + 440, 56, 1200, 0x8A94AA, 3);
+    P.text(b.tradeSet == 1 ? "NO SPARE JAM '96 BASE CARDS YET" : "NO SPARE LANCINI TIZM BASE CARDS YET", cx, y0 + 440, 56, 1300, 0x8A94AA, 3);
     P.text("A CARD YOU HAVE TWO OR MORE OF SHOWS UP HERE", cx, y0 + 520, 40, x1 - x0 - 140, 0xB8C2D6, 2);
   }
   for (int k = 0; k < kTileCols * kTileRows; ++k) {
@@ -3039,7 +3684,7 @@ void trade_page(Pc& P, const BinderView& b) {
       P.box(tx0 - 8, ty0 - 18, tx0 + 58, ty0 + 26, 14, kGold);
       P.text("-" + std::to_string(t.next), tx0 + 25, ty0 + 4, 32, 58, kNavy, 0);
     }
-    if (i == b.tradeCursor) P.ring(tx0 - 10, ty0 - 10, tx1 + 10, ty1 + 10, 22, 8, kGold);
+    if (i == b.tradeCursor && !b.tradeOnSets) P.ring(tx0 - 10, ty0 - 10, tx1 + 10, ty1 + 10, 22, 8, kGold);  // (r226: not while on the sets)
     // under it: its spares; the next trade's take and its level after
     // (r149: what's traded said plainly - its BASE copies to spare; a level it'd lose on the tile)
     P.text("X" + std::to_string(t.spare) + " SPARE", tcx, ty1 + 24, 40, kTileW + 16, 0xE8ECF5, 2);
@@ -3048,10 +3693,10 @@ void trade_page(Pc& P, const BinderView& b) {
       after.n[kBase][0] -= t.next;
       const int lv0 = card_level(t.o), lv1 = card_level(after);
       if (lv1 < lv0) {
-        const std::string lt = "LV" + std::to_string(lv0) + " TO LV" + std::to_string(lv1);
-        const float lw = P.width(lt, 24) + 20;
-        P.box(tcx - lw / 2, ty1 - 96, tcx + lw / 2, ty1 - 66, 15, 0xFF8A3A);
-        P.text(lt, tcx, ty1 - 81, 24, lw - 8, 0x1A0A00);
+        const std::string lt = "LV " + std::to_string(lv0) + ">" + std::to_string(lv1);  // (r236: 30 px, short: was "LV3 TO LV2" at 24)
+        const float lw = P.width(lt, 30) + 20;
+        P.box(tcx - lw / 2, ty1 - 100, tcx + lw / 2, ty1 - 62, 19, 0xFF8A3A);
+        P.text(lt, tcx, ty1 - 81, 30, lw - 8, 0x1A0A00);
       }
     }
   }
@@ -3059,21 +3704,30 @@ void trade_page(Pc& P, const BinderView& b) {
   if (rows > kTileRows)
     P.right("ROWS " + std::to_string(b.tradeTop + 1) + "-" + std::to_string(std::min(rows, b.tradeTop + kTileRows)) + " OF " +
                 std::to_string(rows),
-            x1 - 50, y0 + 822, 24, 300, 0x8A94AA, 2);
+            x1 - 50, y0 + 822, 30, 300, 0x8A94AA, 2);  // (r236: 30 px floor)
   // the slot: A trades the next 10 for a pack
   const float sy = y0 + 784;
-  const bool can = b.spareFree >= kTradeFor;
-  P.box(cx - 600, sy, cx + 260, sy + 76, 38, can ? 0x24305C : 0x151C36);
-  P.ring(cx - 600, sy, cx + 260, sy + 76, 38, 5, can ? kGold : 0x3A4A70);
-  P.box(cx - 540, sy + 34, cx - 360, sy + 42, 4, 0x05070C);  // (its slit)
-  P.text(can ? "A: TRADE 10 FOR 1 PACK" : "NEED " + std::to_string(kTradeFor - b.spareFree) + " MORE SPARE BASE CARDS", cx - 100, sy + 38,
-         40, 640, can ? 0xFFFFFF : 0x8A94AA, 3);
-  mini_pack(P, cx + 300, sy - 16, cx + 376, sy + 92);
-  P.text(!b.tradeSay.empty() ? b.tradeSay
-                             : "TRADED SO FAR: " + std::to_string(b.tradedPacks) + (b.tradedPacks == 1 ? " PACK (" : " PACKS (") +
-                                   std::to_string(b.tradedCards) + " CARDS)",
-         cx, y0 + 900, 40, x1 - x0 - 60, !b.tradeSay.empty() ? kGold : 0xE8ECF5, 2);
-  P.text("X: KEEP A CARD OUT  -  NEVER A CARD'S LAST COPY", cx, y0 + 950, 40, x1 - x0 - 60, 0x8A94AA, 2);
+  const int need = trade_for(b.tradeSet);
+  const bool can = b.spareFree >= need;
+  const std::string sn = b.tradeSet == 1 ? "JAM '96" : "LANCINI TIZM";
+  P.box(cx - 640, sy, cx + 260, sy + 76, 38, can ? (b.tradeSet == 1 ? 0x34185A : 0x24305C) : 0x151C36);
+  P.ring(cx - 640, sy, cx + 260, sy + 76, 38, 5, can ? (b.tradeSet == 1 ? 0xFFD400 : kGold) : 0x3A4A70);
+  P.box(cx - 612, sy + 34, cx - 512, sy + 42, 4, 0x05070C);  // (its slit)
+  P.text(can ? std::to_string(need) + " SPARES = 1 " + sn + " PACK"  // (r236: no "A:" on the page - the bar says it)
+             : "NEED " + std::to_string(need - b.spareFree) + " MORE SPARE " + sn + " BASE CARDS",
+         cx - 150, sy + 38, 40, 680, can ? 0xFFFFFF : 0x8A94AA, 3);
+  {  // (the pack it gives: its set's real wrapper)
+    const ImgP pic = shop_pic(b.tradeSet, false);
+    if (pic) {
+      const float ph = 124, pw = ph * static_cast<float>(pic->w) / pic->h;
+      P.image(pic, cx + 338 - pw / 2, sy - 24, cx + 338 + pw / 2, sy - 24 + ph, false);
+    } else {
+      mini_pack(P, cx + 300, sy - 16, cx + 376, sy + 92);
+    }
+  }
+  // r236: only its last word (a trade done / not yet) - the always-on TRADED SO FAR + "STICK UP: PICK THE SET - X: KEEP A CARD OUT -
+  // NEVER A CARD'S LAST COPY" lines are gone (the bar has X KEEP / TRADE IT; a last copy never shows here)
+  if (!b.tradeSay.empty()) P.text(b.tradeSay, cx, y0 + 900, 40, x1 - x0 - 60, kGold, 2);
 }
 
 // r146: SETS (LT from the trade-ins): the evolution lines (done first, then the nearest; 9 at a time, the stick for more),
@@ -3134,13 +3788,14 @@ void sets_page(Pc& P, const BinderView& b) {
     P.right(std::to_string(r.have) + "/" + std::to_string(r.total), tx1 - 18, y + 36, 40, 120, r.done ? kGold : 0xE8ECF5, 2);
   };
   head("EVOLUTION LINES", std::to_string(b.linesDone) + " / " + std::to_string(b.lines.size()) + " DONE");
-  rule("A WHOLE LINE: " + lineBonus + ", ITS EVOLUTIONS " + lineShiny);
+  rule("LINE DONE: " + lineBonus);  // (r236: short)
+  (void)lineShiny;
   for (const BinderView::SetRow& r : b.lines) {
     float y;
     if (slot(&y)) tile(r, lx0, lx1, y, true);
   }
   head("POKEMON TYPES", std::to_string(b.typesDone) + " / " + std::to_string(b.types.size()) + " DONE");
-  rule("A WHOLE TYPE: +" + std::to_string(kTypeXp) + "% XP FOR ITS POKEMON");
+  rule("TYPE DONE: +" + std::to_string(kTypeXp) + "% XP");  // (r236: short)
   for (size_t i = 0; i < b.types.size(); i += 2) {
     float y;
     if (!slot(&y)) continue;
@@ -3149,7 +3804,7 @@ void sets_page(Pc& P, const BinderView& b) {
     if (i + 1 < b.types.size()) tile(b.types[i + 1], mid + 10, lx1, y, false);
   }
   head("BINDER PAGES", std::to_string(b.pagesFull) + " / " + std::to_string(b.pageFill.size()) + " FULL");
-  rule("+" + std::to_string(kPageCoins) + "% COINS A FULL PAGE (AT MOST +" + std::to_string(kPageCoinsCap) + "%): X" + mul);
+  rule("FULL PAGE: +" + std::to_string(kPageCoins) + "% COINS  -  NOW X" + mul);  // (r236: short)
   for (size_t p0 = 0; p0 < b.pageFill.size(); p0 += 12) {
     float y;
     if (!slot(&y)) continue;
@@ -3189,7 +3844,7 @@ void grading_page(Pc& P, const BinderView& b) {
   hexagon(P, cx - 330, y0 + 60, 34, 0xFFFFFF);
   hexagon(P, cx - 330, y0 + 60, 24, 0x8E9BB4);
   P.text("TIZM GRADING", cx + 30, y0 + 62, 70, 900, kGold, 5);
-  P.text("BACK IN A SLAB AFTER " + std::to_string(kGradeMatches) + " MATCHES, GRADED 1 TO 10", cx, y0 + 116, 40, x1 - x0 - 60, 0xB8C2D6, 2);
+  // (r236: "BACK IN A SLAB AFTER 2 MATCHES, GRADED 1 TO 10" - always on - is the send confirm's line now)
   const int nS = static_cast<int>(b.gSlabs.size()), nT = static_cast<int>(b.gTiles.size());
   int back = 0, at = 0;
   for (const auto& g : b.gSlabs) (g.s.left > 0 ? at : back) += 1;
@@ -3212,7 +3867,8 @@ void grading_page(Pc& P, const BinderView& b) {
   if (b.gLeft > 0) P.text("<", x0 + 20, y0 + 282, 50, 40, kGold, 2);
   if (b.gLeft + kGSlabCols < nS) P.text(">", x1 - 20, y0 + 282, 50, 40, kGold, 2);
   P.left("SEND ONE", x0 + 40, y0 + 424, 40, 400, 0xFFFFFF, 2);
-  P.right(b.gSay.empty() ? std::to_string(b.coins) + " TIZM COINS" : b.gSay, x1 - 40, y0 + 424, 40, x1 - x0 - 360, b.gSay.empty() ? kGold : 0xFFE7A0, 2);
+  P.right(b.gSay.empty() ? xrcoin::fit(b.coins, 13) + " BIT COINS" : b.gSay,  // (r208: commas; past 13 characters short)
+          x1 - 40, y0 + 424, 40, x1 - x0 - 360, b.gSay.empty() ? kGold : 0xFFE7A0, 2);
   if (nT == 0) P.text("NO CARDS TO SEND YET", cx, y0 + 640, 40, x1 - x0 - 120, 0x8A94AA, 2);
   for (int k = 0; k < kGCols * kGRows; ++k) {
     const int i = b.gTop * kGCols + k;
@@ -3744,13 +4400,260 @@ void explosions_page(Pc& P, const BinderView& b) {
   if (!say.empty()) P.text(say, cx, 1140, 40, x1 - x0 - 60, kGold, 3);
 }
 
+// ---- r236 (LOOK B "BROADCAST PREMIUM", Lance 11-12; logs/r235-menus/optB_cards.png, optB_locker.png): CARDS > PACKS and the
+// four LOCKER pages, drawn with the hub's broadcast kit (xr_menu.h: the hub's BroadcastScope is on while hub_page runs)
+// CARDS > PACKS: the hero (your packs + ONE action: OPEN) over BUY PACKS - three products, name + price only (the box / THE VAULT on
+// the focused one's X)
+void packs_page_b(Pc& P, const BinderView& b) {
+  xrmenu::Kit K(P.v);
+  const float px0 = 470, px1 = 2120, y0 = 232;
+  const bool have = b.packs > 0, onOpen = have && b.packsOnOpen;
+  xrmenu::panel(K, px0, y0, px1, y0 + 470, xrmenu::kBCards, 0.94f);
+  P.glow(px0 + 60, y0 + 30, px0 + 640, y0 + 450, xrmenu::kBCards, 0.35f);
+  const ImgP pack = shop_pic(0, false);
+  for (int k = 0; k < 3; ++k) {
+    if (!have && k < 2) continue;
+    const float a = have && k < 3 - std::min(3, b.packs) ? 0.0f : (have ? 1.0f : 0.35f);
+    if (a <= 0.0f) continue;
+    if (pack) P.image(pack, px0 + 90 + k * 110, y0 + 60 + (2 - k) * 4, px0 + 330 + k * 110, y0 + 420 - (2 - k) * 4, false, a);
+    else mini_pack(P, px0 + 90 + k * 110, y0 + 60, px0 + 330 + k * 110, y0 + 420);
+  }
+  if (have) {
+    xrmenu::say(K, std::to_string(b.packs) + (b.packs == 1 ? " PACK" : " PACKS"), px0 + 720, y0 + 150, 110, 0xFFFFFF, 'l', px1 - px0 - 760, true, 0.0f, 3.0f);
+    xrmenu::label(K, "READY TO OPEN", px0 + 724, y0 + 240, 38);
+    xrmenu::button(K, px0 + 720, y0 + 300, px0 + 1180, y0 + 410, "OPEN", "A", true, onOpen);
+  } else {
+    xrmenu::say(K, "NO PACKS", px0 + 720, y0 + 150, 110, xrmenu::kBDim, 'l', px1 - px0 - 760);
+    xrmenu::label(K, "ONE EVERY MATCH  -  + A JAM '96 FOR A WIN", px0 + 724, y0 + 240, 38, xrmenu::kBSoft, 'l', px1 - px0 - 780);
+  }
+  xrmenu::label(K, "BUY PACKS", px0 + 10, y0 + 540, 40);
+  if (!b.say.empty()) xrmenu::label(K, b.say, px1 - 10, y0 + 540, 34, xrmenu::kBGold, 'r', 1150);
+  else if (b.lastCoins > 0) xrmenu::label(K, "LAST MATCH +" + std::to_string(b.lastCoins) + " BIT COINS", px1 - 10, y0 + 540, 34, xrmenu::kBGold, 'r', 900);
+  const float tw = (px1 - px0 - 60) / 3.0f, ty0 = y0 + 590, ty1 = 1170;
+  static const uint32_t kCol[3] = {0x3B6FD0, 0xE0408A, 0xC9A227};
+  for (int set = 0; set < 3; ++set) {
+    const float x0 = px0 + set * (tw + 30);
+    const bool focus = !onOpen && b.pick / 2 == set;
+    const bool box = focus && b.pick % 2 == 1;
+    const long long price = set == 2 ? (box ? xrexq::kBoxPrice : xrexq::kPackPrice) : set == 0 ? (box ? kBoxPrice : kPackPrice) : (box ? kJamBoxPrice : kJamPackPrice);
+    const bool can = b.coins >= price;
+    xrmenu::TileSpec ts;
+    ts.colour = kCol[set];
+    ts.on = focus;
+    xrmenu::tile(K, x0, ty0, x0 + tw, ty1, ts);
+    const ImgP pic = shop_pic(set, box);
+    if (pic) P.image(pic, x0 + 30, ty0 + 30, x0 + 230, ty1 - 30, false);
+    else mini_pack(P, x0 + 40, ty0 + 40, x0 + 220, ty1 - 40);
+    const char* name = set == 0 ? (box ? "BOX OF 5" : "TIZM PACK") : set == 1 ? (box ? "JAM BOX OF 5" : "JAM '96 PACK") : (box ? "THE VAULT" : "EXQUISITE");
+    xrmenu::say(K, name, x0 + 250, ty0 + 150, 48, 0xFFFFFF, 'l', tw - 270);
+    xrmenu::bcoin(K, x0 + 272, ty0 + 240, 44);
+    xrmenu::say(K, xrcoin::text(price), x0 + 306, ty0 + 240, 52, can ? xrmenu::kBGold : 0xFF6A5A, 'l', tw - 330);
+    if (focus)  // (the focused one's details: what's in it, or what it still needs)
+      xrmenu::label(K, !can ? "NEED " + xrcoin::text(price - b.coins) + " MORE"
+                            : set == 2 ? (box ? "5 PACKS IN A CASE" : "3 CARDS  -  1 HIT") : (box ? "5 PACKS" : "5 CARDS"),
+                    x0 + 252, ty0 + 316, 30, can ? xrmenu::kBSoft : 0xFF8A7A, 'l', tw - 270);
+  }
+}
+
+// LOCKER (BALLS, GOAL FX, TAKEOVERS, BINDERS): six big tiles (3 x 2, scrolling a row at a time) - name + price / EQUIPPED - and the
+// focused one's panel (its big picture, tier, price, ONE button)
+void locker_page_b(Pc& P, const BinderView& b) {
+  xrmenu::Kit K(P.v);
+  struct It {
+    std::string name, kind;
+    int tier = 0;
+    long long price = 0;
+    bool owned = false, on = false, none = false, takeover = false;
+    ImgP pic;
+    bool ball = false;
+    uint32_t c1 = 0, c2 = 0;
+  };
+  std::vector<It> items;
+  int cursor = 0;
+  const bool balls = b.page == kPageLooks, covers = b.page == kPageCovers;
+  if (balls) {
+    for (int i = 0; i < kBallTiles; ++i) {
+      const xrballs::Item& it = ball_item(i);
+      It x;
+      x.name = it.name;
+      x.kind = "YOUR MATCH BALL";
+      x.tier = it.tier;
+      x.price = it.price;
+      x.owned = i < static_cast<int>(b.ballOwned.size()) && b.ballOwned[static_cast<size_t>(i)];
+      x.on = b.ballOn == i;
+      x.pic = ball_tile(i);
+      x.ball = true;
+      items.push_back(x);
+    }
+    cursor = b.lkBall;
+  } else if (covers) {
+    for (int i = 0; i < kSkinCount; ++i) {
+      const LookItem& it = look_item(kLookSkin, i);
+      It x;
+      x.name = upper(it.name);
+      x.kind = "YOUR BINDER'S COVER";
+      x.tier = it.tier;
+      x.price = it.price;
+      x.owned = i < static_cast<int>(b.lkOwned[0].size()) && b.lkOwned[0][static_cast<size_t>(i)];
+      x.on = b.skin == i;
+      x.pic = skin_tile(i);
+      items.push_back(x);
+    }
+    cursor = b.lkCol[0];
+  } else {
+    for (int idx : b.fxList) {
+      It x;
+      if (idx < 0 || idx >= static_cast<int>(b.fx.size())) {
+        x.name = "NO EXPLOSION";
+        x.kind = "THE GOAL'S OWN SHOW ONLY";
+        x.owned = true;
+        x.on = b.fxNone;
+        x.none = true;
+        x.c1 = 0x2A3550;
+        x.c2 = 0x111A2E;
+      } else {
+        const BinderView::FxTile& t = b.fx[static_cast<size_t>(idx)];
+        x.name = upper(t.name);
+        x.takeover = t.secs > 5.0f;
+        x.kind = x.takeover ? "TAKES OVER YOUR ROOM" : "GOES OFF WHEN YOU SCORE";
+        x.tier = t.tier;
+        x.price = t.price;
+        x.owned = t.owned;
+        x.on = t.equipped;
+        x.c1 = t.rgb1;
+        x.c2 = t.rgb2;
+      }
+      items.push_back(x);
+    }
+    cursor = b.fxPos;
+  }
+  const int n = static_cast<int>(items.size());
+  cursor = std::max(0, std::min(std::max(0, n - 1), cursor));
+  const float px0 = 470, gx1 = 1440, y0 = 232, y1 = 1170, gap = 26;
+  const int rows = (n + kLkGridCols - 1) / kLkGridCols, crow = cursor / kLkGridCols;
+  const int top = std::max(0, std::min(std::max(0, rows - kLkGridRows), crow - (crow > 0 ? 1 : 0)));
+  const float tw = (gx1 - px0 - gap * (kLkGridCols - 1)) / kLkGridCols, th = (y1 - y0 - gap * (kLkGridRows - 1)) / kLkGridRows;
+  // a swatch for an explosion / takeover / NO EXPLOSION: its two colours as a lit disc, a burst for the explosions
+  auto swatch = [&](const It& it, float cx, float cy, float r) {
+    P.glow(cx - 1.4f * r, cy - 1.4f * r, cx + 1.4f * r, cy + 1.4f * r, it.c1, 0.35f);
+    P.box(cx - r, cy - r, cx + r, cy + r, r, it.c1, 1.0f, it.c2);
+    if (!it.none) {
+      xrtext::BoardPiece bp;
+      bp.kind = xrtext::BoardPiece::kBurst;
+      bp.x0 = cx - 0.8f * r;
+      bp.y0 = cy - 0.8f * r;
+      bp.x1 = cx + 0.8f * r;
+      bp.y1 = cy + 0.8f * r;
+      bp.points = it.takeover ? 8 : 12;
+      bp.inner = it.takeover ? 0.55f : 0.45f;
+      bp.rgb = 0xFFFFFF;
+      bp.alpha = 0.55f;
+      P.v.push_back(bp);
+    } else {
+      P.box(cx - 0.55f * r, cy - 0.07f * r, cx + 0.55f * r, cy + 0.07f * r, 0.07f * r, 0xFFFFFF, 0.5f);
+    }
+  };
+  for (int k = 0; k < kLkGridCols * kLkGridRows; ++k) {
+    const int i = top * kLkGridCols + k;
+    if (i >= n) break;
+    const It& it = items[static_cast<size_t>(i)];
+    const int c = k % kLkGridCols, r = k / kLkGridCols;
+    const float x0 = px0 + c * (tw + gap), yy = y0 + r * (th + gap), cx = x0 + 0.5f * tw;
+    xrmenu::TileSpec ts;
+    ts.colour = it.c1 != 0 && i == cursor ? it.c1 : 0x2F8CFF;  // (the package's blue; an explosion focused: its own colour)
+    ts.on = i == cursor;
+    xrmenu::tile(K, x0, yy, x0 + tw, yy + th, ts);
+    if (it.takeover) P.poly({x0 + tw - 70, yy, x0 + tw, yy, x0 + tw, yy + 70}, xrmenu::kBGold);  // (a ROOM TAKEOVER: its gold corner)
+    if (it.pic) {
+      if (it.ball) P.box(cx - 110, yy + 50, cx + 110, yy + 270, 110, 0x05070C, 0.7f);
+      P.figure(it.pic, cx - 120, yy + 40, cx + 120, yy + 280, true, 0.5f, 0.5f);
+    } else {
+      swatch(it, cx, yy + 160, 110);
+    }
+    xrmenu::say(K, it.name, cx, yy + th - 110, 42, 0xFFFFFF, 'c', tw - 30);
+    if (it.on) {
+      xrmenu::label(K, "EQUIPPED", cx, yy + th - 50, 32, 0x3DDC84, 'c', tw - 30);
+    } else if (it.owned) {
+      xrmenu::label(K, "OWNED", cx, yy + th - 50, 32, xrmenu::kBSoft, 'c', tw - 30);
+    } else {
+      const std::string pr = xrcoin::text(it.price);
+      const float ww = xrtext::face_text_width(pr, 40, xrtext::kFaceBroadcast) + 50;
+      xrmenu::bcoin(K, cx - ww / 2 + 18, yy + th - 50, 36);
+      xrmenu::say(K, pr, cx - ww / 2 + 46, yy + th - 50, 40, b.coins >= it.price ? xrmenu::kBGold : 0xFF6A5A, 'l');
+    }
+  }
+  if (rows > kLkGridRows) {  // (more rows: the arrows down the grid's right edge, lit where there are more)
+    const float ax = gx1 + 20;
+    P.poly({ax - 12, y0 + 40, ax, y0 + 16, ax + 12, y0 + 40}, top > 0 ? xrmenu::kBGold : 0x3A4560);
+    P.poly({ax - 12, y1 - 40, ax + 12, y1 - 40, ax, y1 - 16}, top + kLkGridRows < rows ? xrmenu::kBGold : 0x3A4560);
+  }
+  // the focused one
+  if (n == 0) return;
+  const It& f = items[static_cast<size_t>(cursor)];
+  const float fx0 = 1480, fx1 = 2120, cxp = 0.5f * (fx0 + fx1), py = y1 - 235;
+  const uint32_t tint = f.c1 != 0 ? f.c1 : xrgoalfx::tier_rgb(f.tier);
+  xrmenu::panel(K, fx0, y0, fx1, y1, tint, 0.94f);
+  const float bs = std::min(400.0f, py - 300 - (y0 + 60));
+  P.glow(cxp - 260, y0 + 30, cxp + 260, y0 + 60 + bs + 50, tint, 0.4f);
+  if (f.pic) P.figure(f.pic, cxp - bs / 2, y0 + 60, cxp + bs / 2, y0 + 60 + bs, true, 0.5f, 0.5f);
+  else swatch(f, cxp, y0 + 60 + bs / 2, bs * 0.4f);
+  xrmenu::say(K, f.name, cxp, py - 175, 64, 0xFFFFFF, 'c', fx1 - fx0 - 60, true, 0.0f, 3.0f);
+  xrmenu::label(K, f.none ? f.kind : std::string(xrgoalfx::tier_name(f.tier)) + "  -  " + f.kind, cxp, py - 105, 32, xrmenu::kBSoft, 'c', fx1 - fx0 - 60);
+  if (f.on || f.owned || f.price <= 0) {
+    xrmenu::say(K, f.on ? "EQUIPPED" : "OWNED", cxp, py, 56, f.on ? 0x3DDC84 : xrmenu::kBSoft, 'c');
+  } else {
+    const std::string pr = xrcoin::text(f.price);
+    const float ww = xrtext::face_text_width(pr, 64, xrtext::kFaceBroadcast) + 70;
+    xrmenu::bcoin(K, cxp - ww / 2 + 26, py, 52);
+    xrmenu::say(K, pr, cxp - ww / 2 + 66, py, 64, b.coins >= f.price ? xrmenu::kBGold : 0xFF6A5A, 'l');
+  }
+  const std::string say = !(balls || covers) ? (!b.fxSay.empty() ? b.fxSay : (b.fxPreviewing ? "PREVIEWING  -  B STOPS IT" : ""))
+                                             : (!b.lkSay.empty() ? b.lkSay : ((b.lkPreview || b.ballPreview) ? "PREVIEWING  -  B STOPS IT" : ""));
+  if (!say.empty()) xrmenu::label(K, say, cxp, y1 - 172, 30, xrmenu::kBGold, 'c', fx1 - fx0 - 40);
+  xrmenu::button(K, fx0 + 40, y1 - 140, fx1 - 40, y1 - 40, f.on ? "EQUIPPED" : (f.owned ? "PUT IT ON" : "BUY"), "A", true, true, !f.on);
+}
+
+// r201: the MARKET and MUSEUM pages - their modules draw them into the page area (470, 222 .. 2120, 1180 = their 1650 x 958),
+// fitted as the rest; their hints and their confirm. Never with g_mutex held (they call into the binder).
+HubPage market_museum_page(int page) {
+  WdScope wd("drawing thread", page == kPageMarket ? "MARKET picture" : (page == kPageCollectors ? "COLLECTORS picture" : "MUSEUM picture"));  // r237
+  HubPage out;
+  auto keep = std::make_shared<std::vector<std::shared_ptr<void>>>();
+  const float ox = g_fitOx.load(), oy = g_fitOy.load(), k = g_fitK.load();
+  const float t = static_cast<float>(std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), 3600.0));
+  std::string aWord, xWord, yWord, q, line;
+  bool aDim = false;
+  if (page == kPageMarket) {
+    xrmarket::draw(out.pieces, *keep, ox + 470.0f * k, oy + 222.0f * k, k, t);
+    xrmarket::hints(&aWord, &aDim, &xWord, &yWord);
+    if (xrmarket::asking(&q, &line)) out.confirm = q, out.confirmLine = line;
+  } else if (page == kPageCollectors) {  // r213: COLLECTOR TRADES (the same page area)
+    xrtrade::draw(out.pieces, *keep, ox + 470.0f * k, oy + 222.0f * k, k, t);
+    xrtrade::hints(&aWord, &aDim, &xWord, &yWord);
+    if (xrtrade::asking(&q, &line)) out.confirm = q, out.confirmLine = line;
+  } else {
+    xrmuseum::draw(out.pieces, *keep, ox + 470.0f * k, oy + 222.0f * k, k, t);
+    xrmuseum::hints(&aWord, &aDim, &xWord, &yWord);
+    if (xrmuseum::asking(&q, &line)) out.confirm = q, out.confirmLine = line;
+  }
+  if (!aWord.empty()) out.hints.push_back({"A", aWord, 0x2EA043});
+  if (!xWord.empty()) out.hints.push_back({"X", xWord, 0x2E6FD0});
+  if (!yWord.empty()) out.hints.push_back({"Y", yWord, 0xC9A227});
+  if (aWord.empty()) out.hints.push_back({"A", "SELECT", 0x2EA043});
+  out.aDim = aDim || aWord.empty();
+  out.keep = keep;
+  return out;
+}
 HubPage hub_page(float w, float h, float top, float bottom) {
   (void)w;
   (void)h;
   (void)top;
   (void)bottom;
+  WdScope wd("drawing thread", "hub picture (CARDS / LOCKER page)");  // r237
   HubPage out;
   if (!g_loaded.load()) return out;
+  if ((g_page.load() == kPageMarket || g_page.load() == kPageMuseum || g_page.load() == kPageCollectors) && g_sceneMode.load() == 0)
+    return market_museum_page(g_page.load());  // (r213: + COLLECTORS)
   BinderView b;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -3759,7 +4662,7 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     g_spread = std::max(0, std::min(b.spreads - 1, g_spread));
     b.spread = g_spread;
     b.cursor = g_cursor;
-    b.total = static_cast<int>(g_set.size());
+    b.total = g_setN;  // (r217: a set's count)
     b.packs = static_cast<int>(g_packs.size());
     b.coins = g_coins;  // r140
     b.lastCoins = g_lastCoins;
@@ -3769,17 +4672,27 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     b.page = g_page.load();  // r146
     b.shop = b.page == kPageShop;
     b.pick = g_shopPick.load();
+    b.packsOnOpen = g_packsOnOpen.load();  // r236
     build_sets();
+    b.tradeSet = g_tradeSet;  // r226 (the trade-in show's words too)
     if (b.page == kPageTrade) {  // r146: your spare base cards (r147: commons first), the most first
-      std::vector<std::pair<int, int>> next = trade_pick();
+      // r226: the page's set's (g_tradeSet); both sets' counts for their panels
       for (size_t i = 0; i < g_set.size(); ++i) {
+        const int sp = spare_of(static_cast<int>(i));
+        const int s = g_set[i].set == 1 ? 1 : 0;
+        b.setSpareAll[s] += sp;
+        b.setSpareFree[s] += g_keep.count(g_set[i].id) > 0 ? 0 : sp;
+      }
+      std::vector<std::pair<int, int>> next = trade_pick(g_tradeSet);
+      for (size_t i = 0; i < g_set.size(); ++i) {
+        if (g_set[i].set != g_tradeSet) continue;
         const int sp = spare_of(static_cast<int>(i));
         if (sp <= 0) continue;
         BinderView::Tile t;
         t.c = g_set[i];
         t.o = g_owned[i];
         t.spare = sp;
-        t.kept = g_keep.count(g_set[i].key) > 0;
+        t.kept = g_keep.count(g_set[i].id) > 0;
         for (const auto& nx : next)
           if (nx.first == static_cast<int>(i)) t.next = nx.second;
         b.tiles.push_back(t);
@@ -3787,8 +4700,10 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         b.spareFree += t.kept ? 0 : sp;
       }
       std::stable_sort(b.tiles.begin(), b.tiles.end(), [](const BinderView::Tile& x, const BinderView::Tile& y) {
-        return trade_before(g_byKey[x.c.key], x.spare, g_byKey[y.c.key], y.spare);  // (r147)
+        return trade_before(g_byKey[x.c.id], x.spare, g_byKey[y.c.id], y.spare);  // (r147)
       });
+      if (b.tiles.empty()) g_tradeOnSets = true;  // r226: no cards of this set - the cursor on the set panels (left / right: the other set)
+      b.tradeOnSets = g_tradeOnSets;
       b.tradedCards = g_tradedCards;
       b.tradedPacks = g_tradedPacks;
       g_tradeCursor = std::max(0, std::min(static_cast<int>(b.tiles.size()) - 1, g_tradeCursor));
@@ -3802,10 +4717,13 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       if (!b.tiles.empty()) {
         const BinderView::Tile& t = b.tiles[static_cast<size_t>(b.tradeCursor)];
         b.curLevel = card_level(t.o);
-        b.curXp = card_bonus(g_byKey[t.c.key], &b.curWhy, nullptr);
+        b.curXp = card_bonus(g_byKey[t.c.id], &b.curWhy, nullptr);
       }
     }
-    if (b.page == kPageExplosions) {  // r153: GOAL EXPLOSIONS
+    if (b.page == kPageExplosions || b.page == kPageTakeovers) {  // r153: GOAL EXPLOSIONS (r236: GOAL FX / TAKEOVERS)
+      b.fxList = fx_list(b.page == kPageTakeovers);
+      g_fxPos[b.page == kPageTakeovers ? 1 : 0] = std::max(0, std::min(static_cast<int>(b.fxList.size()) - 1, g_fxPos[b.page == kPageTakeovers ? 1 : 0]));
+      b.fxPos = g_fxPos[b.page == kPageTakeovers ? 1 : 0];
       const char* eq = xrgoalfx::equipped();
       for (const xrgoalfx::Item& it : xrgoalfx::catalogue()) {
         BinderView::FxTile t;
@@ -3882,19 +4800,27 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         b.pagesFull += have == 9 ? 1 : 0;
       }
       b.coinPct = coin_pct(b.pagesFull);
-      for (size_t i = 0; i < g_set.size(); ++i) b.bonusChars += card_bonus(static_cast<int>(i), nullptr, nullptr) > 0 ? 1 : 0;
+      for (size_t i = 0; i < g_set.size(); ++i) b.bonusChars += g_set[i].set == 0 && card_bonus(static_cast<int>(i), nullptr, nullptr) > 0 ? 1 : 0;
       g_setsTop = std::max(0, std::min(std::max(0, sets_rows(b) - kSetsShown), g_setsTop));  // r157 round 2: rows of the one list
       b.setsTop = g_setsTop;
     }
     for (size_t i = 0; i < g_set.size(); ++i) {
       const Owned& o = g_owned[i];
-      if (g_set[i].here) {
-        ++b.here;
-        ++b.hereTier[g_set[i].rarity];
-      }
-      if (o.total() > 0) {
-        ++b.have;
-        ++b.haveTier[g_set[i].rarity];
+      if (g_set[i].set == 1) {  // r217: the JAM '96 set's own progress
+        b.jamHere += g_set[i].here ? 1 : 0;
+        b.jamHave += o.total() > 0 ? 1 : 0;
+      } else if (g_set[i].set == 2) {  // r230: LANCINI EXQUISITE's
+        b.exqHere += g_set[i].here ? 1 : 0;
+        b.exqHave += o.total() > 0 ? 1 : 0;
+      } else {
+        if (g_set[i].here) {
+          ++b.here;
+          ++b.hereTier[g_set[i].rarity];
+        }
+        if (o.total() > 0) {
+          ++b.have;
+          ++b.haveTier[g_set[i].rarity];
+        }
       }
       if (o.shinyAny()) ++b.shinies;
       for (int p = 1; p < 4; ++p) b.finishes[p] += o.n[p][0] + o.n[p][1];
@@ -3906,14 +4832,17 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       if (at >= b.list.size()) break;
       b.cards.push_back(g_set[b.list[at]]);
       b.owned.push_back(g_owned[b.list[at]]);
-      b.isNew.push_back(g_newCards.count(g_set[b.list[at]].key) != 0);  // r149
+      b.isNew.push_back(g_newCards.count(g_set[b.list[at]].id) != 0);  // r149
     }
     if (b.page != kPageTrade && b.cursor < static_cast<int>(b.cards.size())) {  // r146: its level, its bonuses
       const int ci = b.list[static_cast<size_t>(b.spread) * kPerSpread + b.cursor];
       b.curLevel = card_level(g_owned[ci]);
       b.curXp = card_bonus(ci, &b.curWhy, nullptr);
     }
-    if (b.page == kPageLooks) {  // r160: the LOOKS page's cursor, a buy asking, its last word (r163: one grid, skins only)
+    if (b.page == kPageLooks || b.page == kPageCovers) {  // r160: the LOOKS page's cursor, a buy asking, its last word (r236: BALLS / BINDERS)
+      g_lkBallFocus = b.page == kPageLooks;
+      g_lkBall = std::max(0, std::min(kBallTiles - 1, g_lkBall));
+      g_lkCol[0] = std::max(0, std::min(kSkinCount - 1, g_lkCol[0]));
       const int rows = (kSkinCount + kLkCols - 1) / kLkCols;
       g_lkCol[0] = std::max(0, std::min(kSkinCount - 1, g_lkCol[0]));
       const int row = g_lkCol[0] / kLkCols;
@@ -3934,10 +4863,15 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       b.lkBallFirst = g_lkBallFirst;
     }
   }
+  // r201: the spread's market values (the market's lock, after g_mutex: never inside it)
+  for (int s = 0; s < static_cast<int>(b.cards.size()); ++s) {
+    const size_t at = static_cast<size_t>(b.spread) * kPerSpread + s;
+    b.values.push_back(at < b.list.size() && b.owned[static_cast<size_t>(s)].total() > 0 ? xrmarket::card_value(b.list[at]) : -1);
+  }
   // r160: the skin on (its own lock: after g_mutex), what you own, a preview up, the binder out
   b.skin = look_on(kLookSkin);
   b.binderOut = g_binderOut.load();
-  if (b.page == kPageLooks) {
+  if (b.page == kPageLooks || b.page == kPageCovers) {  // (r236: + BINDERS)
     for (int i = 0; i < kSkinCount; ++i) b.lkOwned[0].push_back(look_owned(kLookSkin, i));
     b.lkPreview = g_skinPreview.load() >= 0;
     for (int i = 0; i < kBallTiles; ++i) b.ballOwned.push_back(ball_owned(i));  // r168
@@ -3953,13 +4887,14 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     // a pack open in your hands: no binder behind it (it would give the cards away)
     P.box(qx0, 222, qx1, 1180, 30, 0x151C36);
     mini_pack(P, qcx - 560, 300, qcx - 260, 760);
-    P.text("OPENING A PACK", qcx + 220, 380, 80, 880, kGold, 5);
+    P.text(g_openSet.load() == 2 ? "OPENING AN EXQUISITE PACK" : (g_openSet.load() == 1 ? "OPENING A JAM '96 PACK" : "OPENING A PACK"), qcx + 220, 380, 80, 880,
+           g_openSet.load() == 2 ? 0xE6C774u : (g_openSet.load() == 1 ? 0xFFD400u : kGold), 5);
     P.text("HOLD IT IN ONE HAND", qcx + 220, 500, 48, 880, 0xFFFFFF, 3);
     P.text("THE OTHER TRIGGER RIPS IT", qcx + 220, 580, 44, 880, 0xB8C2D6, 2);
     P.text("A TRIGGER TURNS THE FRONT CARD OVER", qcx, 860, 48, qroom, 0xFFFFFF, 3);
     P.text("THE BIGGEST PULL COMES LAST", qcx, 940, 44, qroom, 0xB8C2D6, 2);
     P.text("BOTH GRIPS TURN AND SIZE IT", qcx, 1010, 44, qroom, 0xB8C2D6, 2);
-    P.text(kSetName, qcx, 1110, 40, qroom, 0x8A94B8, 2);
+    P.text(g_openSet.load() == 2 ? xrexq::kSetName : (g_openSet.load() == 1 ? kJamSetName : kSetName), qcx, 1110, 40, qroom, 0x8A94B8, 2);  // (r217; r230)
     out.hints = {{"TRIGGER", "RIP / NEXT CARD", 0x2EA043}, {"A", "SAME / NEXT PACK", 0x2EA043}, {"B", "INTO THE BINDER", 0xC0392B}};
   } else if (b.mode == 4) {
     // r152: a slab BACK FROM TIZM GRADING, its envelope opening in front of you
@@ -3978,8 +4913,9 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     for (int i = 4; i >= 0; --i)
       mini_pack(P, qcx - 640 + i * 66, 330 - (i % 2) * 16, qcx - 490 + i * 66, 556 - (i % 2) * 16, i > 0);
     P.text("TRADE-IN", qcx + 260, 400, 84, 800, kGold, 5);
-    P.text("10 SPARE CARDS IN", qcx + 260, 510, 48, 800, 0xFFFFFF, 3);
-    P.text("1 FREE PACK OUT", qcx + 260, 580, 48, 800, 0xB8C2D6, 2);
+    // (r226: the set traded - the page's, it can't change during the show)
+    P.text(std::to_string(trade_for(b.tradeSet)) + (b.tradeSet == 1 ? " SPARE JAM '96 CARDS IN" : " SPARE CARDS IN"), qcx + 260, 510, 48, 800, 0xFFFFFF, 3);
+    P.text(b.tradeSet == 1 ? "1 FREE JAM '96 PACK OUT" : "1 FREE PACK OUT", qcx + 260, 580, 48, 800, 0xB8C2D6, 2);
     P.text(std::to_string(b.packs) + (b.packs == 1 ? " PACK WAITING" : " PACKS WAITING"), qcx, 880, 56, qroom, kGold, 3);
     P.text(kSetName, qcx, 1110, 40, qroom, 0x8A94B8, 2);
     out.hints = {{"A", "DONE", 0x2EA043}, {"B", "SKIP", 0xC0392B}};
@@ -3990,40 +4926,68 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     sets_page(P, b);  // r146
    } else if (b.page == kPageGrading) {
     grading_page(P, b);  // r152
-   } else if (b.page == kPageExplosions) {
-    explosions_page(P, b);  // r157
-   } else if (b.page == kPageLooks) {
-    looks_page(P, b);  // r160
+   } else if (b.page == kPageExplosions || b.page == kPageTakeovers || b.page == kPageLooks || b.page == kPageCovers) {
+    locker_page_b(P, b);  // r236: LOCKER (r157's EXPLOSIONS / r160's LOOKS split in four)
    } else if (b.shop) {
+    packs_page_b(P, b);  // r236: CARDS > PACKS (r140's shop + opening)
+   } else if (false) {  // (r140-r230's shop layout, kept for the record: never drawn)
     // r140: the CARD SHOP (instead of the binder's pages): your TIZM COINS, a pack or a box of five, the last match's coins
     const float x0 = kAreaX0, x1 = kAreaX1, y0 = kAreaY0, cx = 0.5f * (x0 + x1);
     P.box(x0, y0, x1, 1180, 26, 0x1A2140, 1.0f, 0x0A0E1C);  // (r157 round 2: down to the page area's foot)
-    P.text("THE CARD SHOP", cx, y0 + 74, 76, 900, kGold, 5);
-    P.text("THE SAME PACKS, THE SAME ODDS", cx, y0 + 138, 40, x1 - x0 - 60, 0xB8C2D6, 2);
-    coin_icon(P, cx - 250, y0 + 222, 46);
-    P.left(std::to_string(b.coins), cx - 186, y0 + 222, 84, 360, 0xFFFFFF, 5);
-    P.left("TIZM COINS", cx + 30, y0 + 230, 44, 360, 0xE8ECF5, 3);
-    for (int k = 0; k < 2; ++k) {
-      const float ox0 = k == 0 ? x0 + 60 : cx + 30, ox1 = k == 0 ? cx - 30 : x1 - 60, oy0 = y0 + 300, oy1 = y0 + 790;
-      const float ocx = 0.5f * (ox0 + ox1);
-      const int price = k == 0 ? kPackPrice : kBoxPrice;
-      const bool can = b.coins >= price;
-      P.box(ox0, oy0, ox1, oy1, 28, k == b.pick ? 0x24305C : 0x151C36);
-      if (k == b.pick) P.ring(ox0 - 8, oy0 - 8, ox1 + 8, oy1 + 8, 34, 8, kGold);
-      P.text(k == 0 ? "1 PACK" : "BOX OF 5 PACKS", ocx, oy0 + 56, 52, ox1 - ox0 - 40, 0xFFFFFF, 4);
-      if (k == 0) {
-        mini_pack(P, ocx - 88, oy0 + 92, ocx + 88, oy0 + 356);
-      } else {
-        for (int i = 4; i >= 0; --i)
-          mini_pack(P, ocx - 220 + i * 66, oy0 + 112 - (i % 2) * 16, ocx - 70 + i * 66, oy0 + 338 - (i % 2) * 16, i > 0);
+    // r217 (Lance 11-11): two packs side by side, each with its real wrapper and its box - LANCINI TIZM (50 / 200) and the premium
+    // JAM '96 (250 / 1,000); stick left / right the pack, up / down a pack or its box (b.pick = set x 2 + box)
+    P.text("THE CARD SHOP", cx, y0 + 58, 70, 900, kGold, 5);
+    coin_icon(P, cx - 250, y0 + 140, 40);
+    P.left(xrcoin::fit(b.coins, 9), cx - 196, y0 + 140, 70, 360, 0xFFFFFF, 5);  // (r208: commas; past 9 characters short: "4.2B")
+    P.left("BIT COINS", cx + 40, y0 + 146, 40, 360, 0xE8ECF5, 3);
+    // r230: three columns - LANCINI TIZM, JAM '96, LANCINI EXQUISITE (1,000 a pack, THE VAULT case of five 5,000: shop only)
+    const float colW = (x1 - x0 - 60 - 2 * 18) / 3.0f;
+    for (int set = 0; set < 3; ++set) {
+      const float cx0 = x0 + 30 + set * (colW + 18), cx1 = cx0 + colW, ccx = 0.5f * (cx0 + cx1);
+      const uint32_t head = set == 0 ? kGold : (set == 1 ? 0xFFD400 : 0xE6C774);
+      const uint32_t panel = set == 0 ? 0x151C36 : (set == 1 ? 0x1A0E30 : 0x0D0C0B), sel = set == 0 ? 0x24305C : (set == 1 ? 0x34185A : 0x2A2418);
+      P.box(cx0, y0 + 196, cx1, y0 + 250, 27, set == 0 ? 0x0B1022 : (set == 1 ? 0x0C0814 : 0x050505));
+      P.ring(cx0, y0 + 196, cx1, y0 + 250, 27, 3, set == 0 ? 0x8A94B8 : (set == 1 ? 0xE0218A : 0xC9A04A));
+      P.text(set == 0 ? "LANCINI TIZM" : (set == 1 ? "JAM '96  -  PREMIUM" : "LANCINI EXQUISITE"), ccx, y0 + 223, 36, cx1 - cx0 - 40, head, 3);
+      for (int box = 0; box < 2; ++box) {
+        const int k = set * 2 + box;
+        const float oy0 = y0 + 266 + box * 318.0f, oy1 = oy0 + 300;
+        const int price = set == 2 ? (box ? xrexq::kBoxPrice : xrexq::kPackPrice)
+                                   : set == 0 ? (box ? kBoxPrice : kPackPrice) : (box ? kJamBoxPrice : kJamPackPrice);
+        const bool can = b.coins >= price;
+        P.box(cx0, oy0, cx1, oy1, 26, k == b.pick ? sel : panel);
+        if (k == b.pick) P.ring(cx0 - 7, oy0 - 7, cx1 + 7, oy1 + 7, 32, 7, head);
+        const ImgP pic = shop_pic(set, box != 0);
+        const float px0 = cx0 + 14, py0 = oy0 + 16, phMax = oy1 - oy0 - 32, pwMax = 0.48f * (cx1 - cx0);
+        float tx = cx0 + 0.5f * (cx1 - cx0);
+        if (pic) {
+          float pw = phMax * static_cast<float>(pic->w) / pic->h, ph = phMax;
+          if (pw > pwMax) ph *= pwMax / pw, pw = pwMax;
+          const float pyc = py0 + 0.5f * (phMax - ph);
+          P.image(pic, px0, pyc, px0 + pw, pyc + ph, false);
+          tx = px0 + pw + 14;
+        } else if (box == 0) {
+          mini_pack(P, px0 + 10, py0 + 10, px0 + 140, py0 + phMax - 10);
+          tx = px0 + 156;
+        } else {
+          for (int i = 4; i >= 0; --i) mini_pack(P, px0 + i * 22, py0 + 40 - (i % 2) * 12, px0 + 90 + i * 22, py0 + phMax - 30 - (i % 2) * 12, i > 0);
+          tx = px0 + 196;
+        }
+        const float tw = cx1 - 14 - tx;
+        P.left(set == 2 ? (box ? "THE VAULT" : "1 PACK") : (box ? "BOX OF 5" : "1 PACK"), tx, oy0 + 56, 38, tw, 0xFFFFFF, 4);
+        if (set == 2 && box) P.left("A CASE OF 5 PACKS", tx, oy0 + 96, 24, tw, 0xC9B98A, 2);
+        coin_icon(P, tx + 20, oy0 + 150, 22);
+        P.left(xrcoin::text(price), tx + 50, oy0 + 150, 48, tw - 50, can ? head : 0xFF6A5A, 4);
+        const std::string sub = !can ? "NEED " + xrcoin::text(price - b.coins) + " MORE"
+                                     : set == 2 ? (box ? "1,000 A PACK" : "3 CARDS  -  1 HIT")
+                                                : (box ? (set == 0 ? "40 A PACK - BEST BUY" : "200 A PACK - BEST BUY") : (set == 0 ? "5 CARDS" : "5 JAM '96 CARDS"));
+        P.left(sub, tx, oy0 + 214, 28, tw, !can ? 0xFF8A7A : 0xB8C2D6, 2);
+        if (set == 1 && box == 0) P.left("WIN A MATCH: 1 FREE", tx, oy0 + 256, 24, tw, 0xE0218A, 2);
+        if (set == 0 && box == 0) P.left("EVERY MATCH: 1 FREE", tx, oy0 + 256, 24, tw, 0x8A94B8, 2);
+        if (set == 2) P.left(box ? "EVERY CARD NUMBERED" : "SHOP ONLY", tx, oy0 + 256, 24, tw, 0xE6C774, 2);
       }
-      coin_icon(P, ocx - 90, oy0 + 404, 30);
-      P.left(std::to_string(price), ocx - 48, oy0 + 404, 60, 260, can ? kGold : 0xFF6A5A, 4);
-      P.text(!can ? "NEED " + std::to_string(price - b.coins) + " MORE" : (k == 1 ? "40 A PACK  -  THE BEST BUY" : "5 CARDS"),
-             ocx, oy1 - 40, 40, ox1 - ox0 - 40, !can ? 0xFF8A7A : 0xB8C2D6, 2);
-    }
-    if (!b.say.empty()) P.text(b.say, cx, y0 + 846, 40, x1 - x0 - 60, kGold, 3);
-    if (b.lastCoins > 0) {
+    }    if (!b.say.empty()) P.text(b.say, cx, y0 + 912, 36, x1 - x0 - 60, kGold, 3);
+    if (b.lastCoins > 0 && b.say.empty()) {  // (r217: the shop's last word in its place while it's up)
       // r146: its multipliers (full binder pages, your players' card XP) on a gold line of their own
       std::string why = upper(b.lastWhy), bonus;
       size_t cut = why.find(", BINDER PAGES");
@@ -4033,11 +4997,10 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         why = why.substr(0, cut);
         for (size_t at = bonus.find("; "); at != std::string::npos; at = bonus.find("; ")) bonus.replace(at, 2, "  -  ");
       }
-      P.text("LAST MATCH: +" + std::to_string(b.lastCoins) + " TIZM COINS", cx, y0 + 910, 40, x1 - x0 - 60, 0xE8ECF5, 2);
-      P.text(why, cx, y0 + 960, 40, x1 - x0 - 60, 0xE8ECF5, 2);
-      if (!bonus.empty()) P.text(bonus, cx, y0 + 1010, 40, x1 - x0 - 60, kGold, 2);
-    } else
-      P.text("GOALS, ASSISTS, TACKLES, WINS: ALL EARN COINS", cx, y0 + 910, 40, x1 - x0 - 60, 0xB8C2D6, 2);
+      P.text("LAST MATCH: +" + std::to_string(b.lastCoins) + " BIT COINS  -  " + why, cx, y0 + 912, 32, x1 - x0 - 60, 0xE8ECF5, 2);
+      if (!bonus.empty()) P.text(bonus, cx, y0 + 950, 30, x1 - x0 - 60, kGold, 2);
+    } else if (b.say.empty())
+      P.text("GOALS, ASSISTS, TACKLES, WINS: ALL EARN COINS", cx, y0 + 912, 36, x1 - x0 - 60, 0xB8C2D6, 2);
    } else {
     // the binder: two pages, the spine - r160: framed in your binder's skin (its covers' insides, its spine)
     binder_frame(P, b.skin);
@@ -4053,6 +5016,13 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         // r149: a shiny's pocket shows its shiny picture (its big one once made, else its shiny portrait)
         const ImgP pic = b.owned[s].shinyAny() ? card_art(c, true, 0.0f) : portrait(c.key);
         mini_card(P, c, b.owned[s], x0, y0, x1, y1, pic, false, b.isNew[s]);  // (r163: no sleeves - the card fills its pocket again)
+        if (s < static_cast<int>(b.values.size()) && b.values[static_cast<size_t>(s)] > 0) {  // r201: its market value, a gold tag
+          const std::string vt = xrcoin::fit(b.values[static_cast<size_t>(s)], 6);  // (r210: a grail's millions short: "48.3M")
+          const float tw = P.width(vt, 30) + 40;
+          P.box(x1 - tw - 4, y0 + 4, x1 - 4, y0 + 42, 19, 0x0B1020, 0.88f);
+          P.box(x1 - tw + 4, y0 + 13, x1 - tw + 24, y0 + 33, 10, kGold);
+          P.left(vt, x1 - tw + 30, y0 + 24, 30, tw - 32, kGold, 2);
+        }
       } else {
         P.box(x0, y0, x1, y1, 14, 0x0C0F18);
       }
@@ -4061,13 +5031,14 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     const int firstPage = b.spread * 2 + 1;
     // r157: the stick past the binder's edge turns its pages (arrows lit where there are more)
     const float pcx = (kLeftPageX + kRightPageX + kPageW) / 2, pcy = kBinderY + kPageH + kFrameV + 26;
-    P.text("PAGES " + std::to_string(firstPage) + "-" + std::to_string(firstPage + 1) + " OF " + std::to_string(b.spreads * 2) +
-               (b.spreads > 1 ? "  -  RIGHT STICK TURNS THE PAGE" : ""),  // r171
+    // r217: the binder holds LANCINI TIZM's pages, then JAM '96's - the spread's set named
+    const bool jamSpread = !b.cards.empty() && b.cards[0].set == 1, exqSpread = !b.cards.empty() && b.cards[0].set == 2;  // (r230: + EXQUISITE)
+    P.text(std::string(exqSpread ? "EXQUISITE  -  " : (jamSpread ? "JAM '96  -  " : "")) + "PAGES " + std::to_string(firstPage) + "-" + std::to_string(firstPage + 1) + " OF " + std::to_string(b.spreads * 2),  // r171 (r236: the turn's words live in the bar: R TURN PAGE)
            pcx, pcy, 40, 1100, 0xB8C2D6, 2);
     const uint32_t back = b.spread > 0 ? kGold : 0x3A4560, on = b.spread + 1 < b.spreads ? kGold : 0x3A4560;
     P.poly({kLeftPageX + 10, pcy, kLeftPageX + 46, pcy - 24, kLeftPageX + 46, pcy + 24}, back);
     P.poly({kRightPageX + kPageW - 10, pcy, kRightPageX + kPageW - 46, pcy - 24, kRightPageX + kPageW - 46, pcy + 24}, on);
-    {  // r160: X takes your binder out into the room (a real 3D one in its skin) / puts it back - printed here, as in the bar
+    if (false) {  // r160: X takes your binder out (r236: printed in the bar only - no on-page copy)
       const std::string w = b.binderOut ? "PUT THE BINDER AWAY" : "TAKE THE BINDER OUT";
       const float tw = P.width(w, 40), bx0 = pcx - 0.5f * (tw + 100), by = 1140;
       P.box(bx0 - 14, by - 34, bx0 + tw + 100, by + 34, 34, 0x0B1020, 0.85f);
@@ -4080,19 +5051,35 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     // r157 round 2 (menu overhaul, no scaling): your collection under the hub's rail (the brand, have / total, coins);
     // the one under the ring and your packs in a column at the right; every word 40 px or more (r140-r156's side panel
     // was 640 px wide with 22-34 px lines)
-    {
+    // r236 (LOOK B, the sitemap): PACKS and the LOCKER pages draw their own focus panels; the other pages keep the column at the
+    // right (the one under the ring, full height now - no packs box: packs live on PACKS, HOME and the tab badge); the collection
+    // box left the rail's foot for the BINDER column's foot (the numbered rail runs down to it)
+    const bool ownPanels = b.page == kPageShop || b.page == kPageLooks || b.page == kPageCovers || b.page == kPageExplosions || b.page == kPageTakeovers;
+    if (!ownPanels && b.page == kPageBinder) {
+      xrmenu::Kit K(P.v);
+      const float sx0 = kAreaX1 + 20, sx1 = 2120, cy0 = 860;
+      xrmenu::label(K, "YOUR COLLECTION", sx0 + 30, cy0 + 20, 32);
+      xrmenu::say(K, "TIZM  " + std::to_string(b.have) + " / " + std::to_string(b.here), sx0 + 30, cy0 + 82, 44, 0xFFFFFF, 'l', sx1 - sx0 - 60);
+      xrmenu::say(K, "JAM '96  " + std::to_string(b.jamHave) + " / " + std::to_string(b.jamHere), sx0 + 30, cy0 + 150, 40, 0xFF5AC8, 'l', sx1 - sx0 - 60);
+      xrmenu::say(K, "EXQUISITE  " + std::to_string(b.exqHave) + " / " + std::to_string(b.exqHere), sx0 + 30, cy0 + 214, 40, 0xE6C774, 'l', sx1 - sx0 - 60);
+    }
+    if (false) {  // (r217-r235's collection box under the rail: never drawn - see above)
       const float cx0 = 40, cx1 = 420, ccx = 0.5f * (cx0 + cx1), cy0 = 960, cy1 = 1180;
       P.box(cx0, cy0, cx1, cy1, 30, 0x151C36);
-      logo(P, cx0 + 60, cy0 + 8, 0.6f, false);
-      P.text(std::to_string(b.have) + " / " + std::to_string(b.here), ccx, cy0 + 120, 56, cx1 - cx0 - 40, 0xFFFFFF, 4);
-      P.box(cx0 + 30, cy0 + 154, cx1 - 30, cy0 + 170, 8, 0x2A3354);
+      logo(P, cx0 + 90, cy0 + 6, 0.5f, false);  // (r217: smaller - the JAM '96 line under it)
+      P.text(std::to_string(b.have) + " / " + std::to_string(b.here), ccx, cy0 + 108, 40, cx1 - cx0 - 40, 0xFFFFFF, 4);
+      P.box(cx0 + 30, cy0 + 134, cx1 - 30, cy0 + 145, 6, 0x2A3354);
       if (b.here > 0 && b.have > 0)
-        P.box(cx0 + 30, cy0 + 154, cx0 + 30 + (cx1 - cx0 - 60) * std::min(1.0f, static_cast<float>(b.have) / b.here), cy0 + 170, 8, kGold);
-      P.text(std::to_string(b.coins) + " COINS", ccx, cy0 + 196, 40, cx1 - cx0 - 40, kGold, 2);
+        P.box(cx0 + 30, cy0 + 134, cx0 + 30 + (cx1 - cx0 - 60) * std::min(1.0f, static_cast<float>(b.have) / b.here), cy0 + 145, 6, kGold);
+      // r217: the JAM '96 set's progress under it
+      // r230: + LANCINI EXQUISITE's beside it
+      P.text("JAM '96 " + std::to_string(b.jamHave) + "/" + std::to_string(b.jamHere), ccx - 92, cy0 + 166, 30, 172, 0xFF5AC8, 3);
+      P.text("EXQ " + std::to_string(b.exqHave) + "/" + std::to_string(b.exqHere), ccx + 98, cy0 + 166, 30, 160, 0xE6C774, 3);
+      P.text(xrcoin::fit(b.coins, 11) + " COINS", ccx, cy0 + 202, 34, cx1 - cx0 - 40, kGold, 2);  // (r208)
     }
     const float sx0 = kAreaX1 + 20, sx1 = 2120, scx = 0.5f * (sx0 + sx1), room = sx1 - sx0 - 30;
-    const float ty0 = kAreaY0, ty1 = 760;
-    P.box(sx0, ty0, sx1, ty1, 28, 0x151C36);
+    const float ty0 = kAreaY0, ty1 = b.page == kPageBinder ? 840.0f : 1180.0f;  // r236: full height (no packs box under it)
+    if (!ownPanels) P.box(sx0, ty0, sx1, ty1, 28, 0x151C36);
     // (a line too long for the column split in two at the space nearest its middle)
     auto two = [&](const std::string& t, float y, float px, uint32_t rgb) {  // (lines filled word by word, up to 4)
       std::vector<std::string> out(1);
@@ -4118,7 +5105,8 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       co = &b.owned[b.cursor];
     }
     const float y = ty0 + 70;
-    if (b.page == kPageExplosions) {  // r157: the explosion under the cursor
+    if (ownPanels) {  // r236: PACKS / LOCKER draw their own focused one
+    } else if (b.page == kPageExplosions) {  // r157: the explosion under the cursor
       if (b.fxCursor < static_cast<int>(b.fx.size())) {
         const BinderView::FxTile& t = b.fx[static_cast<size_t>(b.fxCursor)];
         two(upper(t.name), y + 20, 48, 0xFFFFFF);
@@ -4192,15 +5180,15 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       P.text(std::string("COINS ") + mul, scx, y + 400, 44, room, b.coinPct > 0 ? kGold : 0xB8C2D6, 3);
       P.text("GOD PACKS " + std::to_string(b.godPacks), scx, y + 470, 40, room, b.godPacks > 0 ? kGold : 0xE6B4FF, 2);
     } else if (b.shop) {
-      two("YOUR TIZM COINS", y + 20, 48, 0xFFFFFF);
-      P.text(std::to_string(b.coins), scx, y + 200, 96, room, kGold, 5);
+      two("YOUR BIT COINS", y + 20, 48, 0xFFFFFF);
+      P.text(xrcoin::fit(b.coins, 9), scx, y + 200, 96, room, kGold, 5);  // (r208: commas; past 9 characters short)
       two("EARN THEM IN FRANCHISE MATCHES", y + 360, 40, 0xB8C2D6);
     } else if (cc != nullptr) {
       const Card& c = *cc;
       const Owned& o = *co;
       const bool own = o.total() > 0;
       two(own ? upper(c.name) : "???", y + 20, 48, 0xFFFFFF);
-      P.text("#" + num3(c.num) + " - " + kRarityName[c.rarity], scx, y + 150, 40, room,
+      P.text(std::string(c.set == 1 ? "JAM '96  -  " : "") + "#" + num3(c.num) + " - " + kRarityName[c.rarity], scx, y + 150, 40, room,
              c.rarity == kSuper ? 0xE6B4FF : (c.rarity == kRare ? kGold : 0xE8ECF5), 2);
       if (b.page == kPageTrade) {  // r149: on TRADE-INS only its BASE copies (nothing of its finishes / shinies)
         P.text("BASE X" + std::to_string(o.n[kBase][0]), scx, y + 220, 40, room, 0x6ED36E, 2);
@@ -4218,7 +5206,9 @@ HubPage hub_page(float w, float h, float top, float bottom) {
                lv > 1 ? kGold : 0xE8ECF5, 2);
         if (lv < 5 && !chip) P.text(std::to_string(kLevelCopies[lv] - o.total()) + " MORE: LV " + std::to_string(lv + 1), scx, y + 470, 40, room, 0xE8ECF5, 2);
       }
-      if (b.page == kPageBinder && own) {  // A takes it out (the same button as the hint bar)
+      if (b.page == kPageBinder && own && b.cursor < static_cast<int>(b.values.size()) && b.values[static_cast<size_t>(b.cursor)] > 0)  // r201
+        P.text("MARKET " + xrcoin::text(b.values[static_cast<size_t>(b.cursor)]) + " COINS", scx, y + 200, 36, room, kGold, 2);
+      if (false && b.page == kPageBinder && own) {  // A takes it out (r236: the bar's A only - no on-page copy)
         P.box(sx0 + 20, ty1 - 80, sx1 - 20, ty1 - 10, 35, 0x0B1020, 0.8f);
         const float gx = sx0 + 40;
         P.box(gx - 3, ty1 - 77, gx + 61, ty1 - 13, 32, 0xFFFFFF);
@@ -4227,8 +5217,8 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         P.left("TAKE IT OUT", gx + 76, ty1 - 46, 40, sx1 - gx - 100, 0xFFFFFF, 2);
       }
     }
-    // the packs (Y opens one: printed on them, as in the hint bar)
-    {
+    // the packs (Y opens one: printed on them, as in the hint bar) - r236: on CARDS > PACKS only (its hero)
+    if (false) {
       const float py0 = ty1 + 20, py1 = 1180;
       P.box(sx0, py0, sx1, py1, 28, b.packs > 0 ? 0x3A1F5A : 0x151C36, 1.0f, b.packs > 0 ? 0x1A0E2A : 0);
       if (b.packs > 0) {
@@ -4244,7 +5234,7 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       } else {
         P.text("NO PACKS", scx, py0 + 80, 56, room, 0x8A94AA, 3);
         P.text("1 PACK A MATCH", scx, py0 + 190, 40, room, 0xE8ECF5, 2);
-        P.text("2 FOR A WIN", scx, py0 + 240, 40, room, 0xE8ECF5, 2);
+        P.text("+ A JAM '96 PACK A WIN", scx, py0 + 240, 40, room, 0xFF5AC8, 2);  // (r217)
         two("10 SPARES = 1 PACK", py0 + 330, 40, 0xB8C2D6);
       }
     }
@@ -4257,10 +5247,11 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         out.hints = {{"GRIP", "HOLD IT", 0x3A4A70}, {"LT RT", "TURN IT OVER", 0x3A4A70}, {"B", "BACK IN ITS POCKET", 0xC0392B},
                      {"GRIP", "LET GO ON ITS POCKET", 0x3A4A70}};
     } else if (b.page == kPageTrade) {  // r146
-      out.hints = {{"A", "TRADE 10", 0x2EA043}, {"X", "KEEP / TRADE IT", 0x2E6FD0}};
-      out.aDim = b.spareFree < kTradeFor;
-    } else if (b.page == kPageSets) {  // r146
-      out.hints = {{"A", "SELECT", 0x2EA043}};
+      out.hints = {{"A", "TRADE " + std::to_string(trade_for(b.tradeSet)) + (b.tradeSet == 1 ? " JAM '96" : ""), 0x2EA043},
+                   {"X", "KEEP / TRADE IT", 0x2E6FD0}};  // (r226)
+      out.aDim = b.spareFree < trade_for(b.tradeSet);
+    } else if (b.page == kPageSets) {  // r146 (r236: the BINDER's other view)
+      out.hints = {{"A", "SELECT", 0x2EA043}, {"Y", "PAGES", 0xC9A227}};
       out.aDim = true;
     } else if (b.page == kPageGrading) {  // r152
       out.hints = {{"A", "SEND / LOOK", 0x2EA043}, {"X", "SLAB SHELF", 0x2E6FD0}};
@@ -4269,48 +5260,55 @@ HubPage hub_page(float w, float h, float top, float bottom) {
         const int ti = b.gCursor - nS;
         const BinderView::GTile* t = ti >= 0 && ti < static_cast<int>(b.gTiles.size()) ? &b.gTiles[static_cast<size_t>(ti)] : nullptr;
         out.confirm = "SEND " + upper(g_set[b.gArmed].name) + "?";
-        out.confirmLine = t != nullptr ? ref_words(t->r) + "  -  " + std::to_string(t->cost) + " TIZM COINS  -  BACK AFTER " +
+        out.confirmLine = t != nullptr ? ref_words(t->r) + "  -  " + std::to_string(t->cost) + " BIT COINS  -  BACK AFTER " +
                                              std::to_string(kGradeMatches) + " FRANCHISE MATCHES"
                                        : std::string("TO TIZM GRADING");
       }
-    } else if (b.page == kPageExplosions) {  // r157
+    } else if (b.page == kPageExplosions || b.page == kPageTakeovers) {  // r157 (r236: GOAL FX / TAKEOVERS)
       const bool none = b.fxCursor >= static_cast<int>(b.fx.size());
       const BinderView::FxTile* t = none ? nullptr : &b.fx[static_cast<size_t>(b.fxCursor)];
       out.hints = {{"A", t == nullptr ? "PUT IT ON" : (t->owned ? "PUT IT ON" : "BUY IT"), 0x2EA043}};
       out.aDim = t != nullptr ? t->equipped : b.fxNone;
-      if (t != nullptr) out.hints.push_back({"X", "SEE IT", 0x2E6FD0});
+      if (t != nullptr) out.hints.push_back({"X", "PREVIEW", 0x2E6FD0});
       if (b.fxArmed >= 0 && b.fxArmed < static_cast<int>(b.fx.size())) {
         const BinderView::FxTile& a = b.fx[static_cast<size_t>(b.fxArmed)];
         out.confirm = "BUY " + upper(a.name) + "?";
-        out.confirmLine = std::to_string(a.price) + " TIZM COINS  -  YOU HAVE " + std::to_string(b.coins);
+        out.confirmLine = std::to_string(a.price) + " BIT COINS  -  YOU HAVE " + xrcoin::text(b.coins);
       }
-    } else if (b.page == kPageLooks && b.lkBallFocus) {  // r168: a ball skin
+    } else if (b.page == kPageLooks) {  // r168: a ball skin (r236: LOCKER > BALLS)
       const int i = b.lkBall;
       const bool mine = i < static_cast<int>(b.ballOwned.size()) && b.ballOwned[static_cast<size_t>(i)];
-      out.hints = {{"A", mine ? "PUT IT ON" : "BUY IT", 0x2EA043}, {"X", "SEE IT", 0x2E6FD0}};
+      out.hints = {{"A", mine ? "PUT IT ON" : "BUY", 0x2EA043}, {"X", "PREVIEW", 0x2E6FD0}};
       out.aDim = b.ballOn == i;
       if (b.lkArmKind == kLookBall && b.lkArm >= 0 && b.lkArm < kBallTiles) {
         const xrballs::Item& a = ball_item(b.lkArm);
         out.confirm = "BUY " + std::string(a.name) + "?";
-        out.confirmLine = std::string("BALL SKIN") + "  -  " + std::to_string(a.price) + " TIZM COINS  -  YOU HAVE " + std::to_string(b.coins);
+        out.confirmLine = std::string("BALL SKIN") + "  -  " + std::to_string(a.price) + " BIT COINS  -  YOU HAVE " + xrcoin::text(b.coins);
       }
-    } else if (b.page == kPageLooks) {  // r160
+    } else if (b.page == kPageCovers) {  // r160 (r236: LOCKER > BINDERS)
       const int i = b.lkCol[0];
       const bool mine = i < static_cast<int>(b.lkOwned[0].size()) && b.lkOwned[0][static_cast<size_t>(i)];
-      out.hints = {{"A", mine ? "PUT IT ON" : "BUY IT", 0x2EA043}, {"X", "SEE IT", 0x2E6FD0}};
+      out.hints = {{"A", mine ? "PUT IT ON" : "BUY", 0x2EA043}, {"X", "PREVIEW", 0x2E6FD0}};
       out.aDim = b.skin == i;
       if (b.lkArmKind == kLookSkin && b.lkArm >= 0 && b.lkArm < look_count(b.lkArmKind)) {
         const LookItem& a = look_item(b.lkArmKind, b.lkArm);
         out.confirm = "BUY " + upper(a.name) + "?";
         out.confirmLine = std::string("BINDER SKIN") + "  -  " + std::to_string(a.price) +
-                          " TIZM COINS  -  YOU HAVE " + std::to_string(b.coins);
+                          " BIT COINS  -  YOU HAVE " + xrcoin::text(b.coins);
       }
-    } else if (b.shop) {  // r140
-      out.hints = {{"A", "BUY", 0x2EA043}};
+    } else if (b.shop) {  // r140 (r236: CARDS > PACKS - A opens one on the hero, buys a product; X its box / one pack)
+      const bool onOpen = b.packs > 0 && b.packsOnOpen;
+      out.hints = {{"A", onOpen ? "OPEN" : "BUY", 0x2EA043}, {"X", b.pick % 2 == 1 ? "ONE PACK" : (b.pick / 2 == 2 ? "THE VAULT" : "BOX OF 5"), 0x2E6FD0}};
+      if (!onOpen) {
+        const int set = b.pick / 2;
+        const bool box = b.pick % 2 == 1;
+        const long long price = set == 2 ? (box ? xrexq::kBoxPrice : xrexq::kPackPrice) : set == 0 ? (box ? kBoxPrice : kPackPrice) : (box ? kJamBoxPrice : kJamPackPrice);
+        out.aDim = b.coins < price;
+      }
     } else {
-      out.hints = {{"A", "LOOK", 0x2EA043}, {"Y", "OPEN A PACK", 0xC9A227}};
+      out.hints = {{"A", "LOOK", 0x2EA043}, {"Y", "SETS", 0xC9A227}};  // (r236: Y = SETS; packs open on PACKS)
       out.aDim = !(b.cursor < static_cast<int>(b.owned.size()) && b.owned[static_cast<size_t>(b.cursor)].total() > 0);
-      if (b.packs <= 0) out.hints.back().words = "NO PACKS";
+      // (r236: Y is SETS now - always there)
       out.hints.insert(out.hints.begin() + 1, {"X", b.binderOut ? "BINDER AWAY" : "BINDER OUT", 0x2E6FD0});  // r160: your 3D binder
       if (b.spreads > 1 && !b.binderOut) out.hints.insert(out.hints.begin() + 1, {"R", "TURN PAGE", 0x3A4A70});  // r171: the right stick
       if (b.binderOut) out.hints.push_back({"TRIGGER", "ON A CARD IN IT: TAKE IT", 0x3A4A70});  // r163
@@ -4350,6 +5348,11 @@ HubPage hub_page(float w, float h, float top, float bottom) {
 
 int packs_waiting() { return g_packCount.load(); }
 int generation() { return g_gen.load(); }
+// r221: the frame thread's takeover-coin payments since the last call (the goal probe in xr_quest)
+void take_coin_probe(long long* ns, int* pays) {
+  *ns = g_coinPayNs.exchange(0);
+  *pays = g_coinPays.exchange(0);
+}
 
 std::string magazine_pull() {
   if (!g_loaded.load()) return "";
@@ -4362,6 +5365,25 @@ std::string magazine_pull() {
   }
   return "";
 }
+// r219: your big pulls of the last 7 days as the market's copies (STRIKERS ILLUSTRATED's market spread)
+void magazine_pulls(std::vector<xrmarket::Variant>* out) {
+  out->clear();
+  if (!g_loaded.load()) return;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const long long now = static_cast<long long>(std::time(nullptr));
+  for (auto it = g_pulls.rbegin(); it != g_pulls.rend() && out->size() < 12; ++it) {
+    if (now - it->when > 7LL * 24 * 3600) break;
+    const Ref& r = it->ref;
+    if (r.card < 0 || r.card >= static_cast<int>(g_set.size()) || (r.parallel == kBase && !r.shiny && r.hit == kHitNone)) continue;
+    xrmarket::Variant v;
+    v.card = r.card;
+    v.parallel = r.parallel;
+    v.shiny = r.shiny;
+    v.hit = r.hit;
+    v.serial = r.parallel == kBlack && !exq_card(r.card) ? 1 : r.serial;  // (r230: an Exquisite copy's tier + number)
+    out->push_back(v);
+  }
+}
 
 // r140: new packs rolled (packs earned, packs bought; `flags` what got them) and waiting; what's in them for the
 // pictures to be made early. (g_mutex held)
@@ -4369,15 +5391,25 @@ static void add_packs(int n, unsigned flags, std::vector<std::pair<std::string, 
   for (int i = 0; i < n && g_packs.size() < 999; ++i) {
     uint64_t rng = g_salt ^ (static_cast<uint64_t>(g_serial + 1) * 0x9E3779B97F4A7C15ull);
     const bool god = mix64(rng) % kGodOdds == 0;  // r149: a GOD PACK
-    Pack p = roll_pack(rng, {}, god);
+    const bool exq = (flags & kExqPack) != 0;     // r230: a LANCINI EXQUISITE pack (its own rates; no GOD PACK roll)
+    Pack p = exq ? roll_exq_pack(rng, {}) : roll_pack(rng, {}, god, (flags & kJamPack) != 0 ? 1 : 0);  // r217: a JAM '96 pack's: its Jam cards
     p.serial = ++g_serial;
-    p.flags = flags | (god_cards(p) ? kGodPack : 0u);
+    // (r230: a VAULT case's packs: each its place in the case)
+    p.flags = (flags & ~(7u << kExqBoxShift)) | (exq && (flags & kExqBox) != 0 ? static_cast<unsigned>(i % xrexq::kBoxPacks) << kExqBoxShift : 0u) |
+              (!exq && god_cards(p) ? kGodPack : 0u);
     if (p.cards[0].card < 0) break;  // (no set on this headset)
     g_packs.push_back(p);
     for (const Ref& r : p.cards)
       if (r.card >= 0) prefetch->push_back({g_set[r.card].key, r.shiny});
   }
   g_packCount = static_cast<int>(g_packs.size());
+}
+// r226: the next `packs` waiting packs' cards, in the order they'll be opened and turned over - their big pictures asked for ahead (a
+// session's start: the queue an earlier session made is gone with it; after a pack: the next one) (g_mutex held)
+static void next_packs_art(int packs, std::vector<std::pair<std::string, bool>>* out) {
+  for (size_t p = 0; p < g_packs.size() && p < static_cast<size_t>(packs); ++p)
+    for (const Ref& r : g_packs[p].cards)
+      if (r.card >= 0) out->push_back({g_set[r.card].key, r.shiny && pk_key(g_set[r.card].key)});
 }
 
 // r140: coins landing: a few bright pings of a coin dropping on coins, `k` of them (made here, like the chimes)
@@ -4444,7 +5476,8 @@ static void card_sounds_preload() {
   static std::atomic<bool> once{false};
   if (once.exchange(true)) return;
   std::thread([]() {
-    for (const char* n : {"base", "rare", "silver", "gold", "boom", "hometown", "signed", "black", "shiny", "godpack", "godtell"})
+    for (const char* n : {"base", "rare", "silver", "gold", "boom", "hometown", "signed", "black", "shiny", "godpack", "godtell",
+                          "casino_coins_pour_tray", "casino_coins_jingle"})  // (r219: the big pulls' coin showers)
       card_wav(n);
   }).detach();
 }
@@ -4466,24 +5499,32 @@ static void level_sound() {
   PortCardSound(pcm.data(), static_cast<int>(pcm.size()), 0.7f);
 }
 
-int coins() {
+long long coins() {
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_coins;
+}
+// r208: every change to the balance (g_mutex held): held at xrcoin::kMax (never wrapping), the ever-earned / -spent totals too
+static void coins_add(long long c) {
+  g_coins = xrcoin::clamp(xrcoin::add(g_coins, c));
+  g_coinsEarned = xrcoin::add(g_coinsEarned, c);
+}
+static void coins_take(long long c) {
+  g_coins = xrcoin::clamp(g_coins - c);
+  g_coinsSpent = xrcoin::add(g_coinsSpent, c);
 }
 // r153: GOAL EXPLOSIONS' wallet (xr_goalfx.cpp buys with it): your TIZM COINS; a spend taken and saved (collection.txt,
 // written whole: a temp file, then renamed), false when there aren't enough (nothing taken)
-static int goalfx_balance() {
+static long long goalfx_balance() {
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_coins;
 }
-static bool goalfx_spend(int coins, const char* what) {
+static bool goalfx_spend(long long coins, const char* what) {
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (coins < 0 || g_coins < coins) return false;
-    g_coins -= coins;
-    g_coinsSpent += coins;
+    coins_take(coins);
     save_collection();
-    CLOG("GOAL EXPLOSION %s bought for %d TIZM coins: %d left", what != nullptr ? what : "?", coins, g_coins);
+    CLOG("GOAL EXPLOSION %s bought for %lld BIT coins: %lld left", what != nullptr ? what : "?", coins, g_coins);
   }
   ++g_gen;
   coin_sound(2);
@@ -4497,10 +5538,9 @@ static int looks_buy(int kind, int i) {
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_careerSeed == 0 || g_coins < it.price) return 1;
-    g_coins -= it.price;
-    g_coinsSpent += it.price;
+    coins_take(it.price);
     save_collection();
-    CLOG("LOOKS: %s bought for %d TIZM coins: %d left", it.id, it.price, g_coins);
+    CLOG("LOOKS: %s bought for %d BIT coins: %lld left", it.id, it.price, g_coins);
   }
   look_add_owned(kind, i);
   ++g_gen;
@@ -4515,16 +5555,632 @@ static int balls_buy(int i) {
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_careerSeed == 0 || g_coins < it.price) return 1;
-    g_coins -= it.price;
-    g_coinsSpent += it.price;
+    coins_take(it.price);
     save_collection();
-    CLOG("LOOKS: ball %s bought for %d TIZM coins: %d left", it.id, it.price, g_coins);
+    CLOG("LOOKS: ball %s bought for %d BIT coins: %lld left", it.id, it.price, g_coins);
   }
   ball_add_owned(i);
   ++g_gen;
   coin_sound(2);
   return 0;
 }
+// r199: TIZM SPORTSBOOK's wallet (xr_book.cpp): the loaded binder's coins, only for the career it belongs to
+unsigned wallet_career() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_careerSeed;
+}
+bool spend_coins(unsigned career, long long coins, const char* why) {  // r208: 64-bit
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (career == 0 || career != g_careerSeed || coins <= 0 || g_coins < coins) return false;
+    coins_take(coins);
+    save_collection();
+    CLOG("SPORTSBOOK: %lld BIT coins staked (%s): %lld left", coins, why != nullptr ? why : "?", g_coins);
+  }
+  ++g_gen;
+  return true;
+}
+bool add_coins(unsigned career, long long coins, const char* why) {  // r208: 64-bit, held at kMax (never wrapping)
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (career == 0 || career != g_careerSeed || coins <= 0) return false;
+    const long long was = g_coins;
+    coins_add(coins);
+    save_collection();
+    if (was + coins > xrcoin::kMax)
+      CLOG("SPORTSBOOK: +%lld BIT coins (%s): %lld now - THE MOST A BINDER HOLDS (%lld over it not kept)", coins, why != nullptr ? why : "?",
+           g_coins, was + coins - xrcoin::kMax);
+    else
+      CLOG("SPORTSBOOK: +%lld BIT coins (%s): %lld now", coins, why != nullptr ? why : "?", g_coins);
+  }
+  ++g_gen;
+  return true;
+}
+bool play_sound(const char* name, float gain) { return name != nullptr && play_wav(name, gain); }
+// r202: the casino's win / lose music (real CC0 clips) at the SOUND > EFFECTS volume (the game's SFX group)
+bool play_music(const char* name, float gain) {
+  if (name == nullptr) return false;
+  const std::vector<short>& pcm = card_wav(name);
+  if (pcm.empty()) return false;
+  PortCardSoundSfx(pcm.data(), static_cast<int>(pcm.size()), gain);
+  return true;
+}
+
+// ---- r201: the TIZM CARD MARKET + the CARD MUSEUM (xr_market.cpp / xr_museum.cpp): your copies as they see them, a bought copy
+// into the binder, a sold one out of it, the set, the pictures. Never called with g_mutex held from their side's view: they call
+// in here (their lock -> g_mutex), xr_cards never calls them while holding g_mutex.
+std::vector<xrmarket::CardInfo> g_mkSet;  // (built once on the game thread: the character lines come from franchise.cpp)
+void mk_catalogue(std::vector<xrmarket::CardInfo>* out) { *out = g_mkSet; }
+void mk_holdings(std::vector<xrmarket::Holding>* out) {
+  out->clear();
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto add = [&](int card, int par, bool shiny, int hit, int serial, int grade, uint32_t cert, int count, bool grading) {
+    if (count <= 0) return;
+    xrmarket::Holding h;
+    h.card = card;
+    h.parallel = par;
+    h.shiny = shiny;
+    h.hit = hit;
+    h.serial = serial;
+    h.grade = grade;
+    h.cert = cert;
+    h.count = count;
+    h.grading = grading;
+    out->push_back(h);
+  };
+  for (size_t i = 0; i < g_owned.size(); ++i) {
+    const Owned& o = g_owned[i];
+    const int c = static_cast<int>(i);
+    for (int s = 0; s < 2; ++s) {
+      add(c, kBase, s != 0, kHitNone, 0, 0, 0, o.n[kBase][s], false);
+      add(c, kSilver, s != 0, kHitNone, 0, 0, 0, o.n[kSilver][s], false);
+      add(c, kBlack, s != 0, kHitNone, 1, 0, 0, o.n[kBlack][s], false);
+    }
+    // a GOLD: each number its own copy (the shiny ones the last numbers: the collection keeps no tie between them)
+    const int gn = o.n[kGoldTizm][0], gs = o.n[kGoldTizm][1];
+    for (int k = 0; k < gn + gs; ++k)
+      add(c, kGoldTizm, k >= gn, kHitNone, k < static_cast<int>(o.golds.size()) ? o.golds[static_cast<size_t>(k)] : 0, 0, 0, 1, false);
+    for (const Ref& h : o.hits) add(c, h.parallel, h.shiny, h.hit, h.serial, 0, 0, 1, false);
+  }
+  for (const Slab& s : g_slabs)
+    add(s.ref.card, s.ref.parallel, s.ref.shiny, s.ref.hit, s.ref.serial, s.grade, s.cert, 1, s.left > 0);
+}
+Ref mk_ref(const xrmarket::Variant& v) {
+  Ref r;
+  r.card = v.card;
+  r.parallel = std::max(0, std::min(3, v.parallel));
+  r.shiny = v.shiny;
+  r.serial = v.serial;
+  r.hit = std::max(0, std::min(3, v.hit));
+  return r;
+}
+void mk_changed() {  // (g_mutex held) the binder changed: saved, the bonuses, the hub's picture
+  save_collection();
+  bonuses_update();
+  ++g_gen;
+}
+bool mk_give(const xrmarket::Variant& v) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_careerSeed == 0 || v.card < 0 || v.card >= static_cast<int>(g_set.size())) return false;
+  if (v.grade > 0) {
+    Slab s;
+    s.ref = mk_ref(v);
+    s.grade = std::max(1, std::min(10, v.grade));
+    s.cert = v.cert;
+    s.left = 0;
+    s.seen = true;
+    s.when = static_cast<long long>(std::time(nullptr));
+    g_slabs.push_back(s);
+    slabs_sync();
+  } else {
+    if (v.parallel == kGoldTizm) {
+      for (int g : g_owned[static_cast<size_t>(v.card)].golds)
+        if (g == v.serial) return false;  // (that number is yours already)
+    }
+    if (v.parallel == kBlack && g_owned[static_cast<size_t>(v.card)].n[kBlack][0] + g_owned[static_cast<size_t>(v.card)].n[kBlack][1] > 0) return false;
+    if (g_set[static_cast<size_t>(v.card)].set == 2 && (!xrexq::valid(v.serial) || exq_taken(v.card, v.serial, {})))  // r230: an EXQUISITE number is one copy
+      return false;
+    add_owned(mk_ref(v), +1);
+  }
+  g_newCards.insert(g_set[static_cast<size_t>(v.card)].id);
+  mk_changed();
+  CLOG("TIZM MARKET: bought %s (finish %d, hit %d, grade %d)", g_set[static_cast<size_t>(v.card)].key.c_str(), v.parallel, v.hit, v.grade);
+  return true;
+}
+bool mk_take(const xrmarket::Variant& v) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_careerSeed == 0 || v.card < 0 || v.card >= static_cast<int>(g_owned.size())) return false;
+  Owned& o = g_owned[static_cast<size_t>(v.card)];
+  if (v.grade > 0) {
+    for (auto it = g_slabs.begin(); it != g_slabs.end(); ++it)
+      if (it->ref.card == v.card && it->cert == v.cert && it->left == 0) {
+        g_slabs.erase(it);
+        slabs_sync();
+        mk_changed();
+        return true;
+      }
+    return false;
+  }
+  if (v.hit != kHitNone || g_set[static_cast<size_t>(v.card)].set == 2) {  // (r230: every EXQUISITE copy kept whole)
+    bool have = false;
+    for (const Ref& h : o.hits) have = have || (h.hit == v.hit && h.parallel == v.parallel && h.shiny == v.shiny && h.serial == v.serial);
+    if (!have) return false;
+  } else if (o.n[std::max(0, std::min(3, v.parallel))][v.shiny ? 1 : 0] <= 0) {
+    return false;
+  }
+  add_owned(mk_ref(v), -1);
+  mk_changed();
+  CLOG("TIZM MARKET: sold %s (finish %d, hit %d)", g_set[static_cast<size_t>(v.card)].key.c_str(), v.parallel, v.hit);
+  return true;
+}
+long long mk_balance() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_coins;
+}
+std::shared_ptr<void> mk_portrait(int card, const uint8_t** px, int* w, int* h) {
+  std::string key;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (card < 0 || card >= static_cast<int>(g_set.size())) return nullptr;
+    key = g_set[static_cast<size_t>(card)].key;
+  }
+  ImgP p = portrait(key);
+  if (!p || p->empty()) return nullptr;
+  *px = p->rgba.data();
+  *w = p->w;
+  *h = p->h;
+  return std::const_pointer_cast<void>(std::static_pointer_cast<const void>(p));
+}
+std::shared_ptr<void> mk_thumb(int kind, const uint8_t** px, int* w, int* h) {
+  static std::mutex m;
+  static ImgP cache[xrmuseum::kKinds];
+  std::lock_guard<std::mutex> lock(m);
+  if (kind < 0 || kind >= xrmuseum::kKinds) return nullptr;
+  if (!cache[kind]) {
+    auto img = std::make_shared<Img>();
+    int iw = 0, ih = 0, n = 0;
+    unsigned char* d = stbi_load((home_dir() + "/franchise/museum/thumb_" + std::to_string(kind) + ".png").c_str(), &iw, &ih, &n, 4);
+    if (d != nullptr) {
+      img->rgba.assign(d, d + static_cast<size_t>(iw) * ih * 4);
+      img->w = iw;
+      img->h = ih;
+      stbi_image_free(d);
+    }
+    cache[kind] = img;
+  }
+  if (cache[kind]->empty()) return nullptr;
+  *px = cache[kind]->rgba.data();
+  *w = cache[kind]->w;
+  *h = cache[kind]->h;
+  return std::const_pointer_cast<void>(std::static_pointer_cast<const void>(cache[kind]));
+}
+// r235 (COLLECTOR-TRADES.md 11): a CPU collector rips a pack - THIS roller (roll_pack / roll_exq_pack, add_packs' own GOD PACK roll): the same
+// odds as yours, one 1/1 per card per set ever (yours, a pack waiting, the collector world's list - told after every rip), every EXQUISITE
+// number once. `set` 0 LANCINI TIZM, 1 JAM '96, 2 EXQUISITE. Nothing of yours changes (the pack is never in g_packs). (the trades module's
+// lock -> g_mutex -> g_worldM, as black_mine)
+bool trade_rip(int set, uint64_t seed, std::vector<xrmarket::Variant>* out) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_careerSeed == 0 || g_set.empty() || out == nullptr) return false;
+  uint64_t rng = seed;
+  Pack p;
+  if (set == 2) {
+    p = roll_exq_pack(rng, {});
+  } else {
+    const bool god = mix64(rng) % kGodOdds == 0;
+    p = roll_pack(rng, {}, god, set == 1 ? 1 : 0);
+  }
+  for (const Ref& r : p.cards) {
+    if (r.card < 0) continue;
+    xrmarket::Variant v;
+    v.card = r.card;
+    v.parallel = r.parallel;
+    v.shiny = r.shiny;
+    v.hit = r.hit;
+    v.serial = r.serial;
+    out->push_back(v);
+  }
+  return true;
+}
+void mk_install() {  // (game thread, the set loaded: once)
+  static bool s_done = false;
+  if (s_done || !g_loaded.load()) return;
+  s_done = true;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    // r231: each card's place in its FAMILY (evolutions.txt: an evolution line, a hero's suits, an ORIGINAL's uniforms - one player for the
+    // market): its depth from the first form, the family's deepest + 1 (a branch's forms each their own depth) - the market's stage premium
+    std::unordered_map<std::string, std::string> evoPrev;
+    if (FILE* f = std::fopen((home_dir() + "/franchise/evolutions.txt").c_str(), "r")) {
+      char a[128], b[128];
+      int lv = 0;
+      while (std::fscanf(f, "%127s %127s %d", a, b, &lv) == 3) evoPrev[b] = a;
+      std::fclose(f);
+    }
+    auto depth_of = [&evoPrev](const std::string& key, std::string* root) {
+      int d = 0;
+      std::string r = key;
+      for (auto it = evoPrev.find(r); it != evoPrev.end() && d < 8; it = evoPrev.find(r)) r = it->second, ++d;
+      *root = r;
+      return d;
+    };
+    std::unordered_map<std::string, int> famDeep;
+    for (const Card& c : g_set) {
+      std::string r;
+      const int d = depth_of(c.key, &r);
+      famDeep[r] = std::max(famDeep[r], d);
+    }
+    for (const Card& c : g_set) {
+      xrmarket::CardInfo k;
+      {
+        std::string r;
+        k.stage = depth_of(c.key, &r);
+        k.stages = famDeep[r] + 1;
+      }
+      k.key = c.id;  // (r217: a Jam card its own)
+      k.stat = c.stat;
+      k.name = c.name;
+      char line[64];
+      PortFranchiseMarketLine(c.key.c_str(), line, sizeof(line));
+      k.line = line;
+      k.rarity = c.rarity;
+      k.series = c.series;
+      k.rating = c.rating;
+      k.here = c.here;
+      k.c1 = c.c1;
+      k.c2 = c.c2;
+      // r217: its set (a JAM '96 card: "JAM '96 <name>" on the market / the wire / the collectors; its LANCINI TIZM twin its base)
+      k.set = c.set;
+      k.base = c.set >= 1 ? c.twin : static_cast<int>(g_mkSet.size());
+      if (c.set == 1) {
+        k.name = "JAM '96 " + c.name;
+        k.stat.clear();  // (franchise rows map to the main card: card_of_key's stat lookup keeps the first)
+      }
+      if (c.set == 2) {  // r230: a LANCINI EXQUISITE card (its checklist number: the "jersey number" premium)
+        k.name = "EXQUISITE " + c.name;
+        k.stat.clear();
+        k.no = c.num;
+      }
+      g_mkSet.push_back(k);
+    }
+  }
+  xrmarket::Source s;
+  s.career = &wallet_career;
+  s.balance = &mk_balance;
+  s.spend = &spend_coins;
+  s.add = &add_coins;
+  s.sound = &play_sound;
+  s.catalogue = &mk_catalogue;
+  s.holdings = &mk_holdings;
+  s.give = &mk_give;
+  s.take = &mk_take;
+  s.portrait = &mk_portrait;
+  s.listed = [](const std::vector<xrmarket::Variant>& v) {  // r210: listed copies stay out of trade-ins + grading
+    {
+      std::lock_guard<std::mutex> lock(g_listedM);
+      g_listedV = v;
+    }
+    ++g_gen;
+  };
+  s.sold = [](const xrmarket::Variant& v, const char* who) {  // r213: a 1/1 sold on the market stays in the collector world
+    if (v.parallel != kBlack || v.card < 0) return;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);  // (the market's lock -> g_mutex, as give / take)
+      if (v.card >= static_cast<int>(g_set.size())) return;
+      world_black(v.card);  // (this career's list read first if it wasn't yet)
+      std::vector<std::string> keys;
+      {
+        std::lock_guard<std::mutex> wl(g_worldM);
+        keys = g_worldKeys;
+      }
+      keys.push_back(g_set[static_cast<size_t>(v.card)].id);  // (the pack roller knows at once; the trades module's own list follows)
+      world_set(g_careerSeed, keys);
+    }
+    (void)who;  // (r235: the copy itself goes to the collector world through sold_for - its buyer, his price)
+  };
+  // r235: any copy of yours sold (SELL NOW / an offer / your listing): a named collector's buy into his binder (queued: the market's lock held)
+  s.sold_for = [](const xrmarket::Variant& v, const char* who, long long coins) { xrtrade::world_sold(v, who, coins); };
+  // r235: the SEARCH buys a collector's / the dealer's case's copy through the trades module (no market lock held: xr_market input)
+  s.buy_offering = [](uint32_t id, long long ask, std::string* line) { return xrtrade::buy_listing(id, ask, line); };
+  // r214: the wire never sells a 1/1 that's taken in this career - yours (binder, slab, a pack waiting) or a collector's (the world
+  // keys COLLECTOR TRADES keeps / its world11 file). The market's lock -> g_mutex -> g_worldM (a leaf), as `sold`; nothing called back.
+  s.black_taken = [](int card) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (card < 0 || card >= static_cast<int>(g_owned.size()) || card >= static_cast<int>(g_set.size())) return false;
+    const Owned& o = g_owned[static_cast<size_t>(card)];
+    if (o.n[kBlack][0] + o.n[kBlack][1] > 0 || o.blackAny()) return true;
+    for (const Ref& r : o.sealed)
+      if (r.parallel == kBlack) return true;
+    for (const Slab& sl : g_slabs)
+      if (sl.ref.card == card && sl.ref.parallel == kBlack) return true;
+    for (const Pack& p : g_packs)
+      for (const Ref& q : p.cards)
+        if (q.card == card && q.parallel == kBlack) return true;
+    return world_black(card);
+  };
+  // r230: an EXQUISITE number taken in this career (yours, a pack waiting, a collector's): the market lists / sells another number. The market's
+  // lock -> g_mutex -> g_worldM, as black_taken
+  s.serial_taken = [](int card, int serial) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return exq_taken(card, serial, {});
+  };
+  // r220: a JAM '96 copy's die for its minis (the market, the museum's labels, the magazine, the collectors' trades)
+  s.cut_sil = [](const xrmarket::Variant& v, const uint8_t** px, int* w, int* h) -> std::shared_ptr<void> {
+    Ref r;
+    r.parallel = v.parallel, r.shiny = v.shiny, r.hit = v.hit;
+    ImgP p = lk::cut_small(lk::jam_shape(r), 0.0f, 108, 151, 0xFFFFFF, false);
+    if (!p || p->empty()) return nullptr;
+    *px = p->rgba.data();
+    *w = p->w;
+    *h = p->h;
+    return std::const_pointer_cast<void>(std::static_pointer_cast<const void>(p));
+  };
+  xrmarket::set_source(s);
+  {  // r213: COLLECTOR TRADES - the same binder, wallet and set as the market's; the collectors' 1/1s to the pack roller
+    xrtrade::Source t;
+    t.career = &wallet_career;
+    t.balance = &mk_balance;
+    t.spend = &spend_coins;
+    t.add = &add_coins;
+    t.sound = &play_sound;
+    t.catalogue = &mk_catalogue;
+    t.holdings = &mk_holdings;
+    t.give = &mk_give;
+    t.take = &mk_take;
+    t.black_mine = [](int card) {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      if (card < 0 || card >= static_cast<int>(g_owned.size())) return false;
+      const Owned& o = g_owned[static_cast<size_t>(card)];
+      if (o.n[kBlack][0] + o.n[kBlack][1] > 0 || o.blackAny()) return true;
+      for (const Ref& s : o.sealed)
+        if (s.parallel == kBlack) return true;
+      for (const Slab& sl : g_slabs)
+        if (sl.ref.card == card && sl.ref.parallel == kBlack) return true;
+      for (const Pack& p : g_packs)
+        for (const Ref& q : p.cards)
+          if (q.card == card && q.parallel == kBlack) return true;
+      return false;
+    };
+    t.serial_mine = [](int card, int serial) {  // r230: an EXQUISITE number of yours (binder, slab, a pack waiting) - a collector's never repeats it
+      std::lock_guard<std::mutex> lock(g_mutex);
+      return exq_taken(card, serial, {});
+    };
+    t.world_blacks = [](unsigned career, const std::vector<std::string>& keys) {
+      world_set(career, keys);
+      CLOG("COLLECTOR TRADES: %d BLACK 1/1s in the collectors' binders (packs give a GOLD for those)", static_cast<int>(keys.size()));
+    };
+    t.log = [](const char* line) { CLOG("%s", line); };
+    t.rip = &trade_rip;  // r235: the collectors rip packs with this roller
+    xrtrade::set_source(t);
+  }
+  xrmuseum::Wallet w;
+  w.career = &wallet_career;
+  w.balance = &mk_balance;
+  w.spend = &spend_coins;
+  w.sound = &play_sound;
+  xrmuseum::set_wallet(w);
+  xrmuseum::set_thumbs(&mk_thumb);
+  CLOG("TIZM MARKET + CARD MUSEUM: %d cards priced", static_cast<int>(g_mkSet.size()));
+}
+// r201: a box-filtered copy of an RGBA picture at w x h into `dst` (its stride dw) at (x, y)
+void mk_blit(const std::vector<uint8_t>& src, int sw, int sh, uint8_t* dst, int dw, int dh, int x, int y, int w, int h) {
+  if (src.size() < static_cast<size_t>(sw) * sh * 4 || w <= 0 || h <= 0) return;
+  for (int j = 0; j < h; ++j) {
+    const int ty = y + j;
+    if (ty < 0 || ty >= dh) continue;
+    const int sy0 = j * sh / h, sy1 = std::max(sy0 + 1, (j + 1) * sh / h);
+    for (int i = 0; i < w; ++i) {
+      const int tx = x + i;
+      if (tx < 0 || tx >= dw) continue;
+      const int sx0 = i * sw / w, sx1 = std::max(sx0 + 1, (i + 1) * sw / w);
+      unsigned acc[4] = {0, 0, 0, 0}, n = 0;
+      for (int yy = sy0; yy < sy1; yy += std::max(1, (sy1 - sy0) / 3))
+        for (int xx = sx0; xx < sx1; xx += std::max(1, (sx1 - sx0) / 3)) {
+          const uint8_t* p = &src[(static_cast<size_t>(yy) * sw + xx) * 4];
+          for (int k = 0; k < 4; ++k) acc[k] += p[k];
+          ++n;
+        }
+      uint8_t* d = &dst[(static_cast<size_t>(ty) * dw + tx) * 4];
+      for (int k = 0; k < 4; ++k) d[k] = static_cast<uint8_t>(acc[k] / std::max(1u, n));
+      // r217: its cut-outs stay cut (a JAM '96 card's die-cut crest, every card's round corners: the museum's shader drops alpha
+      // under 0.3); its foil's alpha (128-255) solid as before
+      d[3] = d[3] < 96 ? 0 : 255;
+    }
+  }
+}
+// r210: a straight-RGBA sRGB picture's whole mip chain (levels 1..n, each half the last, down to 1 x 1), made on a worker: each texel
+// the 2 x 2 above it averaged in LINEAR light (sRGB decoded, averaged, encoded - the GPU's blit did this too) weighted by alpha (a clear
+// texel's colour never bleeds into a card's edge), alpha averaged plainly. Copied up as it is (xrfx::Model::texMips: no GPU work).
+std::vector<std::vector<uint8_t>> mip_chain_srgb(const std::vector<uint8_t>& rgba, int w, int h) {
+  struct Tables {  // (a function-local static: built once, thread-safe)
+    float lin[256];
+    uint8_t enc[4097];
+    Tables() {
+      for (int i = 0; i < 256; ++i) {
+        const float c = i / 255.0f;
+        lin[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+      }
+      for (int i = 0; i <= 4096; ++i) {
+        const float l = i / 4096.0f;
+        const float c = l <= 0.0031308f ? l * 12.92f : 1.055f * std::pow(l, 1.0f / 2.4f) - 0.055f;
+        enc[i] = static_cast<uint8_t>(std::lround(std::min(1.0f, std::max(0.0f, c)) * 255.0f));
+      }
+    }
+  };
+  static const Tables s_t;
+  const float* s_lin = s_t.lin;
+  const uint8_t* s_enc = s_t.enc;
+  std::vector<std::vector<uint8_t>> out;
+  const std::vector<uint8_t>* src = &rgba;
+  int sw = w, sh = h;
+  while (sw > 1 || sh > 1) {
+    const int dw = std::max(1, sw / 2), dh = std::max(1, sh / 2);
+    std::vector<uint8_t> d(static_cast<size_t>(dw) * dh * 4);
+    for (int y = 0; y < dh; ++y)
+      for (int x = 0; x < dw; ++x) {
+        float acc[3] = {0, 0, 0}, wsum = 0, asum = 0, csum[3] = {0, 0, 0};
+        int n = 0;
+        for (int j = 0; j < 2; ++j)
+          for (int i = 0; i < 2; ++i) {
+            const int sx = std::min(sw - 1, 2 * x + i), sy = std::min(sh - 1, 2 * y + j);
+            const uint8_t* p = &(*src)[(static_cast<size_t>(sy) * sw + sx) * 4];
+            const float a = p[3] / 255.0f;
+            for (int c = 0; c < 3; ++c) acc[c] += s_lin[p[c]] * a, csum[c] += s_lin[p[c]];
+            wsum += a;
+            asum += p[3];
+            ++n;
+          }
+        uint8_t* q = &d[(static_cast<size_t>(y) * dw + x) * 4];
+        for (int c = 0; c < 3; ++c) {
+          const float l = wsum > 1e-4f ? acc[c] / wsum : csum[c] / n;  // (all clear: the plain average keeps the velvet under it)
+          q[c] = s_enc[static_cast<int>(std::lround(std::min(1.0f, std::max(0.0f, l)) * 4096.0f))];
+        }
+        q[3] = static_cast<uint8_t>(std::lround(asum / n));
+      }
+    out.push_back(std::move(d));
+    src = &out.back();
+    sw = dw;
+    sh = dh;
+  }
+  return out;
+}
+// r226 (Lance's JAM '96 OMASTAR at arm's length: the LANCINI TIZM plate / small words "garbled"): a card front's mips for the cards in your
+// hands - mip_chain_srgb's levels (each from the one above, as it makes them: nothing compounds), then each level's colour given a light
+// 3x3 unsharp (kFrontMipSharp, in linear light, premultiplied: never past its own alpha) - the GPU's 2x2 box chain is soft at the sizes a
+// card is seen at in the hand (measured, logs\r226-cards\legibility: the plate / stats at a card 180-400 px wide on screen, error vs a clean
+// shrink of the same front 10-14% lower, edge contrast closer to it, no overshoot). Level 0 (the card up close) and every level's alpha
+// (the foil, the die-cut) exactly as before. Worker threads only (a front ~1.4 ms a megapixel more).
+constexpr float kFrontMipSharp = 0.5f;
+std::vector<std::vector<uint8_t>> mip_chain_front(const std::vector<uint8_t>& rgba, int w, int h) {
+  struct Tables {
+    float lin[256];
+    uint8_t enc[4097];
+    Tables() {
+      for (int i = 0; i < 256; ++i) {
+        const float c = i / 255.0f;
+        lin[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+      }
+      for (int i = 0; i <= 4096; ++i) {
+        const float l = i / 4096.0f;
+        const float c = l <= 0.0031308f ? l * 12.92f : 1.055f * std::pow(l, 1.0f / 2.4f) - 0.055f;
+        enc[i] = static_cast<uint8_t>(std::lround(std::min(1.0f, std::max(0.0f, c)) * 255.0f));
+      }
+    }
+  };
+  static const Tables s_t;
+  std::vector<std::vector<uint8_t>> lv = mip_chain_srgb(rgba, w, h);
+  int lw = w, lh = h;
+  for (std::vector<uint8_t>& d : lv) {
+    lw = std::max(1, lw / 2), lh = std::max(1, lh / 2);
+    if (lw < 3 || lh < 3 || d.size() < static_cast<size_t>(lw) * lh * 4) continue;
+    const size_t n = static_cast<size_t>(lw) * lh;
+    std::vector<float> P(n * 3);
+    for (size_t i = 0; i < n; ++i) {
+      const float a = d[i * 4 + 3] / 255.0f;
+      for (int c = 0; c < 3; ++c) P[i * 3 + c] = s_t.lin[d[i * 4 + c]] * a;
+    }
+    for (int y = 0; y < lh; ++y)
+      for (int x = 0; x < lw; ++x) {
+        const size_t i = static_cast<size_t>(y) * lw + x;
+        const uint8_t ab = d[i * 4 + 3];
+        if (ab == 0) continue;  // (clear: its colour as mip_chain_srgb left it)
+        const float a = ab / 255.0f;
+        float b[3] = {0, 0, 0};
+        for (int dy = -1; dy <= 1; ++dy)
+          for (int dx = -1; dx <= 1; ++dx) {
+            const size_t k = static_cast<size_t>(std::min(lh - 1, std::max(0, y + dy))) * lw + std::min(lw - 1, std::max(0, x + dx));
+            for (int c = 0; c < 3; ++c) b[c] += P[k * 3 + c];
+          }
+        for (int c = 0; c < 3; ++c) {
+          const float p = P[i * 3 + c], v = std::min(a, std::max(0.0f, p + kFrontMipSharp * (p - b[c] / 9.0f)));
+          d[i * 4 + c] = s_t.enc[static_cast<int>(std::lround(std::min(1.0f, v / a) * 4096.0f))];
+        }
+      }
+  }
+  return lv;
+}
+// r210: an empty spot in a piece - its card cell clear (alpha 0: the shader drops it, the case / stand behind shows) but for a thin
+// dashed outline of a card and a small EMPTY SPOT plate: up close it reads as a place for a card, far off (the outline's mips under the
+// shader's 0.3 cut) nothing - never a grey card. Drawn at the cell's own size (w x h), straight RGBA.
+std::vector<uint8_t> empty_spot(int w, int h) {
+  Pc P;
+  const float m = 0.07f * w, t = std::max(3.0f, 0.016f * w), arm = 0.16f * w;
+  const uint32_t ink = 0xE6D8B4;
+  const float x0 = m, y0 = m, x1 = w - m, y1 = h - m;
+  // the corners: an L each (a mount's corner brackets)
+  P.box(x0, y0, x0 + arm, y0 + t, t * 0.5f, ink, 0.95f), P.box(x0, y0, x0 + t, y0 + arm, t * 0.5f, ink, 0.95f);
+  P.box(x1 - arm, y0, x1, y0 + t, t * 0.5f, ink, 0.95f), P.box(x1 - t, y0, x1, y0 + arm, t * 0.5f, ink, 0.95f);
+  P.box(x0, y1 - t, x0 + arm, y1, t * 0.5f, ink, 0.95f), P.box(x0, y1 - arm, x0 + t, y1, t * 0.5f, ink, 0.95f);
+  P.box(x1 - arm, y1 - t, x1, y1, t * 0.5f, ink, 0.95f), P.box(x1 - t, y1 - arm, x1, y1, t * 0.5f, ink, 0.95f);
+  // the dashes between them, along each side
+  const float dash = 0.06f * w, gap = 0.045f * w;
+  for (float x = x0 + arm + gap; x + dash <= x1 - arm - gap * 0.5f; x += dash + gap) {
+    P.box(x, y0, x + dash, y0 + t, t * 0.5f, ink, 0.8f);
+    P.box(x, y1 - t, x + dash, y1, t * 0.5f, ink, 0.8f);
+  }
+  for (float y = y0 + arm + gap; y + dash <= y1 - arm - gap * 0.5f; y += dash + gap) {
+    P.box(x0, y, x0 + t, y + dash, t * 0.5f, ink, 0.8f);
+    P.box(x1 - t, y, x1, y + dash, t * 0.5f, ink, 0.8f);
+  }
+  const float cy = 0.5f * h;
+  P.box(0.2f * w, cy - 0.055f * h, 0.8f * w, cy + 0.055f * h, 0.05f * h, 0x101422, 0.82f);
+  P.ring(0.2f * w, cy - 0.055f * h, 0.8f * w, cy + 0.055f * h, 0.05f * h, t * 0.7f, ink, 0.9f);
+  P.text("EMPTY SPOT", 0.5f * w, cy + 0.004f * h, 0.05f * h, 0.54f * w, ink, 0);
+  return render(w, h, P.v, nullptr);
+}
+bool museum_atlas(const std::vector<xrmarket::Variant>& items, std::vector<uint8_t>* out) {
+  constexpr int W = 1024, H = 2048, CW = 341, CH = 476, LH = 97;
+  // r210: clear everywhere (alpha 0) but the cards drawn (r201-r209 filled it with the case's dark velvet, alpha 1: an empty slot's
+  // face + label strip drew as a flat dark card - his "olive / grey slabs"); the colour under the clear is that velvet, so a filtered
+  // edge never brightens
+  out->assign(static_cast<size_t>(W) * H * 4, 0);
+  for (size_t i = 0; i < out->size(); i += 4) {
+    (*out)[i] = 14;
+    (*out)[i + 1] = 16;
+    (*out)[i + 2] = 34;
+  }
+  static const std::vector<uint8_t> s_empty = empty_spot(CW - 2, CH - 2);
+  for (size_t k = 0; k < 9; ++k) {  // (the empty spots first: a card drawn below covers its cell)
+    if (k < items.size() && items[k].card >= 0) continue;
+    const int x = static_cast<int>(k % 3) * CW, y = static_cast<int>(k / 3) * CH;
+    for (int j = 0; j < CH - 2; ++j)
+      std::memcpy(&(*out)[(static_cast<size_t>(y + j) * W + x) * 4], &s_empty[static_cast<size_t>(j) * (CW - 2) * 4], static_cast<size_t>(CW - 2) * 4);
+  }
+  std::vector<Card> cards;
+  int total = 0, all = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_set.empty()) return false;
+    total = g_setN;  // (r217: a set's count)
+    // r220: a JAM '96 card's index is past the first set's count (r217-r219 left every Jam card out of the case here - an empty spot's
+    // velvet: the bound was the set's count, not the cards')
+    all = static_cast<int>(g_set.size());
+    for (const xrmarket::Variant& v : items) cards.push_back(v.card >= 0 && v.card < all ? g_set[static_cast<size_t>(v.card)] : Card());
+  }
+  for (size_t k = 0; k < items.size() && k < 9; ++k) {
+    const xrmarket::Variant& v = items[k];
+    if (v.card < 0 || v.card >= all) continue;
+    const Ref r = mk_ref(v);
+    const std::vector<uint8_t> front = draw_front(cards[k], r, total, 2.0f);
+    mk_blit(front, kFrontW, kFrontH, out->data(), W, H, static_cast<int>(k % 3) * CW, static_cast<int>(k / 3) * CH, CW - 2, CH - 2);
+    if (v.grade > 0) {
+      Pc P;
+      slab_label(P, cards[k], r, v.grade, v.cert, 960.0f, 274.0f);  // (the slab label's own 960 x 274)
+      const std::vector<uint8_t> lab = render(960, 274, P.v, nullptr);
+      mk_blit(lab, 960, 274, out->data(), W, H, static_cast<int>(k % 3) * CW, 1428 + static_cast<int>(k / 3) * LH, CW - 2, LH - 2);
+    }
+  }
+  {  // the card back (every card's back the same plain one)
+    Card c0;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      c0 = g_set[0];
+    }
+    const std::vector<uint8_t> back = draw_back(c0, total);
+    mk_blit(back, kBackW, kBackH, out->data(), W, H, 0, 1719, 236, 329);
+  }
+  return true;
+}
+
 int last_coins(std::string* why, long long* when) {
   std::lock_guard<std::mutex> lock(g_mutex);
   if (why != nullptr) *why = g_lastCoinsWhy;
@@ -4582,6 +6238,7 @@ static void claim_legacy(unsigned seed) {
 }
 
 void poll() {
+  WdScope wd("game thread", "cards poll");  // r237
   load_set();
   static bool s_wallet = false;
   if (!s_wallet) {
@@ -4591,10 +6248,43 @@ void poll() {
     w.spend = &goalfx_spend;
     xrgoalfx::set_wallet(w);
   }
+  mk_install();  // r201: the TIZM CARD MARKET + the CARD MUSEUM (their wallet, your copies, the set)
+  {
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    {
+      WdScope wdm("game thread", "MARKET frame (prices, a matchday, the search's results)");  // r237
+      if (xrmarket::frame(now)) ++g_gen;
+    }
+    {
+      WdScope wdm("game thread", "MUSEUM frame");  // r237
+      if (xrmuseum::frame(now)) ++g_gen;
+    }
+    {  // r226: the museum's copies (kept out of TRADE-INS) - re-read when the museum changed (its lock, never under g_mutex)
+      static int s_museumGen = -1;
+      const int mg = xrmuseum::generation();
+      if (mg != s_museumGen) {
+        s_museumGen = mg;
+        std::vector<xrmarket::Variant> v = xrmuseum::items();
+        std::lock_guard<std::mutex> lock(g_museumM);
+        if (v.size() != g_museumV.size()) ++g_gen;
+        g_museumV.swap(v);
+      }
+    }
+    {
+      WdScope wdt("game thread", "COLLECTORS frame (the twenty's matchday, the index)");  // r237
+      if (xrtrade::frame(now)) ++g_gen;  // r213: COLLECTOR TRADES (after the market: this career's prices first)
+    }
+    if (g_page.load() == kPageMarket && xrmarket::redraw_due()) ++g_gen;  // r206: the flash / the last word, a few pictures only
+    if ((g_page.load() != kPageMarket || g_sceneMode.load() != 0) && xrmarket::search_open()) xrmarket::search_close();  // r235: (off the page: its letter grid down)
+    if (g_page.load() == kPageMuseum && xrmuseum::redraw_due()) ++g_gen;
+    if (g_page.load() == kPageCollectors && xrtrade::redraw_due()) ++g_gen;
+  }
   // r153: the loaded career's own binder (a new career: an empty one, its own salt); none loaded yet: nothing taken (a
   // match's packs / coins wait in franchise.cpp for their career). Not while a pack / card is out in your hands.
   const unsigned seed = PortFranchiseCareerSeed();
   if (seed != 0 && seed != g_careerSeed && g_loaded.load() && !busy()) {
+    WdScope wdc("game thread", "a career's binder loading");  // r237
+    std::vector<std::pair<std::string, bool>> nextArt;  // r226
     {
       std::lock_guard<std::mutex> lock(g_mutex);
       reset_collection();
@@ -4613,7 +6303,9 @@ void poll() {
       g_packCount = static_cast<int>(g_packs.size());
       bonuses_update();  // r146: the franchise's card bonuses from this career's binder
       CLOG("collection: career %u's binder%s", seed, fresh ? " (new: empty, its own salt)" : "");
+      next_packs_art(2, &nextArt);  // r226: the next two packs' big pictures made now (in the background, after anything asked first)
     }
+    for (const auto& kp : nextArt) xrbig::prefetch(kp.first, kp.second, kArt);
     {  // r163: the old sleeves' coins back (once, to the first career loaded after r163: looks.txt never said which paid)
       int refund = 0;
       {
@@ -4624,10 +6316,10 @@ void poll() {
       if (refund > 0) {
         {
           std::lock_guard<std::mutex> lock(g_mutex);
-          g_coins += refund;
-          g_coinsSpent = std::max(0, g_coinsSpent - refund);
+          g_coins = xrcoin::clamp(xrcoin::add(g_coins, refund));
+          g_coinsSpent = std::max(0LL, g_coinsSpent - refund);
           save_collection();
-          CLOG("looks: sleeves are gone - %d TIZM coins back to career %u (%d now)", refund, seed, g_coins);
+          CLOG("looks: sleeves are gone - %d BIT coins back to career %u (%lld now)", refund, seed, g_coins);
         }
         std::lock_guard<std::mutex> lk(g_lookM);
         looks_save_l();  // (its sleeves dropped, refunded noted)
@@ -4651,18 +6343,39 @@ void poll() {
     }
   }
   {  // r164: 8-BIT TAKEOVER's caught coins: real TIZM coins in a franchise match of the loaded career, else dropped
+    // r221 (Lance's r220 log: ~20 of these a goal, each one a whole binder file written + fsync'd here on the frame
+    // thread under g_mutex, and a log line): paid at once as before (the balance), the file written by the background
+    // saver (save_collection_soon), and ONE log line for the takeover once its catches stop for 2 s
+    static int s_runCoins = 0, s_runCatches = 0;
+    static std::chrono::steady_clock::time_point s_runLast;
     const int caught = xrgoalfx::take_earned();
     if (caught > 0 && g_careerSeed != 0 && seed == g_careerSeed && PortFranchiseMatchActive()) {
+      const auto t0 = std::chrono::steady_clock::now();
       {
         std::lock_guard<std::mutex> lock(g_mutex);
-        g_coins += caught;
-        g_coinsEarned += caught;
-        save_collection();
-        CLOG("+%d TIZM coins from a room takeover (8-BIT TAKEOVER coins / r182 PIXEL INVADERS kills): %d now", caught, g_coins);
+        coins_add(caught);
       }
+      save_collection_soon();
+      s_runCoins += caught;
+      ++s_runCatches;
+      s_runLast = std::chrono::steady_clock::now();
+      g_coinPayNs.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(s_runLast - t0).count());
+      g_coinPays.fetch_add(1);
       ++g_gen;
     } else if (caught > 0) {
       CLOG("%d 8-BIT TAKEOVER coins not paid (not a franchise match of this career)", caught);
+    }
+    if (s_runCatches > 0 && std::chrono::steady_clock::now() - s_runLast > std::chrono::seconds(2)) {
+      long long now;
+      {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        now = g_coins;
+      }
+      CLOG("+%d BIT coins from a room takeover in %d catches (8-BIT TAKEOVER coins / r182 PIXEL INVADERS kills): %lld now "
+           "(r221: paid at each catch, the binder saved off the frame thread - %d saves so far, avg %.1f ms, max %.1f ms)",
+           s_runCoins, s_runCatches, now, g_saverRuns.load(),
+           g_saverRuns.load() > 0 ? g_saverNs.load() / 1e6 / g_saverRuns.load() : 0.0, g_saverMaxNs.load() / 1e6);
+      s_runCoins = s_runCatches = 0;
     }
   }
   if (g_careerSeed == 0 || seed != g_careerSeed) return;  // r153: (a match's coins / packs: its own career's)
@@ -4672,30 +6385,33 @@ void poll() {
   if (coins > 0) {
     {
       std::lock_guard<std::mutex> lock(g_mutex);
-      g_coins += coins;
-      g_coinsEarned += coins;
+      coins_add(coins);
       g_lastCoins = coins;
       g_lastCoinsWhen = static_cast<long long>(std::time(nullptr));
       g_lastCoinsWhy = why;
       save_collection();
-      CLOG("+%d TIZM coins (%s): %d now", coins, why, g_coins);
+      CLOG("+%d BIT coins (%s): %lld now", coins, why, g_coins);
     }
     ++g_gen;
     coin_sound(3);
   }
   unsigned flags = 0;
   const int n = PortFranchiseTakeCardPacks(&flags);
-  if (n <= 0) return;
+  // r217 (Lance 11-11): a WIN = 1 LANCINI TIZM pack + 1 JAM '96 pack, a loss 1 LANCINI TIZM pack (franchise.cpp: a series / a trophy
+  // won still a LANCINI TIZM pack more each)
+  const int nJam = PortFranchiseTakeJamPacks();
+  if (n <= 0 && nJam <= 0) return;
   std::vector<std::pair<std::string, bool>> prefetch;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     add_packs(n, flags, &prefetch);
+    add_packs(nJam, flags | kJamPack, &prefetch);
     // r152: a franchise match played (its packs: one a match): TIZM GRADING's slabs a match nearer coming back
     for (Slab& s : g_slabs)
       if (s.left > 0 && --s.left == 0) CLOG("TIZM GRADING: %s back - grade %d", pull_text(s.ref).c_str(), s.grade);
     slabs_sync();
     save_collection();
-    CLOG("%d pack%s earned (%s%s%s), %d waiting", n, n == 1 ? "" : "s", (flags & 1) ? "a win" : "a match",
+    CLOG("%d pack%s + %d JAM '96 earned (%s%s%s), %d waiting", n, n == 1 ? "" : "s", nJam, (flags & 1) ? "a win" : "a match",
          (flags & 2) ? ", a playoff series won" : "", (flags & 4) ? ", a trophy" : "", static_cast<int>(g_packs.size()));
   }
   ++g_gen;
@@ -4706,24 +6422,43 @@ void poll() {
 // r140: the CARDS shop: a pack (kPackPrice) or a box of five (kBoxPrice), paid in TIZM coins; rolled and saved the moment
 // they're bought (the same odds as an earned pack, never re-rolled), waiting with the rest (opened the same way). 0
 // bought, 1 not enough coins, 2 no room. (Game thread.)
-static int buy_packs(bool box) {
+// r217: `jam` a JAM '96 pack / box (kJamPackPrice / kJamBoxPrice)
+// r230: `set` 0 LANCINI TIZM, 1 JAM '96, 2 LANCINI EXQUISITE (a pack 1,000 / THE VAULT case of five 5,000 - its packs kExqPack, a case's
+// kExqBox with each one's place in it)
+static int buy_packs(bool box, int set = 0) {
   std::vector<std::pair<std::string, bool>> prefetch;
-  const int price = box ? kBoxPrice : kPackPrice, n = box ? kBoxPacks : 1;
+  const bool jam = set == 1, exq = set == 2;
+  const int price = exq ? (box ? xrexq::kBoxPrice : xrexq::kPackPrice) : jam ? (box ? kJamBoxPrice : kJamPackPrice) : (box ? kBoxPrice : kPackPrice),
+            n = box ? kBoxPacks : 1;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_coins < price) return 1;
     if (g_packs.size() + n > 999) return 2;
-    g_coins -= price;
-    g_coinsSpent += price;
-    add_packs(n, kBought, &prefetch);
+    coins_take(price);
+    add_packs(n, kBought | (jam ? kJamPack : 0u) | (exq ? kExqPack | (box ? kExqBox : 0u) : 0u), &prefetch);
     save_collection();
-    CLOG("bought %s for %d TIZM coins: %d left, %d packs waiting", box ? "a box of 5 packs" : "a pack", price, g_coins,
-         static_cast<int>(g_packs.size()));
+    CLOG("bought %s%s for %d BIT coins: %lld left, %d packs waiting", exq ? "LANCINI EXQUISITE: " : (jam ? "JAM '96: " : ""),
+         box ? (exq ? "THE VAULT (a case of 5 packs)" : "a box of 5 packs") : "a pack", price, g_coins, static_cast<int>(g_packs.size()));
   }
   ++g_gen;
   coin_sound(2);
   for (const auto& kp : prefetch) xrbig::prefetch(kp.first, kp.second, kArt);
   return 0;
+}
+// r202: TIZM CASINO's MEGA JACKPOT pays a free pack (the shop's odds, rolled + saved now, waiting with the rest)
+bool grant_packs(unsigned career, int n, const char* why) {
+  std::vector<std::pair<std::string, bool>> prefetch;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (career == 0 || career != g_careerSeed || n <= 0 || g_packs.size() + n > 999) return false;
+    add_packs(n, kBought, &prefetch);
+    save_collection();
+    CLOG("STRIKERZ CASINO: %d free pack%s (%s), %d packs waiting", n, n == 1 ? "" : "s", why != nullptr ? why : "?",
+         static_cast<int>(g_packs.size()));
+  }
+  ++g_gen;
+  for (const auto& kp : prefetch) xrbig::prefetch(kp.first, kp.second, kArt);
+  return true;
 }
 
 namespace {
@@ -4732,33 +6467,44 @@ namespace {
 bool grade_pick(int card, Ref* out) {
   if (card < 0 || card >= static_cast<int>(g_owned.size())) return false;
   const Owned& o = g_owned[card];
+  // r210: the finest copy in the order below that is NOT listed on the market (a listed copy stays out of grading); r152-r209 took the
+  // first kind there was
+  std::vector<std::pair<Ref, int>> cands;  // (a kind of copy, how many of it you have)
   Ref r;
   r.card = card;
-  if (o.n[kBlack][0] + o.n[kBlack][1] > 0) {
-    r.parallel = kBlack, r.shiny = o.n[kBlack][1] > 0, r.serial = 1;
-  } else if (!o.hits.empty()) {
-    r = o.hits.front();
-    for (const Ref& h : o.hits)
-      if (pull_score(h) > pull_score(r)) r = h;
-  } else if (o.n[kGoldTizm][0] + o.n[kGoldTizm][1] > 0) {
+  for (int s = 1; s >= 0; --s)
+    if (o.n[kBlack][s] > 0) r.parallel = kBlack, r.shiny = s != 0, r.serial = 1, r.hit = kHitNone, cands.push_back({r, o.n[kBlack][s]});
+  {
+    std::vector<Ref> hits = o.hits;
+    std::stable_sort(hits.begin(), hits.end(), [](const Ref& a, const Ref& b) { return pull_score(a) > pull_score(b); });
+    for (const Ref& h : hits) cands.push_back({h, 1});
+  }
+  if (o.n[kGoldTizm][0] + o.n[kGoldTizm][1] > 0) {
+    r = Ref();
+    r.card = card;
     r.parallel = kGoldTizm, r.shiny = o.n[kGoldTizm][1] > 0;
     for (int v : o.golds) {  // (a number not sealed already)
       bool sealed = false;
       for (const Ref& s : o.sealed) sealed = sealed || (s.parallel == kGoldTizm && s.serial == v);
-      if (!sealed) {
-        r.serial = v;
-        break;
-      }
+      if (!sealed) r.serial = v, cands.push_back({r, 1});
     }
-  } else if (o.n[kSilver][0] + o.n[kSilver][1] > 0) {
-    r.parallel = kSilver, r.shiny = o.n[kSilver][1] > 0;
-  } else if (o.n[kBase][0] + o.n[kBase][1] > 0) {
-    r.parallel = kBase, r.shiny = o.n[kBase][1] > 0;
-  } else {
-    return false;
   }
-  *out = r;
-  return true;
+  for (int par : {kSilver, kBase})
+    for (int s = 1; s >= 0; --s)
+      if (o.n[par][s] > 0) {
+        r = Ref();
+        r.card = card;
+        r.parallel = par, r.shiny = s != 0;
+        cands.push_back({r, o.n[par][s]});
+      }
+  for (const auto& c : cands) {
+    const int listed = listed_n(card, c.first.parallel, c.first.shiny, c.first.hit, c.first.serial, 0);
+    if (c.second > listed) {
+      *out = c.first;
+      return true;
+    }
+  }
+  return false;
 }
 std::vector<int> grading_slab_order() {  // (g_mutex held)
   std::vector<int> v;
@@ -4801,8 +6547,7 @@ static int grade_send(int card, Slab* sent) {
     if (!grade_pick(card, &r)) return 2;
     const int cost = grade_cost(r);
     if (g_coins < cost) return 1;
-    g_coins -= cost;
-    g_coinsSpent += cost;
+    coins_take(cost);
     Slab s;
     s.ref = r;
     uint64_t rng = g_salt ^ (static_cast<uint64_t>(++g_gradeSent) * 0xC2B2AE3D27D4EB4Full);
@@ -4834,15 +6579,16 @@ static int grade_send(int card, Slab* sent) {
 // out of your collection, a pack rolled for them that moment (the same odds as any, never re-rolled) waiting with the
 // rest; its history; saved, the franchise bonuses worked out again (the levels it took). 0 traded (*out: the cards, for
 // its show), 1 not enough spares, 2 no room. (Game thread.)
-static int trade_in(std::vector<int>* out) {
+// r226: `set` 0 LANCINI TIZM spares -> a LANCINI TIZM pack, 1 JAM '96 spares -> a JAM '96 pack (kJamPack in its flags: rolled from the Jam set)
+static int trade_in(std::vector<int>* out, int set = 0) {
   std::vector<std::pair<std::string, bool>> prefetch;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    const std::vector<std::pair<int, int>> pick = trade_pick();
+    const std::vector<std::pair<int, int>> pick = trade_pick(set);
     if (pick.empty()) return 1;
     if (g_packs.size() + 1 > 999) return 2;
     const size_t before = g_packs.size();
-    add_packs(1, kTraded, &prefetch);
+    add_packs(1, kTraded | (set == 1 ? kJamPack : 0u), &prefetch);
     if (g_packs.size() == before) return 2;  // (no set on this headset)
     Trade t;
     t.when = static_cast<long long>(std::time(nullptr));
@@ -4854,15 +6600,16 @@ static int trade_in(std::vector<int>* out) {
       r.shiny = false;
       add_owned(r, -p.second);
       for (int k = 0; k < p.second; ++k) out->push_back(p.first);
-      t.what += (t.what.empty() ? "" : ",") + g_set[p.first].key + "*" + std::to_string(p.second);
+      t.what += (t.what.empty() ? "" : ",") + g_set[p.first].id + "*" + std::to_string(p.second);
     }
     g_trades.push_back(t);
     if (g_trades.size() > 40) g_trades.erase(g_trades.begin(), g_trades.end() - 40);
-    g_tradedCards += kTradeFor;
+    g_tradedCards += trade_for(set);
     ++g_tradedPacks;
     save_collection();
     bonuses_update();
-    CLOG("traded in %d spare base cards (%s) for pack %d: %d packs waiting, %d traded in all", kTradeFor, t.what.c_str(), t.pack,
+    CLOG("traded in %d spare %sbase cards (%s) for %spack %d: %d packs waiting, %d traded in all", trade_for(set), set == 1 ? "JAM '96 " : "", t.what.c_str(),
+         set == 1 ? "JAM '96 " : "", t.pack,
          static_cast<int>(g_packs.size()), g_tradedCards);
   }
   ++g_gen;
@@ -4880,8 +6627,15 @@ constexpr float kPackWm = 0.135f, kPackHm = kPackWm * kPH / kPW;
 // corners as its pictures (48 px of 1080 across: kCornerR of its width)
 constexpr float kCardT = 0.0012f, kCornerR = 48.0f / 1080.0f;
 constexpr int kCardNX = 2, kCardNY = 2, kCardNV = (kCardNX + 1) * (kCardNY + 1);
-constexpr int kCornerSegs = 5, kEdgeSegs = 4 * (kCornerSegs + 1), kEdgeNV = (kEdgeSegs + 1) * 2;
+// r220: 15 (64 edge segments - every JAM '96 die's edge at exactly lk::jamcut::kLoopN points, so THE PUNCH lerps point to point; an A
+// card's round corners a little smoother)
+constexpr int kCornerSegs = 15, kEdgeSegs = 4 * (kCornerSegs + 1), kEdgeNV = (kEdgeSegs + 1) * 2;  // r217: 9 (40 edge segments: a Jam card's crest)
+static_assert(kEdgeSegs == lk::jamcut::kLoopN, "every die's edge loop has kEdgeSegs points");
 constexpr int kCardVerts = 2 * kCardNV + kEdgeNV;  // a card's vertices: its front, its back, its edge
+// r220 (THE PUNCH): after each card's own (kCardVerts) and its level moment (kTagVerts): its front inside the crest only (face down: none
+// of its real cut showing round the back), its back with its own die (after the punch), its cut-away bits (quads)
+constexpr int kBitMax = lk::jamcut::kBitMax, kPunchVerts = lk::jamcut::kLoopN + kCardNV + 4 * kBitMax;
+constexpr uint64_t kPunchedLongAgo = 1;  // (punchNs: already its cut - out of the binder, a slab, a trade-in)
 
 // r138: each finish's own look in your hands beyond its picture - where the special (non-BASE) treatments plug in (being
 // chosen with Lance: things popping out of the card, depth inside it, an aura on its back before it turns over ...):
@@ -4906,7 +6660,7 @@ enum Mode { kNone = 0, kPackUp = 1, kOut = 2, kAway = 3, kTrade = 4 };  // (r146
 // r139 (Lance: "i want the pack opening experience to be that of ripping a pack in real life"): the pack in your hand
 // waiting to be ripped; ripped, its cards filing out one by one into a stack in that hand, backs to you; the stack (each
 // trigger turns its front card over / puts it to the back)
-enum Phase { kWaiting, kFiling, kStack };
+enum Phase { kWaiting, kFiling, kStack, kVault };  // (r230: kVault - an EXQUISITE pack in its case, the latches / the lid first)
 
 XrVector3f v_add(XrVector3f a, XrVector3f b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 XrVector3f v_sub(XrVector3f a, XrVector3f b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
@@ -4973,6 +6727,10 @@ struct Sheet {
   XrVector3f relP[2] = {};
   XrVector3f relPTo{0.0f, 0.0f, 0.0f};
   int lead = 1;
+  // r219 (BIG PULLS): a hit's reveal in a pack - its build-up's plan (xr_pulls.h; tier 0: a BASE card's plain 0.5 s flip), and how far
+  // its turn has come (0 face down .. 1 face up: the moment at 0.5)
+  xrpulls::Plan pull;
+  float flipP = 0.0f;
 };
 
 // The pictures a model is made of, drawn on threads; uploaded once all are in.
@@ -4982,6 +6740,17 @@ struct Pics {
   std::vector<int> w, h;
   int left = 0;
   int gen = 0;
+  // r226 (the cards' pictures): a front drawn with its portrait (its big picture not in yet: late[i] 1), drawn again once it is
+  // (2 drawing, 3 done) - redrawn[i] the new front until the frame thread swaps it into the card model; what it was drawn from
+  std::vector<uint8_t> late;
+  std::vector<std::vector<uint8_t>> redrawn;
+  // r226: a picture's mips made on its drawing thread (mip_chain_front: the fronts'; empty = the GPU makes them, as before)
+  std::vector<std::vector<std::vector<uint8_t>>> mips, redrawnMips;
+  std::vector<Card> cards;
+  std::vector<Ref> refs;
+  std::vector<int> levels;
+  int total = 0;
+  unsigned bigGen = ~0u;  // (xrbig::generation() when the late ones were last looked at)
 };
 
 struct Scene3 {
@@ -5056,6 +6825,14 @@ struct Scene3 {
   // took it up a level), its level and copies, when it was turned over (0 not yet)
   int tagKind[kSheets] = {}, tagLevel[kSheets] = {}, tagCopies[kSheets] = {};
   uint64_t tagNs[kSheets] = {};
+  // r220 (THE PUNCH): each card's die (-1 an A card, 0 a JAM '96 crest, > 0 its real cut: lk::jam_shape) and when it was punched from
+  // the crest it shows face down to its real cut (0: still to come - a pack card not turned over yet; kPunchedLongAgo: already its
+  // cut, e.g. out of the binder); the card's pose at that moment (its bits fall from there)
+  int cutShape[kSheets] = {};
+  uint64_t punchNs[kSheets] = {};
+  XrQuaternionf punchQ[kSheets] = {};
+  XrVector3f punchPos[kSheets] = {};
+  float punchScale[kSheets] = {};
   std::vector<std::string> packNew;  // r149: the cards the open pack made NEW (unmade if it goes back unopened)
   int newLook = -1;                  // r149: the NEW card the binder's cursor rests on, since when
   uint64_t newLookNs = 0;
@@ -5070,6 +6847,52 @@ struct Scene3 {
   bool gradeHit = false;  // (its grade's moment had)
 };
 Scene3 S;
+// r230: LANCINI EXQUISITE's opening (xr_cards_vault.inc, below): THE VAULT case, the private gallery's mood
+std::atomic<float> g_gallery{0.0f};
+uint64_t g_lastRevealNs = 0;  // (the last card's reveal: the gallery eases back a while after the last)
+void vault_begin(uint64_t now, unsigned flags, int serial);
+void vault_end(bool fxReady);
+void vault_flick_next(uint64_t now);
+bool vault_trigger(int h, uint64_t now);
+// r219 (BIG PULLS, C:\StrikersMR\BIG-PULLS.md): the hit being built up in the stack now (its card, -1 none) and its heartbeat's last
+// moment played; the room's darkness + white flash now (a 1/1's: room_dark / room_flash - xr_quest's passthrough reads them, the
+// effects' shade round you darkens with it); a 1/1's own show (its cameo, its spotlight's + autograph's dimming) held back after
+// its reveal till g_pullGateNs, then eased in (pull_gate)
+int g_pullCard = -1;
+float g_pullBeatT = -1.0f;
+std::atomic<float> g_pullDark{0.0f}, g_pullFlash{0.0f};
+uint64_t g_pullGateNs = 0;
+float pull_floor();  // (the room's floor for the party: below, with g_floorY)
+// A card's build-up (xr_pulls.h) as it's turned over in a pack: its finish, shiny, case hit, set; a GRAIL character (the market's
+// demand tier 5); a GOD PACK's last card
+xrpulls::Plan pull_plan_of(int i) {
+  const Ref& r = S.refs[i];
+  xrpulls::Pull p;
+  {  // r230: an EXQUISITE card - its own show (xr_exq.h: GOLD LEAF / hits BIG, EMERALD / SAPPHIRE HUGE, a MASTERPIECE 1/1 / a GOLD RPA the JACKPOT + the lights out)
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (exq_card(r.card)) {
+      p.exq = xrexq::tier_of(r.serial);
+      p.rookie = exq_rookie(g_set[static_cast<size_t>(r.card)]);
+    }
+  }
+  p.parallel = r.parallel;
+  p.shiny = r.shiny;
+  p.hit = r.hit;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    p.jam = r.card >= 0 && r.card < static_cast<int>(g_set.size()) && g_set[r.card].set == 1;
+  }
+  // (only a hit asks the market - its lock, never with the binder's held)
+  if (r.parallel != kBase || r.shiny || r.hit != kHitNone || p.exq > 0) p.grail = xrmarket::hype_tier(r.card) >= 5;
+  p.godLast = S.godAdded && S.revealed >= S.n;
+  return xrpulls::plan(p);
+}
+// 1 while nothing holds a 1/1's own dimming back; after a dark build-up's reveal 0 till g_pullGateNs, then up over kEaseBack
+float pull_gate(uint64_t now) {
+  if (g_pullGateNs == 0 || now >= g_pullGateNs + static_cast<uint64_t>(xrpulls::kEaseBack * 1e9f)) return 1.0f;
+  if (now <= g_pullGateNs) return 0.0f;
+  return static_cast<float>(static_cast<double>(now - g_pullGateNs) * 1e-9) / xrpulls::kEaseBack;
+}
 // r138: the special cards' 3D (below)
 void specials_plan(uint64_t now, bool fxReady);
 void specials_end(bool fxReady);
@@ -5093,8 +6916,72 @@ void god_skip();
 void god_end(bool fxReady);
 int g_picGen = 0;
 std::mutex g_packPxMutex;
-std::vector<uint8_t> g_packPx[2];  // the pack's pictures, drawn once (every pack looks the same)
-int g_packPxTotal = -1;
+std::vector<uint8_t> g_packPx[3][2];  // the pack's pictures, drawn once (every pack of a set looks the same) - r217: [set][side] (r230: + EXQUISITE)
+int g_packPxTotal[3] = {-1, -1, -1};
+// r217: the CARD SHOP's pictures - each pack's real wrapper (300 x 460) and its box of five in a 3/4 view (650 x 550), drawn once a
+// set on a thread of their own the first time the shop asks (the hub draws a plain pack till then, then again: g_gen), kept (~0.6
+// + 1.4 MB a set)
+std::mutex g_shopPicM;
+ImgP g_shopPic[3][2];
+bool g_shopPicAsked[3] = {false, false, false};
+std::vector<uint8_t> vault_shop_px(const Img& pack, int* w, int* h);  // r230 (below)
+ImgP shop_pic(int set, bool box) {
+  set = set == 1 ? 1 : (set == 2 ? 2 : 0);
+  {
+    std::lock_guard<std::mutex> lock(g_shopPicM);
+    if (g_shopPic[set][box ? 1 : 0]) return g_shopPic[set][box ? 1 : 0];
+    if (g_shopPicAsked[set]) return ImgP();
+    g_shopPicAsked[set] = true;
+  }
+  auto work = [set]() {
+    const std::vector<uint8_t> big = draw_pack(false, g_setN, set);
+    auto pack = std::make_shared<Img>();
+    {  // (its foil's alpha solid: a picture on the hub)
+      Img full;
+      full.w = kPackW, full.h = kPackH, full.rgba = big;
+      for (size_t i = 3; i < full.rgba.size(); i += 4)
+        if (full.rgba[i] >= 120) full.rgba[i] = 255;
+      lk::Cv cv(300, 460);
+      lk::paste(cv, full, 0, 0, 300, 460);
+      pack->w = 300, pack->h = 460, pack->rgba = lk::bytes(cv, false);
+    }
+    ImgP mario = portrait("strikers_mario"), chari = portrait("pk_charizard"), spidey = portrait("mua_spiderman");
+    lk::Star st[3];
+    lk::pack_stars(mario, chari, spidey, st);
+    auto box = std::make_shared<Img>();
+    if (set == 2) box->rgba = vault_shop_px(*pack, &box->w, &box->h);  // r230: THE VAULT, open, its 5 packs in velvet
+    else box->rgba = lk::box_picture(set, *pack, st, &box->w, &box->h);
+    {
+      std::lock_guard<std::mutex> lock(g_shopPicM);
+      g_shopPic[set][0] = pack;
+      g_shopPic[set][1] = box;
+    }
+    CLOG("the CARD SHOP's %s pictures drawn", set == 2 ? "LANCINI EXQUISITE" : (set == 1 ? "JAM '96" : "LANCINI TIZM"));
+    ++g_gen;
+  };
+#ifdef HARNESS_REAL_CARDS
+  work();  // (the PC proof: no threads)
+  std::lock_guard<std::mutex> lock(g_shopPicM);
+  return g_shopPic[set][box ? 1 : 0];
+#else
+  std::thread(work).detach();
+  return ImgP();
+#endif
+}
+std::vector<uint8_t> shop_box_px(int set, int* w, int* h) {  // (the PC proof: the box, drawn now)
+  const std::vector<uint8_t> big = draw_pack(false, g_setN, set);
+  Img full;
+  full.w = kPackW, full.h = kPackH, full.rgba = big;
+  for (size_t i = 3; i < full.rgba.size(); i += 4)
+    if (full.rgba[i] >= 120) full.rgba[i] = 255;
+  lk::Cv cv(300, 460);
+  lk::paste(cv, full, 0, 0, 300, 460);
+  Img pack;
+  pack.w = 300, pack.h = 460, pack.rgba = lk::bytes(cv, false);
+  lk::Star st[3];
+  lk::pack_stars(portrait("strikers_mario"), portrait("pk_charizard"), portrait("mua_spiderman"), st);
+  return lk::box_picture(set, pack, st, w, h);
+}
 
 Sheet* sheet(int i) { return i == 0 ? &S.pack : (i >= 1 && i <= S.n ? &S.card[i - 1] : nullptr); }
 
@@ -5147,6 +7034,8 @@ void start_flip(Sheet& s, float to, float dur, uint64_t now, bool fx) {
   s.flipDur = dur;
   s.flipNs = now;
   s.flipFx = fx;
+  s.pull = xrpulls::Plan{};  // r219: a plain turn (stack_step gives a hit's its build-up after this)
+  s.flipP = 0.0f;
 }
 
 // r139: the stack (Lance: "the cards file 1 by 1 with the backs of the cards showing, but in a single line not spread
@@ -5191,6 +7080,11 @@ XrVector3f back_path(int i, float u, float* pop) {
 }
 
 // What to draw: the pictures (threads) for the pack (once: kept) and the cards.
+// r220: a punched card's bits printed as its frame (BASE white, a TIZM BOOM yellow, SILVER / GOLD / BLACK their metal) - its two colours
+void punch_bit_rgb(const Ref& r, uint32_t* f1, uint32_t* f2) {
+  *f1 = r.parallel == kSilver ? 0xF4F6FAu : r.parallel == kGoldTizm ? 0xFFE27Au : r.parallel == kBlack ? 0x2A2436u : r.hit == kHitBoom ? 0xFFD400u : 0xFFFFFFu;
+  *f2 = r.parallel == kSilver ? 0x9AA6BCu : r.parallel == kGoldTizm ? 0xB07A10u : r.parallel == kBlack ? 0xE0218Au : r.hit == kHitBoom ? 0xFF7A1Au : 0xDDE3EEu;
+}
 void ask_pictures(bool packToo) {
   const int gen = ++g_picGen;
   int total = 0;
@@ -5198,7 +7092,7 @@ void ask_pictures(bool packToo) {
   std::vector<int> levels;  // r146: each card's level as it stands (its stars, its back's line)
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    total = static_cast<int>(g_set.size());
+    total = g_setN;  // (r217: a set's count)
     for (int i = 0; i < S.n; ++i) {
       cards.push_back(g_set[S.refs[i].card]);
       levels.push_back(card_level(g_owned[S.refs[i].card]));
@@ -5211,6 +7105,9 @@ void ask_pictures(bool packToo) {
       S.tagLevel[i] = levels.back();
       S.tagCopies[i] = copies;
       S.tagNs[i] = 0;
+      // r220 (THE PUNCH): its die; a pack's Jam card with a real cut is punched as it's turned over, anything else is its cut already
+      S.cutShape[i] = jam_shape_of(cards.back(), S.refs[i]);
+      S.punchNs[i] = S.mode == kPackUp && S.cutShape[i] > 0 ? 0 : kPunchedLongAgo;
     }
   }
   const float waitS = S.mode == kTrade ? 0.8f : 4.0f;  // (r146: a trade-in's ten: its show shouldn't wait on big pictures)
@@ -5222,20 +7119,21 @@ void ask_pictures(bool packToo) {
     pics->gen = gen;
     S.packPics = pics;
     bool cached = false;
+    const int pset = (S.packData.flags & kExqPack) != 0 ? 2 : ((S.packData.flags & kJamPack) != 0 ? 1 : 0);  // r217: a JAM '96 pack its own wrapper (r230: + EXQUISITE)
     {
       std::lock_guard<std::mutex> lock(g_packPxMutex);
-      cached = g_packPxTotal == total && !g_packPx[0].empty() && !g_packPx[1].empty();
-      if (cached) pics->rgba = {g_packPx[0], g_packPx[1]};
+      cached = g_packPxTotal[pset] == total && !g_packPx[pset][0].empty() && !g_packPx[pset][1].empty();
+      if (cached) pics->rgba = {g_packPx[pset][0], g_packPx[pset][1]};
     }
     if (!cached) {
       pics->left = 2;
-      std::thread([pics, total]() {
+      std::thread([pics, total, pset]() {
         for (int side = 0; side < 2; ++side) {
-          std::vector<uint8_t> px = draw_pack(side == 1, total);
+          std::vector<uint8_t> px = draw_pack(side == 1, total, pset);
           {
             std::lock_guard<std::mutex> lock(g_packPxMutex);
-            g_packPx[side] = px;
-            g_packPxTotal = total;
+            g_packPx[pset][side] = px;
+            g_packPxTotal[pset] = total;
           }
           std::lock_guard<std::mutex> lock(pics->m);
           pics->rgba[side] = std::move(px);
@@ -5247,11 +7145,31 @@ void ask_pictures(bool packToo) {
   // the cards' pictures: their fronts, their backs, then (r138) their edges: a few pixels of the finish's edge colour, its
   // foil in their alpha (ready at once)
   // r147: then their level moments (kTagW x kTagH; a card with none: 4 x 4 see-through)
+  // r220: then each card's back with its own die (a punched pack card's, drawn to swap in at its punch; 4 x 4 see-through for the rest)
+  // and its cut-away bits' picture (lk::bits_px, quarter size; 4 x 4 none)
   auto pics = std::make_shared<Pics>();
-  pics->rgba.resize(4 * S.n);
-  pics->w.assign(4 * S.n, kFrontW);
-  pics->h.assign(4 * S.n, kFrontH);
-  std::vector<int> tags(static_cast<size_t>(S.n), 0);
+  pics->rgba.resize(6 * S.n);
+  pics->w.assign(6 * S.n, kFrontW);
+  pics->h.assign(6 * S.n, kFrontH);
+  std::vector<int> tags(static_cast<size_t>(S.n), 0), backShape(static_cast<size_t>(S.n), 0), punchShape(static_cast<size_t>(S.n), 0);
+  std::vector<uint32_t> bitRgb(static_cast<size_t>(S.n) * 2, 0);
+  int extra = 0;
+  for (int i = 0; i < S.n; ++i) {
+    const int sh = std::max(0, S.cutShape[i]);
+    const bool punch = S.cutShape[i] > 0 && S.punchNs[i] == 0;
+    backShape[static_cast<size_t>(i)] = punch ? 0 : sh;  // (the back it shows first: a punched card's crest, else its own die)
+    punchShape[static_cast<size_t>(i)] = punch ? sh : 0;
+    for (int k : {4 * S.n + i, 5 * S.n + i}) {
+      pics->w[static_cast<size_t>(k)] = pics->h[static_cast<size_t>(k)] = 4;
+      pics->rgba[static_cast<size_t>(k)].assign(4 * 4 * 4, 0);
+    }
+    if (punch) {
+      pics->w[static_cast<size_t>(4 * S.n + i)] = kBackW, pics->h[static_cast<size_t>(4 * S.n + i)] = kBackH;
+      pics->w[static_cast<size_t>(5 * S.n + i)] = lk::kBitsW, pics->h[static_cast<size_t>(5 * S.n + i)] = lk::kBitsH;
+      extra += 2;
+      punch_bit_rgb(S.refs[i], &bitRgb[static_cast<size_t>(2 * i)], &bitRgb[static_cast<size_t>(2 * i + 1)]);
+    }
+  }
   for (int i = 0; i < S.n; ++i) {
     pics->w[S.n + i] = kBackW;
     pics->h[S.n + i] = kBackH;
@@ -5259,11 +7177,19 @@ void ask_pictures(bool packToo) {
     pics->w[2 * S.n + i] = pics->h[2 * S.n + i] = 4;
     std::vector<uint8_t>& e = pics->rgba[2 * S.n + i];
     e.resize(4 * 4 * 4);
+    // r230: an EXQUISITE card's edge - black stock, gilt where its front has a leaf band (lk::xq::look_of)
+    uint32_t edge = fl.edge;
+    float edgeFoil = fl.edgeFoil;
+    if (i < static_cast<int>(cards.size()) && cards[static_cast<size_t>(i)].set == 2) {
+      const lk::xq::Look xl = lk::xq::look_of(std::max(1, xrexq::tier_of(S.refs[i].serial)));
+      edge = xl.band ? (xl.foil == lk::xq::kFSilver ? 0xC9CED6u : 0xC9A04Au) : 0x141416u;
+      edgeFoil = xl.band ? 1.0f : 0.15f;
+    }
     for (int p = 0; p < 16; ++p) {
-      e[p * 4 + 0] = (fl.edge >> 16) & 255;
-      e[p * 4 + 1] = (fl.edge >> 8) & 255;
-      e[p * 4 + 2] = fl.edge & 255;
-      e[p * 4 + 3] = static_cast<uint8_t>(255 - std::lround(fl.edgeFoil * 127.0f));
+      e[p * 4 + 0] = (edge >> 16) & 255;
+      e[p * 4 + 1] = (edge >> 8) & 255;
+      e[p * 4 + 2] = edge & 255;
+      e[p * 4 + 3] = static_cast<uint8_t>(255 - std::lround(edgeFoil * 127.0f));
     }
     tags[static_cast<size_t>(i)] = S.tagKind[i];
     pics->w[3 * S.n + i] = S.tagKind[i] != 0 ? kTagW : 4;
@@ -5272,27 +7198,57 @@ void ask_pictures(bool packToo) {
   }
   int tagCount = 0;
   for (int k : tags) tagCount += k != 0 ? 1 : 0;
-  pics->left = 2 * S.n + tagCount;
+  pics->left = 2 * S.n + tagCount + extra;
   pics->gen = gen;
   S.cardPics = pics;
   // three threads (the fronts on two, the backs on one): each picture's canvas is ~26 MB of floats while it's drawn
   const std::vector<Ref> refs(S.refs, S.refs + S.n);
+  // r226 (Lance's JAM '96 BOWSER, a framed menu icon): the cards' big pictures FIRST in the queue, in the order they're turned over
+  // (r225: each front's get() pushed its own to the front - the last asked first - behind nothing it could see); a front drawn without
+  // its big picture (still being drawn after waitS) is noted and drawn again the moment it's in (late_fronts: swapped into the model)
+  {
+    std::vector<std::pair<std::string, bool>> order;
+    for (size_t i = 0; i < cards.size(); ++i) order.push_back({cards[i].key, refs[i].shiny && pk_key(cards[i].key)});
+    xrbig::first(order, kArt);
+  }
+  pics->late.assign(static_cast<size_t>(S.n), 0);
+  pics->redrawn.assign(static_cast<size_t>(S.n), {});
+  pics->redrawnMips.assign(static_cast<size_t>(S.n), {});
+  pics->mips.assign(pics->rgba.size(), {});
+  pics->cards = cards;
+  pics->refs = refs;
+  pics->levels = levels;
+  pics->total = total;
   for (int t = 0; t < 2; ++t)
     std::thread([pics, cards, refs, levels, total, t, waitS]() {
       for (size_t i = static_cast<size_t>(t); i < cards.size(); i += 2) {
-        std::vector<uint8_t> px = draw_front(cards[i], refs[i], total, waitS, kSpNone, levels[i]);
+        bool big = true;
+        std::vector<uint8_t> px = draw_front(cards[i], refs[i], total, waitS, kSpNone, levels[i], false, &big);
+        std::vector<std::vector<uint8_t>> mp = mip_chain_front(px, kFrontW, kFrontH);  // r226: its small text crisper in the hand
         std::lock_guard<std::mutex> lock(pics->m);
         pics->rgba[i] = std::move(px);
+        pics->mips[i] = std::move(mp);
+        pics->late[i] = big ? 0 : 1;
         --pics->left;
       }
     }).detach();
   std::vector<int> tagLevel(S.tagLevel, S.tagLevel + S.n), tagCopies(S.tagCopies, S.tagCopies + S.n);
-  std::thread([pics, cards, total, tags, tagLevel, tagCopies]() {
+  std::thread([pics, cards, total, tags, tagLevel, tagCopies, backShape, punchShape, bitRgb]() {
     for (size_t i = 0; i < cards.size(); ++i) {
-      std::vector<uint8_t> px = draw_back(cards[i], total);  // (r147: the plain back - nothing of its level before it's turned)
+      // (r147: the plain back - nothing of its level before it's turned; r220: with its own die, or the crest it's punched from)
+      std::vector<uint8_t> px = draw_back(cards[i], total, backShape[i]);
       std::lock_guard<std::mutex> lock(pics->m);
       pics->rgba[cards.size() + i] = std::move(px);
       --pics->left;
+    }
+    for (size_t i = 0; i < cards.size(); ++i) {  // r220: a punched card's own back and its bits
+      if (punchShape[i] <= 0) continue;
+      std::vector<uint8_t> b = draw_back(cards[i], total, punchShape[i]);
+      std::vector<uint8_t> bits = lk::bits_px(punchShape[i], bitRgb[2 * i], bitRgb[2 * i + 1]);
+      std::lock_guard<std::mutex> lock(pics->m);
+      pics->rgba[4 * cards.size() + i] = std::move(b);
+      pics->rgba[5 * cards.size() + i] = std::move(bits);
+      pics->left -= 2;
     }
     for (size_t i = 0; i < cards.size(); ++i) {  // r147: its level moment's sticker
       if (tags[i] == 0) continue;
@@ -5321,6 +7277,13 @@ xrfx::Model grid_model(const std::shared_ptr<Pics>& pics, const std::vector<Grid
       m.texW.push_back(static_cast<uint32_t>(pics->w[i]));
       m.texH.push_back(static_cast<uint32_t>(pics->h[i]));
     }
+    if (!pics->mips.empty()) {  // r226: the fronts' own mips (mip_chain_front); the rest empty: the GPU's, as before
+      m.texMips.resize(pics->rgba.size());
+      for (size_t i = 0; i < pics->mips.size() && i < m.texMips.size(); ++i) {
+        if (keepPics) m.texMips[i] = pics->mips[i];
+        else m.texMips[i] = std::move(pics->mips[i]);
+      }
+    }
   }
   uint32_t base = 0;
   for (const GridPart& g : parts) {
@@ -5346,6 +7309,72 @@ xrfx::Model grid_model(const std::shared_ptr<Pics>& pics, const std::vector<Grid
   return m;
 }
 
+// r226 (Lance 11-12, his JAM '96 BOWSER "the art just looks wonky": a square picture window, a zoomed face over orange - Bowser's
+// Charged menu icon, 128 px, opaque = r141's framed photo; his log: the card's pictures were up before "bowser_1024 drawn in 8413 ms",
+// so the front got the icon and kept it): the cards out (frame thread, the card model up). A front drawn with its portrait whose big
+// picture is in now is drawn again on a thread (the same card, finish, level - its big picture this time) and swapped into the card
+// model (xrfx::set_model_tex: that one picture; the card's place, flip, foil, tags untouched). Cheap when nothing is late: one
+// counter compared a frame.
+void late_fronts() {
+  const std::shared_ptr<Pics> pics = S.cardPics;
+  if (!pics) return;
+  struct Up {
+    int i;
+    std::vector<uint8_t> px;
+    std::vector<std::vector<uint8_t>> mips;
+  };
+  std::vector<Up> up;
+  std::vector<int> start;
+  {
+    std::lock_guard<std::mutex> lock(pics->m);
+    for (size_t i = 0; i < pics->late.size(); ++i)
+      if (pics->late[i] == 3 && !pics->redrawn[i].empty()) {
+        up.push_back({static_cast<int>(i), std::move(pics->redrawn[i]), std::move(pics->redrawnMips[i])});
+        pics->redrawn[i].clear();
+        pics->redrawnMips[i].clear();
+        pics->late[i] = 0;
+      }
+    const unsigned g = xrbig::generation();
+    bool any = false;
+    for (uint8_t l : pics->late) any = any || l == 1;
+    if (any && g != pics->bigGen) {
+      pics->bigGen = g;
+      for (size_t i = 0; i < pics->late.size() && i < pics->cards.size(); ++i) {
+        if (pics->late[i] != 1) continue;
+        const bool sh = pics->refs[i].shiny && pk_key(pics->cards[i].key);
+        if (xrbig::ready(pics->cards[i].key, sh, kArt)) {
+          pics->late[i] = 2;
+          start.push_back(static_cast<int>(i));
+        } else {
+          xrbig::prefetch(pics->cards[i].key, sh, kArt);  // (still queued: nothing; let go from memory: asked again)
+        }
+      }
+    }
+  }
+  for (const Up& u : up) {
+    const bool ok = u.i < S.n && xrfx::set_model_tex(kCardSlot, u.i, u.px, kFrontW, kFrontH, &u.mips);
+    const Card& c = pics->cards[static_cast<size_t>(u.i)];
+    CLOG("card %d (%s%s): its big picture came in after the cards were up - its front drawn again%s", u.i, c.set == 1 ? "JAM '96 " : "",
+         c.key.c_str(), ok ? " and swapped in" : " - the swap failed (its first front stays)");
+  }
+  for (int i : start)
+    std::thread([pics, i]() {
+      bool big = false;
+      std::vector<uint8_t> px = draw_front(pics->cards[static_cast<size_t>(i)], pics->refs[static_cast<size_t>(i)], pics->total, 2.0f, kSpNone,
+                                           pics->levels[static_cast<size_t>(i)], true, &big);
+      std::vector<std::vector<uint8_t>> mp = big ? mip_chain_front(px, kFrontW, kFrontH) : std::vector<std::vector<uint8_t>>();
+      std::lock_guard<std::mutex> lock(pics->m);
+      if (big) {
+        pics->redrawn[static_cast<size_t>(i)] = std::move(px);
+        pics->redrawnMips[static_cast<size_t>(i)] = std::move(mp);
+        pics->late[static_cast<size_t>(i)] = 3;
+      } else {
+        pics->late[static_cast<size_t>(i)] = 1;  // (let go from memory meanwhile: looked at again next frame)
+        pics->bigGen = ~0u;
+      }
+    }).detach();
+}
+
 void drop_cards_model(bool fxReady) {
   if (fxReady && S.cardModel >= 0) xrfx::set_model(kCardSlot, xrfx::Model{});
   S.cardModel = -1;
@@ -5358,6 +7387,7 @@ void drop_models(bool fxReady) {
 
 void end_scene(bool fxReady) {
   drop_models(fxReady);
+  vault_end(fxReady);  // r230
   god_end(fxReady);       // r149 (before the 1/1 world's: the same slot)
   slab_end(fxReady);      // r152
   S.outSlab = -1;
@@ -5392,10 +7422,13 @@ void sheet_reset(Sheet& s, float w, float h) {
   s.rigid = w == kCardWm;  // r138: the cards are stiff; the pack's pouch still gives a little
 }
 
+int special_kind(const Ref& r);                                    // (below)
+void cel_prefetch(const std::vector<std::pair<Card, bool>>& cards);  // r193 (below)
 // A pack opened: its cards into your collection at once (the opening is the show; a crash mid-way loses nothing), the
 // pack up into your hands.
 bool open_pack(uint64_t now) {
   Pack p;
+  std::vector<std::pair<std::string, bool>> thisArt, nextArt;  // r226
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_packs.empty()) return false;
@@ -5407,7 +7440,7 @@ bool open_pack(uint64_t now) {
     for (const Ref& r : p.cards) {
       if (r.card < 0) continue;
       add_owned(r, +1);
-      if (g_newCards.insert(g_set[r.card].key).second) S.packNew.push_back(g_set[r.card].key);  // r149: NEW in the binder
+      if (g_newCards.insert(g_set[r.card].id).second) S.packNew.push_back(g_set[r.card].id);  // r149: NEW in the binder
       if (big_pull(r)) {
         g_pulls.push_back(Pull{t, r});
         ++S.pullsAdded;
@@ -5427,8 +7460,15 @@ bool open_pack(uint64_t now) {
     for (const Ref& r : p.cards)
       if (r.card >= 0) what += std::string(what.empty() ? "" : ", ") + pull_text(r) + " (" + kRarityShort[g_set[r.card].rarity] + ")";
     CLOG("pack %d opened: %s; %d waiting", p.serial, what.c_str(), static_cast<int>(g_packs.size()));
+    // r226: its cards' big pictures first in the queue now (in turn-over order), while it's gripped and ripped; the next pack's after
+    for (const Ref& r : p.cards)
+      if (r.card >= 0) thisArt.push_back({g_set[r.card].key, r.shiny && pk_key(g_set[r.card].key)});
+    next_packs_art(1, &nextArt);
   }
+  xrbig::first(thisArt, kArt);
+  for (const auto& kp : nextArt) xrbig::prefetch(kp.first, kp.second, kArt);
   S.packData = p;
+  g_openSet = (p.flags & kExqPack) != 0 ? 2 : ((p.flags & kJamPack) != 0 ? 1 : 0);  // r217; r230: 2 an EXQUISITE pack
   set_anchor();
   S.mode = kPackUp;
   S.phase = kWaiting;
@@ -5437,6 +7477,15 @@ bool open_pack(uint64_t now) {
   S.n = 0;
   for (const Ref& r : p.cards)
     if (r.card >= 0) S.refs[S.n++] = r;
+  {  // r193: its card figures' celebrations made now, before any card can be turned (cel_prefetch)
+    std::vector<std::pair<Card, bool>> figs;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (int i = 0; i < S.n; ++i) {
+      const int k = special_kind(S.refs[i]);
+      if (k == kSpWindow || k == kSpGlass || k == kSpPop) figs.push_back({g_set[S.refs[i].card], S.refs[i].shiny});
+    }
+    cel_prefetch(figs);
+  }
   S.revealed = 0;
   S.torn = false;
   S.wrapFall = false;
@@ -5472,6 +7521,7 @@ bool open_pack(uint64_t now) {
   specials_plan(now, true);  // r138: its auras (r139: each special's 3D made as its card comes to the stack's front)
   if (S.godAdded) god_prepare();  // r149
   card_sounds_preload();          // r149: the tiers' sounds
+  if ((p.flags & kExqPack) != 0) vault_begin(now, p.flags, p.serial);  // r230: THE VAULT first (S.phase kVault: the latches, the lid)
   buzz(0.35f, 0.08f);
   ++g_gen;
   return true;
@@ -5519,6 +7569,10 @@ void look_card(int card, uint64_t now, const XrVector3f* from, int slab = -2) {
     if (r.parallel == o.free_best() && o.n[r.parallel][0] + o.n[r.parallel][1] == 0)
       for (const Ref& h : o.hits)
         if (h.parallel == r.parallel) r = h;
+    if (g_set[card].set == 2) {  // r230: an EXQUISITE card - its best numbered copy (its highest tier, the lowest number)
+      const Ref b = exq_best(o, false);
+      if (b.card >= 0) r = b;
+    }
     if (slab == -2 && o.bestGrade > 0)  // (the binder's pocket shows its best slab: that one)
       for (size_t k = 0; k < g_slabs.size(); ++k)
         if (g_slabs[k].ref.card == card && g_slabs[k].left == 0 && g_slabs[k].grade == o.bestGrade && g_slabs[k].cert == o.bestCert)
@@ -5536,7 +7590,7 @@ void look_card(int card, uint64_t now, const XrVector3f* from, int slab = -2) {
     }
     S.refs[0] = r;
     CLOG("looking at card %d: %s", g_set[card].num, pull_text(r).c_str());
-    if (g_newCards.erase(g_set[card].key) > 0) save_collection();  // r149: seen
+    if (g_newCards.erase(g_set[card].id) > 0) save_collection();  // r149: seen
   }
   sheet_reset(S.card[0], kCardWm, kCardHm);
   Sheet& s = S.card[0];
@@ -5632,7 +7686,7 @@ void put_away(uint64_t now) {
     S.tradeSkip = true;
     return;
   }
-  if (S.mode == kPackUp && S.phase == kWaiting) unopen();
+  if (S.mode == kPackUp && (S.phase == kWaiting || S.phase == kVault)) unopen();  // (r230: still in its case: unopened)
   S.mode = kAway;
   S.t0 = now;
   for (int h = 0; h < 2; ++h) S.hold[h] = -1;
@@ -5675,6 +7729,37 @@ void tear(uint64_t now, int hand) {
   CLOG("the pack ripped open (%s)", hand == 0 ? "left trigger" : (hand == 1 ? "right trigger" : "A"));
 }
 
+// r219: every frame of the stack: the hit being built up - its heartbeat (made in code, xr_pulls.h) with a buzz in both hands each
+// beat, harder as it turns; a 1/1's room going dark, slammed back at its reveal with one white flash (g_pullDark / g_pullFlash)
+void pull_frame(uint64_t now) {
+  if (g_pullCard < 0 || g_pullCard >= S.n || S.card[g_pullCard].pull.tier == 0) {
+    g_pullCard = -1;
+    g_pullDark = 0.0f;
+    g_pullFlash = 0.0f;
+    return;
+  }
+  const Sheet& s = S.card[g_pullCard];
+  const float t = now >= s.flipNs ? secs(now, s.flipNs) : 0.0f;
+  static std::vector<short> s_lub, s_dub;
+  if (s_lub.empty()) {
+    xrpulls::heart_pcm(false, &s_lub);
+    xrpulls::heart_pcm(true, &s_dub);
+  }
+  xrpulls::beats(s.pull, g_pullBeatT, t, [&](float, float amp, float gain, bool dub) {
+    const std::vector<short>& pcm = dub ? s_dub : s_lub;
+    PortCardSound(pcm.data(), static_cast<int>(pcm.size()), gain);
+    buzz(amp, dub ? 0.05f : 0.07f);
+  });
+  g_pullBeatT = std::max(g_pullBeatT, t);
+  g_pullDark = xrpulls::dark(s.pull, t);
+  g_pullFlash = xrpulls::flash(s.pull, t - xrpulls::reveal_at(s.pull));
+  if (t > xrpulls::total(s.pull) + 0.6f) {  // (its build-up + its flash over: the lift eases back by itself)
+    g_pullCard = -1;
+    g_pullDark = 0.0f;
+    g_pullFlash = 0.0f;
+  }
+}
+
 // r139: a pull of the trigger (or A) with the stack in your hand: its front card turned over - out toward you, its
 // moment (reveal_fx as its face comes round) - or, turned over already, put round to the back and the next card's back
 // (its tell) to the front
@@ -5685,11 +7770,35 @@ void stack_step(uint64_t now) {
   for (int i = 0; i < S.n; ++i)
     if (S.backNs[i] != 0 && secs(now, S.backNs[i]) < 0.4f * kBackDur) return;  // (one still lifting off the stack)
   Sheet& s = S.card[f];
-  if (s.flipDur > 0.0f) return;  // (still turning over)
+  if (s.flipDur > 0.0f) {  // (still turning over)
+    // r219: a pull of the trigger during a hit's slow turn = SNAP NOW (on to its snap; the heartbeats it skipped stay unplayed)
+    if (s.pull.tier > 0 && S.faceUp[f] && now >= s.flipNs) {
+      const float t = secs(now, s.flipNs), edge = s.pull.lift + s.pull.slow;
+      if (t > s.pull.lift && t < edge) {
+        s.flipNs -= static_cast<uint64_t>(static_cast<double>(edge - t) * 1e9);
+        g_pullBeatT = edge + 1.0f;
+        CLOG("big pull: snapped now (%.2f s into its %.2f s build-up)", t, edge);
+      }
+    }
+    return;
+  }
   if (!S.faceUp[f]) {
     S.faceUp[f] = true;
     ++S.revealed;
-    start_flip(s, 0.0f, 0.5f, now + 150000000ull, true);  // (out toward you first, then over)
+    // r219 (BIG PULLS): a hit's slow-mo build-up (xr_pulls.h: it lifts toward you, turns slowly to edge-on with a heartbeat and the
+    // controllers pulsing, then snaps round - its moment where the snap passes half way); a BASE card turns as it always did
+    const xrpulls::Plan pl = pull_plan_of(f);
+    if (pl.tier > 0) {
+      start_flip(s, 0.0f, xrpulls::total(pl), now, true);
+      s.pull = pl;
+      g_pullCard = f;
+      g_pullBeatT = -1.0f;
+      CLOG("big pull: %s - build-up tier %d%s: lift %.2f + slow %.2f + snap %.2f s (the reveal at %.2f s), heartbeat %.0f-%.0f bpm, buzz %.2f-%.2f%s, party %d%s%s",
+           pull_text(S.refs[f]).c_str(), pl.tier, pl.notches == 2 ? " (two notches)" : (pl.notches == 1 ? " (a notch)" : ""), pl.lift, pl.slow, pl.snap,
+           xrpulls::reveal_at(pl), pl.bpm0, pl.bpm1, pl.amp0, pl.amp1, pl.dark ? ", the room goes dark" : "", pl.party, *pl.word ? " - " : "", pl.word);
+    } else {
+      start_flip(s, 0.0f, 0.5f, now + 150000000ull, true);  // (out toward you first, then over)
+    }
     card_sound(2);
     return;
   }
@@ -5707,7 +7816,9 @@ void stack_step(uint64_t now) {
 // parallel shines or sparkles: Lance "i want a CLEAR distinction between whats base and whats a parralell"), a tap of
 // the controllers, a little more for a rare / super rare character. A guest's own voice (its character select line) for
 // a parallel, a shiny, or a rare or better character; the controllers buzz to match.
+void punch_start(int i, uint64_t now);  // r220 (below)
 void reveal_fx(int i) {
+  if (S.mode == kPackUp) punch_start(i, mono_ns());  // r220: THE PUNCH - a JAM '96 card's crest snaps to its real cut, here with its reveal
   const Ref r = S.refs[i];
   Card c;
   {
@@ -5720,6 +7831,13 @@ void reveal_fx(int i) {
   const bool show = fl.show || r.shiny;
   // r149: each tier its own reveal sound (BLACK > a case hit > GOLD > SILVER > a rare character > BASE; a shiny's sparkle
   // cascade on top); without the files (an old install) the r138 chimes and the evolution fanfare as before
+  const int xt = c.set == 2 ? xrexq::tier_of(r.serial) : 0;  // r230: an EXQUISITE card's tier
+  g_lastRevealNs = mono_ns();
+  if (xt > 0 && S.mode == kPackUp) {  // r230: its foil serial stamped at the reveal (r220's press, made in code)
+    static std::vector<short> s_press;
+    if (s_press.empty()) xrpulls::die_press_pcm(&s_press);
+    PortCardSound(s_press.data(), static_cast<int>(s_press.size()), xt >= xrexq::kGoldLeaf ? 0.75f : 0.5f);
+  }
   const char* tier = r.parallel == kBlack ? "black"
                      : r.hit == kHitBoom ? "boom"
                      : r.hit == kHitHome ? "hometown"
@@ -5747,7 +7865,7 @@ void reveal_fx(int i) {
   }
   const bool special = show || r.parallel != kBase;
   // r141: a BLACK 1/1 turned over in a pack for the first time: its life-size cameo (its voice comes with its celebration)
-  const bool cameo = r.parallel == kBlack && S.mode == kPackUp && cameo_ask(i, c.key);
+  const bool cameo = r.parallel == kBlack && c.set != 2 && S.mode == kPackUp && cameo_ask(i, c.id);  // (r230: an EXQUISITE 1/1 has no cameo - flat)
   if ((special || c.rarity >= kRare) && c.roster >= 0 && !cameo)
     PortGuestVoiceSay(c.roster, "select,cheer,taunt,quote", special || c.rarity == kSuper ? 1.0f : 0.8f);
   else if ((special || c.rarity >= kRare) && c.klass >= 0 && !cameo)
@@ -5761,6 +7879,17 @@ void reveal_fx(int i) {
     CLOG("%s: %s, LV %d (%d copies)", pull_text(r).c_str(), S.tagKind[i] == 2 ? "level up" : "duplicate", S.tagLevel[i], S.tagCopies[i]);
   }
   CLOG("turned over: %s (%s)", pull_text(r).c_str(), kRarityName[c.rarity]);
+  // r219 (BIG PULLS): its party in your room (r207's casino party pieces, xr_goalfx pull_party: its coins + confetti out of your hand,
+  // the giant word 2 m out, the siren, the fireworks) + the casino's coin clips; a 1/1's own show held back till the party's peak
+  const xrpulls::Plan& pl = s.pull;
+  if (S.mode == kPackUp && pl.tier > 0) {
+    if (pl.party > 0) {
+      xrgoalfx::pull_party(pl.party, pl.word, s.pos, S.head, pull_floor());
+      play_wav(pl.party >= xrpulls::kPartyBig ? "casino_coins_pour_tray" : "casino_coins_jingle", pl.party >= xrpulls::kPartyBig ? 0.7f : 0.6f);
+      CLOG("big pull: its party - %s%s%s", pl.party == 4 ? "JACKPOT" : (pl.party == 3 ? "HUGE" : (pl.party == 2 ? "BIG" : "a pop")), *pl.word ? " - " : "", pl.word);
+    }
+    if (pl.dark) g_pullGateNs = mono_ns() + static_cast<uint64_t>(xrpulls::kAfterParty * 1e9f);
+  }
   if (S.mode == kPackUp && S.godAdded && !S.godDone && S.revealed >= S.n) god_last(mono_ns());  // r149: its show next
 }
 
@@ -5779,10 +7908,72 @@ void finish_frame(const Sheet& s, const Ref& r, const XrQuaternionf& q, bool bac
 // its edge all round (the rounded rectangle its pictures' see-through corners cut: kCornerR of its width) facing out,
 // into `out` (kCardVerts x 6 floats: its front grid, its back grid, its edge's two rows), at `q`, `pos`, `scale`; all at
 // one point when not shown.
+// r217: a JAM '96 card's die-cut edge (lk::crest_pts' outline, the shape its pictures' alpha cut): kEdgeSegs + 1 points round it
+// (the last the first again), counter-clockwise from its right side's top as the rounded card's, and their outward normals - in
+// card metres (W x H, x right, y up)
+// r220: a JAM '96 die's edge (lk::jamcut: kEdgeSegs points, the same order as the crest's below - its right side at y 800, up, over the
+// top right to left, down, along the foot), `morph` 0 the crest it punches from (point for point: kCrestFor) .. 1 its cut; card metres
+void cut_edge(int shape, float morph, float W, float H, XrVector3f* p, XrVector3f* n) {
+  const lk::jamcut::ShapeDef& sd = lk::jamcut::kShape[std::max(0, std::min(lk::jamcut::kShapes - 1, shape))];
+  const float* a = sd.crestFor ? sd.crestFor : lk::jamcut::kShape[0].loop;
+  const float* b = sd.loop ? sd.loop : lk::jamcut::kShape[0].loop;
+  const float m = clampf(morph, 0.0f, 1.0f);
+  for (int k = 0; k <= kEdgeSegs; ++k) {
+    const int i = k % kEdgeSegs;
+    const float x = a[2 * i] + (b[2 * i] - a[2 * i]) * m, y = a[2 * i + 1] + (b[2 * i + 1] - a[2 * i + 1]) * m;
+    p[k] = XrVector3f{(x / kCW - 0.5f) * W, (0.5f - y / kCH) * H, 0.0f};
+  }
+  for (int k = 0; k <= kEdgeSegs; ++k) {
+    const XrVector3f q0 = p[(k + kEdgeSegs - 1) % kEdgeSegs], q1 = p[(k + 1) % kEdgeSegs];
+    const float tx = q1.x - q0.x, ty = q1.y - q0.y, l = std::max(1e-6f, std::sqrt(tx * tx + ty * ty));
+    n[k] = XrVector3f{ty / l, -tx / l, 0.0f};
+  }
+}
+// (r217's crest, analytic: kept for the r217 PC proof's edge timing - the cards use cut_edge's crest, shape 0)
+void crest_edge(float W, float H, XrVector3f* p, XrVector3f* n) {
+  std::vector<float> px;  // (front px: x right, y down)
+  auto add = [&](float x, float y) { px.push_back(x), px.push_back(y); };
+  const float cw = kCW, ch = kCH, r = 48.0f, rs = 12.0f, crestH = static_cast<float>(lk::kCrest);
+  auto top = [&](float x) { const float u = (x - cw / 2) / (cw * 0.30f); return crestH * (1.0f - std::exp(-std::pow(u, 6.0f))); };
+  add(cw, crestH + rs);                                                       // its right side, just under the shoulder
+  for (int i = 1; i <= 2; ++i) {                                              // the right shoulder's corner
+    const float a = 1.5707963f * i / 2.0f;
+    add(cw - rs + rs * std::cos(a), crestH + rs - rs * std::sin(a));
+  }
+  for (int i = 1; i <= 24; ++i) {                                             // the crest, right to left
+    const float x = (cw - rs) - (cw - 2 * rs) * i / 25.0f;
+    add(x, top(x));
+  }
+  for (int i = 0; i <= 2; ++i) {                                              // the left shoulder's corner
+    const float a = 1.5707963f + 1.5707963f * i / 2.0f;
+    add(rs + rs * std::cos(a), crestH + rs - rs * std::sin(a));
+  }
+  for (int i = 0; i <= 4; ++i) {                                              // down its left side; the bottom left corner
+    const float a = 3.1415927f + 1.5707963f * i / 4.0f;
+    add(r + r * std::cos(a), ch - r - r * std::sin(a));
+  }
+  for (int i = 0; i <= 4; ++i) {                                              // its foot; the bottom right corner
+    const float a = 4.712389f + 1.5707963f * i / 4.0f;
+    add(cw - r + r * std::cos(a), ch - r - r * std::sin(a));
+  }
+  const int m = static_cast<int>(px.size() / 2);  // (= kEdgeSegs points; the loop closes on the first)
+  for (int k = 0; k <= kEdgeSegs; ++k) {
+    const int i = std::min(k % kEdgeSegs, m - 1);
+    p[k] = XrVector3f{(px[2 * i] / cw - 0.5f) * W, (0.5f - px[2 * i + 1] / ch) * H, 0.0f};
+  }
+  for (int k = 0; k <= kEdgeSegs; ++k) {
+    const XrVector3f a = p[(k + kEdgeSegs - 1) % kEdgeSegs], b = p[(k + 1) % kEdgeSegs];
+    const float tx = b.x - a.x, ty = b.y - a.y, l = std::max(1e-6f, std::sqrt(tx * tx + ty * ty));
+    n[k] = XrVector3f{ty / l, -tx / l, 0.0f};
+  }
+}
+// (r220: `shape` -1 an A card's rounded edge, else its JAM '96 die - lk::jam_shape; `morph` THE PUNCH: 0 the crest .. 1 its cut)
 void card_box(float* out, const Sheet& s, const XrQuaternionf& q, const XrVector3f& pos, float scale, bool show,
-              float thick = kCardT, float nrm = 1.0f) {  // r138: (a special's shell: obsidian thicker, normals 2 long)
+              float thick = kCardT, float nrm = 1.0f, int shape = -1, float morph = 1.0f, float frontNrm = 0.0f) {  // r138: (a special's shell: obsidian thicker, normals 2 long)
+  // r230: rontNrm > 0 its front's normals this long (an EXQUISITE EMERALD / SAPPHIRE: xr_fx_model.frag's jewel chrome, kJewelCode)
+  float nk = nrm;
   auto put = [&](int v, const XrVector3f& lp, const XrVector3f& ln) {
-    const XrVector3f p = v_add(pos, q_rot(q, lp)), n = v_mul(q_rot(q, ln), nrm);
+    const XrVector3f p = v_add(pos, q_rot(q, lp)), n = v_mul(q_rot(q, ln), nk);
     float* o = out + v * 6;
     o[0] = p.x;
     o[1] = p.y;
@@ -5798,13 +7989,24 @@ void card_box(float* out, const Sheet& s, const XrQuaternionf& q, const XrVector
   const float W = s.w * scale, H = s.h * scale, T = thick * scale;
   for (int side = 0; side < 2; ++side) {  // its front (+z), its back (-z; its picture mirrored: seen from behind)
     const float z = side == 0 ? 0.5f * T : -0.5f * T;
+    nk = side == 0 && frontNrm > 0.0f ? frontNrm : nrm;
     for (int i = 0; i <= kCardNY; ++i)
       for (int j = 0; j <= kCardNX; ++j)
         put(side * kCardNV + i * (kCardNX + 1) + j,
             XrVector3f{(static_cast<float>(j) / kCardNX - 0.5f) * W, (0.5f - static_cast<float>(i) / kCardNY) * H, z},
             XrVector3f{0.0f, 0.0f, side == 0 ? 1.0f : -1.0f});
   }
+  nk = nrm;
   // its edge: round its four corners (top right, top left, bottom left, bottom right), back to the start
+  if (shape >= 0) {  // r217: a JAM '96 card's die-cut crest (r220: its own die, punched from the crest)
+    XrVector3f ep[kEdgeSegs + 1], en[kEdgeSegs + 1];
+    cut_edge(shape, morph, W, H, ep, en);
+    for (int k = 0; k <= kEdgeSegs; ++k) {
+      put(2 * kCardNV + k, XrVector3f{ep[k].x, ep[k].y, 0.5f * T}, en[k]);
+      put(2 * kCardNV + (kEdgeSegs + 1) + k, XrVector3f{ep[k].x, ep[k].y, -0.5f * T}, en[k]);
+    }
+    return;
+  }
   const float rc = kCornerR * W, cx = 0.5f * W - rc, cy = 0.5f * H - rc;
   for (int k = 0; k <= kEdgeSegs; ++k) {
     const int kk = k % kEdgeSegs, corner = kk / (kCornerSegs + 1), step = kk % (kCornerSegs + 1);
@@ -5813,6 +8015,130 @@ void card_box(float* out, const Sheet& s, const XrQuaternionf& q, const XrVector
     const XrVector3f n{std::cos(a), std::sin(a), 0.0f};
     put(2 * kCardNV + k, XrVector3f{ox + rc * n.x, oy + rc * n.y, 0.5f * T}, n);
     put(2 * kCardNV + (kEdgeSegs + 1) + k, XrVector3f{ox + rc * n.x, oy + rc * n.y, -0.5f * T}, n);
+  }
+}
+
+// ============================================================================================ r220: THE PUNCH
+// Lance 11-11: a JAM '96 card face down / in the pack shows the plain crest (no give-away: its tells + its build-up as r219 left them);
+// at its reveal (reveal_fx: where r219's snap passes half way) its edge snaps from the crest to its real cut (xr_pulls kPunchMorph), a
+// die-press ka-chunk (made in code), and the cut-away pieces fall off as small bits that shrink away (kBitLife; at most kBitMax a card,
+// worked out from the time alone - nothing kept per frame). Before it: its front only inside the crest (its real cut - a crown's balls -
+// never shows round its back), its crest back; after: its whole front (its picture's alpha is its die), its back with its own die.
+// The card model's parts after the level moments, a card at a time: its crest front (the crest loop in triangles: the front picture),
+// its die's back (a grid: picture 4n + i), its bits (a quad each: picture 5n + i, each cutting its own piece)
+void punch_parts(xrfx::Model& m, int n, const int* shapes) {
+  uint32_t base = m.vertexCount;
+  auto grid = [&](int tex, int nx, int ny, float u0, float u1, float v0, float v1, bool mirror) {
+    for (int i = 0; i <= ny; ++i)
+      for (int j = 0; j <= nx; ++j) {
+        const float u = u0 + (u1 - u0) * j / nx, v = v0 + (v1 - v0) * i / ny;
+        m.uv.push_back(mirror ? 1.0f - u : u);
+        m.uv.push_back(v);
+      }
+    xrfx::ModelPart part;
+    part.tex = tex;
+    part.firstIndex = static_cast<uint32_t>(m.indices.size());
+    for (int i = 0; i < ny; ++i)
+      for (int j = 0; j < nx; ++j) {
+        const uint32_t a = base + static_cast<uint32_t>(i * (nx + 1) + j), b = a + 1, c = a + nx + 1, d = c + 1;
+        m.indices.insert(m.indices.end(), {a, c, b, b, c, d});
+      }
+    part.indexCount = static_cast<uint32_t>(m.indices.size()) - part.firstIndex;
+    m.parts.push_back(part);
+    base += static_cast<uint32_t>((nx + 1) * (ny + 1));
+  };
+  for (int i = 0; i < n; ++i) {
+    {  // its crest front
+      const float* L = lk::jamcut::kShape[0].loop;
+      for (int k = 0; k < lk::jamcut::kLoopN; ++k) m.uv.push_back(L[2 * k] / kCW), m.uv.push_back(L[2 * k + 1] / kCH);
+      xrfx::ModelPart part;
+      part.tex = i;
+      part.firstIndex = static_cast<uint32_t>(m.indices.size());
+      for (int t = 0; t < 3 * lk::jamcut::kCrestTris; ++t) m.indices.push_back(base + lk::jamcut::kCrestTri[t]);
+      part.indexCount = static_cast<uint32_t>(m.indices.size()) - part.firstIndex;
+      m.parts.push_back(part);
+      base += static_cast<uint32_t>(lk::jamcut::kLoopN);
+    }
+    grid(4 * n + i, kCardNX, kCardNY, 0.0f, 1.0f, 0.0f, 1.0f, true);  // its die's back (seen from behind: mirrored)
+    // its bits: each quad's uv its piece's box of the card (its quads past its die's count stay folded away)
+    const lk::jamcut::ShapeDef& sd = lk::jamcut::kShape[std::max(0, std::min(lk::jamcut::kShapes - 1, shapes[i]))];
+    for (int b = 0; b < kBitMax; ++b) {
+      if (shapes[i] > 0 && b < sd.bitN) {
+        const float* B = sd.bits + 6 * b;
+        grid(5 * n + i, 1, 1, B[0] / kCW, B[2] / kCW, B[1] / kCH, B[3] / kCH, false);
+      } else {
+        grid(5 * n + i, 1, 1, 0.0f, 1.0f, 0.0f, 1.0f, false);
+      }
+    }
+  }
+  m.vertexCount = base;
+}
+// how far card i's edge has come from the crest to its cut (1: its cut; an A card / the crest: no matter)
+float punch_morph_of(int i, uint64_t now) {
+  if (S.cutShape[i] <= 0) return 1.0f;
+  if (S.punchNs[i] == 0) return 0.0f;
+  if (S.punchNs[i] == kPunchedLongAgo) return 1.0f;
+  return xrpulls::punch_morph(secs(now, S.punchNs[i]));
+}
+// card i turned over in a pack: punched (reveal_fx, its moment) - its die-press, a tap in the hands; its bits fall from here
+void punch_start(int i, uint64_t now) {
+  if (i < 0 || i >= S.n || S.cutShape[i] <= 0 || S.punchNs[i] != 0) return;
+  const Sheet& s = S.card[i];
+  S.punchNs[i] = now;
+  S.punchQ[i] = sheet_q(s);
+  S.punchPos[i] = s.pos;
+  S.punchScale[i] = s.scale;
+  static std::vector<short> s_press;
+  if (s_press.empty()) xrpulls::die_press_pcm(&s_press);
+  PortCardSound(s_press.data(), static_cast<int>(s_press.size()), 0.85f);
+  buzz(0.55f, 0.06f);
+  CLOG("THE PUNCH: card %d - the crest punched to its %s (%d bits)", i, lk::jamcut::kShape[S.cutShape[i]].name, lk::jamcut::kShape[S.cutShape[i]].bitN);
+}
+// card i's punch vertices this frame (`out`: kPunchVerts x 6 floats) and its own card_box's (`box`: its front folded away before the
+// punch - the crest front stands in - its crest back folded away after it - its die's back stands in)
+void punch_frame(float* out, float* box, int i, const Sheet& s, const XrQuaternionf& q, bool show, uint64_t now) {
+  std::fill(out, out + static_cast<size_t>(kPunchVerts) * 6, 0.0f);
+  const int sh = S.cutShape[i];
+  if (sh <= 0 || S.punchNs[i] == kPunchedLongAgo) return;  // (an A card, the crest, or its cut already: card_box as it is)
+  const bool pending = S.punchNs[i] == 0;
+  auto put = [&](float* o, const XrVector3f& p, const XrVector3f& n) { o[0] = p.x, o[1] = p.y, o[2] = p.z, o[3] = n.x, o[4] = n.y, o[5] = n.z; };
+  if (show) {
+    if (pending) {
+      const float W = s.w * s.scale, H = s.h * s.scale, z = 0.5f * kCardT * s.scale;
+      const float* L = lk::jamcut::kShape[0].loop;
+      const XrVector3f nz = q_rot(q, XrVector3f{0.0f, 0.0f, 1.0f});
+      for (int k = 0; k < lk::jamcut::kLoopN; ++k)
+        put(out + k * 6, v_add(s.pos, q_rot(q, XrVector3f{(L[2 * k] / kCW - 0.5f) * W, (0.5f - L[2 * k + 1] / kCH) * H, z})), nz);
+      std::fill(box, box + static_cast<size_t>(kCardNV) * 6, 0.0f);  // (its whole front: after the punch)
+    } else {
+      float* back = box + static_cast<size_t>(kCardNV) * 6;
+      std::copy(back, back + static_cast<size_t>(kCardNV) * 6, out + static_cast<size_t>(lk::jamcut::kLoopN) * 6);
+      std::fill(back, back + static_cast<size_t>(kCardNV) * 6, 0.0f);
+    }
+  }
+  if (pending) return;
+  // its bits: from where each piece was on the card at the punch, thrown out across it, out of its face and up, tumbling, falling
+  const float t = secs(now, S.punchNs[i]), k = xrpulls::bit_scale(t);
+  if (k <= 0.0f) return;
+  const lk::jamcut::ShapeDef& sd = lk::jamcut::kShape[sh];
+  const float sc = S.punchScale[i], W = kCardWm * sc, H = kCardHm * sc;
+  const XrQuaternionf pq = S.punchQ[i];
+  for (int b = 0; b < sd.bitN && b < kBitMax; ++b) {
+    const float* B = sd.bits + 6 * b;
+    const XrVector3f rest{(B[4] / kCW - 0.5f) * W, (0.5f - B[5] / kCH) * H, 0.0f};
+    const float rl = std::max(1e-4f, std::sqrt(rest.x * rest.x + rest.y * rest.y));
+    const xrpulls::BitThrow th = xrpulls::bit_throw(b, static_cast<uint32_t>(S.refs[i].card * 31 + i));
+    const XrVector3f vl{rest.x / rl * th.out, rest.y / rl * th.out, th.face};
+    XrVector3f c = v_add(v_add(S.punchPos[i], q_rot(pq, rest)), v_mul(q_rot(pq, vl), t));
+    c.y += th.up * t - 0.5f * xrpulls::kBitGravity * t * t;
+    const XrQuaternionf bq = q_mul(pq, q_axis(th.ax, th.ay, th.az, th.spin * t));
+    const XrVector3f nz = q_rot(bq, XrVector3f{0.0f, 0.0f, 1.0f});
+    float* o = out + (static_cast<size_t>(lk::jamcut::kLoopN + kCardNV) + static_cast<size_t>(b) * 4) * 6;
+    for (int v = 0; v < 4; ++v) {  // (the grid's order: top left, top right, bottom left, bottom right - its uv the piece's box)
+      const float px = v % 2 == 0 ? B[0] : B[2], py = v < 2 ? B[1] : B[3];
+      const XrVector3f l{(px - B[4]) / kCW * W * k, -(py - B[5]) / kCH * H * k, 0.0f};
+      put(o + v * 6, v_add(c, q_rot(bq, l)), nz);
+    }
   }
 }
 
@@ -6004,7 +8330,7 @@ void hold_sheets(const bool grip[2], const bool have[2], const XrVector3f hand[2
       float bestD = 1e9f;
       for (int i = 0; i <= S.n; ++i) {
         const Sheet* s = sheet(i);
-        if (s == nullptr || (i == 0 && S.mode != kPackUp)) continue;
+        if (s == nullptr || (i == 0 && S.mode != kPackUp) || (i == 0 && S.phase == kVault)) continue;  // (r230: the pack still in its case)
         if (i > 0 && S.mode == kPackUp) continue;  // (r139: the cards are the stack's, in the pack's hand)
         const float d = sheet_hit(*s, hand[h], aim[h]);
         if (d >= 0.0f && d < bestD) {
@@ -6103,11 +8429,16 @@ int special_kind(const Ref& r) {
   return special_kind_open(r);
 }
 int special_kind_open(const Ref& r) {
+  if (r.card >= 0 && r.card < static_cast<int>(g_set.size()) && g_set[static_cast<size_t>(r.card)].set == 2) return kSpNone;  // r230: an EXQUISITE card - flat, every tier (its foil / jewel chrome in the shader)
   if (r.hit == kHitBoom) return kSpBoom;    // r149: its comic layers popping out
   if (r.hit == kHitHome) return kSpWindow;  // r149: a window into its home (landscape)
-  if (r.parallel == kGoldTizm) return kSpPop;
+  // r218 (Lance 11-11): SILVER and GOLD keep only their glow tell before the flip; turned over they're solid cards (their
+  // A / B front with its moving foil) - no SILVER window room, no GOLD /10 step-out loop (r153; its code below is no
+  // longer reached: no Special, no figure, no per-frame work for them). A GOLD shiny too; a shiny BASE / SILVER keeps its
+  // evolution room as before.
+  if (r.parallel == kGoldTizm) return r.hit == kHitSigned ? kSpSign : kSpNone;  // (a SIGNED GOLD: its autograph still writes on)
   if (r.parallel == kBlack) return kSpGlass;
-  if (r.parallel == kSilver || r.shiny) return kSpWindow;
+  if (r.shiny) return kSpWindow;
   if (r.hit == kHitSigned) return kSpSign;  // r149: a SIGNED BASE: its autograph writing itself on
   return kSpNone;
 }
@@ -6184,27 +8515,40 @@ Bounds posed_bounds(const xrevo::Figure* f, float yaw, int loopStart, int loopFr
 // file has none (the Pokemon, the Melee fighters: their evolution idles)
 constexpr float kThroneFig = 0.85f * kCardWm, kThroneWide = 1.3f * kCardWm, kPedH = 0.014f, kPedStep = 0.006f;
 constexpr float kThroneTop = 0.5f * kCardHm + kPedH;  // (the pedestal's top, in the card's frame)
+// r193 (Lance: a SILVER Croconaw "stuttered like 5 times before running in place on the card"): a card figure's move -
+// the first of `kinds` (in that order) with a clean stretch (xrevo::clean_stretch: none of the game's cut-scene jumps; not
+// a run - a card holds its figure in place, so a run reads as running on the spot), that stretch; false none
+bool card_move(const xrevo::Figure* f, std::initializer_list<uint32_t> kinds, uint32_t* start, uint32_t* frames) {
+  for (uint32_t want : kinds)
+    for (const xrevo::Segment& seg : xrevo::segments(f))
+      if (seg.kind == want && seg.frames > 4) {
+        float tr = 0.0f;
+        if (xrevo::clean_stretch(f, seg.start, seg.frames, std::min<uint32_t>(seg.frames, 30u), 0.5f, start, frames, &tr)) {
+          if (*frames != seg.frames)
+            CLOG("special: its move (kind %u, %u frames at %u) cut to its clean stretch: %u frames at %u (travel %.2f)", want,
+                 seg.frames, seg.start, *frames, *start, tr);
+          return true;
+        }
+        CLOG("special: its move (kind %u, %u frames at %u) left out: no clean stretch (jumps / a run)", want, seg.frames, seg.start);
+      }
+  return false;
+}
 // (r149: `wHalf`, `wBot`, `wTop` its window - a HOMETOWN's landscape one, in its own frame)
 Fit fit_figure(const xrevo::Figure* f, int kind, float wHalf = kWinHalf, float wBot = kWinBottom, float wTop = kWinTop) {
   Fit fit;
   if (kind == kSpGlass) {
-    for (uint32_t want : {5u, 2u}) {  // its cheer, else its big move
-      for (const xrevo::Segment& seg : xrevo::segments(f))
-        if (seg.kind == want && seg.frames > 4) {
-          fit.loopStart = static_cast<int>(seg.start);
-          fit.loopFrames = static_cast<int>(seg.frames);
-          break;
-        }
-      if (fit.loopFrames > 0) {
-        if (want == 5u)  // (its cameo's celebration: the cheer, then its first big move)
-          for (const xrevo::Segment& seg : xrevo::segments(f))
-            if (seg.kind == 2 && seg.frames > 4) {
-              fit.bigStart = static_cast<int>(seg.start);
-              fit.bigFrames = static_cast<int>(seg.frames);
-              break;
-            }
-        break;
+    // its cheer, else its big move (r193: their clean stretches - card_move)
+    uint32_t s = 0, n = 0;
+    if (card_move(f, {5u}, &s, &n)) {
+      fit.loopStart = static_cast<int>(s);
+      fit.loopFrames = static_cast<int>(n);
+      if (card_move(f, {2u}, &s, &n)) {  // (its cameo's celebration: the cheer, then its first big move)
+        fit.bigStart = static_cast<int>(s);
+        fit.bigFrames = static_cast<int>(n);
       }
+    } else if (card_move(f, {2u}, &s, &n)) {
+      fit.loopStart = static_cast<int>(s);
+      fit.loopFrames = static_cast<int>(n);
     }
     const Bounds b = posed_bounds(f, fit.yaw, fit.loopStart, fit.loopFrames, 0.0f, 16);
     fit.bw = std::max(1e-4f, b.hi.x - b.lo.x);
@@ -6216,13 +8560,13 @@ Fit fit_figure(const xrevo::Figure* f, int kind, float wHalf = kWinHalf, float w
                 -fit.scale * 0.5f * (b.lo.z + b.hi.z)};
     return fit;
   }
-  if (kind == kSpPop)  // a pop-out loops a move of its own when its pose file has one (a home figure's big move)
-    for (const xrevo::Segment& seg : xrevo::segments(f))
-      if ((seg.kind == 2 || seg.kind == 5) && seg.frames > 4) {  // (r181: + a Pokemon's / Melee's cheer, cel_bake's kind 5)
-        fit.loopStart = static_cast<int>(seg.start);
-        fit.loopFrames = static_cast<int>(seg.frames);
-        break;
-      }
+  if (kind == kSpPop) {  // a pop-out loops a move of its own when its pose file has one (a home figure's big move)
+    uint32_t s = 0, n = 0;  // (r181: + a Pokemon's / Melee's cheer, cel_bake's kind 5; r193: its clean stretch)
+    if (card_move(f, {2u, 5u}, &s, &n)) {
+      fit.loopStart = static_cast<int>(s);
+      fit.loopFrames = static_cast<int>(n);
+    }
+  }
   if (kind == kSpPop) {
     const Bounds b = posed_bounds(f, fit.yaw, fit.loopStart, fit.loopFrames, 0.0f);
     const float bw = std::max(1e-4f, b.hi.x - b.lo.x), bh = std::max(1e-4f, b.hi.y - b.lo.y);
@@ -6840,6 +9184,7 @@ void fx_up_across(float* dx, float* dy) {
   *dy = l > 0.3f ? u.y / l : 1.0f;
 }
 float g_floorY = -1.0e9f;  // (the room's floor, LOCAL; xr_quest.cpp set_floor)
+float pull_floor() { return g_floorY > -1.0e8f ? g_floorY : S.head.position.y - 1.6f; }  // r219
 
 float fx_r(uint64_t& s) { return static_cast<float>(rand01(s)); }
 uint32_t fx_rgb_mix(uint32_t a, uint32_t b, float t) { return mix_rgb(a, b, clampf(t, 0.0f, 1.0f)); }
@@ -8420,6 +10765,9 @@ struct SpecialBuild {
   // the standing one (celVerts: its vertices - the same pack's, checked)
   xrevo::Figure* celFig = nullptr;
   uint32_t celVerts = 0;
+  // r193: its celebration still to be made after the card is up (its figure holds a still meanwhile); that tried (done
+  // or not)
+  bool celLater = false, celTried = false;
   std::vector<std::vector<uint8_t>> tex;
   std::vector<int> tw, th;
   xrfx::Model fig;
@@ -8436,8 +10784,18 @@ struct SpecialBuild {
   int solidTex = -1;
   Fit fitTop;
   HomeMesh home;  // r171: a HOMETOWN's diorama (its pictures at the room's: roomTex)
+  int cutBackTex = -1;  // r220: a JAM '96 die's own back (its texture, last), -1 none
 };
 struct Special {
+  int set = 0;  // r217: its card's set (its autograph's place: lk::sign_box)
+  // r220 (THE PUNCH): its card's die (-1 an A card / the crest) and its foot (its autograph's place moves up it); its shell's vertices
+  // before the punch (the crest: its front inside the crest, the crest back, the crest edge) and after (its whole front, its die's
+  // back, its die's edge) - the first shellN of verts; which is in (-1 not yet, 0 before, 1 punching, 2 after)
+  int shape = -1;
+  float foot = 0.0f;
+  int shellN = 0;
+  std::vector<float> shellPre, shellPost;
+  int shellState = -1;
   int i = -1;  // the scene's card (S.card[i]), -1 none
   int kind = kSpNone;
   bool shiny = false;
@@ -8493,6 +10851,24 @@ struct Special {
   int goldFxBase = -1;
   int airBase = -1;        // r179: its autograph's neon copy in the air (its quad)
   bool airBuzzed = false;  // (its neon buzz played)
+  // r193: the autograph's MOMENT (sign_moment): when it started gathering (0 not yet), when it landed on the card (0 not
+  // yet); how long its face has been away mid-way (over 0.6 s: it starts again next time); where it hangs (world, eased
+  // after the card); its sounds played (1 gather, 2 + write); when its face first came to you; its strokes (pen tip)
+  uint64_t airNs = 0, landNs = 0, frontNs = 0, airLastNs = 0;
+  float awayS = 0.0f;
+  XrVector3f airPos{0.0f, 0.0f, 0.0f};
+  bool airPosOk = false;
+  int airSnd = 0;
+  const void* sig = nullptr;  // (xrsign::Signature)
+  // r193 (Lance: the 1/1's platform "was visible before I flipped the card over"): its 3D on top rising out of the card's
+  // top edge once its face is to you (0 hidden .. 1 all), xr_fx_model.frag
+  float reveal = 0.0f;
+  // r193 (Lance: the SILVER Croconaw "stuttered like 5 times before running in place"): its celebration still being made
+  // (its figure holds a still pose - never the raw standing file - until it's here); a blend from the pose it held (its
+  // vertices) into the new one (blendT s in, < 0 none); and between its idle and its big move (both ways)
+  bool celPending = false;
+  std::vector<float> blendFrom;
+  float blendT = -1.0f;
   // r173: its figure's living loop (frames in its pose file: its idle, its big move; 0 none)
   uint32_t liveIdleStart = 0, liveIdleFrames = 0, liveBigStart = 0, liveBigFrames = 0;
 };
@@ -9091,36 +11467,8 @@ void sign_ink(const Card& c, float* y, float* z) {
   *y = static_cast<float>((best >> 16) & 255) + static_cast<float>((best >> 8) & 255) / 256.0f;
   *z = 3.0f + static_cast<float>(best & 255) / 256.0f;
 }
-void bake_signature(std::vector<uint8_t>& px, int w, int h, const Card& c) {
-  const xrsign::Signature& s = xrsign::get(c.key, c.signAs);
-  std::vector<uint8_t> ink(static_cast<size_t>(kSignW) * kSignH * 4, 0);
-  xrsign::draw(s, s.duration + 1.0f, ink.data(), kSignW, kSignH, kSignW * 4);
-  // (a soft dark edge round its ink, 3 px - it reads on a busy refractor too)
-  std::vector<uint8_t> edge(static_cast<size_t>(kSignW) * kSignH, 0), tmp(edge.size(), 0);
-  for (int y = 0; y < kSignH; ++y)
-    for (int x = 0; x < kSignW; ++x) {
-      uint8_t m = 0;
-      for (int d = -3; d <= 3; ++d) m = std::max(m, ink[(static_cast<size_t>(y) * kSignW + std::max(0, std::min(kSignW - 1, x + d))) * 4 + 3]);
-      tmp[static_cast<size_t>(y) * kSignW + x] = m;
-    }
-  for (int y = 0; y < kSignH; ++y)
-    for (int x = 0; x < kSignW; ++x) {
-      uint8_t m = 0;
-      for (int d = -3; d <= 3; ++d) m = std::max(m, tmp[static_cast<size_t>(std::max(0, std::min(kSignH - 1, y + d))) * kSignW + x]);
-      edge[static_cast<size_t>(y) * kSignW + x] = m;
-    }
-  for (int y = 0; y < kSignH; ++y)
-    for (int x = 0; x < kSignW; ++x) {
-      const int X = static_cast<int>(kSignX0) + x, Y = static_cast<int>(kSignY0) + y;
-      if (X < 0 || Y < 0 || X >= w || Y >= h) continue;
-      const size_t i = static_cast<size_t>(y) * kSignW + x;
-      const uint8_t* q = &ink[i * 4];
-      if (q[3] == 0 && edge[i] == 0) continue;
-      uint8_t* p = &px[(static_cast<size_t>(Y) * w + X) * 4];
-      const float e = 0.45f * edge[i] / 255.0f, a = q[3] / 255.0f;
-      for (int k = 0; k < 3; ++k) p[k] = static_cast<uint8_t>(std::lround((p[k] * (1.0f - e) + 10.0f * e) * (1.0f - a) + q[k] * a));
-      if (p[3] > 0) p[3] = 255;  // (ink: no foil under it)
-    }
+void bake_signature(std::vector<uint8_t>& px, int w, int h, const Card& c, float foot) {  // r217: on its set's own place (lk::bake_sign)
+  lk::bake_sign(px, w, h, c, c.set, foot);  // (r220: up a Jam die's foot)
 }
 // its autograph as it writes: R its glow, G its ink, B when it's written there (0..1 of its time), A how much shows
 std::vector<uint8_t> sign_strip(const Card& c) {
@@ -9136,37 +11484,45 @@ std::vector<uint8_t> sign_strip(const Card& c) {
   }
   std::vector<float> core(when.size(), 0.0f);
   for (size_t i = 0; i < when.size(); ++i) core[i] = step[i * 4 + 3] / 255.0f;  // (the whole of it: the last step)
-  // its glow: the ink spread 10 px (a box blur twice), its time carried out into it (the nearest written pixel's)
-  std::vector<float> glow = core, tmp(core.size());
+  // its glow: the ink spread 10 px (a box blur twice), its time carried out into it (the nearest written pixel's);
+  // r193 (Lance: "the ink needs to SHINE"): and a wide halo round it, 24 px more (the shader's luminous glow)
+  std::vector<float> tmp(core.size());
   std::vector<float> tw = when;
-  for (int pass = 0; pass < 2; ++pass) {
-    for (int y = 0; y < kSignH; ++y)
-      for (int x = 0; x < kSignW; ++x) {
-        float sum = 0.0f, tsum = 0.0f, tn = 0.0f;
-        for (int d = -10; d <= 10; ++d) {
-          const int xx = std::max(0, std::min(kSignW - 1, x + d));
-          sum += glow[static_cast<size_t>(y) * kSignW + xx];
-          const float tv = tw[static_cast<size_t>(y) * kSignW + xx];
-          if (tv >= 0.0f) tsum += tv, tn += 1.0f;
+  auto blur = [&](std::vector<float>& glow, int R) {
+    const float n = 2.0f * R + 1.0f;
+    for (int pass = 0; pass < 2; ++pass) {
+      for (int y = 0; y < kSignH; ++y)
+        for (int x = 0; x < kSignW; ++x) {
+          float sum = 0.0f, tsum = 0.0f, tn = 0.0f;
+          for (int d = -R; d <= R; ++d) {
+            const int xx = std::max(0, std::min(kSignW - 1, x + d));
+            sum += glow[static_cast<size_t>(y) * kSignW + xx];
+            const float tv = tw[static_cast<size_t>(y) * kSignW + xx];
+            if (tv >= 0.0f) tsum += tv, tn += 1.0f;
+          }
+          tmp[static_cast<size_t>(y) * kSignW + x] = sum / n;
+          if (tw[static_cast<size_t>(y) * kSignW + x] < 0.0f && tn > 0.0f) tw[static_cast<size_t>(y) * kSignW + x] = tsum / tn;
         }
-        tmp[static_cast<size_t>(y) * kSignW + x] = sum / 21.0f;
-        if (tw[static_cast<size_t>(y) * kSignW + x] < 0.0f && tn > 0.0f) tw[static_cast<size_t>(y) * kSignW + x] = tsum / tn;
-      }
-    for (int y = 0; y < kSignH; ++y)
-      for (int x = 0; x < kSignW; ++x) {
-        float sum = 0.0f, tsum = 0.0f, tn = 0.0f;
-        for (int d = -10; d <= 10; ++d) {
-          const int yy = std::max(0, std::min(kSignH - 1, y + d));
-          sum += tmp[static_cast<size_t>(yy) * kSignW + x];
-          const float tv = tw[static_cast<size_t>(yy) * kSignW + x];
-          if (tv >= 0.0f) tsum += tv, tn += 1.0f;
+      for (int y = 0; y < kSignH; ++y)
+        for (int x = 0; x < kSignW; ++x) {
+          float sum = 0.0f, tsum = 0.0f, tn = 0.0f;
+          for (int d = -R; d <= R; ++d) {
+            const int yy = std::max(0, std::min(kSignH - 1, y + d));
+            sum += tmp[static_cast<size_t>(yy) * kSignW + x];
+            const float tv = tw[static_cast<size_t>(yy) * kSignW + x];
+            if (tv >= 0.0f) tsum += tv, tn += 1.0f;
+          }
+          glow[static_cast<size_t>(y) * kSignW + x] = sum / n;
+          if (tw[static_cast<size_t>(y) * kSignW + x] < 0.0f && tn > 0.0f) tw[static_cast<size_t>(y) * kSignW + x] = tsum / tn;
         }
-        glow[static_cast<size_t>(y) * kSignW + x] = sum / 21.0f;
-        if (tw[static_cast<size_t>(y) * kSignW + x] < 0.0f && tn > 0.0f) tw[static_cast<size_t>(y) * kSignW + x] = tsum / tn;
-      }
-  }
+    }
+  };
+  std::vector<float> glow = core;
+  blur(glow, 10);
+  std::vector<float> wide = glow;
+  blur(wide, 24);
   for (size_t i = 0; i < when.size(); ++i) {
-    const float g = clampf(glow[i] * 2.2f, 0.0f, 1.0f), a = std::max(g, core[i]);
+    const float g = clampf(std::max(glow[i] * 2.2f, wide[i] * 3.2f), 0.0f, 1.0f), a = std::max(g, core[i]);
     out[i * 4 + 0] = static_cast<uint8_t>(std::lround(g * 255.0f));
     out[i * 4 + 1] = static_cast<uint8_t>(std::lround(core[i] * 255.0f));
     out[i * 4 + 2] = static_cast<uint8_t>(std::lround(clampf(tw[i] < 0.0f ? 1.0f : tw[i], 0.0f, 1.0f) * 255.0f));
@@ -9251,6 +11607,39 @@ bool file_there(const std::string& path) {
   struct stat st {};
   return ::stat(path.c_str(), &st) == 0 && st.st_size > 0;
 }
+// r193: a celebration file there and whole (none being made this moment: cel_bake holds g_celMutex while it writes);
+// `wait`: wait for one being made, else a file being made counts as not there
+bool cel_ready(const std::string& gev, bool wait) {
+  if (wait) {
+    std::lock_guard<std::mutex> lock(g_celMutex);
+    return file_there(gev);
+  }
+  std::unique_lock<std::mutex> lock(g_celMutex, std::try_to_lock);
+  return lock.owns_lock() && file_there(gev);
+}
+// r193 (the SILVER Croconaw's celebration was made 1.4 s AFTER its card was up: it stood in its raw standing file, then
+// swapped): every card figure's celebration in a pack made as the pack comes up, one after another on a thread of its
+// own (as its pictures are fetched ahead), so it's there by the time its card's turned. The same files load_figure
+// would make (a guest's guests/cel/<key>.gev from its pack - its shiny pack for a shiny); none for a Strikers character /
+// a guest with its own home figure (a plain one).
+void cel_prefetch(const std::vector<std::pair<Card, bool>>& cards) {
+  if (cards.empty()) return;
+  std::thread([cards]() {
+    const std::string g = home_dir() + "/guests/";
+    for (const auto& cs : cards) {
+      const Card& c = cs.first;
+      const bool shiny = cs.second;
+      if (c.key.compare(0, 9, "strikers_") == 0) continue;
+      if (!shiny && file_there(g + "home/" + c.key + ".gpk") && file_there(g + "home/" + c.key + ".gev")) continue;
+      const std::string gpk = g + c.key + (shiny ? "_shiny" : "") + ".gpk", gev = g + "cel/" + c.key + ".gev";
+      if (!file_there(gpk) || cel_ready(gev, true)) continue;
+      const uint64_t t0 = mono_ns();
+      const int r = cel_bake(gpk, gev);
+      CLOG("pack: %s's celebration made ahead: %s (%.0f ms)", c.key.c_str(), r == 1 ? "made" : (r == 0 ? "none to make" : "FAILED"),
+           secs(mono_ns(), t0) * 1000.0f);
+    }
+  }).detach();
+}
 
 // Its figure's model and standing loop (xr_big's sources: a Strikers character's captain / home figure; a guest's pack -
 // a shiny one's OWN _shiny pack first - with its pose file), else none. Thread.
@@ -9278,10 +11667,11 @@ xrevo::Figure* load_figure(const Card& c, bool shiny, xrfx::Model* m, bool home 
     if (home && !shiny) tries.push_back({g + "home/" + c.key + ".gpk", g + "home/" + c.key + ".gev"});
     if (home && (shiny || !homeFig)) {
       const std::string gpk = g + c.key + (shiny ? "_shiny" : "") + ".gpk", gev = g + "cel/" + c.key + ".gev";
-      if (file_there(gpk) && !file_there(gev) && later != nullptr) {
+      // (r193: a celebration being made ahead right now - cel_prefetch - counts as not there yet: never read half made)
+      if (file_there(gpk) && !cel_ready(gev, later == nullptr) && later != nullptr) {
         *later = {gpk, gev};  // r181: made after the card is up (its standing figure meanwhile: the evo try below)
       } else if (file_there(gpk)) {
-        if (!file_there(gev)) {
+        if (!cel_ready(gev, true)) {
           const uint64_t t0 = mono_ns();
           const int r = cel_bake(gpk, gev);
           CLOG("special: %s's celebration %s (%.0f ms)", c.key.c_str(), r == 1 ? "made" : (r == 0 ? "none to make" : "FAILED"),
@@ -9317,7 +11707,7 @@ void special_start(Special& sp, int i, uint64_t now) {
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     c = g_set[r.card];
-    total = static_cast<int>(g_set.size());
+    total = g_setN;  // (r217: a set's count)
     level = card_level(g_owned[r.card]);  // r146: its stars
   }
   sp = Special{};
@@ -9326,6 +11716,9 @@ void special_start(Special& sp, int i, uint64_t now) {
   sp.shiny = r.shiny;
   sp.spotUntil = sp.kind == kSpGlass && S.mode == kOut ? now + 4500000000ull : 0;  // (out of the binder: lit at once)
   sp.theme = sp.kind == kSpGlass ? fx_theme_of(c.key) : -1;  // r141: a BLACK 1/1's world
+  sp.set = c.set;  // r217
+  sp.shape = c.set == 1 ? lk::jam_shape(r) : -1;  // r220
+  sp.foot = c.set == 1 ? jam_foot(r) : 0.0f;
   sp.roster = c.roster;
   sp.klass = c.klass;
   sp.rgb = c.c1;  // r147
@@ -9334,6 +11727,9 @@ void special_start(Special& sp, int i, uint64_t now) {
   sp.home = r.hit == kHitHome;
   sp.signedCard = r.hit == kHitSigned || r.parallel == kBlack;
   sp.signDone = S.mode != kPackUp;
+#if __has_include("xr_sign.h")
+  if (sp.signedCard) sp.sig = &xrsign::get(c.key, c.signAs);  // r193 (its pen tip, sign_moment)
+#endif
   auto b = std::make_shared<SpecialBuild>();
   sp.build = b;
   const int kind = sp.kind;
@@ -9483,7 +11879,15 @@ void special_start(Special& sp, int i, uint64_t now) {
       CLOG("special: %s's HOMETOWN diorama (%s, biome %d): %zu vertices, %zu colours, %zu particles", c.key.c_str(), name.c_str(),
            home_biome(name), home.v.size() / 6, home.pal.size(), home.fx.size());
     }
+    int cutBackTex = -1;  // r220: a JAM '96 die's own back (after its punch / out of the binder), last
+    if (c.set == 1 && lk::jam_shape(r) > 0) {
+      cutBackTex = static_cast<int>(tex.size());
+      tex.push_back(draw_back(c, total, lk::jam_shape(r)));
+      tw.push_back(kBackW);
+      th.push_back(kBackH);
+    }
     std::unique_lock<std::mutex> lock(b->m);  // (r181: let go before its celebration is made, below)
+    b->cutBackTex = cutBackTex;
     b->home = std::move(home);
     b->tex = std::move(tex);
     b->tw = std::move(tw);
@@ -9500,24 +11904,45 @@ void special_start(Special& sp, int i, uint64_t now) {
     b->signZ = signZ;
     b->solidTex = solidTex;
     b->fitTop = fitTop;
+    b->celLater = f != nullptr && !later.first.empty();  // r193
     b->done = true;
     lock.unlock();
     // r181: its celebration, made now the card is up (its standing figure shows meanwhile), then read with the same pack
     // for the frame loop to swap in (specials_frame: the same vertices, the same fit - both by its standing pose)
+    // r193: made ahead as the pack came up (cel_prefetch) - here only if that hasn't reached it yet (made already: read)
     if (f != nullptr && !later.first.empty()) {
       const uint64_t t0 = mono_ns();
-      const int made = cel_bake(later.first, later.second);
+      const int made = cel_ready(later.second, true) ? 1 : cel_bake(later.first, later.second);
       xrfx::Model tmp;
-      xrevo::Figure* cf = made == 1 ? xrevo::load_files(later.first, later.second, &tmp) : nullptr;
+      xrevo::Figure* cf = made == 1 || file_there(later.second) ? xrevo::load_files(later.first, later.second, &tmp) : nullptr;
       CLOG("special: %s's celebration %s after the card was up (%.0f ms)%s", c.key.c_str(),
            made == 1 ? "made" : (made == 0 ? "none to make" : "FAILED"), secs(mono_ns(), t0) * 1000.0f, cf != nullptr ? ", to swap in" : "");
+      std::lock_guard<std::mutex> lk(b->m);
       if (cf != nullptr) {
-        std::lock_guard<std::mutex> lk(b->m);
         b->celFig = cf;
         b->celVerts = tmp.vertexCount;
       }
+      b->celTried = true;
+    } else {
+      std::lock_guard<std::mutex> lk(b->m);
+      b->celTried = true;
     }
   }).detach();
+}
+
+// r173 / r181 / r193: its figure's living loop - its idle (kind 0), then its big move (kind 2, else its cheer 5, else its
+// greeting / reaction 1 / 3: the first with a clean stretch, card_move), round again; none: its idle alone / its whole
+// pose file
+constexpr float kBlendS = 0.25f, kBlendIn = 0.4f;  // r193: a change of move blended over (s); a celebration swapped in
+void live_moves(Special& sp) {
+  sp.liveIdleStart = sp.liveIdleFrames = sp.liveBigStart = sp.liveBigFrames = 0;
+  for (const xrevo::Segment& seg : xrevo::segments(sp.fig))
+    if (seg.kind == 0 && seg.frames > 4) {
+      sp.liveIdleStart = seg.start, sp.liveIdleFrames = seg.frames;
+      break;
+    }
+  uint32_t s = 0, n = 0;
+  if (card_move(sp.fig, {2u, 5u, 1u, 3u}, &s, &n)) sp.liveBigStart = s, sp.liveBigFrames = n;
 }
 
 // Its model up (game thread, its pictures and figure ready): the shell (front with its window, back, edge: normals 2
@@ -9559,14 +11984,47 @@ void special_up(Special& sp, int slot) {
   unit.w = kCardWm;
   unit.h = kCardHm;
   std::vector<float> shell(static_cast<size_t>(kCardVerts) * 6);
-  card_box(shell.data(), unit, XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f}, XrVector3f{0.0f, 0.0f, 0.0f}, 1.0f, true,
-           sp.kind == kSpGlass ? 3.0f * kCardT : kCardT, 2.0f);
+  const float shellT = sp.kind == kSpGlass ? 3.0f * kCardT : kCardT;
+  // (r217: a Jam card's crest; r220: its own die - punched from the crest as it's turned over, shell_frame)
+  card_box(shell.data(), unit, XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f}, XrVector3f{0.0f, 0.0f, 0.0f}, 1.0f, true, shellT, 2.0f, sp.shape, 1.0f);
   grid_part(0, kCardNX, kCardNY, false);
   stat.insert(stat.end(), shell.begin(), shell.begin() + kCardNV * 6);
   grid_part(1, kCardNX, kCardNY, true);
   stat.insert(stat.end(), shell.begin() + kCardNV * 6, shell.begin() + 2 * kCardNV * 6);
   grid_part(2, kEdgeSegs, 1, false);
   stat.insert(stat.end(), shell.begin() + 2 * kCardNV * 6, shell.end());
+  sp.shellN = 0;
+  if (sp.shape > 0 && b.cutBackTex >= 0) {  // r220: THE PUNCH - its crest front + its die's back, after its edge (the shell's states: shell_frame)
+    const uint32_t base = static_cast<uint32_t>(stat.size() / 6);
+    const float* L = lk::jamcut::kShape[0].loop;
+    xrfx::ModelPart part;
+    part.tex = 0;
+    part.firstIndex = static_cast<uint32_t>(m.indices.size());
+    for (int k = 0; k < lk::jamcut::kLoopN; ++k) {
+      m.uv.push_back(L[2 * k] / kCW);
+      m.uv.push_back(L[2 * k + 1] / kCH);
+      stat.insert(stat.end(), {(L[2 * k] / kCW - 0.5f) * kCardWm, (0.5f - L[2 * k + 1] / kCH) * kCardHm, 0.5f * shellT, 0.0f, 0.0f, 2.0f});
+    }
+    for (int t = 0; t < 3 * lk::jamcut::kCrestTris; ++t) m.indices.push_back(base + lk::jamcut::kCrestTri[t]);
+    part.indexCount = static_cast<uint32_t>(m.indices.size()) - part.firstIndex;
+    m.parts.push_back(part);
+    grid_part(b.cutBackTex, kCardNX, kCardNY, true);
+    stat.insert(stat.end(), shell.begin() + kCardNV * 6, shell.begin() + 2 * kCardNV * 6);
+    sp.shellN = static_cast<int>(stat.size() / 6);
+    // after: its whole front, its die's back, its die's edge (the crest back + crest front folded away)
+    sp.shellPost.assign(stat.begin(), stat.end());
+    std::fill(sp.shellPost.begin() + kCardNV * 6, sp.shellPost.begin() + 2 * kCardNV * 6, 0.0f);
+    std::fill(sp.shellPost.begin() + static_cast<size_t>(kCardVerts) * 6, sp.shellPost.begin() + static_cast<size_t>(kCardVerts + lk::jamcut::kLoopN) * 6, 0.0f);
+    // before: its front inside the crest, the crest back, the crest's edge (its whole front + its die's back folded away)
+    sp.shellPre.assign(stat.begin(), stat.end());
+    std::vector<float> crest(static_cast<size_t>(kCardVerts) * 6);
+    card_box(crest.data(), unit, XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f}, XrVector3f{0.0f, 0.0f, 0.0f}, 1.0f, true, shellT, 2.0f, sp.shape, 0.0f);
+    std::copy(crest.begin() + 2 * kCardNV * 6, crest.end(), sp.shellPre.begin() + 2 * kCardNV * 6);
+    std::fill(sp.shellPre.begin(), sp.shellPre.begin() + kCardNV * 6, 0.0f);
+    std::fill(sp.shellPre.begin() + static_cast<size_t>(kCardVerts + lk::jamcut::kLoopN) * 6, sp.shellPre.end(), 0.0f);
+    std::copy(sp.shellPost.begin(), sp.shellPost.end(), stat.begin());  // (shell_frame puts the right one in)
+    sp.shellState = -1;
+  }
   // r153: a GOLD's solid face (today's front, its picture) a hair over its windowed front, in kGoldRows strips across it -
   // placed every frame (gold_face): slid up off the window / down over it, the strips past its edge squeezed to nothing
   if (sp.kind == kSpPop && b.solidTex >= 0) {
@@ -9711,8 +12169,9 @@ void special_up(Special& sp, int slot) {
   // r149: its autograph writing itself on (a soft part over its front - a BLACK's over its glass; normals 3 long, their x
   // how far it's written: xr_fx_model.frag), across its picture, low
   if (b.signTex >= 0) {
-    const float sx0 = (kSignX0 / kCW - 0.5f) * kCardWm, sx1 = ((kSignX0 + kSignW) / kCW - 0.5f) * kCardWm;
-    const float sy1 = (0.5f - kSignY0 / kCH) * kCardHm, sy0 = (0.5f - (kSignY0 + kSignH) / kCH) * kCardHm;
+    const lk::SignBox sb = lk::sign_box(sp.set, sp.foot);  // r217: each set's autograph place
+    const float sx0 = (sb.x0 / kCW - 0.5f) * kCardWm, sx1 = ((sb.x0 + sb.w) / kCW - 0.5f) * kCardWm;
+    const float sy1 = (0.5f - sb.y0 / kCH) * kCardHm, sy0 = (0.5f - (sb.y0 + sb.h) / kCH) * kCardHm;
     const float z = sp.kind == kSpGlass ? 1.5f * kCardT + 0.0012f : 0.5f * kCardT + 0.001f;
     const XrVector3f q[4] = {{sx0, sy0, z}, {sx1, sy0, z}, {sx1, sy1, z}, {sx0, sy1, z}};
     sp.signBase = static_cast<int>(stat.size() / 6);
@@ -9729,6 +12188,11 @@ void special_up(Special& sp, int slot) {
   // its figure (posed every frame), or its picture standing up
   sp.fig = b.figure;
   b.figure = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(b.m);
+    sp.celPending = sp.fig != nullptr && b.celLater && !b.celTried && b.celFig == nullptr;  // r193: a still until its celebration's here
+    if (sp.fig != nullptr && b.celLater && (b.celTried || b.celFig != nullptr)) sp.celPending = b.celFig != nullptr;
+  }
   if (sp.fig != nullptr) {
     xrfx::Model& f = b.fig;
     const uint32_t texBase = static_cast<uint32_t>(m.texRgba.size()), vBase = static_cast<uint32_t>(stat.size() / 6);
@@ -9751,24 +12215,9 @@ void special_up(Special& sp, int slot) {
     sp.figHeight = std::max(0.05f, xrevo::height(sp.fig));
     // r173: its living loop (a window's / a HOMETOWN's: its idle, then its big move - its celebration / power / combo -,
     // round again); none: its whole pose file (its idle breathing)
-    for (const xrevo::Segment& seg : xrevo::segments(sp.fig)) {
-      if (seg.kind == 0 && sp.liveIdleFrames == 0 && seg.frames > 4) sp.liveIdleStart = seg.start, sp.liveIdleFrames = seg.frames;
-      if (seg.kind == 2 && sp.liveBigFrames == 0 && seg.frames > 4) sp.liveBigStart = seg.start, sp.liveBigFrames = seg.frames;
-    }
     // (r181: a Pokemon's / Melee fighter's celebration is cel_bake's cheer, kind 5 - r173 looked for kind 2 only, so on a
-    // SILVER they only breathed; then its greeting / reaction, else its idle alone)
-    if (sp.liveBigFrames == 0)
-      for (const xrevo::Segment& seg : xrevo::segments(sp.fig))
-        if (seg.kind == 5 && seg.frames > 4) {
-          sp.liveBigStart = seg.start, sp.liveBigFrames = seg.frames;
-          break;
-        }
-    if (sp.liveBigFrames == 0)
-      for (const xrevo::Segment& seg : xrevo::segments(sp.fig))
-        if ((seg.kind == 1 || seg.kind == 3) && seg.frames > 4) {
-          sp.liveBigStart = seg.start, sp.liveBigFrames = seg.frames;
-          break;
-        }
+    // SILVER they only breathed; then its greeting / reaction, else its idle alone; r193: their clean stretches)
+    live_moves(sp);
     CLOG("special: card %d's figure lives: idle %u frames, big move %u frames (%s)", sp.i, sp.liveIdleFrames, sp.liveBigFrames,
          sp.liveBigFrames > 0 ? "its own" : (sp.liveIdleFrames > 0 ? "idle only" : "its whole pose file"));
     sp.fit = fit;  // r140: its place and size (and a pop-out's own move, when its pose file has one), measured posed
@@ -9913,6 +12362,12 @@ const LightPics& light_pics() {
     c[2] = 0.45f * f * swirl;
     c[3] = 0.0f;
   });
+  // r230: 12 the EXQUISITE gallery's warm veil: rows of 8 px, row r = (r + 1) x 4.5% darker with a little warm amber in it (premultiplied)
+  make(64, [&](float, float, int, int y, float* c) {
+    const float a = 0.045f * static_cast<float>(y / 8 + 1);
+    c[0] = 0.13f * a, c[1] = 0.075f * a, c[2] = 0.02f * a;
+    c[3] = a;
+  });
   return L;
 }
 
@@ -9967,8 +12422,14 @@ void light_up(bool fxReady) {
       for (int j = 0; j < kSmokePuffs; ++j) part(2, 1, i, j, 1, 1);
     }
     if (r.shiny) part(3, 0, i, 1, 1, 1);
-    if (r.parallel == kGoldTizm) part(1, 2, i, 0, 1, 1);
+    // (r218: no GOLD figure on its top edge any more - its glow under it (kind 2) left out)
     if (r.hit != kHitNone) part(8 + r.hit, 0, i, 10 + r.hit, 1, 1);  // r149: a case hit's own tell (light pictures 9 - 11)
+  }
+  // r230: an EXQUISITE pack - the private gallery: its warm veil round you (8 levels: g_gallery) + the soft spotlight on the card in hand
+  const bool gallery = (S.packData.flags & kExqPack) != 0 && S.mode == kPackUp;
+  if (gallery) {
+    for (int k = 1; k <= 8; ++k) part(12, 5, -1, k, 6, 10, (k - 0.5f) / 8.0f, (k - 0.5f) / 8.0f);
+    if (!black) part(4, 3, -1, 0, 1, 16, 0.01f, 0.99f);
   }
   if (black) {
     // the beam: a soft shaft turned to your eyes, 16 across (its ends kept off the repeating edge)
@@ -10040,6 +12501,7 @@ void specials_end(bool fxReady) {
   if (g_lightUp && fxReady) xrfx::set_model(kLightSlot, xrfx::Model{});
   g_lightUp = false;
   g_lightParts.clear();
+  g_pullGateNs = 0;  // r219
 }
 Special* special_of(int i) {
   for (Special& sp : g_sp)
@@ -10369,63 +12831,244 @@ void special_boom_start(int i) {
 // picture and progress), a neon tube in the card's own ink (xr_fx_model.frag's air mode: a hot core, its colour glowing
 // round it, a faint flicker / hum; no writing tip), a neon buzz as it starts; written, it hangs a moment, then flies down
 // onto the card's autograph (shrinking into it) and is gone. Every BLACK 1/1 and SIGNED case hit.
-constexpr float kAirHang = 1.3f, kAirFly = 0.7f, kAirW = 0.5f;
-void sign_air(Special& sp, bool faceUp, uint64_t now) {
-  if (sp.airBase < 0 || static_cast<size_t>(sp.airBase + 4) * 6 > sp.verts.size()) return;
-  float* o = &sp.verts[static_cast<size_t>(sp.airBase) * 6];
-  if (!faceUp || sp.signNs == 0 || now <= sp.signNs || sp.i < 0 || sp.i >= kSheets) {
-    std::memset(o, 0, sizeof(float) * 24);
-    return;
-  }
-  const float u = secs(now, sp.signNs);
-  if (u > sp.signDur + kAirHang + kAirFly) {
-    std::memset(o, 0, sizeof(float) * 24);
-    return;
-  }
-  if (!sp.airBuzzed) {  // (its neon buzz: the electric world's hum, a moment of it, faded)
-    sp.airBuzzed = true;
-    static std::vector<short> buzz;
-    if (buzz.empty()) {
-      buzz = fx_ambient(kSnStatic);
-      buzz.resize(std::min(buzz.size(), static_cast<size_t>(32000 * 1.6f)));
-      for (size_t k = 0; k < buzz.size(); ++k) {
-        const float x = static_cast<float>(k) / buzz.size();
-        buzz[k] = static_cast<short>(buzz[k] * std::min(1.0f, x / 0.05f) * std::min(1.0f, (1.0f - x) / 0.3f) * 1.6f);
+// r193 (Lance on r192's 1/1: "the autograph needs to take full center stage. You'll see the signature float down to the card
+// but it wasn't in my eyesight to even know it happened"; "the ink needs to SHINE - that was the most dull inked signature
+// ever"; "it needs to be a hell of a feeling getting those 1/1s"; coordinator: in the room where r179's writes, just LOWER -
+// near / just over the card in his hand, chest to eye height - never following his head): the autograph's MOMENT, every
+// BLACK 1/1 and SIGNED case hit turned over in a pack. GATHER (kAirBuild: light and sparks drawing in where the pen will
+// start, a rising shimmer of chimes, the room dimming, the 1/1's figure dimmed and stepping down into the card), WRITE (big: kAirW wide 0.5-0.95 m from
+// your eyes, in polished foil ink in its own colour - xr_fx_model.frag: a white-hot glint riding the pen tip, sparks
+// dropping off it, tinkles), HANG (a light sweep over the finished foil, twinkles), FLY down onto the card (sparks trailing)
+// and LAND (only now is it on the card: a flash and a ring there, a bell, a buzz in your hand), then a slow shimmer on the
+// card for good. A BLACK 1/1's life-size cameo has the stage first: the moment gathers as its figure heads back into the
+// card (while it's out the card shows flat - its autograph printed on it - so the moment waits for it; its celebration kept
+// to <= 4.5 s). Turned away mid-way (0.6 s): it starts again when its face is back. No shake anywhere.
+constexpr float kAirBuild = 1.0f, kAirHang = 1.2f, kAirFly = 0.75f, kAirW = 0.46f, kAirBack = 0.9f;
+float air_write(const Special& sp) { return clampf(sp.signDur * 1.1f, 1.6f, 4.2f); }
+float air_land(const Special& sp) { return kAirBuild + air_write(sp) + kAirHang + kAirFly; }
+// how much the moment holds the stage (0 .. 1): up as it gathers, down after it lands (the room's dimming, its figure's)
+float sign_focus(const Special& sp, uint64_t now) {
+  if (sp.landNs != 0) return 1.0f - smooth(clampf(secs(now, sp.landNs) / kAirBack, 0.0f, 1.0f));
+  if (sp.airNs == 0 || now <= sp.airNs) return 0.0f;
+  return smooth(clampf(secs(now, sp.airNs) / 0.6f, 0.0f, 1.0f));
+}
+uint32_t sign_rgb(const Special& sp) {  // its ink (sign_ink's), none = its gold
+  const int r = static_cast<int>(sp.signY), g = static_cast<int>(std::lround((sp.signY - static_cast<float>(r)) * 256.0f)),
+            b = static_cast<int>(std::lround((sp.signZ - 3.0f) * 256.0f));
+  if (r + g + b == 0) return 0xFFBD4Du;
+  return static_cast<uint32_t>(r & 255) << 16 | static_cast<uint32_t>(g & 255) << 8 | static_cast<uint32_t>(b & 255);
+}
+// its sounds (made here, 32 kHz mono): 0 the gather (four chimes sweeping up over a swelling air, ~1 s), 1 the writing's
+// tinkles over a faint hiss (len s), 2 the landing (a bell struck bright over a soft low thump)
+const std::vector<short>& sign_sound(int kind, float len) {
+  static std::vector<short> made[3];
+  static float madeLen = -1.0f;
+  constexpr int kRate = 32000;
+  std::vector<short>& pcm = made[kind];
+  if (kind == 1 && std::fabs(madeLen - len) > 0.01f) pcm.clear(), madeLen = len;
+  if (!pcm.empty()) return pcm;
+  uint32_t rng = 0x5EED1u + static_cast<uint32_t>(kind);
+  auto rnd = [&]() {
+    rng = rng * 1664525u + 1013904223u;
+    return static_cast<float>(rng >> 8) / 16777216.0f;
+  };
+  if (kind == 0) {
+    static const float kF[4] = {523.25f, 659.25f, 783.99f, 1046.5f};
+    pcm.assign(static_cast<size_t>((kAirBuild + 0.2f) * kRate), 0);
+    float lp = 0.0f;
+    for (size_t s = 0; s < pcm.size(); ++s) {
+      const float t = static_cast<float>(s) / kRate, x = std::min(1.0f, t / kAirBuild);
+      const float env = x * x * (t < kAirBuild ? 1.0f : std::exp(-(t - kAirBuild) / 0.05f));
+      float v = 0.0f;
+      for (int k = 0; k < 4; ++k) {  // (each up 1.2 octaves: its phase the sweep's integral)
+        const float ph = kF[k] * kAirBuild / (1.2f * 0.693147f) * (std::pow(2.0f, 1.2f * x) - 1.0f);
+        v += std::sin(6.2831853f * ph) * (0.22f - 0.03f * k) * (0.6f + 0.4f * std::sin(6.2831853f * (7.0f + 3.0f * k) * t));
+      }
+      lp += (rnd() * 2.0f - 1.0f - lp) * (0.05f + 0.25f * x);  // (the air swelling, brighter as it builds)
+      v += lp * 0.5f * x;
+      pcm[s] = static_cast<short>(clampf(v * env * 9000.0f, -32000.0f, 32000.0f));
+    }
+  } else if (kind == 1) {
+    pcm.assign(static_cast<size_t>((len + 0.3f) * kRate), 0);
+    for (float at = 0.0f; at < len; at += 0.05f + 0.06f * rnd()) {
+      const float f0 = 2600.0f + 2600.0f * rnd(), amp = 0.25f + 0.35f * rnd();
+      const size_t s1 = std::min(pcm.size(), static_cast<size_t>((at + 0.25f) * kRate));
+      for (size_t s = static_cast<size_t>(at * kRate); s < s1; ++s) {
+        const float t = static_cast<float>(s) / kRate - at;
+        const float e = std::min(1.0f, t / 0.002f) * std::exp(-t / 0.06f);
+        const float v = std::sin(6.2831853f * f0 * t) + 0.4f * std::sin(6.2831853f * f0 * 2.01f * t);
+        pcm[s] = static_cast<short>(clampf(pcm[s] + v * e * amp * 5000.0f, -32000.0f, 32000.0f));
       }
     }
-    PortCardSound(buzz.data(), static_cast<int>(buzz.size()), 0.45f);
+    float lp = 0.0f;
+    for (size_t s = 0; s < pcm.size(); ++s) {
+      const float t = static_cast<float>(s) / kRate, n = rnd() * 2.0f - 1.0f;
+      lp += (n - lp) * 0.3f;
+      const float e = std::min(1.0f, t / 0.2f) * clampf((len + 0.2f - t) / 0.3f, 0.0f, 1.0f);
+      pcm[s] = static_cast<short>(clampf(pcm[s] + (n - lp) * e * 700.0f, -32000.0f, 32000.0f));
+    }
+  } else {
+    static const float kP[5][3] = {{1046.5f, 1.0f, 1.6f}, {1568.0f, 0.55f, 1.1f}, {2093.0f, 0.45f, 0.9f}, {2637.0f, 0.3f, 0.6f},
+                                   {3520.0f, 0.2f, 0.35f}};
+    pcm.assign(static_cast<size_t>(2.2f * kRate), 0);
+    for (size_t s = 0; s < pcm.size(); ++s) {
+      const float t = static_cast<float>(s) / kRate;
+      float v = 0.0f;
+      for (const auto& p : kP) v += std::sin(6.2831853f * p[0] * t) * p[1] * std::exp(-t / p[2]);
+      v *= std::min(1.0f, t / 0.003f);
+      v += std::sin(6.2831853f * (70.0f - 20.0f * t) * t) * 0.9f * std::exp(-t / 0.12f);  // (the thump)
+      pcm[s] = static_cast<short>(clampf(v * 7000.0f, -32000.0f, 32000.0f));
+    }
   }
+  return pcm;
+}
+// the moment's clock (every frame its card is here; `front`: its face to your eyes): starts, plays its sounds, lands
+void sign_moment(Special& sp, bool front, uint64_t now, float dt) {
+  if (sp.signDone || sp.i < 0 || sp.i >= kSheets) return;
+  if (!front) {
+    sp.frontNs = 0;
+    if (sp.airNs != 0) {
+      sp.awayS += dt;
+      if (sp.awayS > 0.6f) {  // (turned away mid-way: from the start again when its face is back)
+        sp.airNs = 0;
+        sp.airSnd = 0;
+        sp.airPosOk = false;
+      }
+    }
+    return;
+  }
+  sp.awayS = 0.0f;
+  if (sp.frontNs == 0) sp.frontNs = now;
+  if (sp.airNs == 0) {
+    if (sp.kind == kSpGlass && g_cam.i == sp.i) {  // (its cameo first: the moment gathers as its figure heads back)
+      if (!g_cam.started || g_cam.t < g_cam.backAt + 0.3f) return;
+    } else if (secs(now, sp.frontNs) < 0.5f) {
+      return;
+    }
+    sp.airNs = now;
+    CLOG("autograph: its moment starts (%.1f s to land)", air_land(sp));
+  }
+  const float u = secs(now, sp.airNs);
+  if (sp.airSnd == 0) {
+    sp.airSnd = 1;
+    const std::vector<short>& p = sign_sound(0, 0.0f);
+    PortCardSound(p.data(), static_cast<int>(p.size()), 0.7f);
+  }
+  if (sp.airSnd == 1 && u >= kAirBuild) {
+    sp.airSnd = 2;
+    const std::vector<short>& p = sign_sound(1, air_write(sp));
+    PortCardSound(p.data(), static_cast<int>(p.size()), 0.45f);
+    buzz(0.25f, 0.05f);
+  }
+  if (u >= air_land(sp)) {
+    sp.signDone = true;
+    sp.landNs = now;
+    const std::vector<short>& p = sign_sound(2, 0.0f);
+    PortCardSound(p.data(), static_cast<int>(p.size()), 0.9f);
+    buzz(0.6f, 0.18f);
+    const Sheet& s = S.card[sp.i];
+    const lk::SignBox sb = lk::sign_box(sp.set, sp.foot);  // r217
+    const float sx = ((sb.x0 + 0.5f * sb.w) / kCW - 0.5f) * kCardWm, sy = (0.5f - (sb.y0 + 0.5f * sb.h) / kCH) * kCardHm;
+    xrfx::ink_land(v_add(s.pos, q_rot(sheet_q(s), v_mul(XrVector3f{sx, sy, 0.004f}, s.scale))), S.head.position,
+                   0.55f * kCardWm * s.scale, sign_rgb(sp));
+    CLOG("autograph: landed on its card");
+  }
+}
+// its copy in the air (its quad, in the model's frame this frame: fq / fat / fsc - the card's, or its cameo's)
+void sign_air(Special& sp, bool front, uint64_t now, float dt, const XrQuaternionf& fq, const XrVector3f& fat, float fsc) {
+  if (sp.airBase < 0 || static_cast<size_t>(sp.airBase + 4) * 6 > sp.verts.size()) return;
+  float* o = &sp.verts[static_cast<size_t>(sp.airBase) * 6];
+  if (!front || sp.signDone || sp.airNs == 0 || now <= sp.airNs || sp.i < 0 || sp.i >= kSheets) {
+    std::memset(o, 0, sizeof(float) * 24);
+    return;
+  }
+  const float u = secs(now, sp.airNs), W = air_write(sp), wEnd = kAirBuild + W;
   const Sheet& s = S.card[sp.i];
   const XrQuaternionf q = sheet_q(s);
   const float sc = std::max(1e-3f, s.scale);
-  // where it hangs: 30 cm over the card, a little further from you, upright, turned to your eyes
-  XrVector3f away = v_sub(s.pos, S.head.position);
-  away.y = 0.0f;
-  const float al = v_len(away);
-  away = al > 1e-3f ? v_mul(away, 1.0f / al) : XrVector3f{0.0f, 0.0f, -1.0f};
-  const XrVector3f c = v_add(s.pos, XrVector3f{away.x * 0.25f, 0.30f + 0.006f * std::sin(u * 1.7f), away.z * 0.25f});
-  const XrQuaternionf fq = facing(c);
-  const XrVector3f R = q_rot(fq, XrVector3f{0.5f * kAirW, 0.0f, 0.0f}),
-                   U = q_rot(fq, XrVector3f{0.0f, 0.5f * kAirW * static_cast<float>(kSignH) / kSignW, 0.0f});
+  const XrVector3f& head = S.head.position;
+  const float airH = kAirW * static_cast<float>(kSignH) / kSignW;
+  // where it hangs: just over the card in your hand as you see it (a BLACK's figure stepped down into the card meanwhile),
+  // between your chest and your eyes, 0.5-0.95 m out - in the room, eased after the card (never after your head)
+  const XrVector3f cu = q_rot(q, XrVector3f{0.0f, 0.5f * kCardHm * sc, 0.0f}), cr = q_rot(q, XrVector3f{0.5f * kCardWm * sc, 0.0f, 0.0f});
+  const float top = s.pos.y + std::fabs(cu.y) + std::fabs(cr.y);
+  XrVector3f d{s.pos.x - head.x, 0.0f, s.pos.z - head.z};
+  float dl = v_len(d);
+  if (dl < 0.05f) {
+    const XrVector3f f = q_rot(S.head.orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+    d = XrVector3f{f.x, 0.0f, f.z};
+    dl = std::max(1e-3f, v_len(d));
+  }
+  d = v_mul(d, 1.0f / dl);
+  const float dist = clampf(dl + 0.06f, 0.5f, 0.95f);
+  // (just over the card AS YOU SEE IT: its bottom 2 degrees over the card's top edge along your eye's line - it's further
+  // out than the card, so a plain height would put it up high in your view)
+  const float eTop = std::atan2(top - head.y, std::max(0.05f, dl)), half = std::atan2(0.5f * airH, dist);
+  const float cy = clampf(head.y + dist * std::tan(clampf(eTop + 0.035f + half, -1.2f, 0.3f)), head.y - 0.45f, head.y - 0.05f);
+  const XrVector3f want{head.x + d.x * dist, cy, head.z + d.z * dist};
+  if (!sp.airPosOk) {
+    sp.airPos = want;
+    sp.airPosOk = true;
+  } else {
+    sp.airPos = v_lerp(sp.airPos, want, std::min(1.0f, dt * 2.0f));
+  }
+  const XrVector3f c = v_add(sp.airPos, XrVector3f{0.0f, 0.005f * std::sin(u * 1.7f), 0.0f});
+  const XrQuaternionf aq = facing(c);
+  const XrVector3f R = q_rot(aq, XrVector3f{0.5f * kAirW, 0.0f, 0.0f}), U = q_rot(aq, XrVector3f{0.0f, 0.5f * airH, 0.0f});
   const XrVector3f air[4] = {v_sub(v_sub(c, R), U), v_sub(v_add(c, R), U), v_add(v_add(c, R), U), v_add(v_sub(c, R), U)};
   // the card's autograph (as special_up put it), in the room
-  const float sx0 = (kSignX0 / kCW - 0.5f) * kCardWm, sx1 = ((kSignX0 + kSignW) / kCW - 0.5f) * kCardWm;
-  const float sy1 = (0.5f - kSignY0 / kCH) * kCardHm, sy0 = (0.5f - (kSignY0 + kSignH) / kCH) * kCardHm;
+  const lk::SignBox sb = lk::sign_box(sp.set, sp.foot);  // r217
+  const float sx0 = (sb.x0 / kCW - 0.5f) * kCardWm, sx1 = ((sb.x0 + sb.w) / kCW - 0.5f) * kCardWm;
+  const float sy1 = (0.5f - sb.y0 / kCH) * kCardHm, sy0 = (0.5f - (sb.y0 + sb.h) / kCH) * kCardHm;
   const float z = (sp.kind == kSpGlass ? 1.5f * kCardT + 0.0012f : 0.5f * kCardT + 0.001f) + 0.0006f;
   const XrVector3f onCard[4] = {{sx0, sy0, z}, {sx1, sy0, z}, {sx1, sy1, z}, {sx0, sy1, z}};
-  const float e = smooth(clampf((u - sp.signDur - kAirHang) / kAirFly, 0.0f, 1.0f));
-  const float prog = std::min(1.05f, u / std::max(0.1f, sp.signDur) * 1.05f);
+  const float e = smooth(clampf((u - wEnd - kAirHang) / kAirFly, 0.0f, 1.0f));
+  // (its normals' x, xr_fx_model.frag: 9.45 .. 9.95 gathering, 10 + its progress writing, 11.05 + seconds since written)
+  const float x = u < kAirBuild ? 9.45f + 0.5f * (u / kAirBuild)
+                                : (u < wEnd ? 10.0f + 1.05f * (u - kAirBuild) / W : 11.05f + std::min(5.0f, u - wEnd));
+  XrVector3f wc[4];
   for (int k = 0; k < 4; ++k) {
-    const XrVector3f cw = v_add(s.pos, q_rot(q, v_mul(onCard[k], sc)));
-    const XrVector3f w = v_add(v_mul(air[k], 1.0f - e), v_mul(cw, e));
-    const XrVector3f l = v_mul(q_rot(q_conj(q), v_sub(w, s.pos)), 1.0f / sc);  // (into the card's frame: its model's)
+    wc[k] = v_lerp(air[k], v_add(s.pos, q_rot(q, v_mul(onCard[k], sc))), e);
+    const XrVector3f l = v_mul(q_rot(q_conj(fq), v_sub(wc[k], fat)), 1.0f / std::max(1e-4f, fsc));  // (into the model's frame)
     float* v = o + k * 6;
     v[0] = l.x, v[1] = l.y, v[2] = l.z;
-    v[3] = 10.0f + prog, v[4] = sp.signY, v[5] = sp.signZ;
+    v[3] = x, v[4] = sp.signY, v[5] = sp.signZ;
+  }
+  // a point of it (its box: bx 0..1 across, by 0..1 down) in the room
+  auto box = [&](float bx, float by) { return v_add(wc[3], v_add(v_mul(v_sub(wc[2], wc[3]), bx), v_mul(v_sub(wc[0], wc[3]), by))); };
+  const uint32_t ink = sign_rgb(sp);
+#if __has_include("xr_sign.h")
+  const xrsign::Signature* sg = static_cast<const xrsign::Signature*>(sp.sig);
+#else
+  const void* sg = nullptr;
+#endif
+  if (u < kAirBuild) {  // light drawing in where its pen will start
+    XrVector3f p0 = box(0.15f, 0.5f);
+#if __has_include("xr_sign.h")
+    if (sg != nullptr && !sg->strokes.empty() && !sg->strokes[0].pts.empty()) p0 = box(sg->strokes[0].pts[0].x, sg->strokes[0].pts[0].y);
+#endif
+    const float k = u / kAirBuild;
+    xrfx::ink_gather(p0, 0.18f * (1.0f - 0.4f * k), 30.0f + 110.0f * k, dt, 0xFFFFFF, ink);
+  } else if (u < wEnd) {  // its pen tip: sparks dropping off it
+#if __has_include("xr_sign.h")
+    if (sg != nullptr) {
+      const float st = (u - kAirBuild) / W * 1.05f * sg->duration;
+      const xrsign::Point* tip = nullptr;
+      for (const xrsign::Stroke& k : sg->strokes)
+        for (const xrsign::Point& p : k.pts)
+          if (p.t <= st) tip = &p;
+      if (tip != nullptr && st - tip->t < 0.05f) xrfx::ink_sparks(box(tip->x, tip->y), 70.0f, dt, 0xFFF8E0, ink);
+    }
+#endif
+  } else if (u < wEnd + kAirHang) {  // written: twinkles over its foil
+    xrfx::card_sparkle(v_sub(c, U), 0.42f * kAirW, 2.0f * airH, 16.0f, dt, 0xFFFFFF, ink);
+  } else {  // flying down: sparks trailing it
+    xrfx::ink_sparks(box(0.5f, 0.5f), 90.0f * (1.0f - e) + 10.0f, dt, 0xFFF8E0, ink);
   }
 }
 
-void special_moves(Special& sp, bool faceUp, bool held, float t, uint64_t now) {
+void special_moves(Special& sp, bool faceUp, bool held, float t, uint64_t now, float dt, const XrQuaternionf& fq,
+                   const XrVector3f& fat, float fsc) {
   if (sp.popBase >= 0 && static_cast<size_t>(sp.popBase + 4 * sp.pops) * 6 <= sp.verts.size()) {
     // r150: its show - played once as it's first face up (out of the binder: with its music; turned over in a pack, the
     // reveal started both); again whenever it's shaken in your hand (back and forth twice, fast)
@@ -10488,21 +13131,17 @@ void special_moves(Special& sp, bool faceUp, bool held, float t, uint64_t now) {
     }
   }
   if (sp.signBase >= 0 && static_cast<size_t>(sp.signBase + 4) * 6 <= sp.verts.size()) {
-    float prog = sp.signDone ? 1.05f : 0.0f;
-    if (!sp.signDone && faceUp) {
-      if (sp.signNs == 0) sp.signNs = now + 450000000ull;  // (just after it's round)
-      if (now > sp.signNs) {
-        prog = std::min(1.05f, secs(now, sp.signNs) / sp.signDur * 1.05f);
-        if (prog >= 1.05f) sp.signDone = true;
-      }
-    }
+    // r193: its moment (sign_moment); on the card nothing until it lands (-0.5), then 1.05 + seconds since it landed (its
+    // landing's light sweep, then its shimmer for good: xr_fx_model.frag); out of the binder written already (8.05)
+    sign_moment(sp, faceUp, now, dt);
+    const float prog = !sp.signDone ? -0.5f : 1.05f + (sp.landNs != 0 ? std::min(7.0f, secs(now, sp.landNs)) : 7.0f);
     for (int q = 0; q < 4; ++q) {
       float* v = &sp.verts[static_cast<size_t>(sp.signBase + q) * 6];
       v[3] = prog;
       v[4] = sp.signY;
       v[5] = sp.signZ;
     }
-    sign_air(sp, faceUp, now);  // r179
+    sign_air(sp, faceUp, now, dt, fq, fat, fsc);  // r179 / r193
   }
 }
 
@@ -11088,7 +13727,16 @@ bool god_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady) {
   const float t = secs(now, g.t0), len = g.stage == 1 ? kGodTellLen : g.len;
   if (g.skip) g.fade -= dt;
   if (t >= len || (g.skip && g.fade <= 0.0f)) {
-    if (g.stage == 3) S.godDone = true;
+    if (g.stage == 3) {
+      S.godDone = true;
+      // r219 (BIG PULLS): the gods hand over to the casino - a GOD PACK's JACKPOT party as its Olympus show clears (never stacked on its
+      // sky dome: both whole-room layers)
+      if (S.mode == kPackUp) {
+        xrgoalfx::pull_party(xrpulls::kPartyJackpot, "GOD PACK", S.pack.pos, S.head, pull_floor());
+        play_wav("casino_coins_pour_tray", 0.75f);
+        CLOG("god pack: its JACKPOT party");
+      }
+    }
     god_end(fxReady);  // (the 1/1 world back next frame)
     return false;
   }
@@ -11471,29 +14119,58 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
         if (static_cast<int>(cv) == sp.figCount) {
           xrevo::release(sp.fig);
           sp.fig = cf;
-          sp.liveIdleStart = sp.liveIdleFrames = sp.liveBigStart = sp.liveBigFrames = 0;
-          for (const xrevo::Segment& seg : xrevo::segments(sp.fig)) {
-            if (seg.kind == 0 && sp.liveIdleFrames == 0 && seg.frames > 4) sp.liveIdleStart = seg.start, sp.liveIdleFrames = seg.frames;
-            if ((seg.kind == 2 || seg.kind == 5) && seg.frames > 4 && (sp.liveBigFrames == 0 || seg.kind == 2))
-              sp.liveBigStart = seg.start, sp.liveBigFrames = seg.frames;
+          live_moves(sp);  // (r193: their clean stretches)
+          uint32_t ps = 0, pn = 0;
+          if (sp.kind == kSpPop && card_move(sp.fig, {2u, 5u}, &ps, &pn)) {  // (a GOLD's pop-out loop: its big move)
+            sp.loopStart = static_cast<int>(ps);
+            sp.loopFrames = static_cast<int>(pn);
           }
-          if (sp.kind == kSpPop)  // (a GOLD's pop-out loop: its big move)
-            for (const xrevo::Segment& seg : xrevo::segments(sp.fig))
-              if ((seg.kind == 2 || seg.kind == 5) && seg.frames > 4) {
-                sp.loopStart = static_cast<int>(seg.start);
-                sp.loopFrames = static_cast<int>(seg.frames);
-                break;
-              }
+          // r193: from the still it held while this was made, blended in over kBlendIn (no pop)
+          sp.blendFrom = sp.posed;
+          sp.blendT = 0.0f;
+          sp.celPending = false;
           CLOG("special: card %d's celebration swapped in: idle %u frames, big move %u frames", sp.i, sp.liveIdleFrames, sp.liveBigFrames);
         } else {
           xrevo::release(cf);
         }
       }
+      if (sp.celPending) {  // r193: none came (failed / none to make): its standing loop after all, blended in
+        std::lock_guard<std::mutex> lock(sp.build->m);
+        if (sp.build->celTried && sp.build->celFig == nullptr) {
+          sp.celPending = false;
+          sp.blendFrom = sp.posed;
+          sp.blendT = 0.0f;
+        }
+      }
+    }
+    if (sp.shellN > 0) {  // r220: THE PUNCH on its shell - the crest before, snapping to its die (kPunchMorph), its die after
+      const int pi = sp.i;
+      const int st = S.punchNs[pi] == 0 ? 0 : (S.punchNs[pi] == kPunchedLongAgo || secs(now, S.punchNs[pi]) >= xrpulls::kPunchMorph ? 2 : 1);
+      std::vector<float>& dst = sp.statCopy.empty() ? sp.verts : sp.statCopy;
+      if (dst.size() >= sp.shellPost.size() && (st != sp.shellState || st == 1)) {
+        const std::vector<float>& src = st == 0 ? sp.shellPre : sp.shellPost;
+        std::copy(src.begin(), src.end(), dst.begin());
+        if (st == 1) {
+          Sheet unit;
+          unit.w = kCardWm;
+          unit.h = kCardHm;
+          std::vector<float> tmp(static_cast<size_t>(kCardVerts) * 6);
+          card_box(tmp.data(), unit, XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f}, XrVector3f{0.0f, 0.0f, 0.0f}, 1.0f, true,
+                   sp.kind == kSpGlass ? 3.0f * kCardT : kCardT, 2.0f, sp.shape, punch_morph_of(pi, now));
+          std::copy(tmp.begin() + 2 * kCardNV * 6, tmp.end(), dst.begin() + 2 * kCardNV * 6);
+        }
+        sp.shellState = st;
+      }
     }
     const Sheet& s = S.card[sp.i];
     const bool show = s.on && s.shown && s.scale > 0.01f && special_live(sp.i);
     const XrQuaternionf q = sheet_q(s);
-    const bool faceUp = std::cos(s.flip) > 0.2f;
+    // r193 (Lance: the 1/1's platform "was visible before I flipped the card over - looked dumb"): face up = turned over
+    // AND its face toward your eyes (held turned round by the wrist counts as face down too) - its 3D, its world on the
+    // card, its effects only then (xr_fx_model.frag also cuts its 3D whenever your eye is behind its face)
+    const XrVector3f faceN = q_rot(q, XrVector3f{0.0f, 0.0f, 1.0f}), faceToEye = v_sub(S.head.position, s.pos);
+    const bool faceUp = std::cos(s.flip) > 0.2f && faceN.x * faceToEye.x + faceN.y * faceToEye.y + faceN.z * faceToEye.z > 0.0f;
+    sp.reveal = faceUp && show ? std::min(1.0f, sp.reveal + dt / 0.45f) : 0.0f;  // (its 3D on top rising out of its edge)
     const bool held = s.hands != 0 || (S.mode == kPackUp && S.pack.hands != 0);  // (r139: the stack in your hand)
     if (sp.kind == kSpGlass) {  // r141: its world (after these), fading as it goes
       fxK = k;
@@ -11510,11 +14187,12 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
     if (sp.kind == kSpGlass && g_cam.i == sp.i) {
       Cameo& c = g_cam;
       camSeen = true;
-      if (!c.started && sp.fig != nullptr && sp.figCount > 0 && show && faceUp) {
+      // (r219: after a dark build-up's reveal, not before the party's peak: pull_gate)
+      if (!c.started && sp.fig != nullptr && sp.figCount > 0 && show && faceUp && now >= g_pullGateNs) {
         c.started = true;
         {
           std::lock_guard<std::mutex> lock(g_mutex);
-          g_cameoSeen.insert(c.key);
+          g_cameoSeen.insert(c.key);  // (r217: the card's id - cameo_ask was given it)
           save_collection();
         }
         XrVector3f fwd = q_rot(S.head.orientation, XrVector3f{0.0f, 0.0f, -1.0f});
@@ -11523,7 +14201,8 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
         const float floor = g_floorY > -1.0e8f ? g_floorY : S.head.position.y - 1.6f;
         c.spot = {S.head.position.x + fwd.x * kCamDist, floor, S.head.position.z + fwd.z * kCamDist};
         const float fps = std::max(1.0f, xrevo::fps(sp.fig));
-        c.celeb = sp.loopFrames > 0 ? clampf((sp.loopFrames + sp.fit.bigFrames) / fps, 3.0f, 7.0f) : 4.0f;
+        // (r193: with its autograph's moment after it, kept to 4.5 s)
+        c.celeb = sp.loopFrames > 0 ? clampf((sp.loopFrames + sp.fit.bigFrames) / fps, 3.0f, sp.signedCard ? 4.5f : 7.0f) : 4.0f;
         c.backAt = kCamDim + kCamOut + c.celeb;
         buzz(0.5f, 0.25f);
         CLOG("cameo: %s, %.1f s of celebration, %.2f m ahead", c.key.c_str(), c.celeb, kCamDist);
@@ -11549,7 +14228,7 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
           float cd = 0.0f;
           const float e = cameo_e(c, &cd);
           camE = out ? e : -1.0f;
-          dim = std::max(dim, cd);
+          dim = std::max(dim, cd * pull_gate(now));  // (r219: eased in after a dark build-up's party)
           const float out1 = kCamDim + kCamOut;
           if (!c.landed && c.t >= out1 && c.t < c.backAt) {  // there, life size: its celebration, its voice
             c.landed = true;
@@ -11572,8 +14251,10 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
       const bool heldUp = held && dy > -0.16f && v_len(toEye) < 0.75f && faceUp && toward;
       const float want = (now < sp.spotUntil || heldUp) && faceUp ? 1.0f : 0.0f;
       sp.spot += (want - sp.spot) * std::min(1.0f, dt * (want > sp.spot ? 3.0f : 1.8f));
-      dim = std::max(dim, sp.spot);
+      dim = std::max(dim, sp.spot * pull_gate(now));  // (r219: the lights stay up through a big pull's party, then ease down)
     }
+    const float signFocus = sp.signedCard ? sign_focus(sp, now) : 0.0f;  // r193: its autograph's moment has the stage
+    dim = std::max(dim, 0.6f * signFocus * pull_gate(now));
     // r153: a GOLD's step-out loop - on only while its face is to you (it starts IN its room, turned over); its solid face
     // over its window as far as the loop says; a gold glint along the face's edge as it slides; a burst as it dives back
     // into its picture
@@ -11615,14 +14296,54 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
         float lift = 0.0f;
         XrVector3f feet = sp.fit.feet;
         const float fps = std::max(1.0f, xrevo::fps(sp.fig));
-        float pt = sp.loopFrames > 0 ? (sp.loopStart + std::fmod(t * fps, static_cast<float>(sp.loopFrames))) / fps : t;
-        if (sp.loopFrames == 0 && sp.liveBigFrames > 0) {  // r173: its idle (at least 2.5 s), then its big move, round again
-          const float idleF = sp.liveIdleFrames > 0 ? sp.liveIdleFrames * std::max(1.0f, std::ceil(2.5f * fps / sp.liveIdleFrames)) : 0.0f;
-          const float f = std::fmod(t * fps, idleF + static_cast<float>(sp.liveBigFrames));
-          pt = (f < idleF ? sp.liveIdleStart + std::fmod(f, static_cast<float>(std::max(1u, sp.liveIdleFrames)))
-                          : sp.liveBigStart + (f - idleF)) / fps;
-        } else if (sp.loopFrames == 0 && sp.liveIdleFrames > 0) {
-          pt = (sp.liveIdleStart + std::fmod(t * fps, static_cast<float>(sp.liveIdleFrames))) / fps;
+        // r193 (Lance: the SILVER Croconaw "stuttered like 5 times before running in place on the card"): what it plays -
+        // frame A, and while it changes over, frame B blended in by w (kBlendS: idle into its big move and back, a looped
+        // move's end into its start), each a big move's (`big`: held in place, below) or not; a still (its first frame)
+        // while its celebration is still being made - never the raw standing file stepping in and then swapped
+        float fA = -1.0f, fB = -1.0f, w = 0.0f;
+        bool bigA = false, bigB = false;
+        float pt = t;  // (seconds: its whole pose file, when none of the below)
+        auto loop_wrap = [&](float start, float L) {  // (a move looped: its last Bf frames blended into its first)
+          const float Bf = std::min(kBlendS * fps, 0.25f * L);
+          if (Bf < 1.0f) {
+            fA = start + std::fmod(t * fps, L);
+            return;
+          }
+          const float fa = Bf + std::fmod(t * fps, L - Bf);
+          fA = start + fa;
+          if (fa >= L - Bf) {
+            fB = start + fa - (L - Bf);
+            w = (fa - (L - Bf)) / Bf;
+          }
+        };
+        if (sp.celPending && sp.kind != kSpGlass && camE < 0.0f) {
+          pt = 0.0f;
+        } else if (sp.loopFrames > 0) {
+          loop_wrap(static_cast<float>(sp.loopStart), static_cast<float>(sp.loopFrames));
+          bigA = bigB = true;
+        } else if (sp.liveBigFrames > 0 && sp.liveIdleFrames > 0) {  // r173: its idle (at least 2.5 s), then its big move
+          const float iL = static_cast<float>(sp.liveIdleFrames), bL = static_cast<float>(sp.liveBigFrames);
+          const float I = iL * std::max(1.0f, std::ceil(2.5f * fps / iL));
+          const float Bf = std::min(kBlendS * fps, 0.3f * std::min(iL, bL));
+          const float cyc = I + bL - 2.0f * Bf;
+          const float f = std::fmod(t * fps, cyc);
+          auto idle = [&](float x) { return sp.liveIdleStart + std::fmod(x, iL); };
+          if (f < Bf) {  // (its big move's end blending into its idle)
+            fA = sp.liveBigStart + bL - Bf + f, bigA = true;
+            fB = idle(f), w = Bf > 0.0f ? f / Bf : 1.0f;
+          } else if (f < I - Bf) {
+            fA = idle(f);
+          } else if (f < I) {  // (its idle blending into its big move)
+            fA = idle(f);
+            fB = sp.liveBigStart + f - (I - Bf), bigB = true, w = (f - (I - Bf)) / std::max(1e-3f, Bf);
+          } else {
+            fA = sp.liveBigStart + f - (I - Bf), bigA = true;
+          }
+        } else if (sp.liveBigFrames > 0) {
+          loop_wrap(static_cast<float>(sp.liveBigStart), static_cast<float>(sp.liveBigFrames));
+          bigA = bigB = true;
+        } else if (sp.liveIdleFrames > 0) {
+          fA = sp.liveIdleStart + std::fmod(t * fps, static_cast<float>(sp.liveIdleFrames));
         }
         if (sp.kind == kSpGlass && sp.loopFrames == 0) lift = 0.0025f * std::sin(t * 1.6f);
         if (camE >= 0.0f) {
@@ -11630,47 +14351,57 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
           const float out1 = kCamDim + kCamOut;
           if (c.t >= out1 && c.t < c.backAt && sp.loopFrames > 0) {  // its cheer, then its big move (round again)
             const float f = std::fmod((c.t - out1) * fps, static_cast<float>(sp.loopFrames + sp.fit.bigFrames));
-            pt = (f < sp.loopFrames ? sp.loopStart + f : sp.fit.bigStart + (f - sp.loopFrames)) / fps;
+            fA = f < sp.loopFrames ? sp.loopStart + f : sp.fit.bigStart + (f - sp.loopFrames);
+            fB = -1.0f;
           }
           feet.y -= kThroneTop;
         }
         float yaw = sp.fit.yaw, scl = sp.fit.scale;
+        // (what its big-move frames are held over: its loop's start / its idle's)
+        float refF = static_cast<float>(sp.loopFrames > 0 ? sp.loopStart : (sp.liveIdleFrames > 0 ? sp.liveIdleStart : sp.liveBigStart));
         if (sp.kind == kSpPop) {  // r153: where its step-out loop has it (on top: its top-edge move, when it has one)
           feet = gp.feet;
           yaw = gp.yaw;
           scl = gp.scale;
-          if (gp.topLoop && sp.fitTop.loopFrames > 0)
-            pt = (sp.fitTop.loopStart + std::fmod(t * fps, static_cast<float>(sp.fitTop.loopFrames))) / fps;
+          if (gp.topLoop && sp.fitTop.loopFrames > 0 && !sp.celPending) {
+            fB = -1.0f, w = 0.0f;
+            loop_wrap(static_cast<float>(sp.fitTop.loopStart), static_cast<float>(sp.fitTop.loopFrames));
+            bigA = bigB = true;
+          }
         }
-        if (sp.kind == kSpPop && !gp.fig) sp.posed.clear();  // (SOLID: nobody in its room or on top)
-        else xrevo::pose(sp.fig, pt, feet, yaw, scl, lift, &sp.posed);
         // r181: a big move played IN PLACE on a card (a Melee cheer, a hero's combo walk off a long way): its drift across
         // the floor taken out - its middle kept over where its standing pose has it (hops / jumps up and down kept), so no
         // figure walks out of its window / off its card
-        if (camE < 0.0f && !sp.posed.empty()) {
-          float refT = -1.0f;
-          bool inBig = false;
-          if (sp.loopFrames == 0 && sp.liveBigFrames > 0) {
-            const float fr = pt * fps;
-            inBig = fr >= static_cast<float>(sp.liveBigStart) - 0.5f && fr < static_cast<float>(sp.liveBigStart + sp.liveBigFrames);
-            refT = static_cast<float>(sp.liveIdleFrames > 0 ? sp.liveIdleStart : sp.liveBigStart) / fps;
-          } else if (sp.loopFrames > 0) {
-            inBig = true;
-            refT = static_cast<float>(sp.loopStart) / fps;
+        static std::vector<float> ref, other;
+        bool refMade = false;
+        auto pose_at = [&](float frame, bool big, std::vector<float>* out) {
+          xrevo::pose(sp.fig, frame / fps, feet, yaw, scl, lift, out);
+          if (!big || camE >= 0.0f || out->empty()) return;
+          if (!refMade) {
+            xrevo::pose(sp.fig, refF / fps, feet, yaw, scl, lift, &ref);
+            refMade = true;
           }
-          if (inBig && refT >= 0.0f) {
-            static std::vector<float> ref;
-            xrevo::pose(sp.fig, refT, feet, yaw, scl, lift, &ref);
-            if (ref.size() == sp.posed.size()) {
-              double cx = 0.0, cz = 0.0, rx = 0.0, rz = 0.0;
-              const size_t n = sp.posed.size() / 6;
-              for (size_t v = 0; v < n; ++v) {
-                cx += sp.posed[v * 6], cz += sp.posed[v * 6 + 2];
-                rx += ref[v * 6], rz += ref[v * 6 + 2];
-              }
-              const float dx = static_cast<float>((rx - cx) / std::max<size_t>(1, n)), dz = static_cast<float>((rz - cz) / std::max<size_t>(1, n));
-              for (size_t v = 0; v < n; ++v) sp.posed[v * 6] += dx, sp.posed[v * 6 + 2] += dz;
-            }
+          if (ref.size() != out->size()) return;
+          double cx = 0.0, cz = 0.0, rx = 0.0, rz = 0.0;
+          const size_t n = out->size() / 6;
+          for (size_t v = 0; v < n; ++v) {
+            cx += (*out)[v * 6], cz += (*out)[v * 6 + 2];
+            rx += ref[v * 6], rz += ref[v * 6 + 2];
+          }
+          const float dx = static_cast<float>((rx - cx) / std::max<size_t>(1, n)), dz = static_cast<float>((rz - cz) / std::max<size_t>(1, n));
+          for (size_t v = 0; v < n; ++v) (*out)[v * 6] += dx, (*out)[v * 6 + 2] += dz;
+        };
+        if (sp.kind == kSpPop && !gp.fig) {
+          sp.posed.clear();  // (SOLID: nobody in its room or on top)
+        } else if (fA < 0.0f) {
+          xrevo::pose(sp.fig, pt, feet, yaw, scl, lift, &sp.posed);
+        } else {
+          pose_at(fA, bigA, &sp.posed);
+          if (fB >= 0.0f && w > 0.0f) {
+            pose_at(fB, bigB, &other);
+            const float k = smooth(clampf(w, 0.0f, 1.0f));
+            if (other.size() == sp.posed.size())
+              for (size_t v = 0; v < sp.posed.size(); ++v) sp.posed[v] += (other[v] - sp.posed[v]) * k;
           }
         }
         if (sp.home)  // r149: a HOMETOWN's figure stands in its landscape diorama: turned onto the card with it
@@ -11681,6 +14412,16 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
             sp.posed[v + 3] = -ny;
             sp.posed[v + 4] = nx;
           }
+        if (sp.blendT >= 0.0f) {  // r193: from the still it held into its celebration (no pop)
+          sp.blendT += dt;
+          const float k = smooth(clampf(sp.blendT / kBlendIn, 0.0f, 1.0f));
+          if (sp.blendFrom.size() == sp.posed.size())
+            for (size_t v = 0; v < sp.posed.size(); ++v) sp.posed[v] = sp.blendFrom[v] + (sp.posed[v] - sp.blendFrom[v]) * k;
+          if (sp.blendT >= kBlendIn || sp.blendFrom.size() != sp.posed.size()) {
+            sp.blendT = -1.0f;
+            sp.blendFrom.clear();
+          }
+        }
         if (sp.posed.size() >= static_cast<size_t>(sp.figCount) * 6) std::memcpy(fo, sp.posed.data(), sizeof(float) * 6 * sp.figCount);
         else std::memset(fo, 0, sizeof(float) * 6 * sp.figCount);  // (r153: a GOLD's, SOLID)
       } else {
@@ -11755,7 +14496,11 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
     else
       md.glowRgb = pack_rgb(std::ceil(kWinHalf / kCardWm * 255.0f) / 255.0f, std::floor((kWinBottom / kCardHm + 0.5f) * 255.0f) / 255.0f,
                             std::ceil((kWinTop / kCardHm + 0.5f) * 255.0f) / 255.0f);
-    special_moves(sp, faceUp, held, t, now);  // r149: a TIZM BOOM's layers popping, an autograph writing itself
+    // r193: its 3D cut to its face's side, rising out of its top edge (not out in its cameo: nothing to cut it); while its
+    // autograph's moment has the stage its figure steps back down into the card (dimmed as it goes), up again after it lands
+    md.reveal = camE >= 0.0f ? -1.0f : sp.reveal * (1.0f - signFocus);
+    md.dim = 0.65f * signFocus;
+    special_moves(sp, faceUp, held, t, now, dt, fq, at, sc);  // r149: a TIZM BOOM's layers popping, an autograph writing itself
     if (sp.home) home_moves(sp, faceUp, q, t, now, dt);  // r171: a HOMETOWN's diorama, alive
     if (sp.kind == kSpPop) md.glow = std::max(md.glow, 0.6f);  // r171: a GOLD's vault (and its figure) lit up bright
     md.flameFrame = -1;
@@ -11776,16 +14521,18 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
     const Special& sp = g_sp[fxK];
     if (g_fx.card != sp.i) fx_begin(sp.i, sp.theme, sp.shiny, fxReady);  // (once: a failed upload isn't retried every frame)
     fx_frame(scene, fxFaceUp, fxHeld, fxQ, fxPos, fxScale, fxTop, dt, t, g_cam.i == sp.i && g_cam.started);
-    dim = std::max(dim, fx_dim());
+    dim = std::max(dim, fx_dim() * pull_gate(now));
   } else if (g_fx.up) {
     fx_end(fxReady);
   }
+  // r219: a 1/1's build-up - the room round you dark (the cards' own shade at its darkest), slammed back at its reveal
+  dim = std::max(dim, g_pullDark.load());
   const float dimR = g_cam.i >= 0 && g_cam.started ? 2.6f : 1.35f;  // (the cameo stands inside the dimming)
   // the light
   if (!g_lightUp || g_lightVerts.size() != static_cast<size_t>(g_lightN) * 6) return;
   const XrVector3f up{0.0f, 1.0f, 0.0f};
   for (const LightPart& lp : g_lightParts) {
-    if (lp.kind == 3 || lp.kind == 4) continue;
+    if (lp.kind == 3 || lp.kind == 4 || lp.kind == 5) continue;  // (r230: 5 the gallery's veil)
     const Sheet* s = lp.card >= 0 && lp.card < S.n ? &S.card[lp.card] : nullptr;
     if (s == nullptr || !s->on || !s->shown || s->scale < 0.01f || ((lp.kind == 0 || lp.kind == 1) && !tell_live(lp.card)) ||
         (lp.kind == 2 && !special_live(lp.card))) {
@@ -11854,16 +14601,25 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
   const Special* lit = nullptr;
   for (const Special& sp : g_sp)
     if (sp.up && sp.kind == kSpGlass && sp.spot > 0.01f && (lit == nullptr || sp.spot > lit->spot)) lit = &sp;
+  // r219: a 1/1's build-up - the one spotlight on the card in your hand while the room is dark (it shone only after the turn)
+  int litI = lit != nullptr ? lit->i : -1;
+  float litK = lit != nullptr ? lit->spot : 0.0f;
+  if (g_pullCard >= 0 && g_pullCard < S.n && g_pullDark.load() > litK) litI = g_pullCard, litK = g_pullDark.load();
+  // r230: the EXQUISITE gallery's soft spotlight on the card turned over at the front of the stack (no 1/1's beam on)
+  if (litI < 0 && g_gallery.load() > 0.05f && S.mode == kPackUp && S.phase == kStack) {
+    const int f = front_card();
+    if (f >= 0 && S.faceUp[f]) litI = f, litK = 0.55f * g_gallery.load();
+  }
   for (const LightPart& lp : g_lightParts) {
     if (lp.kind == 3) {
-      if (lit == nullptr) {
+      if (litI < 0 || litK <= 0.01f) {
         light_hide(lp);
         continue;
       }
       // r138 proof: a cone's two walls over the card read as a solid lampshade; now one soft shaft from above, turned
       // to your eyes, just behind the slab (the card stays crisp in front of it, lit), its foot fading just under it
-      const Sheet& s = S.card[lit->i];
-      const float k = lit->spot, len = 0.25f + 0.6f * k, r0 = 0.012f, r1 = (0.03f + 0.07f * k) * s.scale + 0.02f;
+      const Sheet& s = S.card[litI];
+      const float k = litK, len = 0.25f + 0.6f * k, r0 = 0.012f, r1 = (0.03f + 0.07f * k) * s.scale + 0.02f;
       float hx = S.head.position.x - s.pos.x, hz = S.head.position.z - s.pos.z;
       const float hl = std::max(0.001f, std::sqrt(hx * hx + hz * hz));
       hx /= hl;
@@ -11882,6 +14638,26 @@ void specials_frame(xrfx::Scene& scene, float dt, uint64_t now, bool fxReady, bo
           v[3] = hx;
           v[4] = 0.0f;
           v[5] = hz;
+        }
+    } else if (lp.kind == 5) {  // r230: the gallery's warm veil, 1.6 m round you (outside the 1/1's dimming)
+      const int level = static_cast<int>(std::lround(g_gallery.load() * 8.0f));
+      if (lp.n != level) {
+        light_hide(lp);
+        continue;
+      }
+      float* o = g_lightVerts.data() + static_cast<size_t>(lp.base) * 6;
+      const XrVector3f& h = S.head.position;
+      for (int i = 0; i <= 6; ++i)
+        for (int j = 0; j <= 10; ++j) {
+          const float th = 3.14159265f * i / 6.0f, ph = 6.2831853f * j / 10.0f;
+          const XrVector3f d{std::sin(th) * std::cos(ph), std::cos(th), std::sin(th) * std::sin(ph)};
+          float* v = o + (i * 11 + j) * 6;
+          v[0] = h.x + d.x * 1.6f;
+          v[1] = h.y + d.y * 1.6f;
+          v[2] = h.z + d.z * 1.6f;
+          v[3] = -d.x;
+          v[4] = -d.y;
+          v[5] = -d.z;
         }
     } else if (lp.kind == 4) {
       const int level = static_cast<int>(std::lround(dim * 8.0f));
@@ -11941,6 +14717,62 @@ void set_floor(float y) { g_floorY = y; }  // r141
 bool busy() { return S.mode == kPackUp || S.mode == kOut || S.mode == kTrade; }  // (r146: a trade-in's show)
 
 bool hub_input(const Input& in, bool* redraw, bool* stick) {
+  WdScope wd("game thread", "hub input");  // r237
+  if (g_page.load() == kPageCollectors && g_sceneMode.load() == 0) {  // r213: COLLECTOR TRADES - as the market (r206's rule: redraw on change only)
+    WdScope wdp("game thread", "COLLECTORS input");  // r237
+    *stick = in.dir != 0;
+    const int genBefore = xrtrade::generation();
+    xrtrade::Input ti;
+    ti.dir = in.dir;
+    ti.step = in.step;
+    ti.a = in.a;
+    ti.b = in.b;
+    ti.x = in.x;
+    ti.y = in.y;
+    const bool used = xrtrade::input(ti);
+    if (xrtrade::generation() != genBefore) {
+      *redraw = true;
+      ++g_gen;
+    }
+    return used || *stick;
+  }
+  if ((g_page.load() == kPageMarket || g_page.load() == kPageMuseum) && g_sceneMode.load() == 0) {  // r201
+    WdScope wdp("game thread", g_page.load() == kPageMarket ? "MARKET input" : "MUSEUM input");  // r237
+    *stick = in.dir != 0;
+    bool used;
+    const bool mk = g_page.load() == kPageMarket;
+    const int genBefore = mk ? xrmarket::generation() : xrmuseum::generation();  // r206: what changed = its generation moved
+    if (g_page.load() == kPageMarket) {
+      xrmarket::Input mi;
+      mi.dir = in.dir;
+      mi.step = in.step;
+      mi.a = in.a;
+      mi.b = in.b;
+      mi.x = in.x;
+      mi.y = in.y;
+      used = xrmarket::input(mi);
+    } else {
+      xrmuseum::Input mi;
+      mi.dir = in.dir;
+      mi.step = in.step;
+      mi.a = in.a;
+      mi.b = in.b;
+      mi.x = in.x;
+      mi.y = in.y;
+      used = xrmuseum::input(mi);
+    }
+    // r206 (Lance's r205 test: MARKET = fps drops, then the game killed using 6.3 GiB): r201-r205 bumped g_gen HERE ON EVERY
+    // CALL - hub_input runs every game frame on this page - so xr_quest saw the cards change 72 times a second: fr_refresh
+    // each frame -> the hub's 2160 x 1300 picture asked for again each frame -> a new drawing thread each frame (each ~56 MB:
+    // its float canvas + pixels), far more started than finished, and an 11 MB upload on the frame thread for each that did.
+    // Now only what the market / museum CHANGED redraws (a move, a pick, a tab: its own generation moved - its input() says
+    // "used" every frame while countering / asking, so that word can't be the test); a stick held / drifting asks for nothing.
+    if ((mk ? xrmarket::generation() : xrmuseum::generation()) != genBefore) {
+      *redraw = true;
+      ++g_gen;
+    }
+    return used || *stick;
+  }
   *stick = false;
   poll();
   if (!g_loaded.load()) return false;
@@ -11996,14 +14828,37 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
     int r = -1;
     {
       std::lock_guard<std::mutex> lock(g_mutex);
-      std::vector<int> tiles;  // (the page's order: the most spares first)
+      std::vector<int> tiles;  // (the page's order: the most spares first; r226: the page's set's)
       for (size_t i = 0; i < g_set.size(); ++i)
-        if (spare_of(static_cast<int>(i)) > 0) tiles.push_back(static_cast<int>(i));
+        if (g_set[i].set == g_tradeSet && spare_of(static_cast<int>(i)) > 0) tiles.push_back(static_cast<int>(i));
       std::stable_sort(tiles.begin(), tiles.end(), [](int x, int y) {
         return trade_before(x, spare_of(x), y, spare_of(y));  // (r147: the page's order)
       });
       const int n = static_cast<int>(tiles.size());
-      if (in.step && n > 0) {
+      // r226: the two set panels over the cards - stick up from the cards' top row (or with no cards) onto them, left / right picks the
+      // set (its cards below, what A trades), down back onto its cards
+      if (in.step && g_tradeOnSets) {
+        *stick = true;
+        if (in.dir == 1 || in.dir == 2) {
+          const int s = in.dir == 1 ? 0 : 1;
+          if (s != g_tradeSet) {
+            g_tradeSet = s;
+            g_tradeCursor = 0;
+            g_tradeTop = 0;
+            g_tradeSay.clear();
+          }
+          *redraw = true;
+        } else if (in.dir == 4 && n > 0) {
+          g_tradeOnSets = false;
+          *redraw = true;
+        }
+      } else if (in.step && in.dir == 3 && (n == 0 || std::max(0, std::min(n - 1, g_tradeCursor)) < kTileCols)) {
+        g_tradeOnSets = true;
+        *stick = true;
+        *redraw = true;
+      } else if (in.step && n == 0) {
+        *stick = true;  // (no cards of this set: only up reaches the panels)
+      } else if (in.step && n > 0) {
         int c = std::max(0, std::min(n - 1, g_tradeCursor));
         const int col = c % kTileCols;
         bool moved = false;
@@ -12018,8 +14873,8 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
         if (row >= g_tradeTop + kTileRows) g_tradeTop = row - kTileRows + 1;
         if (moved) *redraw = true;
       }
-      if (in.x && g_tradeCursor < n) {
-        const std::string& key = g_set[tiles[static_cast<size_t>(g_tradeCursor)]].key;
+      if (in.x && !g_tradeOnSets && g_tradeCursor < n) {
+        const std::string& key = g_set[tiles[static_cast<size_t>(g_tradeCursor)]].id;
         if (g_keep.count(key) != 0) g_keep.erase(key);
         else g_keep.insert(key);
         g_tradeSay = g_keep.count(key) != 0 ? upper(g_set[tiles[static_cast<size_t>(g_tradeCursor)]].name) + " KEPT OUT OF TRADE-INS"
@@ -12029,11 +14884,14 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
       }
     }
     if (in.a) {
-      r = trade_in(&traded);
+      const int set = g_tradeSet;  // r226: the picked set's spares for its own pack
+      r = trade_in(&traded, set);
       {
         std::lock_guard<std::mutex> lock(g_mutex);
-        g_tradeSay = r == 0 ? "TRADED! A FREE PACK IS WAITING WITH YOUR PACKS"
-                            : (r == 1 ? "NOT 10 SPARE BASE CARDS YET (THE ONES YOU KEEP DON'T COUNT)" : "NO ROOM FOR MORE PACKS");
+        const std::string sn = set == 1 ? "JAM '96 " : "";
+        g_tradeSay = r == 0 ? "TRADED! A FREE " + sn + "PACK IS WAITING WITH YOUR PACKS"
+                            : (r == 1 ? "NOT " + std::to_string(trade_for(set)) + " SPARE " + sn + "BASE CARDS YET (THE ONES YOU KEEP DON'T COUNT)"
+                                      : "NO ROOM FOR MORE PACKS");
       }
       if (r == 0) trade_show(traded, now);
       else buzz(0.15f, 0.04f);
@@ -12043,6 +14901,12 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   }
   // r146: SETS (LT from the trade-ins): the stick scrolls the evolution lines; RT the trade-ins
   if (g_page.load() == kPageSets) {
+    if (in.y || in.b) {  // r236: SETS is the BINDER's other view now - Y (or B) back to the pages
+      g_page = kPageBinder;
+      ++g_gen;
+      *redraw = true;
+      return true;
+    }
     if (in.step) *stick = true;  // r157
     if (in.step && (in.dir == 3 || in.dir == 4)) {
       std::lock_guard<std::mutex> lock(g_mutex);
@@ -12057,23 +14921,27 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   }
   // r157: GOAL EXPLOSIONS (r153's shop shelf, now on the rail): the stick over the 12 + NO EXPLOSION, A puts on one you own
   // (or asks to buy it: the hub's confirm, A buys, B no), X previews it in your room (B / leaving stops it)
-  if (g_page.load() == kPageExplosions) {
+  // r236 (LOCKER): GOAL FX and TAKEOVERS - the same catalogue split in two pages (a room takeover = seconds > 5; NO EXPLOSION on GOAL
+  // FX), 3 a row; the ring's place on each page (g_fxPos) picks the catalogue's item (g_fxCursor: its index, cat.size() = none)
+  if (g_page.load() == kPageExplosions || g_page.load() == kPageTakeovers) {
     const std::vector<xrgoalfx::Item>& cat = xrgoalfx::catalogue();
     const int n = static_cast<int>(cat.size()) + 1;
+    const bool tk = g_page.load() == kPageTakeovers;
+    const std::vector<int> list = fx_list(tk);
     auto fx_say = [](const std::string& t) {
       std::lock_guard<std::mutex> lock(g_mutex);
       g_fxSay = t;
     };
     if (g_fxArmed >= 0) {  // asking to buy it: A yes, B no, nothing else
       if (in.a) {
-        int left = 0;
+        long long left = 0;  // r208
         const xrgoalfx::Buy r = g_fxArmed < static_cast<int>(cat.size()) ? xrgoalfx::try_buy(cat[static_cast<size_t>(g_fxArmed)].id, &left)
                                                                          : xrgoalfx::Buy::kUnknown;
         if (r == xrgoalfx::Buy::kBought || r == xrgoalfx::Buy::kAlreadyOwned) xrgoalfx::equip(cat[static_cast<size_t>(g_fxArmed)].id);
         {
           std::lock_guard<std::mutex> lock(g_mutex);
           g_fxSay = r == xrgoalfx::Buy::kBought ? upper(cat[static_cast<size_t>(g_fxArmed)].name) + " IS YOURS - IT'S ON"
-                    : r == xrgoalfx::Buy::kNotEnough ? std::string("NOT ENOUGH TIZM COINS YET  -  PLAY FRANCHISE MATCHES")
+                    : r == xrgoalfx::Buy::kNotEnough ? std::string("NOT ENOUGH BIT COINS YET  -  PLAY FRANCHISE MATCHES")
                                                      : std::string("COULDN'T BUY IT");
         }
         buzz(r == xrgoalfx::Buy::kBought ? 0.35f : 0.15f, r == xrgoalfx::Buy::kBought ? 0.08f : 0.04f);
@@ -12087,19 +14955,24 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
       *stick = true;
       return in.a || in.b || in.x || in.y || in.step;
     }
-    int c = std::max(0, std::min(n - 1, g_fxCursor));
-    if (in.step) {
-      const int col = c % kFxCols;
-      if (in.dir == 1 && col > 0) --c;
-      if (in.dir == 2 && col < kFxCols - 1 && c + 1 < n) ++c;
-      if (in.dir == 3 && c >= kFxCols) c -= kFxCols;
-      if (in.dir == 4 && c + kFxCols < n) c += kFxCols;
-      if (c != g_fxCursor) {
+    const int ln = static_cast<int>(list.size());
+    int pos = std::max(0, std::min(std::max(0, ln - 1), g_fxPos[tk ? 1 : 0]));
+    if (in.step && ln > 0) {
+      const int before = pos, col = pos % kLkGridCols;
+      if (in.dir == 1 && col > 0) --pos;
+      if (in.dir == 2 && col < kLkGridCols - 1 && pos + 1 < ln) ++pos;
+      if (in.dir == 3 && pos >= kLkGridCols) pos -= kLkGridCols;
+      if (in.dir == 4 && pos + kLkGridCols < ln) pos += kLkGridCols;
+      else if (in.dir == 4 && pos / kLkGridCols < (ln - 1) / kLkGridCols) pos = ln - 1;
+      if (pos != before) {
         fx_say("");
         *redraw = true;
       }
       *stick = true;
     }
+    g_fxPos[tk ? 1 : 0] = pos;
+    int c = ln > 0 && list[static_cast<size_t>(pos)] >= 0 ? list[static_cast<size_t>(pos)] : n - 1;
+    (void)n;
     g_fxCursor = c;
     if (in.b && g_fxPreviewing) {  // (B stops a preview before it takes you back to the rail)
       xrgoalfx::stop();
@@ -12142,7 +15015,8 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   // r160: LOOKS - the stick over the two rows (BINDER SKINS, CARD SLEEVES; left / right along a row, up / down between
   // them), A puts on one you own or asks to buy it (the hub's confirm: A buys and puts it on, B no), X previews it (a skin:
   // the 3D binder in that skin in front of you; a sleeve: a card of yours out in it), B stops a preview first
-  if (g_page.load() == kPageLooks) {
+  // r236 (LOCKER): BALLS (kPageLooks) and BINDERS (kPageCovers) - the two shelves of r160-r170's LOOKS, each its own page, 3 a row
+  if (g_page.load() == kPageLooks || g_page.load() == kPageCovers) {
     auto say = [](const std::string& t) {
       std::lock_guard<std::mutex> lock(g_mutex);
       g_lkSay = t;
@@ -12152,13 +15026,14 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
       std::lock_guard<std::mutex> lock(g_mutex);
       armKind = g_lkArmKind;
       arm = g_lkArm;
+      g_lkBallFocus = g_page.load() == kPageLooks;  // (the page says which shelf)
     }
     if (armKind == kLookBall && arm >= 0) {  // r168: a ball's buy asking: A yes, B no, nothing else
       if (in.a) {
         const int r = balls_buy(arm);
         if (r == 0 || r == 2) ball_equip(arm);
         say(r == 0 ? std::string(ball_item(arm).name) + " IS YOURS - IT'S ON"
-                   : (r == 1 ? std::string("NOT ENOUGH TIZM COINS YET  -  PLAY FRANCHISE MATCHES") : std::string(ball_item(arm).name) + " IS ON"));
+                   : (r == 1 ? std::string("NOT ENOUGH BIT COINS YET  -  PLAY FRANCHISE MATCHES") : std::string(ball_item(arm).name) + " IS ON"));
         buzz(r == 0 ? 0.35f : 0.15f, r == 0 ? 0.08f : 0.04f);
       }
       if (in.a || in.b) {
@@ -12174,7 +15049,7 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
         const int r = looks_buy(armKind, arm);
         if (r == 0 || r == 2) look_equip(armKind, arm);
         say(r == 0 ? upper(look_item(armKind, arm).name) + " IS YOURS - IT'S ON"
-                   : (r == 1 ? std::string("NOT ENOUGH TIZM COINS YET  -  PLAY FRANCHISE MATCHES") : upper(look_item(armKind, arm).name) + " IS ON"));
+                   : (r == 1 ? std::string("NOT ENOUGH BIT COINS YET  -  PLAY FRANCHISE MATCHES") : upper(look_item(armKind, arm).name) + " IS ON"));
         buzz(r == 0 ? 0.35f : 0.15f, r == 0 ? 0.08f : 0.04f);
       }
       if (in.a || in.b) {
@@ -12187,35 +15062,17 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
     }
     {
       std::lock_guard<std::mutex> lock(g_mutex);
-      if (in.step && g_lkBallFocus) {  // r168: the BALL SKINS row: left / right along it, down to the binder skins
-        const int before = g_lkBall;
-        if (in.dir == 1 && g_lkBall > 0) --g_lkBall;
-        if (in.dir == 2 && g_lkBall < kBallTiles - 1) ++g_lkBall;
-        if (in.dir == 4) {
-          g_lkBallFocus = false;
-          g_lkCol[0] = std::min(kSkinCount - 1, g_lkFirst[0] * kLkCols + std::min(g_lkBall - g_lkBallFirst, kLkCols - 1));
-        }
-        if (g_lkBall != before || !g_lkBallFocus) {
-          g_lkSay.clear();
-          *redraw = true;
-        }
-        *stick = true;
-      } else if (in.step) {  // (r163: one grid of skins, 5 a row: the stick moves the ring, it stops at the edges)
-        const int before = g_lkCol[0];
-        int c = g_lkCol[0];
-        const int col0 = c % kLkCols;
-        if (in.dir == 1 && col0 > 0) --c;
-        if (in.dir == 2 && col0 < kLkCols - 1 && c + 1 < kSkinCount) ++c;
-        if (in.dir == 3 && c >= kLkCols) c -= kLkCols;
-        else if (in.dir == 3) {  // r168: up off the top row: the BALL SKINS row
-          g_lkBallFocus = true;
-          g_lkBall = std::min(kBallTiles - 1, g_lkBallFirst + col0);
-          g_lkSay.clear();
-          *redraw = true;
-        }
-        if (in.dir == 4 && c + kLkCols < kSkinCount) c += kLkCols;
-        g_lkCol[0] = c;
-        if (c != before) {
+      if (in.step) {  // r236: the shelf's grid, 3 a row - the stick moves the ring, it stops at the edges
+        int& cur = g_lkBallFocus ? g_lkBall : g_lkCol[0];
+        const int cnt = g_lkBallFocus ? kBallTiles : kSkinCount;
+        const int before = cur, col0 = cur % kLkGridCols;
+        if (in.dir == 1 && col0 > 0) --cur;
+        if (in.dir == 2 && col0 < kLkGridCols - 1 && cur + 1 < cnt) ++cur;
+        if (in.dir == 3 && cur >= kLkGridCols) cur -= kLkGridCols;
+        if (in.dir == 4 && cur + kLkGridCols < cnt) cur += kLkGridCols;
+        else if (in.dir == 4 && cur / kLkGridCols < (cnt - 1) / kLkGridCols) cur = cnt - 1;
+        cur = std::max(0, std::min(cnt - 1, cur));
+        if (cur != before) {
           g_lkSay.clear();
           *redraw = true;
         }
@@ -12386,7 +15243,7 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_gradeArmed = -1;
         g_gradeSay = r == 0 ? "SENT TO TIZM GRADING  -  BACK AFTER " + std::to_string(kGradeMatches) + " FRANCHISE MATCHES (CERT #" + std::to_string(sent.cert) + ")"
-                            : (r == 1 ? "NOT ENOUGH TIZM COINS YET  -  PLAY FRANCHISE MATCHES" : "NOTHING OF IT LEFT TO SEND");
+                            : (r == 1 ? "NOT ENOUGH BIT COINS YET  -  PLAY FRANCHISE MATCHES" : "NOTHING OF IT LEFT TO SEND");
       }
       buzz(r == 0 ? 0.35f : 0.15f, r == 0 ? 0.08f : 0.04f);
     }
@@ -12396,21 +15253,44 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   // r140: the shop (LT from the binder's first pages): its two offers side by side (the stick), A buys, RT the binder;
   // r146: LT the trade-ins
   if (g_page.load() == kPageShop) {
-    if (in.step && (in.dir == 1 || in.dir == 2)) {
-      const int want = in.dir == 1 ? 0 : 1;
-      if (want != g_shopPick.load()) {
+    // r236 (LOOK B: CARDS > PACKS, the old SHOP + opening): the hero (your packs + OPEN) over three products (TIZM / JAM '96 /
+    // EXQUISITE: name + price); up / down between them, left / right the product, X its box (BOX OF 5 / THE VAULT) or back, A
+    // opens one (the hero) / buys (a product), Y opens one from anywhere on it (as the binder's Y did)
+    const bool havePacks = !g_packs.empty();
+    if (in.y || (in.a && havePacks && g_packsOnOpen.load())) {
+      if (havePacks) S.askOpen = true;
+      *redraw = true;
+      return true;
+    }
+    if (in.step && in.dir >= 1 && in.dir <= 4) {
+      int set = g_shopPick.load() / 2, box = g_shopPick.load() % 2;
+      bool onOpen = g_packsOnOpen.load() && havePacks;
+      if (in.dir == 3 && havePacks) onOpen = true;
+      if (in.dir == 4) onOpen = false;
+      if (!onOpen && in.dir == 1 && set > 0) set -= 1, box = 0;
+      if (!onOpen && in.dir == 2 && set < 2) set += 1, box = 0;
+      const int want = set * 2 + box;
+      if (want != g_shopPick.load() || onOpen != g_packsOnOpen.load()) {
         g_shopPick = want;
+        g_packsOnOpen = onOpen;
         *redraw = true;
       }
     }
+    if (in.x && !(g_packsOnOpen.load() && havePacks)) {  // the product's box / case (or back to one pack)
+      g_shopPick = g_shopPick.load() ^ 1;
+      *redraw = true;
+      return true;
+    }
     if (in.step) *stick = true;  // r157: the stick stays on the page
-    if (in.a) {
-      const bool box = g_shopPick.load() == 1;
-      const int r = buy_packs(box);
+    if (in.a && !(g_packsOnOpen.load() && havePacks)) {
+      const bool box = g_shopPick.load() % 2 == 1, jam = g_shopPick.load() / 2 == 1, exq = g_shopPick.load() / 2 == 2;
+      const int r = buy_packs(box, g_shopPick.load() / 2);
       {
         std::lock_guard<std::mutex> lock(g_mutex);
-        g_shopSay = r == 0 ? (box ? "A BOX OF 5 PACKS IS YOURS  -  OPEN THEM IN THE BINDER (Y)" : "A PACK IS YOURS  -  OPEN IT IN THE BINDER (Y)")
-                           : (r == 1 ? "NOT ENOUGH TIZM COINS YET  -  PLAY FRANCHISE MATCHES" : "NO ROOM FOR MORE PACKS");
+        const std::string what = exq ? (box ? "THE VAULT IS YOURS - 5 LANCINI EXQUISITE PACKS" : "A LANCINI EXQUISITE PACK IS YOURS")
+                                 : jam ? (box ? "A JAM '96 BOX OF 5 PACKS IS YOURS" : "A JAM '96 PACK IS YOURS") : (box ? "A BOX OF 5 PACKS IS YOURS" : "A PACK IS YOURS");
+        g_shopSay = r == 0 ? what + (box ? "  -  OPEN THEM HERE" : "  -  OPEN IT HERE")
+                           : (r == 1 ? "NOT ENOUGH BIT COINS YET  -  PLAY FRANCHISE MATCHES" : "NO ROOM FOR MORE PACKS");
       }
       buzz(r == 0 ? 0.35f : 0.15f, r == 0 ? 0.08f : 0.04f);
       *redraw = true;
@@ -12462,12 +15342,12 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   const int cursorCard = at < list.size() ? list[at] : -1;
   const bool owned = owns(cursorCard);
   // r149: a NEW card looked at - the cursor resting on its pocket a moment - isn't new any more
-  if (cursorCard >= 0 && g_newCards.count(g_set[cursorCard].key) != 0) {
+  if (cursorCard >= 0 && g_newCards.count(g_set[cursorCard].id) != 0) {
     if (S.newLook != cursorCard) {
       S.newLook = cursorCard;
       S.newLookNs = now;
     } else if (secs(now, S.newLookNs) > 0.8f) {
-      g_newCards.erase(g_set[cursorCard].key);
+      g_newCards.erase(g_set[cursorCard].id);
       save_collection();
       S.newLook = -1;
       *redraw = true;
@@ -12481,11 +15361,11 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
     g_binderToggle = true;
     used = true;
   }
-  if (in.y && !g_packs.empty()) {
-    S.askOpen = true;
+  if (in.y) {  // r236: Y = the binder's SETS (its bonuses); packs open on CARDS > PACKS (A, or Y there)
+    g_page = kPageSets;
+    ++g_gen;
+    *redraw = true;
     used = true;
-  } else if (in.y) {
-    used = true;  // (no packs: nothing to open)
   } else if (in.a && owned) {
     S.askLook = cursorCard;
     used = true;
@@ -12497,6 +15377,7 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
 
 int rail_page() {
   const int p = g_page.load();
+  if (p == kPageSets) return kRailBinder;  // r236: SETS is the BINDER's other view (Y)
   for (int i = 0; i < kRailPages; ++i)
     if (kRailOrder[i] == p) return i;
   return 0;
@@ -12504,7 +15385,7 @@ int rail_page() {
 void set_rail_page(int i) {
   i = std::max(0, std::min(kRailPages - 1, i));
   if (kRailOrder[i] == g_page.load()) return;
-  if (g_page.load() == kPageExplosions && g_fxPreviewing) {  // (leaving it stops a preview)
+  if ((g_page.load() == kPageExplosions || g_page.load() == kPageTakeovers) && g_fxPreviewing) {  // (leaving it stops a preview)
     xrgoalfx::stop();
     g_fxPreviewing = false;
   }
@@ -12530,9 +15411,15 @@ void set_hub_fit(float ox, float oy, float k) {
   g_fitOy = oy;
   g_fitK = k;
 }
-bool wants_y() { return g_page.load() == kPageBinder; }
+bool wants_y() {  // (r201: the market's COUNTER; r213: the collectors' SEND / COUNTER)
+  return g_page.load() == kPageBinder || g_page.load() == kPageMarket || g_page.load() == kPageMuseum || g_page.load() == kPageCollectors;
+}
 #ifdef HARNESS_REAL_CARDS  // (tools/outside/menus_render157: the pop-up pages drawn without their 3D)
 void harness_scene(int mode) { g_sceneMode = mode; }
+void harness_page(int railIndex, bool sets) {  // r236: a page by its rail index (sets: the BINDER's SETS view)
+  set_rail_page(railIndex);
+  if (sets) g_page = kPageSets;
+}
 void harness_wear(int skin, int sleeve) {  // r160 round 2: a skin on (the binder page's renders; r163: no sleeves)
   (void)sleeve;
   std::lock_guard<std::mutex> lock(g_lookM);
@@ -12683,6 +15570,229 @@ void harness_gold(const char* who) {
   host_log(line, n);
   const int n2 = std::snprintf(line, sizeof(line), "HOMEWIN %.5f %.5f", kHomeWinHalfX, kHomeWinHalfY);
   host_log(line, n2);
+}
+// r210: the CARD MUSEUM's card atlas for the PC proof (tools/outside/cards210): `spec` = up to 9 items "key:parallel:grade" or "-" (an
+// empty spot), ';' between. Saved straight (each picture's colour with alpha 255 + its alpha as grey): museum210_atlas (r210's,
+// museum_atlas itself) and its mips (museum210_mip<i>, mip_chain_srgb itself)
+void harness_museum210(const char* spec) {
+  load_set();
+  std::vector<xrmarket::Variant> items;
+  std::string s(spec), tok;
+  for (size_t i = 0; i <= s.size(); ++i) {
+    if (i < s.size() && s[i] != ';') {
+      tok += s[i];
+      continue;
+    }
+    xrmarket::Variant v;
+    char key[96] = {};
+    int par = 0, grade = 0;
+    if (tok != "-" && std::sscanf(tok.c_str(), "%95[^:]:%d:%d", key, &par, &grade) >= 1) {
+      auto it = g_byKey.find(key);
+      if (it != g_byKey.end()) {
+        v.card = it->second;
+        v.parallel = par;
+        v.serial = par == kGoldTizm ? 7 : (par == kBlack ? 1 : 0);
+        v.grade = grade;
+        v.cert = grade > 0 ? 20261110u + static_cast<uint32_t>(items.size()) : 0u;
+      }
+    }
+    items.push_back(v);
+    tok.clear();
+  }
+  std::vector<uint8_t> atlas;
+  if (!museum_atlas(items, &atlas)) return;
+  auto save2 = [](const std::string& name, const std::vector<uint8_t>& px, int w, int h) {
+    std::vector<uint8_t> rgb = px, a = px;
+    for (size_t i = 0; i < px.size(); i += 4) {
+      rgb[i + 3] = 255;
+      a[i] = a[i + 1] = a[i + 2] = px[i + 3];
+      a[i + 3] = 255;
+    }
+    host_save_png((name + "_rgb.png").c_str(), static_cast<int>(name.size() + 8), rgb.data(), w, h);
+    host_save_png((name + "_a.png").c_str(), static_cast<int>(name.size() + 6), a.data(), w, h);
+  };
+  save2("museum210_atlas", atlas, 1024, 2048);
+  const std::vector<std::vector<uint8_t>> mips = mip_chain_srgb(atlas, 1024, 2048);
+  for (size_t i = 0; i < mips.size() && i < 8; ++i) save2("museum210_mip" + std::to_string(i + 1), mips[i], std::max(1, 1024 >> (i + 1)), std::max(1, 2048 >> (i + 1)));
+  char line[96];
+  const int n = std::snprintf(line, sizeof(line), "MUSEUM210 %zu items, %zu mips", items.size(), mips.size());
+  host_log(line, n);
+}
+// r211: Lance's new pull rates for the PC proof (tools/outside/odds211). mode 1: the pack's back (its ODDS) as the headset draws it
+// (odds211_pack_back.png; _flat: its foil alpha made solid to look at), then `packs` packs rolled as add_packs rolls them (its own GOD
+// PACK roll, roll_pack, god_cards) - every card of the set in the pools, each pack against an empty binder (the pure odds) - counted:
+// ODDS lines (regular packs: not god-rolled; all: every pack). mode 2: the one-of-each-ever rule - every card's 1/1 already yours,
+// `packs` packs: no BLACK comes (each becomes a GOLD /10)
+void harness_odds211(int mode, int packs) {
+  load_set();
+  if (g_set.empty()) return;
+  char line[256];
+  auto say = [&](int k) { host_log(line, std::min(k, static_cast<int>(sizeof(line)) - 1)); };
+  if (mode == 1) {
+    std::vector<uint8_t> px = draw_pack(true, static_cast<int>(g_set.size()));
+    harness_savetex("odds211_pack_back.png", px, kPackW, kPackH);
+    for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;
+    harness_savetex("odds211_pack_back_flat.png", px, kPackW, kPackH);
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (Card& c : g_set) c.here = true;
+  g_owned.assign(g_set.size(), Owned{});
+  g_packs.clear();
+  if (mode == 2)
+    for (Owned& o : g_owned) o.n[kBlack][0] = 1;
+  // [0] regular packs, [1] every pack
+  long long packsN[2] = {}, cards[2] = {}, fin[2][4] = {}, hit[2][4] = {}, pkCards[2] = {}, shiny[2] = {}, rar[2][3] = {};
+  long long withBlack[2] = {}, withGold[2] = {}, withSilver[2] = {}, withHit[2] = {}, godRolled = 0, godFlagged = 0, godNatural = 0;
+  const uint64_t salt = mode == 1 ? 0x2110DD5A17C0FFEEull : 0x2112B1AC0F0E1E55ull;
+  for (int i = 0; i < packs; ++i) {
+    uint64_t rng = salt ^ (static_cast<uint64_t>(i + 1) * 0x9E3779B97F4A7C15ull);  // (add_packs' own seeding)
+    const bool god = mix64(rng) % kGodOdds == 0;
+    const Pack p = roll_pack(rng, {}, god);
+    const bool flagged = god_cards(p);
+    godRolled += god ? 1 : 0;
+    godFlagged += flagged ? 1 : 0;
+    godNatural += flagged && !god ? 1 : 0;
+    for (int g = god ? 1 : 0; g < 2; ++g) {
+      ++packsN[g];
+      bool b = false, gd = false, sv = false, h = false;
+      for (const Ref& r : p.cards) {
+        if (r.card < 0) continue;
+        ++cards[g];
+        ++fin[g][r.parallel];
+        ++hit[g][r.hit];
+        ++rar[g][g_set[static_cast<size_t>(r.card)].rarity];
+        if (pk_key(g_set[static_cast<size_t>(r.card)].key)) ++pkCards[g], shiny[g] += r.shiny ? 1 : 0;
+        b = b || r.parallel == kBlack, gd = gd || r.parallel == kGoldTizm, sv = sv || r.parallel == kSilver, h = h || r.hit != kHitNone;
+      }
+      withBlack[g] += b, withGold[g] += gd, withSilver[g] += sv, withHit[g] += h;
+    }
+  }
+  say(std::snprintf(line, sizeof(line), "ODDS211 mode %d packs %d set %d | rates %d %d %d | hits %d %d %d | shiny %d | god %d", mode, packs,
+                    static_cast<int>(g_set.size()), kSilverOdds, kGoldOdds, kBlackOdds, kHitIn[1], kHitIn[2], kHitIn[3], kShinyOdds, kGodOdds));
+  for (int g = 0; g < 2; ++g) {
+    const char* w = g == 0 ? "regular" : "all";
+    say(std::snprintf(line, sizeof(line), "ODDS %s packs %lld cards %lld base %lld silver %lld gold %lld black %lld", w, packsN[g], cards[g], fin[g][0], fin[g][1],
+                      fin[g][2], fin[g][3]));
+    say(std::snprintf(line, sizeof(line), "ODDS %s hits boom %lld home %lld signed %lld none %lld | pokemon %lld shiny %lld | C %lld R %lld SR %lld", w, hit[g][1],
+                      hit[g][2], hit[g][3], hit[g][0], pkCards[g], shiny[g], rar[g][0], rar[g][1], rar[g][2]));
+    say(std::snprintf(line, sizeof(line), "ODDS %s packswith blackp %lld goldp %lld silverp %lld hitp %lld", w, withBlack[g], withGold[g], withSilver[g], withHit[g]));
+  }
+  say(std::snprintf(line, sizeof(line), "ODDS god rolled %lld flagged %lld natural %lld", godRolled, godFlagged, godNatural));
+  g_owned.assign(g_set.size(), Owned{});
+}
+// r213: the collectors' 1/1s and the SHIPPING pack roller (tools/outside/trades213: cards213.cpp). A career (seed 0x213213), an empty binder,
+// every card in the pools; `packs` packs rolled as add_packs rolls them, each against what the world holds: mode 1 every card's 1/1 a
+// collector's (told: world_set) - no BLACK may come; mode 2 every other card's - BLACKs only of the rest; mode 3 none - BLACKs at r211's
+// rate; mode 4 none told, the career's world11 file (every card) read the first time a 1/1 is rolled - no BLACK may come
+void harness_world213(int mode, int packs) {
+  load_set();
+  if (g_set.empty()) return;
+  char line[256];
+  auto say = [&](int k) { host_log(line, std::min(k, static_cast<int>(sizeof(line)) - 1)); };
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const unsigned was = g_careerSeed;
+  for (Card& c : g_set) c.here = true;
+  g_owned.assign(g_set.size(), Owned{});
+  g_packs.clear();
+  g_careerSeed = 0x213213u;
+  std::vector<std::string> keys;
+  for (size_t i = 0; i < g_set.size(); ++i)
+    if (mode == 1 || (mode == 2 && i % 2 == 0)) keys.push_back(g_set[i].key);
+  if (mode == 4) {
+    std::lock_guard<std::mutex> wl(g_worldM);
+    g_worldCareer = 0;  // (not told: the file)
+    g_worldKeys.clear();
+  } else {
+    world_set(g_careerSeed, keys);
+  }
+  long long cards = 0, blackIn = 0, blackOut = 0, gold = 0;
+  for (int i = 0; i < packs; ++i) {
+    uint64_t rng = 0x2131B1AC00000000ull ^ (static_cast<uint64_t>(i + 1) * 0x9E3779B97F4A7C15ull);
+    const bool god = mix64(rng) % kGodOdds == 0;
+    const Pack p = roll_pack(rng, {}, god);
+    for (const Ref& r : p.cards) {
+      if (r.card < 0) continue;
+      ++cards;
+      gold += r.parallel == kGoldTizm ? 1 : 0;
+      if (r.parallel == kBlack) ((mode == 1 || mode == 4 || (mode == 2 && r.card % 2 == 0)) ? blackIn : blackOut)++;
+    }
+  }
+  say(std::snprintf(line, sizeof(line), "WORLD213 mode %d packs %d cards %lld told %d black_world %lld black_other %lld gold %lld", mode, packs, cards,
+                    static_cast<int>(keys.size()), blackIn, blackOut, gold));
+  {
+    std::lock_guard<std::mutex> wl(g_worldM);
+    g_worldCareer = 0;
+    g_worldKeys.clear();
+  }
+  g_owned.assign(g_set.size(), Owned{});
+  g_careerSeed = was;
+}
+// r235: the collectors' rips through the SHIPPING trade_rip (tools/outside/collect235). A career (seed 0x235235), every card in the pools;
+// `packs` packs of each set (0 LANCINI TIZM, 1 JAM '96, 2 EXQUISITE): mode 1 every card's 1/1 + every EXQUISITE number a collector's (told) -
+// no BLACK, no MASTERPIECE, no told number may come; mode 2 nothing told, an empty binder - the rates; mode 3 every 1/1 YOURS (the binder) -
+// no BLACK. Logged: RIP235 mode set packs cards black gold silver hits shiny | exq tiers 1..10 | dup numbers
+void harness_rip235(int mode, int packs) {
+  load_set();
+  if (g_set.empty()) return;
+  char line[400];
+  auto say = [&](int k) { host_log(line, std::min(k, static_cast<int>(sizeof(line)) - 1)); };
+  const unsigned was = g_careerSeed;
+  std::vector<std::string> keys;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (Card& c : g_set) c.here = true;
+    g_owned.assign(g_set.size(), Owned{});
+    g_packs.clear();
+    g_careerSeed = 0x235235u;
+    if (mode == 3)  // (an EXQUISITE 1/1 is its MASTERPIECE, kept whole in Owned::hits)
+      for (size_t i = 0; i < g_set.size(); ++i) {
+        if (g_set[i].set == 2) g_owned[i].hits.push_back(exq_ref(static_cast<int>(i), xrexq::kMasterpiece, 1));
+        else g_owned[i].n[kBlack][0] = 1;
+      }
+    if (mode == 1)
+      for (size_t i = 0; i < g_set.size(); ++i) {
+        keys.push_back(g_set[i].id);
+        if (g_set[i].set == 2)  // (every EXQUISITE number but the GALLERY /399s: those may still come)
+          for (int t = xrexq::kSilverLeaf; t < xrexq::kTiers; ++t)
+            for (int n = 1; n <= xrexq::kRun[t]; ++n) keys.push_back(g_set[i].id + "#" + std::to_string(xrexq::serial_of(t, n)));
+      }
+    std::sort(keys.begin(), keys.end());
+    world_set(g_careerSeed, keys);
+  }
+  for (int set = 0; set < 3; ++set) {
+    long long cards = 0, fin[4] = {}, hits = 0, shiny = 0, tiers[xrexq::kTiers] = {}, dups = 0, toldNum = 0, wrongSet = 0;
+    for (int i = 0; i < packs; ++i) {
+      std::vector<xrmarket::Variant> got;
+      trade_rip(set, 0x2350000000ull ^ (static_cast<uint64_t>(set) << 48) ^ (static_cast<uint64_t>(i + 1) * 0x9E3779B97F4A7C15ull), &got);
+      for (const xrmarket::Variant& v : got) {
+        ++cards;
+        wrongSet += g_set[static_cast<size_t>(v.card)].set != set ? 1 : 0;
+        if (set == 2) {
+          const int t = xrexq::tier_of(v.serial);
+          ++tiers[t];
+          const std::string k = g_set[static_cast<size_t>(v.card)].id + "#" + std::to_string(v.serial);
+          if (std::binary_search(keys.begin(), keys.end(), k) || (mode == 1 && t == xrexq::kMasterpiece)) ++toldNum;
+          // (the rips here are not added to any world: a number may repeat across packs - the trades module tells each after its rip)
+        } else {
+          ++fin[std::max(0, std::min(3, v.parallel))];
+          hits += v.hit != kHitNone ? 1 : 0;
+          shiny += v.shiny ? 1 : 0;
+        }
+      }
+    }
+    say(std::snprintf(line, sizeof(line), "RIP235 mode %d set %d packs %d cards %lld black %lld gold %lld silver %lld hits %lld shiny %lld wrongset %lld | exq %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld | told %lld dups %lld",
+                      mode, set, packs, cards, fin[3], fin[2], fin[1], hits, shiny, wrongSet, tiers[1], tiers[2], tiers[3], tiers[4], tiers[5], tiers[6], tiers[7], tiers[8],
+                      tiers[9], tiers[10], toldNum, dups));
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::mutex> wl(g_worldM);
+    g_worldCareer = 0;
+    g_worldKeys.clear();
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_owned.assign(g_set.size(), Owned{});
+  g_careerSeed = was;
 }
 // r183: a card's fronts by key (the ORIGINALS' proof): BASE, SILVER, GOLD /10, BLACK 1/1, HOMETOWN, SIGNED, BOOM, and its
 // HOMETOWN's home (logged: HOMEOF <key> <suite> <place>); its sets logged (SETOF <set> <cards>)
@@ -13269,7 +16379,7 @@ void disp_prepare() {
   int total = 0;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    total = static_cast<int>(g_set.size());
+    total = g_setN;  // (r217: a set's count)
   }
   std::thread([p, slabs, cards, total]() {
     std::vector<std::vector<uint8_t>> tex;
@@ -13765,7 +16875,7 @@ std::shared_ptr<BPages> bpages_make(int spread) {
       if (at >= list.size()) break;
       cards.push_back(g_set[list[at]]);
       owned.push_back(g_owned[list[at]]);
-      isNew.push_back(g_newCards.count(g_set[list[at]].key) != 0);
+      isNew.push_back(g_newCards.count(g_set[list[at]].id) != 0);
     }
   }
   (void)total;
@@ -13787,7 +16897,7 @@ std::shared_ptr<BPages> bpages_make(int spread) {
         const size_t at = static_cast<size_t>(side * 9 + s);
         if (at < cards.size()) {
           const ImgP pic = owned[at].shinyAny() ? card_art(cards[at], true, 0.6f) : portrait(cards[at].key);
-          if (cards[at].num == outCard) {
+          if (cards[at].num + 100000 * cards[at].set == outCard) {  // (r217: its number + its set: a Jam card's the same number)
             P.box(x0, y0, x1, y1, 10, 0xD4DAE2);  // (r163: out in your hand)
           } else {
             mini_card(P, cards[at], owned[at], x0, y0, x1, y1, pic, false, isNew[at]);  // (r163: no sleeves)
@@ -14367,7 +17477,7 @@ bool bd_take(int h, int slot, bool grip, const XrVector3f& hand, uint64_t now) {
   XrVector3f pocket;
   if (!bd_pocket_world(slot, &pocket)) return false;
   look_card(card, now, &pocket);
-  g_bdOutCard = g_set[card].num;
+  g_bdOutCard = g_set[card].num + 100000 * g_set[card].set;  // (r217)
   g_bd.outSlot = slot;
   g_bd.pagesGen = -1;  // (its pocket drawn empty)
   Sheet& s = S.card[0];
@@ -14626,6 +17736,11 @@ int binder_state() {
   return g_binderHeld.load() ? 3 : 2;
 }
 
+// r230: LANCINI EXQUISITE's opening - THE VAULT (its case, latches, lid, light) and the private gallery (its mood, its music)
+namespace {  // (the scene's own: the anonymous namespace again)
+#include "xr_cards_vault.inc"
+}  // namespace
+
 void hands(const bool grip[2], const bool have[2], const XrVector3f hand[2], const XrPosef* aim[2], const XrPosef* gripPose[2],
            uint64_t now) {
   disp_grab(grip, have, hand);  // r152: the slab shelf in your room
@@ -14697,6 +17812,7 @@ void hands(const bool grip[2], const bool have[2], const XrVector3f hand[2], con
       }
     }
   }
+  vault_hands(grip, have, hand, now);  // r230: THE VAULT's latches (before the pack can be taken)
   hold_sheets(grip, have, hand, aim, now);
 }
 
@@ -14737,6 +17853,8 @@ void triggers(const float pull[2], uint64_t now) {
     god_skip();
     return;
   }
+  for (int h = 0; h < 2; ++h)  // r230: THE VAULT waiting - a trigger flicks a latch (the nearest the hand / under its pointer)
+    if (pressed[h] && S.phase == kVault && vault_trigger(h, now)) return;
   for (int h = 0; h < 2; ++h) {
     if (!pressed[h] || S.pack.hands == (1 << h)) continue;  // (the holding hand's own trigger does nothing)
     if (S.phase == kWaiting) tear(now, h);
@@ -14752,6 +17870,9 @@ float take_buzz(float* seconds) {
   S.buzzS = 0.0f;
   return a;
 }
+float room_dark() { return g_pullDark.load(); }    // r219
+float room_flash() { return g_pullFlash.load(); }  // r219
+float room_gallery() { return g_gallery.load(); }  // r230
 
 void close(bool fxReady) {
   g_skinPreview = -1;  // r160: (a LOOKS preview ends with the hub)
@@ -14760,12 +17881,21 @@ void close(bool fxReady) {
   S.askOpen = S.askTear = S.askAway = S.nextPack = false;
   S.askLook = -1;
   if (S.mode == kNone && S.packModel < 0 && S.cardModel < 0) return;
-  if (S.mode == kPackUp && S.phase == kWaiting) unopen();
+  if (S.mode == kPackUp && (S.phase == kWaiting || S.phase == kVault)) unopen();  // (r230)
   end_scene(fxReady);
 }
 
 bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, const XrCompositionLayerQuad* hub, uint64_t now) {
   poll();
+  exq_clubs_refresh(now);  // r230: the GRAND THREADS patches' clubs
+  gallery_frame(now, S.lastNs != 0 ? std::min(0.05f, secs(now, S.lastNs)) : 0.0f);  // r230: the EXQUISITE gallery's mood + music
+  // r219: the room's dark / flash only while a 1/1's build-up runs in the stack in your hand (pull_frame, below) - else never (set
+  // once a frame: xr_quest's passthrough never sees a stray 0 between)
+  if (S.mode != kPackUp || S.phase != kStack || !live) g_pullCard = -1;
+  if (g_pullCard < 0) {
+    g_pullDark = 0.0f;
+    g_pullFlash = 0.0f;
+  }
   if (!live) {
     close(fxReady);
     S.hubValid = false;
@@ -14783,7 +17913,8 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
   // the hub's buttons' asks
   if (S.askTear) {
     S.askTear = false;
-    tear(now, -1);
+    if (S.mode == kPackUp && S.phase == kVault) vault_flick_next(now);  // r230: A flicks THE VAULT's next latch
+    else tear(now, -1);
   }
   if (S.askAway) {
     S.askAway = false;
@@ -14849,14 +17980,17 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
         parts.push_back({2 * S.n + i, kEdgeSegs, 1, 0.0f, 1.0f, false});
       }
       for (int i = 0; i < S.n; ++i) parts.push_back({3 * S.n + i, 1, 1, 0.0f, 1.0f, false});  // r147: the level moments
-      xrfx::set_model(kCardSlot, grid_model(S.cardPics, parts, false));
+      xrfx::Model cm = grid_model(S.cardPics, parts, false);
+      punch_parts(cm, S.n, S.cutShape);  // r220: THE PUNCH's (kPunchVerts a card)
+      xrfx::set_model(kCardSlot, std::move(cm));
       S.cardModel = S.cardPics->gen;
-      S.cardVerts.assign(static_cast<size_t>(S.n) * (kCardVerts + kTagVerts) * 6, 0.0f);
+      S.cardVerts.assign(static_cast<size_t>(S.n) * (kCardVerts + kTagVerts + kPunchVerts) * 6, 0.0f);
       S.cardsNs = now;
       CLOG("the cards' pictures up (%d)%s", S.n, xrfx::model_up(kCardSlot) ? "" : " - failed");
     }
   }
   const bool cardsUp = S.cardPics && S.cardModel == S.cardPics->gen;
+  if (fxReady && cardsUp) late_fronts();  // r226: a front drawn before its big picture was in: drawn again + swapped in
   const float k = 1.0f - std::exp(-dt * 9.0f);
   auto settle = [&](Sheet& s) {
     if (s.hands == 0 && !s.free) {
@@ -14869,11 +18003,14 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
     float bendTo = s.hands != 0 && s.hands != 3 ? 1.2f : 0.0f;
     if (s.flipDur > 0.0f && now >= s.flipNs) {
       const float t = secs(now, s.flipNs) / s.flipDur;
-      s.flip = s.flipFrom + (s.flipTo - s.flipFrom) * smooth(t);
+      // r219: a hit's build-up turns by its own curve (xr_pulls.h: slow to edge-on, then the snap); anything else r139's smooth turn
+      s.flipP = s.pull.tier > 0 ? xrpulls::progress(s.pull, secs(now, s.flipNs)) : smooth(t);
+      s.flip = s.flipFrom + (s.flipTo - s.flipFrom) * s.flipP;
       bendTo += 5.0f * std::sin(3.14159265f * clampf(t, 0.0f, 1.0f));
       if (t >= 1.0f) {
         s.flip = s.flipTo;
         s.flipDur = 0.0f;
+        s.flipP = 1.0f;
       }
     }
     // its own motion throws the bend (a flick), a spring - not a card's (r138: no bend, droop or flutter at all)
@@ -14946,6 +18083,10 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
         Sheet& s = S.card[i];
         s.shown = true;
         settle(s);  // (its turn over, stiff)
+        // r219: a hit's build-up lifts it up out of the stack toward your eyes (4 cm up, 5 cm nearer, 6% bigger), eased back after
+        const float lift = s.pull.tier > 0 && now >= s.flipNs ? xrpulls::lift(s.pull, secs(now, s.flipNs)) : 0.0f;
+        const XrVector3f liftAt{0.0f, 0.04f * lift, 0.05f * lift};
+        const float liftPop = 0.06f / kPopScale * lift;
         if (S.backNs[i] != 0) {  // round to the back
           const float u = secs(now, S.backNs[i]) / kBackDur;
           S.backU[i] = u;
@@ -14959,7 +18100,7 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
             float pop = 0.0f;
             const XrVector3f l = back_path(i, u, &pop);
             S.zAt[i] = l.z;
-            place(s, l, pop);
+            place(s, v_add(l, liftAt), pop + liftPop);
           }
         } else {
           // to its place (the rest a place nearer as one goes round); the front one turned over out toward you
@@ -14967,13 +18108,15 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
           S.popK[i] += (want - S.popK[i]) * std::min(1.0f, dt * (want > S.popK[i] ? 9.0f : 12.0f));
           S.zAt[i] += (stack_z(S.depth[i]) - S.zAt[i]) * std::min(1.0f, dt * 14.0f);
           const float p = smooth(S.popK[i]);
-          place(s, XrVector3f{0.0f, kPopY * p, S.zAt[i] + kPopZ * p}, p);
+          place(s, v_add(XrVector3f{0.0f, kPopY * p, S.zAt[i] + kPopZ * p}, liftAt), p + liftPop);
         }
-        if (s.flipFx && s.flipDur > 0.0f && now >= s.flipNs && secs(now, s.flipNs) / s.flipDur >= 0.5f) {
+        // (r219: its moment where its turn passes half way - r139's half its time for a plain turn, the same frame)
+        if (s.flipFx && s.flipDur > 0.0f && now >= s.flipNs && s.flipP >= 0.5f) {
           s.flipFx = false;
           reveal_fx(i);
         }
       }
+      pull_frame(now);  // r219: the build-up's heartbeat, haptics, the dark room
     }
     if (S.wrapFall) {  // the empty wrapper, falling, turning, gone
       S.wrapVel.y -= 2.4f * dt;
@@ -15111,8 +18254,9 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
     }
   }
   S.lastNs = now;
+  vault_frame(scene, now, fxReady);  // r230: THE VAULT (its pack rising into your hands: before the pack is drawn)
   if (!fxReady) return false;
-  bool shown = false;
+  bool shown = g_vault.on && g_vault.model >= 0;
   // the pack: its body (front and back, a pillow) and its strip (torn off: flying)
   if (S.packModel >= 0 && xrfx::model_up(kPackSlot) && S.packVerts.size() == static_cast<size_t>(kPackNV) * 6) {
     // (r139: in your hand until its cards are out; then the empty wrapper falling away, its own way)
@@ -15160,13 +18304,16 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
   slab_frame(scene, dt, now, fxReady);  // r152: a TIZM GRADING slab round its card (its reveal)
   specials_frame(scene, dt, now, fxReady, hide);
   if (S.cardModel >= 0 && xrfx::model_up(kCardSlot) &&
-      S.cardVerts.size() == static_cast<size_t>(S.n) * (kCardVerts + kTagVerts) * 6) {
+      S.cardVerts.size() == static_cast<size_t>(S.n) * (kCardVerts + kTagVerts + kPunchVerts) * 6) {
     float* o = S.cardVerts.data();
     for (int i = 0; i < S.n; ++i) {
       const Sheet& s = S.card[i];
       const bool show = s.on && s.shown && s.scale > 0.01f;
       const XrQuaternionf q = sheet_q(s);
-      card_box(o + static_cast<size_t>(i) * kCardVerts * 6, s, q, s.pos, s.scale, show && !hide[i]);  // r138: stiff, thick
+      // (r217: a Jam card's crest; r220: its own die - punched from the crest as it's turned over: punch_frame)
+      float* box = o + static_cast<size_t>(i) * kCardVerts * 6;
+      card_box(box, s, q, s.pos, s.scale, show && !hide[i], kCardT, 1.0f, S.cutShape[i], punch_morph_of(i, now), jewel_code(S.refs[i]));  // r138: stiff, thick (r230: a jewel's front)
+      punch_frame(o + (static_cast<size_t>(S.n) * (kCardVerts + kTagVerts) + static_cast<size_t>(i) * kPunchVerts) * 6, box, i, s, q, show && !hide[i], now);
       if (show) finish_frame(s, S.refs[i], q, std::cos(s.flip) < 0.0f, dt);
       level_moment(o + (static_cast<size_t>(S.n) * kCardVerts + static_cast<size_t>(i) * kTagVerts) * 6, i, show, q, now, dt);  // r147
       shown = shown || show;

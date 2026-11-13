@@ -35,6 +35,7 @@
 
 #include "xr_fx.h"  // goal celebration effects
 #include "xr_ctrl_model.h"  // r54: the headset's own controller models
+#include "xr_scene.h"       // r197: your room scan (XR_FB_scene) for the MR room effects
 #include "xr_net.hpp" // online 1v1 (include/port/xr_net.h)
 #include "xr_text.h"  // r42: the goal banner and the crowd volume panel
 #include "xr_voice.h" // r44: voice chat, its switch on the pause panel
@@ -46,6 +47,14 @@
 #include "xr_cards.h"    // r137: STRIKERS trading cards (franchise packs, the binder)
 #include "xr_pageturn.h" // r160 round 2: the magazine's page-turn rules, shared with the 3D binder
 #include "xr_goalfx.h"   // r153: goal explosions (their rumble)
+#include "xr_book.h"     // r199: the TIZM SPORTSBOOK (the hub page, the machine)
+#include "xr_casino.h"   // r202: the machine's SLOTS + ROULETTE (its game picker)
+#include "xr_machine.h"  // r203: the machine's controls while a hand holds its joystick (both controllers, the hand's push)
+#include "xr_screen.h"   // r205: the machine's screen off the frame thread (its rows, its cursor overlay)
+#include <condition_variable>  // r205: the machine screen's workers
+#include <sys/resource.h>      // r205: (their priority)
+#include "xr_museum.h"   // r201: the CARD MUSEUM (its pieces in your room)
+#include "xr_trade.h"    // r213: COLLECTOR TRADES (CARDS > COLLECTORS: its badge, HOME's WAITING FOR YOU, its number pad's pointer)
 #include "xr_menu.h"     // r157: the menus' kit (the franchise hub, the pause panel)
 #include <cctype>
 #include <ctime>
@@ -60,6 +69,7 @@
 #include "../../include/port/xr_guest.h"  // r67: guest scorers' names
 #include "../../include/port/xr_body.h"   // r144: the life-size scorer's real reach and height
 #include <functional>  // r70c
+#include <malloc.h>    // r206: mallinfo (the memory log)
 #include "../../include/port/franchise.h"  // r70: franchise mode's hub
 #include "../../include/port/lineup.h"     // r81: the co-captains
 #include "../../include/port/menu_music.h" // r147: the lofi menu music (its setting row, the theme, NOW PLAYING)
@@ -127,6 +137,8 @@ unsigned long PortXrLayersTakeCulled();
 void PortXrTuneSkip(int crowd, int stands, int stadiumField);
 void PortXrTakeDrawCensus(char* out, unsigned long size, unsigned long frames);  // r53
 void PortXrProbe();
+// r222: src/platform/dvd.c - the disc reads since the last call (count, time inside them; any thread)
+extern "C" void port_dvd_take_read_stats(unsigned long long* ns, unsigned* reads);
 void PortXrSetStadiumEconomy(float minPx, float eyeHalfWidthPx, int skipTallField, int bothLayers);
 // Below: starts the celebration renderer when first needed.
 static void ensure_fx();
@@ -137,6 +149,7 @@ void settings_input(XrVector2f stick);  // r44g: the pause settings panel
 void reload_controls();                 // r46: the button map (xr_controls.txt)
 void load_view_height();
 void load_room_options();               // r104: the trophy shelf / badge board / achievement pop-up switches
+void save_room_options();  // r199: (CLUB > SPORTSBOOKs Y switches the machine)
 
 namespace {
 
@@ -148,7 +161,7 @@ constexpr const char* kBuildTag = "STRIKERS_XR build=r152";
 // headset's system log turns over within minutes, so a session's stats and errors were lost.
 void xr_file_log(const char* level, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 void xr_file_log(const char* level, const char* fmt, ...) {
-  char line[768];
+  char line[1536];  // r222: (was 768 - the r221 probe lines were cut short)
   va_list args;
   va_start(args, fmt);
   std::vsnprintf(line, sizeof(line), fmt, args);
@@ -317,6 +330,11 @@ struct StereoSlot {
   int stadiumEye = -1;  // the eye drawn into it this frame, -1 none
   bool mainDrawn = false;  // the table / scorer pass drew into eye[0] this frame
   bool mainOverlay = false;  // ... with coverage alpha, over the split stadium
+  // r222: the life-size scorer alone in the main image (Jumbotron in your room): per eye the part of its half the scorer
+  // can be in (x0, y0, x1, y1 in that eye's pixels; scorer_rect) - only that is blitted and handed to the compositor
+  // (imageRect + its own field of view); the rest of the image is the clear (transparent) and is left out
+  bool rectOn = false;
+  int32_t rect[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
 };
 // r43, single pass: the slot's game frame is handed to the compositor when the render worker has
 // submitted it (aurora_xr_set_submit_callback), not after the game thread waits for that. Per slot:
@@ -372,6 +390,8 @@ struct Passthrough {
   PFN_xrCreatePassthroughLayerFB createLayer = nullptr;
   PFN_xrPassthroughLayerPauseFB pauseLayer = nullptr;
   PFN_xrPassthroughLayerResumeFB resumeLayer = nullptr;
+  PFN_xrPassthroughLayerSetStyleFB setStyle = nullptr;  // r196 (optional)
+  float styleB = 0.0f, styleC = 1.0f, styleS = 1.0f;     // r196: the style last set (brightness, contrast, saturation)
 };
 
 // r46, button mapping: the Quest buttons a GameCube button can come from, and the GameCube buttons.
@@ -641,6 +661,18 @@ struct State {
   bool showShelf = true;
   bool showHome = true;  // r133 (Lance: "make the home ground an optional thing"): the board, banners, corner + shelf
   int raPopups = 2;                   // RetroAchievements pop-ups: 2 all, 1 unlocks only, 0 none
+  // r194 (Lance: the match's weather OUT INTO his MR room): WEATHER IN MY ROOM - the match's rain / snow in your own
+  // room (xr_fx's room weather) and over your table in MR. xr_room_options.txt "roomweather", else strikers.ini
+  // room_weather, else on. This headset only (never sent online); VR's stadium weather doesn't look at it.
+  bool roomWeather = true;
+  // r197 (Lance: "have Strikers use that space as my environment"): USE MY ROOM SCAN - your Quest's room scan (Space
+  // setup) as the room effects' collision (xr_scene.h). xr_room_options.txt "roomscan" (the launcher's SETTINGS > HOME
+  // GROUND row writes the same line), else on. Without a scan / the permission it changes nothing.
+  bool useRoomScan = true;
+  // r199 (SPORTSBOOK.md): SPORTSBOOK MACHINE IN MY ROOM - the TIZM SPORTSBOOK's arcade cabinet in your room / the VR room while a
+  // franchise career is loaded (CLUB > SPORTSBOOK has everything without it). xr_room_options.txt "bookmachine", else on.
+  bool bookMachine = true;
+  Panel bookScreen;  // r199: its screen (a quad layer behind the cabinet's screen hole)
   // r46: the button map (ControlSource per ControlAction), and when xr_controls.txt was last looked at.
   int controls[kActCount] = {kSrcA, kSrcB, kSrcX, kSrcY, kSrcGripR, kSrcTrigL, kSrcTrigR, kSrcMenu, kSrcNone};
   uint64_t longPassSinceNs = 0;       // r47: the long-pass button went down (L first, then A)
@@ -713,7 +745,7 @@ struct State {
   // LEAGUE CLUB CARDS NEWS, wrapping), each section's page on its rail (kept during the visit), the stick on the rail or
   // in the page, a scrolling page's first row / column, B held (hold B = HOME), the one confirm asking (kFrAsk*) and for
   // what (a career slot), the sidekick editor changing one slot only (SQUAD's A), the magazine issue last opened
-  int frSec = 0, frRail[5] = {0, 0, 0, 0, 0}, frScroll = 0, frAsk = 0, frAskSlot = 0, frEditOne = -1;
+  int frSec = 0, frRail[6] = {0, 0, 0, 0, 0, 0}, frScroll = 0, frAsk = 0, frAskSlot = 0, frEditOne = -1;  // (r236: 6 sections)
   bool frOnRail = false, frBHeld = false, frHubPrevLT = false, frHubPrevRT = false;
   uint64_t frBDownNs = 0;
   long long frMagRead = -1;
@@ -754,7 +786,7 @@ struct State {
   std::vector<MagPick> magHistory;  // r131: this career's covers so far (its magazine file), read for magHistSlot
   int magHistSlot = -1;
   bool frWasMatch = false;  // r113: a franchise match was on last sync (its photos start fresh)
-  Panel paperPanel[6];      // r113: the paper's pages (g_paperP draws them); r131: the magazine's 6
+  Panel paperPanel[8];      // r113: the paper's pages (g_paperP draws them); r131: the magazine's 6; r219: 8 (+ THE STRIKERZ MARKET spread)
   bool frAfterMatch = false;          // a franchise match was played: the hub opens back on the menu
   // r70c: the hub's mode 3, one of your Pokemon evolving (stage 0 a split's choice, 1 evolving, 2 evolved,
   // 3 stopped), from when (the animation's clock).
@@ -882,6 +914,7 @@ struct State {
   ScreenSlot screenSlots[kScreenSlots];
   uint32_t screenW = 0, screenH = 0;
   bool screenDirectOn = true, screenDirectFailed = false, screenDirectThisFrame = false;
+  bool scorerRectOn = true;  // r222: the life-size scorer's eye layer only where it can be (xr_tune "scorerrect <0|1>")
   bool screenArmedValid = false, sentThisFrame = false;
   uint32_t screenArmedFrame = 0;
   uint32_t screenCopiesSinceStats = 0, screenShownSinceStats = 0, screenDroppedSinceStats = 0;
@@ -1057,6 +1090,16 @@ std::atomic<uint64_t> g_worldDrawnNs{0};
 // r42: the goal banner's picture, drawn on a thread of its own (xr_text.cpp takes tens of ms).
 std::vector<uint8_t> g_bannerPixels;
 std::atomic<bool> g_bannerReady{false};
+// r221: the frame probe's sections (gp, before log_stats): main.cpp's loop phases and PortXrEndFrame's parts, plus the
+// waits / payments inside them
+namespace gp {
+enum Sec : int { kBegin, kGame, kAurEnd, kAudio, kPreWait, kXrBegin, kCompose, kSelect, kCards, kMuseum, kBook, kFx, kLayers, kXrEnd, kStats, kNSec };
+enum Sub : int { kEyeFence, kSwapWait, kFxUpd, kFxDraw, kCoins, kNSub };
+void add(int sec, uint64_t ns);
+void add_sub(int sub, uint64_t ns);
+void perf_init();
+extern uint32_t g_screenLate;
+}  // namespace gp
 constexpr uint32_t kBannerW = 1024, kBannerH = 560;  // r43d: 420 + the stats line
 // r157 (menu overhaul): the pause panel, 1440 x 900 at the same 1280 px a metre (1.125 m x 0.70 m); false: r156's
 // right-stick settings panel (xrtext::settings_panel) instead, kept until this one is proven on the headset
@@ -1069,7 +1112,11 @@ enum PzRow {
   kRowPopups, kRowSides, kRowStats, kRowLessons, kRowScreen, kRowHeight,
   // r157 round 2: the game's own AUDIO / VISUAL OPTIONS as rows (SHPause.cpp PortPauseOption*); kRowGameSound /
   // kRowGameCamera (open its own screen) are no longer listed - everything on them is a row here
-  kRowMusicVol, kRowSfxVol, kRowVoiceVol, kRowSoundMode, kRowAutoZoom, kRowZoom, kRowWidescreen, kRowCount
+  kRowMusicVol, kRowSfxVol, kRowVoiceVol, kRowSoundMode, kRowAutoZoom, kRowZoom, kRowWidescreen,
+  kRowRoomWeather,  // r194: WEATHER IN MY ROOM (SETTINGS > ROOM)
+  kRowRoomScan,     // r197: USE MY ROOM SCAN (SETTINGS > ROOM)
+  kRowBookMachine,  // r199: SPORTSBOOK MACHINE IN MY ROOM (SETTINGS > ROOM)
+  kRowCount
 };
 constexpr uint32_t kSliderW = 640, kSliderH = 800;  // r147: eight rows (+ MENU MUSIC); r137: seven rows (+ WEATHER); r133: six rows (+ HOME GROUND)  // r44g: the settings panel's rows (r104: five, was 380 for three)
 // r51b: the achievements list: one tall picture of every row (xrtext::achievements_list), 8 rows of
@@ -1139,7 +1186,30 @@ struct AsyncPanel {
   std::atomic<int> ready{0};
   int requested = 0, shown = 0;
   int forGeneration = -1;  // what it was last asked to show (the caller's numbering)
+  // r206: ONE drawing thread per panel at a time (r61-r205: a new detached thread per ask - the market page asked every frame
+  // and they piled up into gigabytes). An ask while one draws waits here; a newer ask replaces it (latest wins).
+  std::mutex jobMutex;
+  bool drawing = false;              // under jobMutex: its thread is up
+  int jobGen = 0;                    // under jobMutex: the waiting ask's number (0 none)
+  uint32_t jobW = 0, jobH = 0;
+  std::function<void(uint8_t*, int, int)> job;
+  bool bgra = false;                 // the pixels are swizzled for a BGRA swapchain already (the worker did it)
+  bool swizzleInWorker = false;      // r206: the worker swizzles for the swapchain (only panels shown as quads - the magazine's
+                                     // pages also go to the effects layer as RGBA: never those)
 };
+// r206: strikers.ini machine_right_stick (STRIKERS_MACHINE_RIGHT_STICK): 0 = the right thumbstick does nothing at the TIZM machine
+// (a drifting stick), else / unset = it works (default). Read once.
+bool machine_right_stick() {
+  static const bool on = []() {
+    const char* v = std::getenv("STRIKERS_MACHINE_RIGHT_STICK");
+    return !(v != nullptr && (v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F' ||
+                              ((v[0] == 'o' || v[0] == 'O') && (v[1] == 'f' || v[1] == 'F'))));
+  }();
+  return on;
+}
+std::atomic<int> g_panelThreads{0};      // r206: drawing threads up now (the memory log)
+std::atomic<long long> g_panelDraws{0};  // pictures drawn / asks dropped for a newer one
+std::atomic<long long> g_panelDropped{0};
 AsyncPanel g_homeBoard, g_ticket, g_cupBoard;
 AsyncPanel g_guestPicker, g_guestTip;  // r67
 AsyncPanel g_franchise, g_frTip;       // r70
@@ -1234,7 +1304,7 @@ struct FrSnapshot {
   // r157 (menu overhaul): the hub's section, each section's page, the stick on the rail, a scrolling page's first row,
   // the confirm asking (kFrAsk*) and its slot; the ready evolution's portrait; this week's magazine not opened yet; the
   // trade window open
-  int sec = 0, rail[5] = {0, 0, 0, 0, 0}, scroll = 0, ask = 0, askSlot = 0;
+  int sec = 0, rail[6] = {0, 0, 0, 0, 0, 0}, scroll = 0, ask = 0, askSlot = 0;  // (r236: 6 sections)
   bool onRail = false, magUnread = false, tradeWindow = false;
   bool paperOpen = false;  // the magazine is open in front of you (its own hint bar; the hub's hidden)
   std::string evoReadyKey;
@@ -1254,21 +1324,32 @@ struct FrSnapshot {
 // online league); now fixed, and SQUAD / TRADES are pages of CLUB (TRADES was mode 5, Y from anywhere).
 constexpr int kPgHome = 0, kPgTable = 1, kPgPlayoffs = 2, kPgResults = 3, kPgStars = 4, kPgMag = 5, kPgHistory = 6,
               kPgRivals = 7, kPgEvo = 8, kPgLevel = 9, kPgLeague = 10, kPgCards = 11, kPgSquad = 12, kPgTrades = 13,
-              kPgFreeAgents = 14;  // r167
-constexpr int kFrSecHome = 0, kFrSecLeague = 1, kFrSecClub = 2, kFrSecCards = 3, kFrSecNews = 4, kFrSecs = 5;
+              kPgFreeAgents = 14,  // r167
+              kPgBook = 15;        // r199: CLUB > SPORTSBOOK (r236: LEAGUE > SPORTSBOOK)
+// r236 (LOOK B, Lance 11-12 "the card tab should ONLY have card shit"): 6 sections - LOCKER (the cosmetics: BALLS, GOAL FX, TAKEOVERS,
+// BINDERS - xr_cards' pages 7-10) between CARDS and NEWS
+constexpr int kFrSecHome = 0, kFrSecLeague = 1, kFrSecClub = 2, kFrSecCards = 3, kFrSecLocker = 4, kFrSecNews = 5, kFrSecs = 6;
+// r236: CARDS and LOCKER are both xr_cards' rail (kPgCards pages): a section's first page on it
+bool fr_cards_sec(int sec) { return sec == kFrSecCards || sec == kFrSecLocker; }
+int fr_cards_first(int sec) { return sec == kFrSecLocker ? xrcards::kCardsRail : 0; }
 // r157: the one confirm (it replaced r70's X X within 3 s and r76's A A): what it asks
 constexpr int kFrAskNone = 0, kFrAskDelete = 1, kFrAskLeave = 2, kFrAskSimSeason = 3;
+// r236: HOME's quiet SIM opens a 2-choice pop-up (askSlot: the choice the stick is on): THIS WEEK / TO PLAYOFFS (picking that = the
+// old SIM TO PLAYOFFS confirm's yes)
+constexpr int kFrAskSim = 4;
 // A section's pages, top to bottom (its rail; CARDS: xr_cards' six pages, all kPgCards)
 std::vector<int> hub_pages(int sec, bool league) {
   switch (sec) {
     case kFrSecHome: return {kPgHome};
     case kFrSecLeague: {
-      std::vector<int> p = {kPgTable, kPgPlayoffs, kPgResults, kPgStars, kPgRivals};
+      // r236 (the sitemap): TABLE, RESULTS, PLAYOFFS, STARS, RIVALS, SPORTSBOOK (from CLUB: you bet on the league's games)
+      std::vector<int> p = {kPgTable, kPgResults, kPgPlayoffs, kPgStars, kPgRivals, kPgBook};
       if (league) p.push_back(kPgLeague);  // (an online league's room)
       return p;
     }
-    case kFrSecClub: return {kPgSquad, kPgEvo, kPgTrades, kPgFreeAgents, kPgLevel};  // r167: + FREE AGENTS
-    case kFrSecCards: return std::vector<int>(xrcards::kRailPages, kPgCards);
+    case kFrSecClub: return {kPgSquad, kPgEvo, kPgTrades, kPgFreeAgents, kPgLevel};  // r167: + FREE AGENTS (r236: SPORTSBOOK to LEAGUE)
+    case kFrSecCards: return std::vector<int>(xrcards::kCardsRail, kPgCards);  // r236: PACKS .. MUSEUM (7)
+    case kFrSecLocker: return std::vector<int>(xrcards::kRailPages - xrcards::kCardsRail, kPgCards);  // r236: BALLS .. BINDERS (4)
     default: return {kPgMag, kPgHistory};
   }
 }
@@ -1288,13 +1369,16 @@ const char* hub_page_name(int page) {
     case kPgSquad: return "SQUAD";
     case kPgTrades: return "TRADES";
     case kPgFreeAgents: return "FREE AGENTS";  // r167
+    case kPgBook: return "SPORTSBOOK";         // r199
     default: return "CARDS";
   }
 }
 // The pages the stick goes into (the rest only show: the ring stays on the rail)
 bool hub_page_live(int page) {
-  return page == kPgEvo || page == kPgRivals || page == kPgSquad || page == kPgTrades || page == kPgLevel || page == kPgFreeAgents ||
-         page == kPgLeague || page == kPgCards || page == kPgPlayoffs || page == kPgHistory;  // r157 round 2: + the two that scroll
+  return page == kPgEvo || page == kPgRivals || page == kPgSquad || page == kPgTrades || page == kPgLevel || page == kPgFreeAgents || page == kPgBook ||
+         page == kPgLeague || page == kPgCards || page == kPgPlayoffs || page == kPgHistory ||  // r157 round 2: + the two that scroll
+         page == kPgStars ||  // r232: its three views (GOLDEN BOOT / ASSISTS / POINTS)
+         page == kPgTable;    // r236: the conference's clubs (a row focused: its details), the other conference
 }
 // The hub opens on HOME (every opening, a career loaded, back from the careers)
 void fr_hub_home() {
@@ -1313,7 +1397,7 @@ std::mutex g_frMutex;
 FrSnapshot g_frSnap;
 // (r143: r113's newspaper photo - the game's own frame after your goal - is gone: Lance: "i should never see gameplay
 // as a cover"; STRIKERS ILLUSTRATED draws its own covers)
-AsyncPanel g_paperP[6];  // r113: the newspaper's pages; r131: STRIKERS ILLUSTRATED's 6
+AsyncPanel g_paperP[8];  // r113: the newspaper's pages; r131: STRIKERS ILLUSTRATED's 6; r219: 8 (kMagPages)
 // r137: its big pictures (xr_big): the issue (paperGen) a page of which was drawn without one, still being drawn (-1
 // none), xrbig::generation() when that page started, and when the issue was last drawn again for them (render thread)
 std::atomic<int> g_magBigWait{-1};
@@ -1565,7 +1649,9 @@ void fr_refresh() {
 // leaves (each leaf a page on either side: cover | scorecard, the table | star watch, rivals | back cover); the closed
 // magazine shows its cover alone; only the stick / triggers / A, a trigger pulled ON a page (dragging that page over
 // the spine) or a sweep of your free hand across it while the other hand holds it turn a page.
-constexpr int kMagPages = 6, kMagLeaves = 3;
+// r219 (BIG-PULLS.md 4): 8 pages on 4 leaves - THE STRIKERZ MARKET spread (pages 6-7) before the back cover
+constexpr int kMagPages = 8, kMagLeaves = 4;
+static_assert(sizeof(g_paperP) / sizeof(g_paperP[0]) == kMagPages, "the magazine's pages");
 constexpr uint32_t kMagW = 1080, kMagH = 1440;  // a page (3 : 4)
 constexpr float kMagPageW = 0.31f;              // a page's width at size 1 (m)
 XrVector3f q_rot(const XrQuaternionf& q, const XrVector3f& v);  // below
@@ -2010,6 +2096,22 @@ const GuestPortrait& guest_portrait(const std::string& pack) {
   }
   return p;
 }
+// r199: a club's logo for the sportsbook's drawing (xrbook::set_logo_source)
+const uint8_t* book_logo(int club, int* w, int* h) {
+  const char* id = club >= 0 && club < PortFranchiseClubCount() ? PortFranchiseClubId(club) : nullptr;
+  if (id == nullptr || id[0] == '\0') return nullptr;
+  const GuestPortrait& p = guest_portrait(std::string("club_") + id);
+  *w = p.w;
+  *h = p.h;
+  return p.rgba.empty() ? nullptr : p.rgba.data();
+}
+// r202: the casino's pictures by key (its slot symbols: the captains' portraits, guests/portraits/<key>.png)
+const uint8_t* casino_picture(const char* key, int* w, int* h) {
+  const GuestPortrait& p = guest_portrait(key != nullptr ? std::string(key) : std::string());
+  *w = p.w;
+  *h = p.h;
+  return p.rgba.empty() ? nullptr : p.rgba.data();
+}
 void draw_franchise_pick(uint8_t* px, int w, int h, const FrSnapshot& s);  // r75 (after the menu's entries)
 std::string fr_upper(std::string s);                                         // (below)
 
@@ -2024,6 +2126,7 @@ struct Pieces {
   // was left out (still being drawn: its portrait in its place)
   std::deque<GuestPortrait> hold;
   bool bigMissing = false;
+  std::vector<std::shared_ptr<void>> keepAlive;  // r219: pictures other modules' pieces point into (the market's minis, a collector's card)
   // r131 (STRIKERS ILLUSTRATED): how the words look until changed: leaning, condensed, turned, a drop shadow, the
   // outline's colour (plain(): upright, full width, none, dark)
   float tSlant = 0.0f, tXscale = 1.0f, tAngle = 0.0f, tShadow = 0.0f, tShadowA = 0.55f;
@@ -2609,6 +2712,8 @@ MagStory mag_story_real(const FrSnapshot& s) {
     if (f.starts_with("@") && at != std::string::npos && at > 0)
       st.lines.push_back({fr_upper(f.substr(0, at)), "\"" + fr_upper(f.substr(at + 2)) + "\""});
   }
+  if (st.lines.size() < 4 && v.playmakerClub >= 0 && v.playmaker[0] != '\0')  // r232: the week's playmaker (a free line)
+    st.lines.push_back({"PLAYMAKER", fr_upper(v.playmaker) + ", " + std::to_string(v.playmakerAssists) + " ASSISTS THIS WEEK"});
   return st;
 }
 // --- r131 (Lance: "i do want the strikers illustrated to be produced at random, it shouldnt always be the hottest team
@@ -3100,6 +3205,8 @@ MagStory mag_story(const FrSnapshot& s) {
     if (v.leaders[i].key != p.key)
       pool.push_back({i == 0 ? "GOLDEN BOOT" : "SCORING RACE",
                       fr_upper(v.leaders[i].name) + ", " + std::to_string(v.leaders[i].goals) + " GOALS"});
+  if (v.playmakerClub >= 0 && v.playmaker[0] != '\0' && v.playmakerKey != p.key)  // r232: the week's playmaker
+    pool.push_back({"PLAYMAKER", fr_upper(v.playmaker) + ", " + std::to_string(v.playmakerAssists) + " ASSISTS THIS WEEK"});
   for (int i = 0; i < v.nemCount && i < 2; ++i)
     if (v.nems[i].key != p.key) pool.push_back({"WANTED", fr_upper(v.nems[i].name) + " " + fr_upper(v.nems[i].title)});
   for (int k = 0; k < 2 && v.playedCount > 0; ++k) {
@@ -3155,7 +3262,7 @@ MagStory mag_story(const FrSnapshot& s) {
     st.lines.push_back(pool[i]);
     pool.erase(pool.begin() + static_cast<long>(i));
   }
-  // r137: the forecast for your next game when the calendar has one (SNOW GAME, UNDER THE LIGHTS ...): the first cover
+  // r137: the forecast for your next game when the calendar has one (r198: RAIN GAME, SNOW GAME, NIGHT GAME ...): the first cover
   // line, in the same four slots (no layout change; the dice above are untouched, so both co-op headsets still agree)
   if (s.nextWeather != 0 && v.nextOpponent >= 0 && v.nextOpponent < nClubs) {
     const std::string wl = PortWeatherLabel(s.nextWeather);
@@ -3750,6 +3857,29 @@ std::vector<std::pair<std::string, int>> mag_watch(const FrSnapshot& s) {
   }
   return watch;
 }
+// ---- r232 PLAYMAKER OF THE WEEK (begin)
+// r232 (Lance: assists "via the goal celebration stats"): STAR WATCH's PLAYMAKER OF THE WEEK - the most assists in the week's games
+// (the franchise's own pick: PortFranchiseView::playmaker), a band + one row where RISING's third row stood: his face, name, club,
+// "3 ASSISTS - 1 GOAL THIS WEEK", his season's assists. 40 px and up (r135); it ends above the running foot.
+void mag_playmaker_block(Pieces& P, const PortFranchiseView& v, const GuestPortrait& face, const GuestPortrait& logo) {
+  const float W = kMagWf, y0 = 1218.0f;
+  P.box(44, y0, W - 44, y0 + 48, 0, kMagInk);
+  P.text("PLAYMAKER OF THE WEEK", W / 2, y0 + 25, 40, 900, kMagYellow);
+  const float r0 = y0 + 54, r1 = r0 + 92;
+  P.box(44, r0, W - 44, r1, 12, 0xFFF1B0);
+  P.ring(44, r0, W - 44, r1, 12, 2, 0xD6D0C4);
+  P.figure(face, 60, r0 + 4, 170, r1 - 4, false, 0.5f, 1.0f);
+  P.image(logo, W - 140, r0 + 12, W - 70, r0 + 82, false);
+  P.left(fr_upper(v.playmaker), 190, r0 + 26, 44, 680, kMagInk);
+  int season = 0;  // (his season's assists: the ASSISTS leaders list has him once he's in its top 10)
+  for (int i = 0; i < v.astLeaderCount && i < 10; ++i)
+    if (fr_upper(v.astLeaders[i].name) == fr_upper(v.playmaker) && v.astLeaders[i].club == v.playmakerClub) season = v.astLeaders[i].assists;
+  const std::string wk = std::to_string(v.playmakerAssists) + (v.playmakerAssists == 1 ? " ASSIST" : " ASSISTS") +
+                         (v.playmakerGoals > 0 ? " + " + std::to_string(v.playmakerGoals) + (v.playmakerGoals == 1 ? " GOAL" : " GOALS") : std::string()) +
+                         (season > 0 ? "  -  " + std::to_string(season) + " THIS SEASON" : std::string(" THIS WEEK"));
+  P.left(wk, 190, r0 + 68, 40, 680, kMagRed);
+}
+// ---- r232 PLAYMAKER OF THE WEEK (end)
 void mag_page_stars(Pieces& P, const FrSnapshot& s, const MagStory& st) {
   const float W = kMagWf;
   const PortFranchiseView& v = s.view;
@@ -3795,8 +3925,10 @@ void mag_page_stars(Pieces& P, const FrSnapshot& s, const MagStory& st) {
     return a->evoLevel - a->level < b->evoLevel - b->level;
   });
   // r135: the name on its own line (48 px, the row's width), under it the level and the next form 44 px (were 34 /
-  // 32 beside the name)
-  for (int i = 0; i < 3 && i < static_cast<int>(rising.size()); ++i) {
+  // 32 beside the name). r232: 2 rows when the week has a PLAYMAKER OF THE WEEK (his band + row in the third's place)
+  const bool playmaker = v.playmakerClub >= 0 && v.playmaker[0] != '\0' && v.playmakerAssists > 0;
+  if (playmaker) mag_playmaker_block(P, v, guest_portrait(v.playmakerKey), mag_logo(s, v.playmakerClub));
+  for (int i = 0; i < (playmaker ? 2 : 3) && i < static_cast<int>(rising.size()); ++i) {
     const PortFranchiseEvoRow& r = *rising[i];
     const float y0 = 936.0f + i * 142;
     P.box(44, y0, W - 44, y0 + 130, 12, r.mine ? 0xFFF1B0 : 0xFFFFFF);
@@ -3900,6 +4032,460 @@ void mag_page_back(Pieces& P, const FrSnapshot& s) {
     P.text("100% BANANA. 0% PEEL. MAY CAUSE SUPER STRIKES.", W / 2, 1362, 42, 1000, 0x3A1A00);  // r135: 42 px (was 30)
   }
 }
+// ---- r219 THE STRIKERZ MARKET spread (begin) - tools/outside/pulls219/mag219 renders this region on the PC
+// r219 (Lance 11-11, C:\StrikersMR\BIG-PULLS.md 4): STRIKERS ILLUSTRATED's market pages, a two-page spread (pages 6-7 of 8): THE
+// STRIKERZ MARKET - the mood, THE STRIKERZ 100 index, HOT / COLD (left); the record, the wire, the league's biggest pulls (yours
+// highlighted), JAM '96 vs LANCINI TIZM, a collector spotlight, your portfolio (right). Real numbers: xrmarket::magazine() (made once a
+// matchday by the market), xrtrade::spotlight(), xrcards::magazine_pulls() - gathered on the magazine's drawing thread when the issue is
+// drawn (a copy each, microseconds; never the frame thread). Every word >= 40 px (r135), numbers shrink to fit their box.
+struct MagMine {  // one of your pulls in the last 7 days
+  xrmarket::Variant v;
+  long long value = 0;
+};
+struct MagMkt {
+  xrmarket::MagMarket m;
+  bool have = false;
+  xrtrade::Spotlight sp;
+  bool haveSp = false;
+  std::vector<MagMine> mine;  // biggest first
+};
+constexpr float kMkW = 1080.0f, kMkH = 1440.0f;
+constexpr uint32_t kMkBg0 = 0x0C1430, kMkBg1 = 0x04060D, kMkPanel = 0x111A33, kMkPanel2 = 0x0B1124, kMkLine = 0x2C3A66, kMkInk = 0xF4F6FF,
+                   kMkDim = 0xA2AECB, kMkUp = 0x39FF88, kMkDown = 0xFF4D5E, kMkGold = 0xFFD23F, kMkPink = 0xFF2E88, kMkCyan = 0x2EF2FF,
+                   kMkTeal = 0x18C6C0;
+long long mk_round(double v) { return static_cast<long long>(std::floor(v + 0.5)); }  // (a whole coin)
+std::string mk_upper(std::string s) {
+  for (char& c : s)
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+  return s;
+}
+// chrome words (the market page's look): white to steel, a dark outline, a cyan glow under them
+void mk_chrome(Pieces& P, const std::string& t, float x, float y, float px, float room, int align, uint32_t glow = kMkCyan) {
+  P.style(0.0f, 1.0f, 0.0f, px * 0.06f, glow, 0.8f);
+  P.rim(0x0E1430);
+  if (align == 0) P.text(t, x, y, px, room, 0xFFFFFF, std::max(3.0f, px * 0.08f), 0x9FB2D6);
+  else if (align < 0) P.left(t, x, y, px, room, 0xFFFFFF, std::max(3.0f, px * 0.08f), 0x9FB2D6);
+  else P.right(t, x, y, px, room, 0xFFFFFF, std::max(3.0f, px * 0.08f), 0x9FB2D6);
+  P.plain();
+}
+// the BIT COIN (xr_coins.h's pixel B on a gold coin)
+void mk_coin(Pieces& P, float cx, float cy, float r) {
+  P.glow(cx - 2.0f * r, cy - 2.0f * r, cx + 2.0f * r, cy + 2.0f * r, kMkGold, 0.3f);
+  P.box(cx - r, cy - r, cx + r, cy + r, r, 0xB8860B);
+  P.box(cx - 0.86f * r, cy - 0.86f * r, cx + 0.86f * r, cy + 0.86f * r, 0.86f * r, kMkGold, 1.0f, 0xE0A800);
+  xrcoin::bit_face([&](float x0, float y0, float x1, float y1, uint32_t rgb) { P.box(x0, y0, x1, y1, 0, rgb); }, cx, cy, r);
+}
+// coins as they fit `room` at `px`: the whole number with commas, else short ("4.09T")
+std::string mk_money(const Pieces& P, long long n, float px, float room) {
+  const std::string t = xrcoin::text(n);
+  return P.width(t, px) <= room ? t : xrcoin::compact(n);
+}
+// a coin + the amount, its right edge at x (its height px)
+void mk_amount(Pieces& P, long long n, float x, float cy, float px, float room, uint32_t rgb, float outline = 2.0f) {
+  const std::string t = mk_money(P, n, px, room - 0.9f * px);
+  const float w = std::min(room - 0.9f * px, P.width(t, px));
+  mk_coin(P, x - w - 0.48f * px, cy, 0.36f * px);
+  P.right(t, x, cy, px, room - 0.9f * px, rgb, outline);
+}
+std::string mk_pct_text(float pct) {
+  const float a = std::fabs(pct);
+  char b[32];
+  if (a < 9.95f) std::snprintf(b, sizeof(b), "%s%.1f%%", pct >= 0.0f ? "+" : "-", a);
+  else std::snprintf(b, sizeof(b), "%s%.0f%%", pct >= 0.0f ? "+" : "-", std::min(a, 99999.0f));
+  return b;
+}
+// a % change on a pill (an arrow up green / down red); align -1 from x, 1 ending at x; its width
+float mk_pct(Pieces& P, float pct, float x, float cy, float px, int align) {
+  const bool up = pct >= 0.0f;
+  const std::string t = mk_pct_text(pct);
+  const float w = P.width(t, px) + px * 1.5f;
+  const float x0 = align < 0 ? x : x - w;
+  P.box(x0, cy - px * 0.66f, x0 + w, cy + px * 0.66f, px * 0.66f, up ? 0x0E3A22 : 0x3A0E1A);
+  P.ring(x0, cy - px * 0.66f, x0 + w, cy + px * 0.66f, px * 0.66f, 2.0f, up ? kMkUp : kMkDown, 0.7f);
+  const float ax = x0 + px * 0.58f;
+  if (up) P.poly({ax - px * 0.3f, cy + px * 0.22f, ax + px * 0.3f, cy + px * 0.22f, ax, cy - px * 0.3f}, kMkUp);
+  else P.poly({ax - px * 0.3f, cy - px * 0.22f, ax + px * 0.3f, cy - px * 0.22f, ax, cy + px * 0.3f}, kMkDown);
+  P.left(t, ax + px * 0.46f, cy + 1, px, w, up ? kMkUp : kMkDown);
+  return w;
+}
+// a line chart: its fill (faint), the line, the last point lit; the values' lowest / highest kept a quarter of its height apart
+void mk_spark(Pieces& P, float x0, float y0, float x1, float y1, const std::vector<double>& vals, uint32_t rgb, float width, bool fill) {
+  if (vals.size() < 2) return;
+  double lo = vals[0], hi = vals[0];
+  for (double v : vals) lo = std::min(lo, v), hi = std::max(hi, v);
+  lo = std::min(lo, hi - std::max(1e-9, hi / 4.0));
+  const double span = std::max(1e-9, hi - lo);
+  const float pad = 0.1f * (y1 - y0);
+  auto X = [&](size_t i) { return x0 + (x1 - x0) * static_cast<float>(i) / static_cast<float>(vals.size() - 1); };
+  auto Y = [&](double v) { return y1 - pad - (y1 - y0 - 2 * pad) * static_cast<float>((v - lo) / span); };
+  for (size_t i = 0; i + 1 < vals.size(); ++i) {
+    const float ax = X(i), ay = Y(vals[i]), bx = X(i + 1), by = Y(vals[i + 1]);
+    if (fill) P.poly({ax, ay, bx, by, bx, y1, ax, y1}, rgb, 0.14f);
+    const float dx = bx - ax, dy = by - ay, l = std::max(0.01f, std::sqrt(dx * dx + dy * dy));
+    const float nx = -dy / l * width * 0.5f, ny = dx / l * width * 0.5f;
+    P.poly({ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny, ax - nx, ay - ny}, rgb);
+  }
+  const float lx = X(vals.size() - 1), ly = Y(vals.back());
+  P.glow(lx - 5 * width, ly - 5 * width, lx + 5 * width, ly + 5 * width, rgb, 0.6f);
+  P.box(lx - width * 1.4f, ly - width * 1.4f, lx + width * 1.4f, ly + width * 1.4f, width * 1.4f, 0xFFFFFF);
+}
+// a panel: dark glass, a thin ring, its accent glow along the top
+void mk_panel(Pieces& P, float x0, float y0, float x1, float y1, uint32_t accent) {
+  P.box(x0, y0, x1, y1, 22, kMkPanel, 0.94f, kMkPanel2);
+  P.glow(x0 + 30, y0 - 24, x1 - 30, y0 + 40, accent, 0.18f);
+  P.ring(x0, y0, x1, y1, 22, 2.5f, accent, 0.55f);
+}
+// a section head: a gold bar, the words
+void mk_head(Pieces& P, const std::string& t, float x, float y, float px, float room, uint32_t rgb = kMkGold) {
+  P.box(x, y - 0.42f * px, x + 8, y + 0.42f * px, 4, rgb);
+  P.style(0.0f, 0.92f);
+  P.left(t, x + 20, y, px, room - 20, rgb, 2.0f);
+  P.plain();
+}
+// the page: night-blue paper, a faint dot screen, the spine's shadow, the CARD MARKET tab, the page number + the running foot
+void mk_frame(Pieces& P, int page, const std::string& date) {
+  const float W = kMkW, H = kMkH;
+  const bool leftPage = page % 2 == 1;
+  P.box(0, 0, W, H, 0, kMkBg0, 1.0f, kMkBg1);
+  P.dots(0, 0, W, H, 14, 0.18f, 0.0f, 0x2EF2FF, 0.035f);
+  P.glow(leftPage ? -200.0f : W - 500.0f, -260.0f, leftPage ? 500.0f : W + 200.0f, 380.0f, kMkPink, 0.10f);
+  for (int i = 0; i < 14; ++i) {  // (the spine's shadow, as the other inside pages)
+    const float x = leftPage ? W - 70 + i * 5.0f : 65 - i * 5.0f;
+    P.box(x, 0, x + 5, H, 0, 0x000001, 0.02f * (i + 1));
+  }
+  const std::string section = "CARD MARKET";
+  const float tw = P.width(section, 44) + 40;
+  const float outer = leftPage ? 44 : W - 44;
+  if (leftPage) {
+    P.box(outer, 36, outer + tw, 100, 0, kMkGold);
+    P.left(section, outer + 20, 68, 44, 600, 0x10131C);
+    P.left(std::to_string(page + 1), 44, H - 40, 44, 100, kMkInk);
+    P.right("STRIKERS ILLUSTRATED - " + date, W - 90, H - 40, 40, 800, kMkDim);
+  } else {
+    P.box(outer - tw, 36, outer, 100, 0, kMkGold);
+    P.right(section, outer - 20, 68, 44, 600, 0x10131C);
+    P.right(std::to_string(page + 1), W - 44, H - 40, 44, 100, kMkInk);
+    P.left("STRIKERS ILLUSTRATED - " + date, 90, H - 40, 40, 800, kMkDim);
+  }
+}
+// the market's mood: its word, its colour, what it means (two lines)
+void mk_mood(double m, std::string* word, uint32_t* rgb, std::string* l1, std::string* l2) {
+  if (m >= 0.35) *word = "BOOM!", *rgb = kMkUp, *l1 = "COLLECTORS PAYING UP", *l2 = "GRAILS MOST OF ALL";
+  else if (m >= 0.12) *word = "HEATING UP", *rgb = 0xA8FF5A, *l1 = "MORE BUYERS THAN SELLERS", *l2 = "PRICES CREEPING UP";
+  else if (m > -0.10) *word = "STEADY", *rgb = kMkGold, *l1 = "A CALM MARKET", *l2 = "PRICES MOVE ON FORM";
+  else if (m > -0.30) *word = "COOLING", *rgb = 0xFF9A4D, *l1 = "SELLERS OUTNUMBER BUYERS", *l2 = "PRICES EASING OFF";
+  else *word = "CRASH!", *rgb = kMkDown, *l1 = "SELLERS EVERYWHERE", *l2 = "BARGAINS FOR THE BRAVE";
+}
+// LEFT: the masthead, the mood dial, THE STRIKERZ 100, HOT / COLD
+void mag_page_market_l(Pieces& P, const MagMkt& d, const std::string& date) {
+  const float W = kMkW;
+  mk_frame(P, 5, date);
+  const xrmarket::MagMarket& m = d.m;
+  // the masthead
+  P.right(m.valid ? "SEASON " + std::to_string(m.season) + " - MATCHDAY " + std::to_string(m.week) : "THE HOBBY'S MONEY PAGES", W - 60, 68, 40, 560, kMkDim);
+  mk_chrome(P, "THE STRIKERZ", W / 2, 178, 112, W - 120, 0);
+  P.style(0.14f, 0.9f, 0.0f, 9.0f, kMkPink, 0.75f);
+  P.rim(0x2A1400);
+  P.text("MARKET", W / 2, 292, 138, W - 160, kMkGold, 6.0f, 0xFF9A1E);
+  P.plain();
+  P.text("THE HOBBY'S MONEY PAGES - BIT COINS", W / 2, 376, 40, W - 120, kMkDim);
+  if (!d.have) {
+    mk_panel(P, 44, 430, W - 44, 1380, kMkLine);
+    P.text("THE MARKET OPENS", W / 2, 820, 72, W - 140, kMkInk, 3.0f);
+    P.text("AFTER YOUR FIRST FRANCHISE MATCHDAY", W / 2, 900, 44, W - 140, kMkDim);
+    return;
+  }
+  // MARKET MOOD: a dial from CRASH to BOOM, its needle on today
+  {
+    const float y0 = 420, y1 = 650;
+    mk_panel(P, 44, y0, W - 44, y1, kMkLine);
+    const float cx = 250, cy = 612, R = 170;
+    static const uint32_t kSeg[5] = {kMkDown, 0xFF9A4D, kMkGold, 0xA8FF5A, kMkUp};
+    for (int sgm = 0; sgm < 5; ++sgm)
+      for (int k = 0; k < 6; ++k) {  // (each wedge in 6 slices: the arc stays round)
+        const float a0 = 3.14159265f * (1.0f - (sgm * 6 + k) / 30.0f), a1 = 3.14159265f * (1.0f - (sgm * 6 + k + 1) / 30.0f);
+        const float ri = R * 0.66f;
+        P.poly({cx + ri * std::cos(a0), cy - ri * std::sin(a0), cx + R * std::cos(a0), cy - R * std::sin(a0), cx + R * std::cos(a1), cy - R * std::sin(a1),
+                cx + ri * std::cos(a1), cy - ri * std::sin(a1)},
+               kSeg[sgm], 0.85f);
+      }
+    const double mv = std::max(-0.8, std::min(1.0, m.mood));
+    const float n = static_cast<float>(mv < 0.0 ? 0.5 + 0.5 * mv / 0.8 : 0.5 + 0.5 * mv);
+    const float a = 3.14159265f * (1.0f - n);
+    const float tx = cx + 0.96f * R * std::cos(a), ty = cy - 0.96f * R * std::sin(a), px = -std::sin(a) * 9.0f, py = -std::cos(a) * 9.0f;
+    P.poly({cx + px, cy + py, tx, ty, cx - px, cy - py}, 0xFFFFFF);
+    P.box(cx - 22, cy - 22, cx + 22, cy + 22, 22, 0xFFFFFF);
+    P.box(cx - 12, cy - 12, cx + 12, cy + 12, 12, 0x10131C);
+    P.text("CRASH", cx - R + 20, cy + 22, 40, 140, kMkDown);
+    P.text("BOOM", cx + R - 20, cy + 22, 40, 140, kMkUp);
+    std::string word, l1, l2;
+    uint32_t rgb = kMkGold;
+    mk_mood(m.mood, &word, &rgb, &l1, &l2);
+    P.left("MARKET MOOD", 470, 470, 40, 520, kMkDim);
+    P.glow(470, 480, 1000, 600, rgb, 0.16f);
+    P.style(0.12f, 0.9f, 0.0f, 6.0f, 0x000000, 0.6f);
+    P.left(word, 466, 540, 96, 540, rgb, 4.0f);
+    P.plain();
+    P.left(l1, 470, 596, 40, 540, kMkInk);
+    // the mood over the matchdays kept: a strip of little bars (green a boom, red a crash)
+    const size_t nh = m.moodHist.size();
+    if (nh >= 2) {
+      const float bx0 = 470, bx1 = 1010, by = 628, bw = (bx1 - bx0) / static_cast<float>(nh);
+      for (size_t i = 0; i < nh; ++i) {
+        const float v = static_cast<float>(std::max(-0.8, std::min(1.0, m.moodHist[i])));
+        const float h = std::max(2.0f, 14.0f * std::fabs(v) / 0.6f);
+        P.box(bx0 + i * bw + 1, by - (v >= 0 ? h : 0), bx0 + (i + 1) * bw - 1, by + (v < 0 ? h : 0), 0, v > 0.1f ? kMkUp : (v < -0.1f ? kMkDown : 0x56607E));
+      }
+    }
+  }
+  // THE STRIKERZ 100: the index, its move, its chart
+  {
+    const float y0 = 668, y1 = 1000;
+    mk_panel(P, 44, y0, W - 44, y1, kMkGold);
+    mk_chrome(P, "THE STRIKERZ 100", 70, 716, 56, 560, -1, kMkGold);
+    P.right(std::to_string(m.basket) + " MOST-WANTED BY PLAY", W - 70, 716, 40, 420, kMkDim);  // (r231: the race by play, not popularity)
+    if (!m.indexA.empty()) {
+      const double now = m.indexA.back(), was = m.indexA.size() >= 2 ? m.indexA[m.indexA.size() - 2] : now;
+      const float pct = static_cast<float>(100.0 * (now - was) / std::max(1e-9, was));
+      const long long iv = static_cast<long long>(mk_round(now));
+      const float pw = mk_pct(P, pct, W - 70, 790, 46, 1);
+      mk_amount(P, iv, W - 100 - pw, 790, 84, W - 220 - pw, 0xFFFFFF, 3.0f);
+      const bool up = m.indexA.back() >= m.indexA.front();
+      P.box(70, 838, W - 70, 950, 14, 0x0A1022);
+      for (int g = 1; g < 3; ++g) P.box(80, 838 + g * 37.0f, W - 80, 839 + g * 37.0f, 0, kMkLine, 0.6f);
+      mk_spark(P, 84, 842, W - 84, 946, m.indexA, up ? kMkUp : kMkDown, 6.0f, true);
+      const double hi = *std::max_element(m.indexA.begin(), m.indexA.end()), lo = *std::min_element(m.indexA.begin(), m.indexA.end());
+      P.left("HIGH " + mk_money(P, static_cast<long long>(mk_round(hi)), 40, 300) + "   LOW " + mk_money(P, static_cast<long long>(mk_round(lo)), 40, 300), 70,
+             976, 40, 640, kMkDim);
+      P.right(std::to_string(m.indexA.size()) + " MATCHDAYS", W - 70, 976, 40, 300, kMkDim);
+    }
+  }
+  // HOT / COLD: the biggest risers + fallers this matchday, a mini card each, its price, its move, its sparkline
+  for (int side = 0; side < 2; ++side) {
+    const std::vector<xrmarket::MagMover>& list = side == 0 ? m.hot : m.cold;
+    const float x0 = side == 0 ? 44.0f : 548.0f, x1 = x0 + 488, y0 = 1016, y1 = 1366;
+    const uint32_t col = side == 0 ? kMkUp : kMkDown;
+    mk_panel(P, x0, y0, x1, y1, col);
+    mk_chrome(P, side == 0 ? "HOT" : "COLD", x0 + 24, 1058, 58, 200, -1, col);
+    P.right(side == 0 ? "RISING" : "FALLING", x1 - 22, 1058, 40, 250, col);
+    if (list.empty()) P.text(side == 0 ? "NOTHING CLIMBING" : "NOTHING SLIDING", 0.5f * (x0 + x1), 1240, 40, 440, kMkDim);
+    for (size_t i = 0; i < list.size() && i < 3; ++i) {
+      const xrmarket::MagMover& mv = list[i];
+      const float ry0 = 1088 + i * 92.0f, ry1 = ry0 + 86;
+      P.box(x0 + 12, ry0, x1 - 12, ry1, 14, 0x0A1022, 0.9f);
+      xrmarket::draw_mini(P.v, P.keepAlive, mv.v, x0 + 20, ry0 + 5, x0 + 76, ry1 - 5);
+      // (a JAM '96 card's name with its '96 tag short: the room is its row's)
+      const std::string nm = mv.name.compare(0, 8, "JAM '96 ") == 0 ? "'96 " + mv.name.substr(8) : mv.name;
+      // r231 (Lance: the page shows the play behind a move - "REDLINE: 14 GOALS, GOLDEN BOOT LEADER"): name, price, move on top, the
+      // reason under them (r219-r230: a sparkline there)
+      P.left(nm, x0 + 88, ry0 + 24, 40, x1 - x0 - 110, kMkInk, 2.0f);
+      const float pw = mk_pct(P, mv.pct, x1 - 20, ry0 + 64, 30, 1);
+      std::string why = mv.why.empty() ? std::string("NOT IN YOUR LEAGUE") : mv.why;  // (its first two parts: the row's room)
+      const size_t cut = why.find(" - ") == std::string::npos ? std::string::npos : why.find(" - ", why.find(" - ") + 3);
+      if (cut != std::string::npos) why = why.substr(0, cut);
+      P.left(why, x0 + 88, ry0 + 64, 28, x1 - x0 - 120 - pw, kMkDim);  // (its price: the TOP CARDS tab + MY CARDS)
+      (void)col;
+    }
+  }
+}
+// "THE RECORD: A BLACK 1/1 CHARIZARD AUTO, GRADED 10 - 80,123,456 COINS" / "A ... JUST SOLD FOR ..." -> what it was
+std::string mk_record_words(const std::string& t) {
+  std::string s = t;
+  if (s.compare(0, 12, "THE RECORD: ") == 0) s = s.substr(12);
+  const size_t sold = s.find(" JUST SOLD FOR ");
+  if (sold != std::string::npos) s = s.substr(0, sold);
+  const size_t dash = s.rfind(" - ");
+  if (dash != std::string::npos && s.find("COINS", dash) != std::string::npos) s = s.substr(0, dash);
+  if (s.compare(0, 2, "A ") == 0) s = s.substr(2);
+  return s;
+}
+// RIGHT: the record, the wire, the league's biggest pulls, JAM '96 vs LANCINI TIZM, a collector spotlight, your portfolio
+void mag_page_market_r(Pieces& P, const MagMkt& d, const std::string& date) {
+  const float W = kMkW;
+  mk_frame(P, 6, date);
+  const xrmarket::MagMarket& m = d.m;
+  if (!d.have) {
+    mk_panel(P, 44, 130, W - 44, 1380, kMkLine);
+    P.text("NO MARKET YET", W / 2, 760, 72, W - 140, kMkInk, 3.0f);
+    P.text("PLAY A FRANCHISE MATCH TO OPEN IT", W / 2, 840, 44, W - 140, kMkDim);
+    return;
+  }
+  // THE RECORD BOOK
+  {
+    const float y0 = 120, y1 = 300;
+    mk_panel(P, 44, y0, W - 44, y1, kMkGold);
+    P.burst(W - 330, y0 - 120, W + 70, y1 + 120, 20, 0.62f, 0.0f, kMkGold, 0.10f);
+    mk_chrome(P, "THE RECORD BOOK", 70, 162, 52, 560, -1, kMkGold);
+    if (m.recordNew) {
+      const float tw = P.width("NEW RECORD!", 40) + 40;
+      P.box(W - 70 - tw, 136, W - 70, 188, 26, kMkPink);
+      P.text("NEW RECORD!", W - 70 - 0.5f * tw, 162, 40, tw, 0xFFFFFF, 2.0f);
+    }
+    if (m.record > 0) {
+      P.style(0.06f, 0.94f);
+      mk_amount(P, m.record, W - 70, 228, 80, W - 160, kMkGold, 4.0f);
+      P.plain();
+      P.left(mk_record_words(m.recordText), 70, 278, 40, W - 140, kMkInk);
+    } else {
+      P.text("NO RECORD SET YET", W / 2, 240, 48, W - 140, kMkDim);
+    }
+  }
+  // THE WIRE: this matchday's biggest sales
+  {
+    const float y0 = 314, y1 = 486;
+    mk_panel(P, 44, y0, W - 44, y1, kMkCyan);
+    mk_head(P, "THE WIRE", 70, 352, 46, 400, kMkCyan);
+    P.right("BIGGEST SALES THIS MATCHDAY", W - 70, 352, 40, 560, kMkDim);
+    if (m.sales.empty()) P.text("A QUIET MATCHDAY ON THE WIRE", W / 2, 428, 40, W - 140, kMkDim);
+    for (size_t i = 0; i < m.sales.size() && i < 2; ++i) {
+      const xrmarket::MagSale& s = m.sales[i];
+      const float cy = 404 + i * 50.0f;
+      P.box(70, cy - 22, 78, cy + 22, 4, s.record ? kMkPink : kMkCyan);
+      P.left(s.what, 92, cy + 1, 40, 600, kMkInk);
+      mk_amount(P, s.amount, W - 70, cy + 1, 40, 300, s.record ? kMkGold : kMkInk, 0.0f);
+    }
+  }
+  // BIGGEST PULLS IN THE LEAGUE: the collectors' this matchday + yours (7 days), by market value - yours in gold
+  {
+    const float y0 = 498, y1 = 860;
+    mk_panel(P, 44, y0, W - 44, y1, kMkPink);
+    mk_head(P, "BIGGEST PULLS IN THE LEAGUE", 70, 536, 46, W - 140, kMkPink);
+    struct Row {
+      std::string who, what;
+      long long value;
+      bool mine;
+    };
+    std::vector<Row> rows;
+    for (const xrmarket::MagPull& p : m.pulls) rows.push_back({p.who, xrmarket::variant_words(p.v) + " " + mk_upper(xrmarket::card_name(p.v.card)), p.value, false});
+    for (const MagMine& p : d.mine) rows.push_back({"YOU", xrmarket::variant_words(p.v) + " " + mk_upper(xrmarket::card_name(p.v.card)), p.value, true});
+    std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.value > b.value; });
+    // (yours always shown: the 4th place gives way to your best when it's lower down)
+    if (rows.size() > 4) {
+      int myAt = -1;
+      for (size_t i = 0; i < rows.size(); ++i)
+        if (rows[i].mine && myAt < 0) myAt = static_cast<int>(i);
+      if (myAt > 3) rows[3] = rows[static_cast<size_t>(myAt)];
+      rows.resize(4);
+    }
+    if (rows.empty()) P.text("NO BIG PULLS THIS MATCHDAY", W / 2, 690, 40, W - 140, kMkDim);
+    // each a two-line row: who + what it's worth, then the card itself the page's width
+    for (size_t i = 0; i < rows.size(); ++i) {
+      const Row& r = rows[i];
+      const float ry = 566 + i * 72.0f, c1 = ry + 18, c2 = ry + 54;
+      if (r.mine) {
+        P.glow(58, ry - 14, W - 58, ry + 86, kMkGold, 0.25f);
+        P.box(58, ry - 2, W - 58, ry + 72, 12, 0xFFE27A, 0.92f);
+      }
+      const uint32_t ink = r.mine ? 0x10131C : kMkInk;
+      P.text(std::to_string(i + 1), 88, c1 + 1, 40, 40, r.mine ? 0x10131C : kMkPink);
+      if (r.mine) {
+        P.box(118, c1 - 19, 206, c1 + 19, 19, kMkPink);
+        P.text("YOU", 162, c1 + 1, 40, 80, 0xFFFFFF);
+      } else {
+        P.left(r.who, 118, c1 + 1, 40, 560, kMkDim);
+      }
+      mk_amount(P, r.value, W - 70, c1 + 1, 40, 300, r.mine ? 0x10131C : kMkGold, 0.0f);
+      P.left(r.what, 118, c2 + 1, 40, W - 196, ink);
+    }
+  }
+  // JAM '96 vs LANCINI TIZM: the two sets' STRIKERZ 100, their moves, the JAM PREMIUM
+  {
+    const float y0 = 872, y1 = 1006;
+    mk_panel(P, 44, y0, W - 44, y1, kMkTeal);
+    auto side = [&](int s) {
+      const std::vector<double>& ix = s == 0 ? m.indexA : m.indexJ;
+      const float x0 = s == 0 ? 60.0f : 650.0f, x1 = s == 0 ? 430.0f : W - 60.0f;
+      if (s == 1) {  // (the JAM look: its marble's pink + teal)
+        P.box(x0, y0 + 14, x1, y1 - 14, 16, 0xE0218A, 0.28f, kMkTeal, 0.28f);
+        P.ring(x0, y0 + 14, x1, y1 - 14, 16, 2.5f, 0xFFD400, 0.8f);
+      } else {
+        P.box(x0, y0 + 14, x1, y1 - 14, 16, 0x1C2850, 0.9f);
+        P.ring(x0, y0 + 14, x1, y1 - 14, 16, 2.5f, 0xC9D2E2, 0.8f);
+      }
+      P.text(s == 0 ? "LANCINI TIZM" : "JAM '96", 0.5f * (x0 + x1), y0 + 42, 40, x1 - x0 - 20, s == 0 ? 0xFFFFFF : 0xFFD400, 2.0f);
+      if (ix.empty()) return;
+      const double now = ix.back(), was = ix.size() >= 2 ? ix[ix.size() - 2] : now;
+      const float pct = static_cast<float>(100.0 * (now - was) / std::max(1e-9, was));
+      const float pw = P.width(mk_pct_text(pct), 40) + 60;
+      mk_amount(P, static_cast<long long>(mk_round(now)), x1 - 24 - pw, y0 + 94, 44, x1 - x0 - 50 - pw, 0xFFFFFF, 2.0f);
+      mk_pct(P, pct, x1 - 14, y0 + 94, 40, 1);
+    };
+    side(0);
+    side(1);
+    double prem = 0.0;
+    if (!m.indexA.empty() && !m.indexJ.empty() && m.indexA.back() > 0.0) prem = m.indexJ.back() / m.indexA.back();
+    P.box(W / 2 - 104, y0 + 14, W / 2 + 104, y1 - 14, 54, 0x0A0C14);
+    P.ring(W / 2 - 104, y0 + 14, W / 2 + 104, y1 - 14, 54, 3.0f, kMkGold);
+    P.text("PREMIUM", W / 2, y0 + 44, 40, 190, kMkDim);  // (the JAM cards' over the LANCINI TIZM: its two sides)
+    char pb[24];
+    std::snprintf(pb, sizeof(pb), "X%.1f", prem);
+    P.text(prem > 0.0 ? pb : "-", W / 2, y0 + 92, 56, 190, kMkGold, 3.0f);
+  }
+  // COLLECTOR SPOTLIGHT: one of the nine a matchday - his portrait card, who, his mood, what he's hunting, his word
+  {
+    const float y0 = 1018, y1 = 1214;
+    mk_panel(P, 44, y0, W - 44, y1, kMkGold);
+    if (d.haveSp) {
+      const xrtrade::Spotlight& sp = d.sp;
+      xrtrade::draw_portrait(P.v, P.keepAlive, sp.collector, 64, y0 + 14, 210, y1 - 14);
+      mk_head(P, "COLLECTOR SPOTLIGHT", 236, y0 + 34, 40, 470, kMkGold);
+      const float mw = P.width(sp.moodWord, 40) + 40;
+      P.box(W - 66 - mw, y0 + 12, W - 66, y0 + 56, 22, sp.mood > 0.1 ? 0x0E3A22 : (sp.mood < -0.1 ? 0x3A0E1A : 0x2A2A44));
+      P.text(sp.moodWord, W - 66 - 0.5f * mw, y0 + 34, 40, mw, sp.mood > 0.1 ? kMkUp : (sp.mood < -0.1 ? kMkDown : kMkInk));
+      P.left(sp.name, 236, y0 + 80, 44, 400, kMkInk, 2.0f);
+      P.left(sp.handle, 236 + std::min(400.0f, P.width(sp.name, 44)) + 18, y0 + 80, 40, W - 300 - std::min(400.0f, P.width(sp.name, 44)), sp.c2 != 0 ? sp.c2 : kMkCyan);
+      P.left("HUNTING:", 236, y0 + 122, 40, 200, kMkGold);
+      P.left(sp.hunting, 236 + P.width("HUNTING:", 40) + 14, y0 + 122, 40, W - 316 - P.width("HUNTING:", 40), kMkInk);
+      // his word, in a bubble
+      const float bx0 = 236, by0 = y0 + 144, bx1 = W - 66, by1 = y0 + 188;
+      P.box(bx0, by0, bx1, by1, 18, 0x0E1430, 0.95f);
+      P.ring(bx0, by0, bx1, by1, 18, 2.5f, kMkCyan, 0.8f);
+      P.style(0.08f);
+      P.text("\"" + sp.quote + "\"", 0.5f * (bx0 + bx1), 0.5f * (by0 + by1) + 1, 40, bx1 - bx0 - 30, kMkInk);
+      P.plain();
+    } else {
+      mk_head(P, "COLLECTOR SPOTLIGHT", 70, y0 + 40, 40, 600, kMkGold);
+      P.text("THE COLLECTORS ARRIVE WITH YOUR FIRST MATCHDAY", W / 2, y0 + 120, 40, W - 140, kMkDim);
+    }
+  }
+  // YOUR PORTFOLIO: your binder at today's prices, its move, its line, your most valuable card
+  {
+    const float y0 = 1222, y1 = 1366;
+    mk_panel(P, 44, y0, W - 44, y1, kMkUp);
+    mk_head(P, "YOUR PORTFOLIO", 70, y0 + 30, 40, 330, kMkUp);
+    P.right(xrcoin::text(m.copies) + " CARDS", 740, y0 + 30, 40, 250, kMkDim);
+    const long long now = m.portfolio.empty() ? 0 : m.portfolio.back();
+    const long long was = m.portfolio.size() >= 2 ? m.portfolio[m.portfolio.size() - 2] : now;
+    mk_amount(P, now, 520, y0 + 76, 60, 470, 0xFFFFFF, 3.0f);
+    const float pct = static_cast<float>(100.0 * static_cast<double>(now - was) / std::max(1.0, static_cast<double>(was)));
+    const float pw = mk_pct(P, pct, 70, y0 + 114, 40, -1);
+    const long long dv = now - was;
+    P.left((dv >= 0 ? "+" : "-") + mk_money(P, dv >= 0 ? dv : -dv, 40, 300), 84 + pw, y0 + 114, 40, 430 - pw, dv >= 0 ? kMkUp : kMkDown);
+    std::vector<double> pv;
+    for (long long v : m.portfolio) pv.push_back(static_cast<double>(v));
+    mk_spark(P, 548, y0 + 54, 740, y1 - 12, pv, pv.size() >= 2 && pv.back() >= pv.front() ? kMkUp : kMkDown, 4.0f, true);
+    if (m.best.card >= 0) {
+      xrmarket::draw_mini(P.v, P.keepAlive, m.best, 756, y0 + 14, 826, y1 - 14);
+      P.left("TOP CARD", 840, y0 + 46, 40, 176, kMkDim);
+      P.left(mk_money(P, m.bestValue, 40, 176), 840, y0 + 96, 40, 176, kMkGold);
+    }
+  }
+}
+// What the spread shows (the magazine's drawing thread): the market's matchday, a collector a matchday in turn, your pulls (7 days)
+MagMkt mag_market_data() {
+  MagMkt d;
+  d.have = xrmarket::magazine(&d.m);
+  if (d.have) {
+    d.haveSp = xrtrade::spotlight(d.m.season * 40 + d.m.week, &d.sp);
+    std::vector<xrmarket::Variant> mine;
+    xrcards::magazine_pulls(&mine);
+    for (const xrmarket::Variant& v : mine) d.mine.push_back({v, xrmarket::price(v)});
+    std::stable_sort(d.mine.begin(), d.mine.end(), [](const MagMine& a, const MagMine& b) { return a.value > b.value; });
+    if (d.mine.size() > 3) d.mine.resize(3);
+  }
+  return d;
+}
+// ---- r219 THE STRIKERZ MARKET spread (end)
 // One page of this week's issue. r143: generated art and character renders only (no game picture: r113's goal photo
 // on CLASSIC is gone, and its capture with it).
 void mag_page(Pieces& P, const FrSnapshot& s, int page) {
@@ -3923,6 +4509,10 @@ void mag_page(Pieces& P, const FrSnapshot& s, int page) {
     mag_page_stars(P, s, st);
   } else if (page == 4) {
     mag_page_rivals(P, s, st);
+  } else if (page == 5 || page == 6) {  // r219: THE STRIKERZ MARKET spread (its numbers gathered here, on the page's drawing thread)
+    const MagMkt d = mag_market_data();
+    if (page == 5) mag_page_market_l(P, d, st.date);
+    else mag_page_market_r(P, d, st.date);
   } else {
     mag_page_back(P, s);
   }
@@ -3970,7 +4560,7 @@ struct FrFigAsk {
     return key == o.key && shiny == o.shiny && omitted == o.omitted && x0 == o.x0 && y0 == o.y0 && x1 == o.x1 && y1 == o.y1;
   }
 };
-constexpr int kFrFigs = xrfx::kModelSlots - 13;  // (r160: the binder's slots after them; r163: - 13, + its halos') their model slots 3.. (0-1 the evolution / the menu's, 2 the home corner's; r131: the last the magazine's; r137: the two before it the trading cards'; r138: + their specials' and light; r141: + a 1/1's world)
+constexpr int kFrFigs = xrfx::kModelSlots - 16 - xrfx::kMuseumSlots;  /* r201: the museum's 6 before the sportsbook's; r199: the sportsbook's 3 slots before the binder's */  // r199: - 15 (the sportsbook cabinet + its ticket before the binder's)  // (r160: the binder's slots after them; r163: - 13, + its halos') their model slots 3.. (0-1 the evolution / the menu's, 2 the home corner's; r131: the last the magazine's; r137: the two before it the trading cards'; r138: + their specials' and light; r141: + a 1/1's world)
 struct FrFigShared {
   std::mutex mutex;
   std::vector<FrFigAsk> asks;         // the newest picture's
@@ -4059,35 +4649,46 @@ struct HubWait {
                  // 3 the trade window (CLUB > TRADES)
   std::string title, where, badge, key;
 };
+// r236 (LOOK B, the sitemap): FOR YOU - 3 at most, in this order: winnings > awards > evolve > packs > collector offers > free-agent
+// offers > the trade window (> free agents to sign); the always-there magazine card is gone (NEWS has its badge). Each a short title
+// and "what > SECTION" under it.
+constexpr int kHubWaitMax = 3;
 std::vector<HubWait> hub_waiting(const FrSnapshot& s) {
   std::vector<HubWait> out;
   const PortFranchiseView& v = s.view;
+  {  // r199: STRIKERZ SPORTSBOOK winnings settled, waiting to be collected (first: they're coins)
+    int tickets = 0;
+    const long long ready = xrbook::ready_to_collect(&tickets);  // (r208: 64-bit, commas)
+    if (ready > 0) out.push_back({6, "WINNINGS", xrcoin::fit(ready, 12) + " COINS  >  LEAGUE", std::to_string(std::min(99, tickets)), ""});
+  }
   // r173: the season's awards night, waiting for you (it never opens by itself over a match's end)
-  if (v.phase == PORT_FR_PHASE_DONE && !s.awardsSeen && v.awardCount > 0) out.push_back({5, "AWARDS NIGHT", "HOME > AWARDS NIGHT", "NEW", ""});
+  if (v.phase == PORT_FR_PHASE_DONE && !s.awardsSeen && v.awardCount > 0)
+    out.push_back({5, "AWARDS NIGHT", "SEASON " + std::to_string(v.season) + "  >  HOME", "NEW", ""});
   if (!s.evoReadyName.empty())
-    out.push_back({0, (s.evoReadyCostume ? "SUIT UP " : "EVOLVE ") + fr_upper(s.evoReadyName), "CLUB > EVO", "READY", s.evoReadyKey});
+    out.push_back({0, s.evoReadyCostume ? "SUIT UP" : "EVOLVE", fr_upper(s.evoReadyName) + "  >  CLUB", "READY", s.evoReadyKey});
   const int packs = xrcards::packs_waiting();
   if (packs > 0)
-    out.push_back({1, std::to_string(packs) + (packs == 1 ? " PACK TO OPEN" : " PACKS TO OPEN"), "CARDS > BINDER",
-                   std::to_string(std::min(99, packs)), ""});
-  if (v.lastWeek > 0)
-    out.push_back({2, "STRIKERS ILLUSTRATED",
-                   std::string("NEWS > MAGAZINE"),
-                   s.magUnread ? "NEW" : "", ""});
-  // r167: your free-agency offers out (and the window while it's open, when there's room)
+    out.push_back({1, std::to_string(packs) + (packs == 1 ? " PACK" : " PACKS"), "TO OPEN  >  CARDS", std::to_string(std::min(99, packs)), ""});
+  {  // r213: COLLECTOR TRADES - a collector's offer for one of your cards (they end after 3 matchdays)
+    const int offers = xrtrade::offers_waiting();
+    if (offers > 0 && !s.coopGuest)
+      out.push_back({7, std::to_string(offers) + (offers == 1 ? " OFFER" : " OFFERS"), "COLLECTORS  >  CARDS", std::to_string(std::min(9, offers)), ""});
+  }
+  // r167: your free-agency offers out (and the window while it's open)
   if (s.faWin.myOffers > 0 && !s.coopGuest)
-    out.push_back({4, std::to_string(s.faWin.myOffers) + (s.faWin.myOffers == 1 ? " OFFER OUT" : " OFFERS OUT"), "CLUB > FREE AGENTS",
+    out.push_back({4, std::to_string(s.faWin.myOffers) + (s.faWin.myOffers == 1 ? " OFFER OUT" : " OFFERS OUT"), "FREE AGENTS  >  CLUB",
                    std::to_string(std::min(9, s.faWin.myOffers)), ""});
-  if (s.tradeWindow && !s.coopGuest) out.push_back({3, "TRADE WINDOW OPEN", "CLUB > TRADES", "", ""});
-  if (s.faWin.open && s.faWin.myOffers == 0 && s.faWin.agents > 0 && !s.coopGuest && out.size() < 4)
-    out.push_back({4, std::to_string(s.faWin.agents) + " FREE AGENTS", "CLUB > FREE AGENTS", "", ""});
+  if (s.tradeWindow && !s.coopGuest) out.push_back({3, "TRADE WINDOW", "OPEN  >  CLUB", "", ""});
+  if (s.faWin.open && s.faWin.myOffers == 0 && s.faWin.agents > 0 && !s.coopGuest)
+    out.push_back({4, std::to_string(s.faWin.agents) + " FREE AGENTS", "TO SIGN  >  CLUB", "", ""});
+  if (out.size() > static_cast<size_t>(kHubWaitMax)) out.resize(kHubWaitMax);
   return out;
 }
 // HOME's buttons as the stick sees them (the actions row, or the day's list; then the WAITING column at 10 +)
 int hub_home_last(const FrSnapshot& s) {
   const PortFranchiseView& v = s.view;
   const bool vsPerson = s.league.active && s.league.vsMember >= 0;
-  if (v.nextOpponent >= 0) return vsPerson ? 0 : (v.phase == PORT_FR_PHASE_REGULAR && !s.league.active ? 2 : 1);
+  if (v.nextOpponent >= 0) return vsPerson ? 0 : 1;  // r236: PLAY + the quiet SIM (its pop-up: THIS WEEK / TO PLAYOFFS)
   if (v.phase == PORT_FR_PHASE_DONE) return 1;  // r173: AWARDS NIGHT, SEASON n+1
   return v.canSimDay ? std::min(6, s.today.count) : -1;
 }
@@ -4101,7 +4702,63 @@ void fr_trades_body(Pieces& P, FrFigPicture& figs, const FrSnapshot& s, float W,
 // the page area with Pieces' own transform, so their 3D figures (FrFigPicture) stand where their portraits are.
 constexpr float kHubRailX0 = 40, kHubRailX1 = 420, kHubRailY = 230, kHubPageX0 = 470, kHubPageX1 = 2120, kHubPageY0 = 222,
                 kHubPageY1 = 1180;
-const char* const kHubSecName[kFrSecs] = {"HOME", "LEAGUE", "CLUB", "CARDS", "NEWS"};
+const char* const kHubSecName[kFrSecs] = {"HOME", "LEAGUE", "CLUB", "CARDS", "LOCKER", "NEWS"};  // (r236: + LOCKER)
+// ---- r232 STARS views (begin)
+// r232 (Lance: "you defff need to add assists into the equation"): LEAGUE > STARS, three views (left / right): 0 the GOLDEN BOOT
+// (goals), 1 ASSISTS, 2 POINTS (goals + assists) - each the top 3 big (in 3D: person), 4-10 as rows; every player's other numbers
+// beside his race's. r157's layout (the GOLDEN BOOT's) kept: the view's name between arrows in the title's place.
+constexpr int kStarsViews = 3;
+template <class Person, class Logo>
+void hub_stars_page(Pieces& P, xrmenu::Kit& K, const PortFranchiseView& v, int view, int me, Person person, Logo logo) {
+  const uint32_t kSoft = xrmenu::kInkSoft, kWhite = xrmenu::kWhite, kGoldC = xrmenu::kGold;
+  view = std::max(0, std::min(kStarsViews - 1, view));
+  static const char* const kName[kStarsViews] = {"GOLDEN BOOT", "ASSISTS", "POINTS"};
+  const PortFranchiseView::Leader* rows = view == 0 ? v.leaders : (view == 1 ? v.astLeaders : v.ptsLeaders);
+  const int count = std::max(0, std::min(10, view == 0 ? v.leaderCount : (view == 1 ? v.astLeaderCount : v.ptsLeaderCount)));
+  auto plural = [](int n, const char* one, const char* many) { return std::to_string(n) + (n == 1 ? one : many); };
+  // its race's number (gold) and the others (soft); big: the top 3's one line
+  auto key_stat = [&](const PortFranchiseView::Leader& l) {
+    return view == 0 ? plural(l.goals, " GOAL", " GOALS") : (view == 1 ? plural(l.assists, " ASSIST", " ASSISTS") : std::to_string(l.goals + l.assists) + " PTS");
+  };
+  auto other_stat = [&](const PortFranchiseView::Leader& l) {
+    return view == 0 ? std::to_string(l.assists) + " A" : (view == 1 ? std::to_string(l.goals) + " G" : std::to_string(l.goals) + " G " + std::to_string(l.assists) + " A");
+  };
+  const float cxp = 0.5f * (kHubPageX0 + kHubPageX1);
+  {  // the view: its name between left / right arrows (where r157's GOLDEN BOOT title stood)
+    K.box(cxp - 450, 250 - 34, cxp + 450, 250 + 34, 34, xrmenu::kDark, 0.75f);
+    K.text(std::string(kName[view]) + "  -  " + std::to_string(view + 1) + " OF " + std::to_string(kStarsViews), cxp, 251, 48, 760, kGoldC, 3.0f);
+    K.poly({cxp - 430, 250, cxp - 398, 250 - 22, cxp - 398, 250 + 22}, view > 0 ? kGoldC : 0x3A4560);
+    K.poly({cxp + 430, 250, cxp + 398, 250 - 22, cxp + 398, 250 + 22}, view < kStarsViews - 1 ? kGoldC : 0x3A4560);
+  }
+  for (int i = 0; i < 3 && i < count; ++i) {
+    const PortFranchiseView::Leader& l = rows[i];
+    const float cx = cxp + (i == 0 ? 0.0f : (i == 1 ? -540.0f : 540.0f)), big = i == 0 ? 1.0f : 0.85f;
+    const float y0 = 300 + (i == 0 ? 0.0f : 50.0f);
+    P.glow(cx - 260, y0, cx + 260, y0 + 420 * big, i == 0 ? 0xFFD23F : 0x6A9AE0, 0.45f);
+    person(l.key, cx - 200, y0, cx + 200, y0 + 400 * big);  // r131: in 3D
+    P.image(logo(l.club), cx + 150, y0, cx + 250, y0 + 100, false);
+    K.text("#" + std::to_string(i + 1), cx - 200, y0 + 40, 64, 140, i == 0 ? kGoldC : 0xC8D2E6, 4.0f);
+    K.text(fr_upper(l.name), cx, y0 + 440 * big + 4, 52, 500, kWhite, 4.0f);
+    K.text(key_stat(l), cx, y0 + 440 * big + 58, 44, 520, kGoldC, 3.0f);  // (r236: its race's number only - one number a name)
+    (void)other_stat;
+  }
+  if (count == 0) K.text(view == 1 ? "NO ASSISTS YET" : "NO GOALS YET", cxp, 600, 90, 1200, 0xC8D2E6, 4.0f);
+  // 4 - 10: two columns of rows (rank, logo, name, its other numbers, its race's)
+  for (int i = 3; i < count && i < 10; ++i) {
+    const PortFranchiseView::Leader& l = rows[i];
+    const int k = i - 3, c = k / 4, r = k % 4;
+    const float x0 = kHubPageX0 + c * 840.0f, x1 = x0 + 810, y = 858 + r * 80.0f;
+    K.box(x0, y, x1, y + 70, 35, l.club == me ? xrmenu::kTileOn : xrmenu::kTile);
+    K.right(std::to_string(i + 1), x0 + 80, y + 36, 40, 60, kSoft, 2.0f);
+    P.image(logo(l.club), x0 + 96, y + 6, x0 + 154, y + 64, false);
+    // (one short line: its race's number first - "26 G  3 A", "20 A  12 G", "32 PTS 12+20")
+    // (r236: the race's number only - "26 G", "20 A", "32 PTS")
+    const std::string row = view == 0 ? std::to_string(l.goals) + " G" : (view == 1 ? std::to_string(l.assists) + " A" : std::to_string(l.goals + l.assists) + " PTS");
+    K.left(fr_upper(l.name), x0 + 170, y + 37, 40, 340, kWhite, 2.0f);
+    K.right(row, x1 - 30, y + 37, 40, 260, kGoldC, 2.0f);
+  }
+}
+// ---- r232 STARS views (end)
 bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   const PortFranchiseView& v = s.view;
   const PortFranchiseLeagueView& lg = s.league;
@@ -4118,13 +4775,18 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   const int packsWaiting = xrcards::packs_waiting();
   Pieces P;
   FrFigPicture figs;  // r131: the page's characters, standing in 3D in front of it
+  // r236 (LOOK B "BROADCAST PREMIUM", Lance 11-12): the whole hub in the sports-TV package - the tabs, the header strip (where you
+  // are > your club > season > week > next match, coins once at the right), the numbered rail, the bottom bar, your club's colour as
+  // the accent, the gold focus. The scope makes the kit draw that look and every width measure in its face; broadcast_pieces() at
+  // the end turns each page's own pieces into it.
+  const uint32_t clubAccent = me >= 0 && me < nClubs ? xrmenu::club_accent(s.clubs[me].c1, s.clubs[me].c2) : 0xE8402Au;
+  xrmenu::BroadcastScope look(clubAccent);
   xrmenu::Kit K(P.v);  // r157: the kit draws into the same pieces (absolute pixels)
   xrmenu::frame(K, W, H);
-  static const uint32_t kSecRgb[kFrSecs] = {xrmenu::kSecHome, xrmenu::kSecLeague, xrmenu::kSecClub, xrmenu::kSecCards,
-                                            xrmenu::kSecNews};
+  const uint32_t kSecRgb[kFrSecs] = {clubAccent, xrmenu::kBLeague, xrmenu::kBClub, xrmenu::kBCards, xrmenu::kBLocker, xrmenu::kBNews};
   const int sec = std::max(0, std::min(kFrSecs - 1, s.sec));
-  {  // the sections: a red count on one that wants you
-    static const char* const kIcon[kFrSecs] = {"home", "table", "shield", "cards", "news"};
+  {  // the sections: a gold count on one that wants you
+    static const char* const kIcon[kFrSecs] = {"home", "table", "shield", "cards", "shirt", "news"};
     std::vector<std::string> names, icons, badges(kFrSecs);
     std::vector<uint32_t> cols;
     for (int i = 0; i < kFrSecs; ++i) {
@@ -4138,48 +4800,43 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     xrmenu::section_tabs(K, 36, W - 36, 28, 118, names, cols, icons, sec, badges);
   }
   const std::vector<int> pages = hub_pages(sec, lg.active);
-  const int at = std::max(0, std::min(static_cast<int>(pages.size()) - 1, sec == kFrSecCards ? xrcards::rail_page() : s.rail[sec]));
+  const bool cardsSec = fr_cards_sec(sec);
+  const int cardsFirst = fr_cards_first(sec);
+  const int at = std::max(0, std::min(static_cast<int>(pages.size()) - 1, cardsSec ? xrcards::rail_page() - cardsFirst : s.rail[sec]));
   const int page = s.page;
   const bool hasRail = pages.size() > 1;
   const bool onRail = hasRail && s.onRail;
-  const std::string pageName = sec == kFrSecCards ? std::string(xrcards::rail_name(at)) : std::string(hub_page_name(page));
-  // where you are
-  std::vector<xrmenu::Crumb> crumbs = {{"FRANCHISE", 0}};
-  if (hasRail) crumbs.push_back({kHubSecName[sec], 0});
-  crumbs.push_back({hasRail ? pageName : std::string(kHubSecName[sec]), kSecRgb[sec]});
-  const float crumbEnd = xrmenu::breadcrumb(K, 44, 168, crumbs, 44);
-  {  // whose career, when: always top right (the season, the week, the difficulty, your coins; co-op / league first)
-    static const char* const kLevelShort[5] = {"", "ROOKIE", "PRO", "SUPERSTAR", "LEGEND"};
-    std::string when = "SEASON " + std::to_string(v.season) + "  -  ";
-    if (v.phase == PORT_FR_PHASE_DONE) when += "CHAMPIONS CROWNED";
-    else if (v.phase == PORT_FR_PHASE_PLAYOFFS) when += fr_upper(v.roundName);
-    else when += "WEEK " + std::to_string(v.week);
-    when += std::string("  -  ") + kLevelShort[std::max(1, std::min(4, v.difficulty))] + "  -  " + std::to_string(xrcards::coins()) +
-            " COINS";
-    if (s.coopActive) when = "CO-OP  -  " + when;
-    if (lg.active) when = std::string("LEAGUE ") + lg.code + "  -  " + when;
-    const std::string name = me >= 0 && me < nClubs ? place(me) : std::string("");
-    const float x1 = W - 40;
-    const float wd = std::min(96 + K.width(name, 42) + 34 + K.width(when, 40) + 34, x1 - crumbEnd - 40);
-    const float nameRoom = std::min(K.width(name, 42), 0.36f * wd), whenRoom = wd - 96 - nameRoom - 64;
-    K.box(x1 - wd, 134, x1, 202, 34, xrmenu::kDark, 0.85f);
-    P.image(logo(me), x1 - wd + 10, 128, x1 - wd + 86, 208, false);
-    K.left(name, x1 - wd + 96, 170, 42, nameRoom, xrmenu::kWhite, 2.0f);
-    K.right(when, x1 - 30, 170, 40, whenRoom, xrmenu::kGold, 2.0f);
+  const std::string pageName = cardsSec ? std::string(xrcards::rail_name(cardsFirst + at)) : std::string(hub_page_name(page));
+  {  // the header strip: where you are (its colour), then your club > the season > the week (or the round) > the next match; coins
+    std::vector<xrmenu::StripPart> parts;
+    if (me >= 0 && me < nClubs) parts.push_back({place(me), xrmenu::kBInk});
+    if (lg.active) parts.push_back({std::string("LEAGUE ") + lg.code, xrmenu::kBGold});
+    else if (s.coopActive) parts.push_back({"CO-OP", xrmenu::kBGold});
+    parts.push_back({"SEASON " + std::to_string(v.season), xrmenu::kBSoft});
+    if (v.phase == PORT_FR_PHASE_DONE) parts.push_back({"CHAMPIONS CROWNED", xrmenu::kBSoft});
+    else if (v.phase == PORT_FR_PHASE_PLAYOFFS) parts.push_back({fr_upper(v.roundName), xrmenu::kBSoft});
+    else parts.push_back({"WEEK " + std::to_string(v.week), xrmenu::kBSoft});
+    if (v.nextOpponent >= 0 && v.nextOpponent < nClubs)
+      parts.push_back({std::string("NEXT: ") + (v.nextHome ? "" : "@ ") + place(v.nextOpponent), xrmenu::kBSoft});
+    float logoX = 0.0f;
+    xrmenu::header_strip(K, W, hasRail ? std::string(kHubSecName[sec]) + " / " + pageName : std::string(kHubSecName[sec]), kSecRgb[sec],
+                         me >= 0 && me < nClubs, parts, xrcoin::fit(xrcards::coins(), 11), &logoX);
+    if (logoX > 0.0f) P.image(logo(me), logoX, 136, logoX + 64, 196, false);
   }
-  if (hasRail) {  // the section's pages
+  if (hasRail) {  // the section's pages: the numbered rail
     std::vector<xrmenu::RailItem> items;
     for (size_t i = 0; i < pages.size(); ++i) {
       xrmenu::RailItem it;
-      it.name = sec == kFrSecCards ? xrcards::rail_name(static_cast<int>(i)) : hub_page_name(pages[i]);
+      const int ci = cardsFirst + static_cast<int>(i);  // (CARDS / LOCKER: xr_cards' rail index)
+      it.name = cardsSec ? xrcards::rail_name(ci) : hub_page_name(pages[i]);
       if (pages[i] == kPgEvo && !s.evoReadyName.empty()) it.badge = "1";
-      if (sec == kFrSecCards && i == 0 && packsWaiting > 0) it.badge = std::to_string(std::min(9, packsWaiting));
+      if (cardsSec && ci == xrcards::kRailPacks && packsWaiting > 0) it.badge = std::to_string(std::min(9, packsWaiting));
+      if (cardsSec && ci == xrcards::kRailMarket && xrmarket::offers_waiting() > 0) it.badge = std::to_string(std::min(9, xrmarket::offers_waiting()));  // r201: collectors' offers
+      if (cardsSec && ci == xrcards::kRailCollectors && xrtrade::offers_waiting() > 0) it.badge = std::to_string(std::min(9, xrtrade::offers_waiting()));  // r213: their trade offers
       if (pages[i] == kPgMag && s.magUnread) it.badge = "1";
       items.push_back(it);
     }
-    // (r160: CARDS has 7 pages now - LOOKS - so its rows are a little shorter, clear of the collection under it)
-    const bool seven = items.size() > 6;
-    xrmenu::rail(K, kHubRailX0, kHubRailX1, kHubRailY, items, at, onRail, kSecRgb[sec], seven ? 92.0f : 104.0f, seven ? 10.0f : 16.0f, 48);
+    xrmenu::rail(K, kHubRailX0, kHubRailX1, kHubRailY, items, at, onRail, kSecRgb[sec]);
   }
   // the hint bar's A (its word; faded when it does nothing here) and the page's extras; a pop-up's own bar
   std::string aWord = "SELECT";
@@ -4218,209 +4875,238 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
           aDim = cardsPage.aDim;
         }
       } else {
-        extras.push_back({ch.glyph, ch.words, ch.glyph == "Y" ? packsWaiting <= 0 : onRail});
+        extras.push_back({ch.glyph, ch.words, onRail});  // (r236: Y is the BINDER's SETS now - not tied to packs)
       }
     }
   } else if (page == kPgHome) {
-    // HOME: the next match (your club v theirs, both captains, the actions in one row), and WAITING FOR YOU
-    const float x0 = 40, x1 = 1350, y0 = kHubPageY0, y1 = kHubPageY1, cx = 0.5f * (x0 + x1);
-    K.box(x0, y0, x1, y1, 34, xrmenu::kTile, 0.65f);
-    auto team = [&](int club, const char* capKey, bool left, const std::string& rec, bool shiny) {
-      const float tcx = left ? x0 + 300 : x1 - 300;
-      const uint32_t c1 = club >= 0 && club < nClubs ? s.clubs[club].c1 : 0x31406A;
-      P.glow(tcx - 300, y0 + 70, tcx + 300, y0 + 590, c1 != 0 ? c1 : 0x31406A, 0.8f);
-      if (left) {
-        P.image(logo(club), tcx - 250, y0 + 90, tcx - 30, y0 + 330, false);
-        figs.person(P, capKey, shiny, tcx - 60, y0 + 120, tcx + 260, y0 + 520);  // r131: in 3D
-      } else {
-        P.image(logo(club), tcx + 30, y0 + 90, tcx + 250, y0 + 330, false);
-        figs.person(P, capKey, shiny, tcx - 260, y0 + 120, tcx + 60, y0 + 520);
-      }
-      K.text(club >= 0 && club < nClubs ? place(club) : std::string(""), tcx, y0 + 568, 64, 560, kWhite, 4.0f);
-      if (!rec.empty()) K.text(rec, tcx, y0 + 632, 52, 300, kGoldC, 3.0f);
-    };
+    // r236 (LOOK B, optB_home.png): HOME - the next match on a glass panel (both clubs, captains, records, the AWAY / NEMESIS /
+    // weather tags), ONE big PLAY and a quiet SIM (its pop-up: THIS WEEK / TO PLAYOFFS), FOR YOU (3 at most) and the last result at
+    // the right. Nothing printed twice: X CAPTAIN lives in the bottom bar only.
+    const float x0 = 40, x1 = 1420, y0 = 232, y1 = 1170, cx = 0.5f * (x0 + x1);
+    xrmenu::panel(K, x0, y0, x1, y1, clubAccent, 0.94f);
+    const int cur = s.cursor;
     auto record = [](int wins, int losses) { return std::to_string(wins) + "-" + std::to_string(losses); };
     const bool hasMatch = v.nextOpponent >= 0 && v.nextOpponent < nClubs;
     const bool backupStarts = v.startsBackup && v.backup[0] != '\0';
-    const int cur = s.cursor;
-    // the actions in one row (focus: the gold ring)
-    auto action = [&](float bx, float wd, const std::string& label, uint32_t rgb, bool on, bool can, float tpx) {
-      const float by0 = y0 + 748, by1 = y0 + 868;
-      if (on) xrmenu::focus(K, bx, by0, bx + wd, by1, 50);
-      K.box(bx, by0, bx + wd, by1, 50, can ? rgb : 0x30384E);
-      K.text(label, bx + wd / 2, 0.5f * (by0 + by1) + 3, tpx, wd - 40, can ? (on ? xrmenu::kCream : kWhite) : xrmenu::kInkDim, 4.0f);
-    };
+    const float ny = y1 - 150 - 125;  // (the names / records sit on the buttons' top: the figures fill what's above)
+    const float by0 = y1 - 150;
     if (hasMatch) {
       const int o = v.nextOpponent;
-      std::string head = v.phase == PORT_FR_PHASE_PLAYOFFS
-                             ? "NEXT MATCH  -  GAME " + std::to_string(v.myGameNo) + " (" + std::to_string(v.mySeriesMe) + "-" +
-                                   std::to_string(v.mySeriesThem) + ")"
-                             : "NEXT MATCH  -  WEEK " + std::to_string(v.week);
-      K.left(head, x0 + 36, y0 + 46, 40, 900, kSoft, 2.0f);
-      team(me, backupStarts ? v.backupKey : v.captainKey, true, record(v.wins, v.losses), backupStarts ? v.backupShiny : v.captainShiny);
-      team(o, v.clubCaptainKey[o], false, v.phase == PORT_FR_PHASE_PLAYOFFS ? std::string("") : record(v.oppWins, v.oppLosses), false);
-      K.text("VS", cx, y0 + 250, 150, 300, xrmenu::kCream, 7.0f);
-      K.text(v.nextHome ? "HOME" : "AWAY", cx, y0 + 360, 40, 300, kSoft, 2.0f);
-      float tagY = y0 + 395;
+      const std::string head = v.phase == PORT_FR_PHASE_PLAYOFFS
+                                   ? "NEXT MATCH  -  GAME " + std::to_string(v.myGameNo) + " (" + std::to_string(v.mySeriesMe) + "-" +
+                                         std::to_string(v.mySeriesThem) + ")"
+                                   : "NEXT MATCH  -  WEEK " + std::to_string(v.week);
+      xrmenu::label(K, head, x0 + 50, y0 + 60, 40);
+      const uint32_t oc = s.clubs[o].c1 != 0 ? xrmenu::club_accent(s.clubs[o].c1, s.clubs[o].c2) : 0x2F8CFF;
+      P.glow(x0 + 60, y0 + 140, x0 + 560, y0 + 700, clubAccent, 0.30f);
+      P.glow(x1 - 560, y0 + 140, x1 - 60, y0 + 700, oc, 0.30f);
+      P.image(logo(me), x0 + 50, y0 + 100, x0 + 250, y0 + 280, false);
+      figs.person(P, backupStarts ? v.backupKey : v.captainKey, backupStarts ? v.backupShiny : v.captainShiny, x0 + 210, y0 + 110, x0 + 510, ny - 70);  // (in 3D)
+      figs.person(P, v.clubCaptainKey[o], false, x1 - 560, y0 + 170, x1 - 200, ny - 70);
+      P.image(logo(o), x1 - 250, y0 + 100, x1 - 50, y0 + 280, false);
+      xrmenu::say(K, me >= 0 && me < nClubs ? place(me) : std::string(""), x0 + 330, ny, 68, 0xFFFFFF, 'c', 520, true, 0.0f, 3.0f);
+      xrmenu::say(K, record(v.wins, v.losses), x0 + 330, ny + 72, 54, xrmenu::kBGold, 'c');
+      xrmenu::say(K, place(o), x1 - 330, ny, 68, 0xFFFFFF, 'c', 520, true, 0.0f, 3.0f);
+      if (v.phase != PORT_FR_PHASE_PLAYOFFS) xrmenu::say(K, record(v.oppWins, v.oppLosses), x1 - 330, ny + 72, 54, xrmenu::kBGold, 'c');
+      // VS on the accent's parallelogram, then the tags: AWAY / HOME, NEMESIS, the game's weather (r137 / r198)
+      K.box(cx - 90, y0 + 270, cx + 70, y0 + 390, 0, clubAccent);
+      K.v.back().lean = 30.0f;
+      K.v.back().styled = true;
+      xrmenu::say(K, "VS", cx - 2, y0 + 330, 92, 0xFFFFFF, 'c');
+      xrmenu::label(K, v.nextHome ? "HOME" : "AWAY", cx, y0 + 450, 36, xrmenu::kBSoft, 'c');
+      float tagY = y0 + 530;
       if (v.nextNemesis >= 0) {
-        K.box(cx - 130, tagY, cx + 130, tagY + 60, 30, 0x6E1414);
-        K.ring(cx - 130, tagY, cx + 130, tagY + 60, 30, 4, 0xFF5A4A);
-        K.text("NEMESIS!", cx, tagY + 31, 42, 230, kWhite, 2.0f);
-        tagY += 75;
+        xrmenu::chip(K, "NEMESIS", cx, tagY, 0xC0392B);
+        tagY += 80;
       }
-      // r137: the game's weather from the calendar (SNOW GAME, RAIN, UNDER THE LIGHTS ...)
       const int wx = s.nextWeather;
       if (wx != 0 && PortWeatherLabel(wx)[0] != '\0') {
         const bool night = (wx & PORT_WX_NIGHT) != 0, snow = (wx & PORT_WX_SNOW) != 0, rain = (wx & PORT_WX_RAIN) != 0;
-        K.box(cx - 150, tagY, cx + 150, tagY + 60, 30, snow ? 0x2A4C78 : (rain ? 0x1E3A5A : 0x111A3C));
-        K.ring(cx - 150, tagY, cx + 150, tagY + 60, 30, 4, night ? 0xFFD23F : (snow ? 0xF2F8FF : 0x8FC8FF));
-        K.text(PortWeatherLabel(wx), cx, tagY + 31, 38, 270, night && !snow && !rain ? 0xFFE9A0 : kWhite, 2.0f);
+        std::string wl = fr_upper(PortWeatherLabel(wx));  // ("SNOW GAME" -> SNOW: a tag says it in a word)
+        const size_t g = wl.find(" GAME");
+        if (g != std::string::npos) wl = wl.substr(0, g);
+        xrmenu::chip(K, wl, cx, tagY, snow ? 0x2F6FD0 : (rain ? 0x1E5A9A : (night ? 0x2A2F6A : 0x2F6FD0)));
       }
-      // the starting captain, the swap printed on it (X)
-      if (v.backup[0] != '\0') {
-        const std::string who = "STARTS: " + fr_upper(backupStarts ? v.backup : v.captain);
-        const float cw = std::min(560.0f, K.width(who, 40) + 200);
-        K.box(x0 + 60, y0 + 668, x0 + 60 + cw, y0 + 728, 30, xrmenu::kDark, 0.8f);
-        K.left(who, x0 + 84, y0 + 699, 40, cw - 200, kWhite, 2.0f);
-        const float gx = x0 + 60 + cw - 160;
-        xrmenu::glyph(K, "X", gx, y0 + 698, 46);
-        K.left("SWAP", gx + 56, y0 + 700, 38, 100, kSoft, 2.0f);
-        extras.push_back({"X", "SWAP CAPTAIN"});
-      }
+      if (v.backup[0] != '\0') extras.push_back({"X", "CAPTAIN"});  // (X swaps captain + backup: the bar says it, nothing on the page)
       if (lg.active && lg.vsMember >= 0 && lg.vsMember < lg.memberCount) {
         const std::string who = fr_upper(lg.members[lg.vsMember].name);
         const bool can = lg.meReady || (s.canPlay && lg.synced);
-        action(x0 + 34, 640, lg.meReady ? "WAITING..." : "READY", 0x2EA043, cur == 0, can, 72);
-        K.left(lg.themReady ? "VS " + who + " - THEY'RE READY!" : "VS " + who + (lg.members[lg.vsMember].online ? " (ONLINE)" : " (OFFLINE)"),
-               x0 + 700, y0 + 808, 40, x1 - x0 - 720, kGoldC, 2.0f);
+        xrmenu::button(K, x0 + 50, by0, x0 + 740, by0 + 110, lg.meReady ? "WAITING..." : "READY", "", true, cur == 0, can);
+        xrmenu::say(K, lg.themReady ? "VS " + who + ": READY!" : "VS " + who + (lg.members[lg.vsMember].online ? " (ONLINE)" : " (OFFLINE)"),
+                    x0 + 790, by0 + 55, 40, xrmenu::kBGold, 'l', x1 - x0 - 840);
         if (cur == 0) aWord = lg.meReady ? "NOT READY" : "READY", aDim = !can;
       } else {
-        // r157: SIM IT, SIM TO PLAYOFFS (it only ever simmed to the playoffs), PLAY FROM THE MAIN MENU when greyed
-        action(x0 + 34, 520, s.canPlay ? "PLAY" : "PLAY FROM THE MAIN MENU", 0x2EA043, cur == 0, s.canPlay, s.canPlay ? 84 : 40);
-        action(x0 + 578, 300, "SIM IT", xrmenu::kSlate, cur == 1, true, 52);
-        if (v.phase == PORT_FR_PHASE_REGULAR && !lg.active) action(x0 + 902, 380, "SIM TO PLAYOFFS", xrmenu::kSlate, cur == 2, true, 48);
+        // ONE primary action (PLAY) and one quiet one (SIM: its pop-up asks THIS WEEK / TO PLAYOFFS)
+        const std::string playWord = s.canPlay ? "PLAY" : (s.coopGuest ? "YOUR FRIEND STARTS IT" : "PLAY FROM THE MAIN MENU");
+        xrmenu::button(K, x0 + 50, by0, x0 + 740, by0 + 110, playWord, "", true, cur == 0, s.canPlay, s.canPlay ? 0.0f : 40.0f);
+        xrmenu::button(K, x0 + 790, by0 + 10, x1 - 50, by0 + 100, "SIM", "", false, cur == 1, !s.coopGuest);
         if (cur == 0) aWord = "PLAY", aDim = !s.canPlay;
-        if (cur == 1) aWord = "SIM IT", aDim = false;
-        if (cur == 2) aWord = "SIM TO PLAYOFFS", aDim = false;
+        if (cur == 1) aWord = "SIM", aDim = s.coopGuest;
       }
     } else if (v.phase == PORT_FR_PHASE_DONE && v.champion >= 0 && v.champion < nClubs) {
-      P.glow(cx - 400, y0 + 40, cx + 400, y0 + 640, 0xFFD23F, 0.6f);
-      P.image(logo(v.champion), cx - 220, y0 + 60, cx + 220, y0 + 500, false);
-      K.text(place(v.champion), cx, y0 + 568, 80, 1100, kWhite, 5.0f);
-      K.text("CHAMPIONS!", cx, y0 + 660, 70, 1100, kGoldC, 4.0f);
+      P.glow(cx - 400, y0 + 40, cx + 400, y0 + 640, xrmenu::kBGold, 0.5f);
+      P.image(logo(v.champion), cx - 220, y0 + 70, cx + 220, y0 + 510, false);
+      xrmenu::say(K, place(v.champion), cx, y0 + 600, 80, 0xFFFFFF, 'c', x1 - x0 - 100, true, 0.0f, 3.0f);
+      xrmenu::say(K, "CHAMPIONS", cx, y0 + 690, 64, xrmenu::kBGold, 'c');
       // r173: awards night is its own moment, opened from here (never over the final's end): AWARDS NIGHT, then the season
-      action(cx - 610, 600, s.awardsSeen ? "AWARDS AGAIN" : "AWARDS NIGHT", 0xC9A227, cur == 0, true, 64);
-      action(cx + 10, 600, "SEASON " + std::to_string(v.season + 1), 0x2EA043, cur == 1, true, 64);
+      xrmenu::button(K, x0 + 50, by0, x0 + 740, by0 + 110, s.awardsSeen ? "AWARDS AGAIN" : "AWARDS NIGHT", "", true, cur == 0);
+      xrmenu::button(K, x0 + 790, by0 + 10, x1 - 50, by0 + 100, "SEASON " + std::to_string(v.season + 1), "", false, cur == 1);
       if (cur == 0) aWord = "AWARDS NIGHT", aDim = false;
       if (cur == 1) aWord = "NEXT SEASON", aDim = false;
     } else {
       // no game of yours today: the day's status big, play it out or watch one of today's games
       const std::string st = v.phase == PORT_FR_PHASE_DONE ? std::string("CHAMPIONS!")
                                                             : (v.status[0] != '\0' ? fr_upper(v.status) : std::string("NO GAME TODAY"));
-      K.text(st, cx, y0 + 120, 100, x1 - x0 - 80, xrmenu::kCream, 6.0f);
+      xrmenu::say(K, st, cx, y0 + 110, 84, 0xFFFFFF, 'c', x1 - x0 - 100, true, 0.0f, 3.0f);
       if (v.canSimDay) {
-        const float by0 = y0 + 220, by1 = by0 + 115;
-        if (cur == 0) xrmenu::focus(K, cx - 300, by0, cx + 300, by1, 50);
-        K.box(cx - 300, by0, cx + 300, by1, 50, 0x2EA043);
-        K.text("PLAY THE DAY", cx, 0.5f * (by0 + by1), 64, 560, cur == 0 ? xrmenu::kCream : kWhite, 4.0f);
-        if (s.today.count > 0) K.text("OR WATCH ONE", cx, y0 + 400, 40, 600, kSoft, 2.0f);
+        xrmenu::button(K, cx - 330, y0 + 190, cx + 330, y0 + 300, "PLAY THE DAY", "", true, cur == 0);
+        if (s.today.count > 0) xrmenu::label(K, "OR WATCH ONE", x0 + 60, y0 + 360, 36);
         for (int i = 0; i < s.today.count && i < 6; ++i) {
-          const float ry = y0 + 432 + i * 88.0f, rx0 = x0 + 60, rx1 = x1 - 60;
+          const float ry = y0 + 400 + i * 88.0f, rx0 = x0 + 60, rx1 = x1 - 60;
           const bool on = cur == i + 1;
-          if (on) xrmenu::focus(K, rx0, ry, rx1, ry + 78, 30);
-          K.box(rx0, ry, rx1, ry + 78, 30, on ? xrmenu::kRowOn : xrmenu::kTile);
-          P.image(logo(s.today.home[i]), rx0 + 14, ry + 4, rx0 + 84, ry + 74, false);
-          P.image(logo(s.today.away[i]), rx1 - 84, ry + 4, rx1 - 14, ry + 74, false);
-          K.text(place(s.today.home[i]) + "  V  " + place(s.today.away[i]), 0.5f * (rx0 + rx1), ry + 40, 40, rx1 - rx0 - 220, kWhite, 2.0f);
+          if (on) xrmenu::focus(K, rx0, ry, rx1, ry + 76, 0);
+          K.box(rx0, ry, rx1, ry + 76, 18, on ? xrmenu::kRowOn : xrmenu::kTile);
+          P.image(logo(s.today.home[i]), rx0 + 14, ry + 4, rx0 + 82, ry + 72, false);
+          P.image(logo(s.today.away[i]), rx1 - 82, ry + 4, rx1 - 14, ry + 72, false);
+          xrmenu::say(K, place(s.today.home[i]) + "  V  " + place(s.today.away[i]), 0.5f * (rx0 + rx1), ry + 38, 40, 0xFFFFFF, 'c', rx1 - rx0 - 220);
         }
         if (cur == 0) aWord = "PLAY THE DAY", aDim = false;
         if (cur >= 1 && cur <= 6) aWord = "WATCH IT", aDim = false;
         extras.push_back({"X", "SKIP AHEAD"});
       }
     }
-    {  // one line under the actions (r157: 40 px): your friend runs it, else the last match's TIZM COINS (r140: a few hours
-       // after it, and why), else the league's headline
+    // FOR YOU: 3 at most, each its title, "what > where" under it and a gold count; A goes there
+    const float ax0 = 1460, ax1 = W - 40;
+    xrmenu::label(K, "FOR YOU", ax0 + 10, y0 + 40, 40);
+    const std::vector<HubWait> wait = hub_waiting(s);
+    static const uint32_t kWaitRgb[8] = {xrmenu::kBClub, xrmenu::kBCards, xrmenu::kBNews, xrmenu::kBClub, xrmenu::kBClub,
+                                         xrmenu::kBGold, xrmenu::kBLeague, xrmenu::kBCards};
+    static const char* const kWaitIcon[8] = {"evo", "cards", "news", "swap", "shield", "trophy", "star", "swap"};
+    float ay = y0 + 90;
+    const float th = 190;
+    for (size_t i = 0; i < wait.size() && i < static_cast<size_t>(kHubWaitMax); ++i) {
+      const HubWait& wt = wait[i];
+      const uint32_t col = kWaitRgb[std::max(0, std::min(7, wt.kind))];
+      const bool on = cur == 10 + static_cast<int>(i);
+      xrmenu::TileSpec ts;  // (an empty tile: the glass in its colour, the focus; the words drawn here)
+      ts.colour = col;
+      ts.on = on;
+      xrmenu::tile(K, ax0, ay, ax1, ay + th, ts);
+      K.box(ax0, ay, ax0 + 12, ay + th, 0, col);
+      K.v.back().styled = true;
+      if (!wt.key.empty()) figs.person(P, wt.key, false, ax0 + 30, ay + 14, ax0 + 180, ay + th - 14);  // (in 3D)
+      else xrmenu::icon(K, kWaitIcon[std::max(0, std::min(7, wt.kind))], ax0 + 105, ay + th / 2, 80, wt.kind == 7 || wt.kind == 6 ? xrmenu::kBGold : 0xFFFFFF);
+      xrmenu::say(K, wt.title, ax0 + 205, ay + th / 2 - 28, 50, 0xFFFFFF, 'l', ax1 - ax0 - 330);
+      xrmenu::label(K, wt.where, ax0 + 205, ay + th / 2 + 34, 32, xrmenu::kBSoft, 'l', ax1 - ax0 - 240);
+      if (!wt.badge.empty()) xrmenu::badge(K, wt.badge, ax1 - 24, ay + 22);
+      if (on) aWord = "GO THERE", aDim = false;
+      ay += th + 26;
+    }
+    if (wait.empty()) xrmenu::say(K, "ALL CAUGHT UP", ax0 + 10, y0 + 140, 44, xrmenu::kBDim);
+    {  // the last result (your game last week) - and the BIT COINS it earned when that's fresh (r140); a co-op guest's line
+      std::string last;
+      for (int i = 0; i < v.playedCount && i < 16; ++i) {
+        const PortFranchiseView::Played& g2 = v.played[i];
+        if (!g2.mine) continue;
+        const bool home = g2.home == me;
+        const int mine = home ? g2.homeGoals : g2.awayGoals, theirs = home ? g2.awayGoals : g2.homeGoals;
+        last = std::string(mine > theirs ? "BEAT " : (mine < theirs ? "LOST TO " : "PLAYED ")) + place(home ? g2.away : g2.home) + " " + std::to_string(mine) + "-" +
+               std::to_string(theirs) + (g2.overtime ? " OT" : "");
+      }
       std::string why;
       long long when = 0;
       const int got = xrcards::last_coins(&why, &when);
-      if (s.coopGuest)
-        K.text("YOUR FRIEND RUNS THIS CAREER: THEY START THE MATCHES", cx, y0 + 914, 40, x1 - x0 - 60, kGoldC, 2.0f);
-      else if (got > 0 && static_cast<long long>(std::time(nullptr)) - when < 3LL * 3600)
-        K.text("+" + std::to_string(got) + " TIZM COINS:  " + fr_upper(why), cx, y0 + 914, 40, x1 - x0 - 60, kGoldC, 2.0f);
-      else if (v.headline[0] != '\0')
-        K.text(fr_upper(v.headline), cx, y0 + 914, 40, x1 - x0 - 60, 0xB8C2D6, 2.0f);
-    }
-    // WAITING FOR YOU: each one says where it lives, A takes you there
-    const float rx0 = 1380, rx1 = W - 40;
-    K.left("WAITING FOR YOU", rx0 + 8, y0 + 30, 40, 600, kSoft, 2.0f);
-    const std::vector<HubWait> wait = hub_waiting(s);
-    static const uint32_t kWaitRgb[6] = {xrmenu::kSecClub, xrmenu::kSecCards, xrmenu::kSecNews, xrmenu::kSecClub, xrmenu::kSecClub,
-                                         xrmenu::kSecNews};
-    static const char* const kWaitIcon[6] = {"evo", "cards", "news", "swap", "shield", "trophy"};  // r167: + free agency, r173: + awards
-    float ty = y0 + 66;
-    const float th = 210;
-    for (size_t i = 0; i < wait.size() && i < 4; ++i) {
-      const HubWait& wt = wait[i];
-      const uint32_t col = kWaitRgb[wt.kind];
-      const bool on = cur == 10 + static_cast<int>(i);
-      if (on) xrmenu::focus(K, rx0, ty, rx1, ty + th, 30);
-      K.box(rx0, ty, rx1, ty + th, 30, xrmenu::mix(col, xrmenu::kDark, 0.6f), 1.0f, xrmenu::mix(col, xrmenu::kDark, 0.82f));
-      K.box(rx0, ty, rx0 + 16, ty + th, 8, col);
-      if (!wt.key.empty()) figs.person(P, wt.key, false, rx0 + 30, ty + 10, rx0 + 210, ty + th - 10);  // (in 3D)
-      else xrmenu::icon(K, kWaitIcon[wt.kind], rx0 + 120, ty + th / 2, 110, kWhite);
-      K.left(wt.title, rx0 + 236, ty + 78, 48, rx1 - rx0 - 266, on ? xrmenu::kCream : kWhite, 3.0f);
-      K.left(wt.where, rx0 + 236, ty + 144, 40, rx1 - rx0 - 270 - (wt.badge.empty() ? 0 : 140), kGoldC, 2.0f);
-      if (!wt.badge.empty()) {  // bottom right, clear of the title
-        const float bw = K.width(wt.badge, 34) + 36;
-        K.box(rx1 - bw - 22, ty + th - 76, rx1 - 22, ty + th - 26, 25, xrmenu::kBadge);
-        K.text(wt.badge, rx1 - 22 - bw / 2, ty + th - 50, 34, bw, kWhite, 2.0f);
+      const float ly = std::max(ay, y0 + 90 + 2 * (th + 26)) + 46;
+      if (s.coopGuest) {
+        xrmenu::label(K, "CO-OP", ax0 + 10, ly, 30);
+        xrmenu::say(K, "YOUR FRIEND STARTS THE MATCHES", ax0 + 10, ly + 54, 36, 0xFFFFFF, 'l', ax1 - ax0 - 20);
+      } else if (!last.empty()) {
+        xrmenu::label(K, "LAST RESULT", ax0 + 10, ly, 30);
+        xrmenu::say(K, last, ax0 + 10, ly + 54, 40, 0xFFFFFF, 'l', ax1 - ax0 - 20);
+        if (got > 0 && static_cast<long long>(std::time(nullptr)) - when < 3LL * 3600)
+          xrmenu::say(K, "+" + std::to_string(got) + " BIT COINS", ax0 + 10, ly + 106, 36, xrmenu::kBGold, 'l', ax1 - ax0 - 20);
       }
-      if (on) aWord = "GO THERE", aDim = false;
-      ty += th + 18;
     }
-    if (wait.empty()) K.text("NOTHING WAITING", 0.5f * (rx0 + rx1), y0 + 200, 44, rx1 - rx0 - 40, xrmenu::kInkDim, 2.0f);
   } else if (page == kPgTable) {
-    // TABLE: both conferences (r157: in the page area, the gold edge = in the playoffs)
-    for (int conf = 0; conf < 2; ++conf) {
-      const float x0 = kHubPageX0 + conf * 840, x1 = x0 + 810;
-      K.box(x0, kHubPageY0, x1, kHubPageY1, 30, xrmenu::kTile, 0.55f);
-      const int first = v.conference[conf][0].club;
-      K.left((first >= 0 && first < nClubs ? fr_upper(s.clubs[first].conf) : std::string(conf == 0 ? "CROWN" : "STAR")) + " CONFERENCE",
-             x0 + 40, 262, 44, x1 - x0 - 320, kGoldC, 3.0f);
-      K.right("GD", x1 - 200, 262, 40, 80, xrmenu::kInkDim, 0.0f);
-      K.right("W-L", x1 - 30, 262, 40, 100, xrmenu::kInkDim, 0.0f);
-      const float rh = 54.5f;
-      for (int i = 0; i < 16; ++i) {
-        const PortFranchiseRow& r = v.conference[conf][i];
-        if (r.club < 0 || r.club >= nClubs) continue;
-        const float y = 300 + i * rh;
-        bool seeded = false;
-        for (int k = 0; k < 7; ++k)
-          if (v.seeds[conf][k] == r.club) seeded = true;
-        if (r.mine) K.box(x0 + 10, y, x1 - 10, y + rh - 4, 20, xrmenu::kTileOn);
-        else if (i % 2 == 0) K.box(x0 + 10, y, x1 - 10, y + rh - 4, 20, 0xFFFFFF, 0.04f);
-        if (seeded) K.box(x0 + 10, y + 4, x0 + 18, y + rh - 8, 3, kGoldC);
-        K.right(std::to_string(i + 1), x0 + 76, y + rh / 2, 40, 60, seeded ? kGoldC : kSoft, 2.0f);
-        P.image(logo(r.club), x0 + 88, y + 2, x0 + 138, y + rh - 6, false);
-        K.left(place(r.club), x0 + 150, y + rh / 2 + 1, 40, x1 - x0 - 420, r.mine ? xrmenu::kCream : kWhite, 2.0f);
-        const int gd = r.goalsFor - r.goalsAgainst;
-        K.right((gd > 0 ? "+" : "") + std::to_string(gd), x1 - 200, y + rh / 2 + 1, 40, 100, kSoft, 2.0f);
-        K.right(std::to_string(r.wins) + "-" + std::to_string(r.losses), x1 - 30, y + rh / 2 + 1, 40, 120, kWhite, 2.0f);
-      }
+    // r236 (the screen rules: a list 8 rows at a time, each row its name + one number, the details of the one focused at the
+    // right): TABLE - one conference at a time (left / right: CROWN / STAR, your own first), its 16 clubs by place, the gold edge =
+    // in the playoffs; the focused club's W-L, goal difference, goals and seed on the side panel
+    const int conf = std::max(0, std::min(1, s.scroll));
+    const float lx0 = kHubPageX0, lx1 = 1440, y0 = 232;
+    std::vector<std::string> confNames;
+    for (int c = 0; c < 2; ++c) {
+      const int first = v.conference[c][0].club;
+      confNames.push_back(first >= 0 && first < nClubs ? fr_upper(s.clubs[first].conf) : std::string(c == 0 ? "CROWN" : "STAR"));
     }
+    xrmenu::subtabs(K, confNames, conf, lx0, y0 + 4, {}, kSecRgb[sec], false);
+    int mineRow = 0;
+    for (int i = 0; i < 16; ++i)
+      if (v.conference[conf][i].mine) mineRow = i;
+    const int focusRow = onRail ? mineRow : std::max(0, std::min(15, s.cursor));
+    constexpr int kRows = 8;
+    const int first = std::max(0, std::min(16 - kRows, focusRow - kRows / 2));
+    const float ry0 = y0 + 100, rh = (1108 - ry0 - (kRows - 1) * 12.0f) / kRows;
+    auto seed_of = [&](int club) {
+      for (int k = 0; k < 7; ++k)
+        if (v.seeds[conf][k] == club) return k + 1;
+      return 0;
+    };
+    for (int k = 0; k < kRows; ++k) {
+      const int i = first + k;
+      const PortFranchiseRow& r = v.conference[conf][i];
+      if (r.club < 0 || r.club >= nClubs) continue;
+      const float y = ry0 + k * (rh + 12.0f);
+      const bool on = !onRail && i == focusRow;
+      xrmenu::TileSpec ts;
+      ts.colour = r.mine ? clubAccent : 0x2F8CFF;
+      ts.on = on;
+      xrmenu::tile(K, lx0, y, lx1, y + rh, ts);
+      const bool seeded = seed_of(r.club) > 0;
+      if (seeded) {
+        K.box(lx0, y + 10, lx0 + 6, y + rh - 10, 0, xrmenu::kBGold);
+        K.v.back().styled = true;
+      }
+      xrmenu::say(K, std::to_string(i + 1), lx0 + 70, y + rh / 2, 40, seeded ? xrmenu::kBGold : xrmenu::kBSoft, 'r');
+      P.image(logo(r.club), lx0 + 90, y + 8, lx0 + 90 + rh - 16, y + rh - 8, false);
+      xrmenu::say(K, place(r.club), lx0 + 110 + rh, y + rh / 2, 44, 0xFFFFFF, 'l', lx1 - lx0 - 360 - rh);
+      xrmenu::say(K, std::to_string(r.wins) + "-" + std::to_string(r.losses), lx1 - 30, y + rh / 2, 48, xrmenu::kBGold, 'r');
+    }
+    xrmenu::scroll_note(K, 0.5f * (lx0 + lx1), 1144, first, kRows, 16, "ROW");
+    // the focused club in full
+    const PortFranchiseRow& fr = v.conference[conf][focusRow];
+    const float fx0 = 1480, fx1 = W - 40, fcx = 0.5f * (fx0 + fx1);
+    xrmenu::panel(K, fx0, y0 + 100, fx1, 1170, fr.club >= 0 && fr.club < nClubs ? xrmenu::club_accent(s.clubs[fr.club].c1, s.clubs[fr.club].c2) : 0, 0.94f);
+    if (fr.club >= 0 && fr.club < nClubs) {
+      P.image(logo(fr.club), fcx - 150, y0 + 130, fcx + 150, y0 + 420, false);
+      xrmenu::say(K, place(fr.club), fcx, y0 + 470, 56, 0xFFFFFF, 'c', fx1 - fx0 - 60, true, 0.0f, 3.0f);
+      xrmenu::label(K, "#" + std::to_string(focusRow + 1) + "  -  " + confNames[static_cast<size_t>(conf)], fcx, y0 + 528, 32, xrmenu::kBSoft, 'c');
+      xrmenu::say(K, std::to_string(fr.wins) + "-" + std::to_string(fr.losses), fcx, y0 + 620, 88, xrmenu::kBGold, 'c');
+      const int gd = fr.goalsFor - fr.goalsAgainst;
+      xrmenu::label(K, "GOALS", fx0 + 60, y0 + 710, 30);
+      xrmenu::say(K, std::to_string(fr.goalsFor) + "-" + std::to_string(fr.goalsAgainst) + "  (" + (gd > 0 ? "+" : "") + std::to_string(gd) + ")",
+                  fx0 + 60, y0 + 758, 44, 0xFFFFFF, 'l', fx1 - fx0 - 100);
+      const int seed = seed_of(fr.club);
+      xrmenu::label(K, "PLAYOFFS", fx0 + 60, y0 + 828, 30);
+      xrmenu::say(K, seed > 0 ? "SEED " + std::to_string(seed) : std::string("OUTSIDE"), fx0 + 60, y0 + 876, 44, seed > 0 ? xrmenu::kBGold : xrmenu::kBSoft);
+    }
+    if (!onRail) aWord = "SELECT", aDim = true;
   } else if (page == kPgSquad) {
     // r157: CLUB > SQUAD - your captain, backup and three sidekicks; what you can do with the one picked under them
     struct Who {
       std::string role, name, key, tag;
       int level = 0;
       bool shiny = false, has = true;
+      int goals = 0, assists = 0;  // r232: this season
     };
     std::vector<Who> squad;
-    squad.push_back({"CAPTAIN", fr_upper(v.captain), v.captainKey, !v.startsBackup ? "STARTS" : "", v.captainLevel, v.captainShiny, true});
+    squad.push_back({"CAPTAIN", fr_upper(v.captain), v.captainKey, !v.startsBackup ? "STARTS" : "", v.captainLevel, v.captainShiny, true,
+                     v.captainGoals, v.captainAssists});
     squad.push_back({"BACKUP", v.backup[0] != '\0' ? fr_upper(v.backup) : "NONE", v.backupKey,
-                     v.startsBackup && v.backup[0] != '\0' ? "STARTS" : "", v.backupLevel, v.backupShiny, v.backup[0] != '\0'});
+                     v.startsBackup && v.backup[0] != '\0' ? "STARTS" : "", v.backupLevel, v.backupShiny, v.backup[0] != '\0', v.backupGoals,
+                     v.backupAssists});
     for (int k = 0; k < 3; ++k) {
-      Who sk{"SIDEKICK", fr_upper(v.sidekicks[k][0] != '\0' ? v.sidekicks[k] : v.kind), v.kindKey, "", v.sidekickLevel, false, true};
+      Who sk{"SIDEKICK", fr_upper(v.sidekicks[k][0] != '\0' ? v.sidekicks[k] : v.kind), v.kindKey, "", v.sidekickLevel, false, true,
+             v.sidekickGoals[k], v.sidekickAssists[k]};
       for (const PortFranchiseEvoRow& r : s.evoWatch)  // a named member's own picture (the evo watch has it)
         if (r.mine && fr_upper(r.name) == sk.name) {
           sk.key = r.key;
@@ -4433,7 +5119,7 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     for (int k = 0; k < 2; ++k)  // (a captain / backup ready: EVOLVE! unless it's the one starting)
       if (!squad[k].name.empty() && fr_upper(s.evoReadyName) == squad[k].name && squad[k].tag.empty())
         squad[k].tag = s.evoReadyCostume ? "SUIT UP!" : "EVOLVE!";
-    const float x0 = kHubPageX0, x1 = kHubPageX1, cw = (x1 - x0 - 4 * 22) / 5, y0 = kHubPageY0, y1 = 900;
+    const float x0 = kHubPageX0, x1 = kHubPageX1, cw = (x1 - x0 - 4 * 22) / 5, y0 = kHubPageY0, y1 = 940;  // (r236: the tag inside its card)
     const int cur = onRail ? -1 : std::max(0, std::min(4, s.cursor));
     for (int i = 0; i < 5; ++i) {
       const Who& wh = squad[static_cast<size_t>(i)];
@@ -4443,7 +5129,10 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
       K.box(tx0, y0, tx0 + cw, y1, 30, on ? xrmenu::kRowOn : (i == 0 ? xrmenu::kTileOn : xrmenu::kTile), 1.0f, xrmenu::kDark);
       K.text(wh.role, tx0 + cw / 2, y0 + 44, 40, cw - 30, i < 2 ? kGoldC : kSoft, 2.0f);
       P.glow(tx0 + cw / 2 - 200, y0 + 130, tx0 + cw / 2 + 200, y0 + 530, xrmenu::kSecClub, 0.35f);
-      if (wh.has && !wh.key.empty()) figs.person(P, wh.key, wh.shiny, tx0 + 20, y0 + 80, tx0 + cw - 20, y0 + 500);  // (in 3D)
+      // r232: the figure 40 px shorter: his season's goals + assists under it (r236: the focused one's only - details on focus)
+      if (wh.has && !wh.key.empty()) figs.person(P, wh.key, wh.shiny, tx0 + 20, y0 + 80, tx0 + cw - 20, y0 + 460);  // (in 3D)
+      if (wh.has && on)
+        K.text(std::to_string(wh.goals) + " G   " + std::to_string(wh.assists) + " A", tx0 + cw / 2, y0 + 500, 40, cw - 30, kGoldC, 2.0f);
       K.text(wh.name, tx0 + cw / 2, y0 + 556, 48, cw - 30, on ? xrmenu::kCream : (wh.has ? kWhite : xrmenu::kInkDim), 3.0f);
       if (wh.has) K.text("LV " + std::to_string(wh.level), tx0 + cw / 2, y0 + 614, 42, cw - 30, kSoft, 2.0f);
       if (!wh.tag.empty()) {
@@ -4463,18 +5152,9 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     const Act acts[3] = {{"A", skPicked ? "CHANGE THIS SIDEKICK" : "CHANGE A SIDEKICK", skPicked && canEdit},
                          {"X", "SWAP CAPTAIN + BACKUP", canSwap},
                          {"Y", "TRADE HIM", cur >= 0 && canTrade && squad[static_cast<size_t>(std::max(0, cur))].has}};
-    const float aw = (x1 - x0 - 2 * 22) / 3, ay0 = 930;
-    for (int i = 0; i < 3; ++i) {
-      const float ax0 = x0 + i * (aw + 22);
-      K.box(ax0, ay0, ax0 + aw, ay0 + 110, 55, xrmenu::kDark, 0.8f);
-      xrmenu::glyph(K, acts[i].g, ax0 + 30, ay0 + 55, 62);
-      K.left(acts[i].t, ax0 + 112, ay0 + 57, 40, aw - 140, acts[i].can ? kWhite : xrmenu::kInkDim, 2.0f);
-    }
-    if (!s.evoReadyName.empty())
-      K.text(fr_upper(s.evoReadyName) + " IS READY TO " + (s.evoReadyCostume ? "SUIT UP" : "EVOLVE") + "  -  CLUB > EVO", 0.5f * (x0 + x1), 1110, 42,
-             x1 - x0, kGoldC, 2.0f);
-    else if (s.coopGuest)
-      K.text("YOUR FRIEND RUNS THIS CAREER: THEY TRADE AND PICK THE SIDEKICKS", 0.5f * (x0 + x1), 1110, 38, x1 - x0, kGoldC, 2.0f);
+    // (r236: the on-page action strip that repeated the bottom bar is gone - A CHANGE / X SWAP CAPTAIN / Y TRADE HIM live there; the
+    // EVOLVE line lives on HOME / the EVO rail badge; a co-op guest's one short line stays: why A / Y are faded)
+    if (s.coopGuest) xrmenu::label(K, "CO-OP: YOUR FRIEND PICKS AND TRADES", 0.5f * (x0 + x1), 1000, 40, xrmenu::kBGold, 'c', x1 - x0);
     if (!onRail) {
       aWord = "CHANGE";
       aDim = !acts[0].can;
@@ -4713,32 +5393,10 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     }
   } else if (page == kPgStars) {
     // STARS: the golden boot's top 3 big, 4-10 as a list under them. r157: in the kit's sizes (r113-r156's layout drawn
-    // smaller had 28 px names)
-    const float cxp = 0.5f * (kHubPageX0 + kHubPageX1);
-    K.text("GOLDEN BOOT", cxp, 250, 48, 900, kGoldC, 3.0f);
-    for (int i = 0; i < 3 && i < v.leaderCount; ++i) {
-      const PortFranchiseView::Leader& l = v.leaders[i];
-      const float cx = cxp + (i == 0 ? 0.0f : (i == 1 ? -540.0f : 540.0f)), big = i == 0 ? 1.0f : 0.85f;
-      const float y0 = 290 + (i == 0 ? 0.0f : 50.0f);
-      P.glow(cx - 260, y0, cx + 260, y0 + 420 * big, i == 0 ? 0xFFD23F : 0x6A9AE0, 0.45f);
-      figs.person(P, l.key, false, cx - 200, y0, cx + 200, y0 + 400 * big);  // r131: in 3D
-      P.image(logo(l.club), cx + 150, y0, cx + 250, y0 + 100, false);
-      K.text("#" + std::to_string(i + 1), cx - 200, y0 + 40, 64, 140, i == 0 ? kGoldC : 0xC8D2E6, 4.0f);
-      K.text(fr_upper(l.name), cx, y0 + 440 * big + 10, 52, 500, kWhite, 4.0f);
-      K.text(std::to_string(l.goals) + " GOALS", cx, y0 + 440 * big + 66, 44, 400, kGoldC, 3.0f);
-    }
-    if (v.leaderCount == 0) K.text("NO GOALS YET", cxp, 600, 90, 1200, 0xC8D2E6, 4.0f);
-    // 4 - 10: two columns of rows (rank, logo, name, goals)
-    for (int i = 3; i < v.leaderCount && i < 10; ++i) {
-      const PortFranchiseView::Leader& l = v.leaders[i];
-      const int k = i - 3, c = k / 4, r = k % 4;
-      const float x0 = kHubPageX0 + c * 840.0f, x1 = x0 + 810, y = 858 + r * 80.0f;
-      K.box(x0, y, x1, y + 70, 35, l.club == me ? xrmenu::kTileOn : xrmenu::kTile);
-      K.right(std::to_string(i + 1), x0 + 80, y + 36, 40, 60, kSoft, 2.0f);
-      P.image(logo(l.club), x0 + 96, y + 6, x0 + 154, y + 64, false);
-      K.left(fr_upper(l.name), x0 + 170, y + 37, 40, x1 - x0 - 380, kWhite, 2.0f);
-      K.right(std::to_string(l.goals) + " GOALS", x1 - 30, y + 37, 40, 200, kGoldC, 2.0f);
-    }
+    // smaller had 28 px names). r232: three views, left / right - GOLDEN BOOT, ASSISTS, POINTS (hub_stars_page)
+    hub_stars_page(P, K, v, s.scroll, me,
+                   [&](const char* key, float x0, float y0, float x1, float y1) { figs.person(P, key, false, x0, y0, x1, y1); }, logo);
+    if (!onRail) aWord = "SELECT", aDim = true;
   } else if (page == kPgMag) {
     // MAGAZINE: this week's STRIKERS ILLUSTRATED cover and READ IT (A on the rail). r157: the kit's sizes
     // (drawn on its own and then placed: the cover's lights and its star run past its edges)
@@ -4746,7 +5404,10 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     Pieces F;
     F.k = 0.62f;
     const unsigned bigAt = xrbig::generation();  // r137
-    mag_page(F, s, 0);  // r143: no game picture
+    {
+      const xrtext::FaceScope lucky(xrtext::kFaceLucky);  // r236: the cover keeps STRIKERS ILLUSTRATED's own lettering (measured in it)
+      mag_page(F, s, 0);  // r143: no game picture
+    }
     if (F.bigMissing) {  // r137: its star's big picture still being drawn: the hub drawn again once it's there
       g_hubBigAt = bigAt;
       g_hubBigWait = true;
@@ -4758,16 +5419,9 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     const float rx0 = coverX + coverW + 80, rx1 = kHubPageX1 - 20, rcx = 0.5f * (rx0 + rx1);
     K.text(v.lastWeek > 0 && v.lastWeek <= PORT_FR_WEEKS ? "WEEK " + std::to_string(v.lastWeek) + " ISSUE" : std::string("THIS WEEK'S ISSUE"), rcx,
            420, 56, rx1 - rx0, kGoldC, 3.0f);
-    if (s.magUnread) {
-      K.box(rcx - 80, 470, rcx + 80, 524, 27, xrmenu::kBadge);
-      K.text("NEW", rcx, 498, 40, 140, kWhite, 2.0f);
-    }
-    // (the one gold ring stays on the rail: A there reads it)
-    K.box(rcx - 300, 580, rcx + 300, 720, 60, xrmenu::kGreen);
-    xrmenu::glyph(K, "A", rcx - 250, 650, 70);
-    K.text("READ IT", rcx + 40, 652, 80, 420, onRail ? xrmenu::kCream : kWhite, 4.0f);
-    K.text("GRAB IT. FLIP IT.", rcx, 800, 44, rx1 - rx0, kSoft, 2.0f);
-    K.text("LT RT OR THE STICK TURN ITS PAGES", rcx, 860, 40, rx1 - rx0, kSoft, 2.0f);
+    if (s.magUnread) xrmenu::chip(K, "NEW", rcx, 498, xrmenu::kBGold, 'c', 40);
+    // (the one gold ring stays on the rail: A there reads it. r236: one primary button, no on-page copy of the bar's hints)
+    xrmenu::button(K, rcx - 300, 590, rcx + 300, 710, "READ IT", "", true, false);
     hints.push_back({"A", "READ IT", 0x2EA043});
   } else if (page == kPgHistory) {
     // HISTORY: this season's awards (with who won them) and the hall of fame. r157: one list in the kit's sizes, the
@@ -4835,7 +5489,7 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
       P.text(fr_upper(nm.title), px0 + pw2 / 2, y0 + 718, 40, pw2 - 40, kPaperRed);
       P.box(px0 + 50, y0 + 764, px0 + pw2 - 50, y0 + 800, 18, 0x5A3A1A, 0.35f);
       P.box(px0 + 50, y0 + 764, px0 + 50 + (pw2 - 100) * std::max(0.05f, std::min(1.0f, nm.heat / 100.0f)), y0 + 800, 18, kPaperRed);
-      P.text("HEAT", px0 + pw2 / 2, y0 + 782, 26, 200, 0xFFFFFF);
+      P.text("HEAT", px0 + pw2 / 2, y0 + 782, 30, 200, 0xFFFFFF);  // (r236: 30 px floor)
       P.text(std::to_string(nm.beatYou) + " - " + std::to_string(nm.lostToYou), px0 + pw2 / 2, y0 + 852, 64, pw2 - 60, 0x2A1A0E);
       P.text(i == v.nextNemesis ? "YOUR NEXT GAME!" : (nm.teammate ? "YOUR OWN TEAMMATE" : "THEM - YOU"), px0 + pw2 / 2, y0 + 906, 32,
              pw2 - 60, i == v.nextNemesis ? kPaperRed : 0x5A3A1A);
@@ -4851,8 +5505,7 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     // one form, its forms as tiles: the reached ones lit (the one playing checked), the next ones locked at their level
     // (EVOLVE! when it's ready). A plays the one picked (a confirm), X the league's Evo Watch
     const float x0 = kHubPageX0, x1 = kHubPageX1;
-    K.left("YOUR FORMS: PICK WHO PLAYS", x0 + 10, 262, 44, 900, kGoldC, 3.0f);
-    K.right("LEVEL, XP AND SHINY STAY", x1 - 10, 262, 40, 700, kSoft, 2.0f);
+    xrmenu::label(K, "YOUR FORMS: PICK WHO PLAYS", x0 + 10, 262, 40);  // (r236: "LEVEL, XP AND SHINY STAY" -> the confirm's line)
     const int rows = std::min(5, static_cast<int>(s.forms.size()));
     const int curRow = onRail ? -1 : std::max(0, std::min(rows - 1, s.evoSlot));
     for (int r = 0; r < rows; ++r) {
@@ -4921,37 +5574,19 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     K.right(std::to_string(fw.agents) + " FREE AGENTS", x1 - 10, 256, 40, 380, kSoft, 2.0f);
     const float lx1 = x0 + 1000, dx0 = lx1 + 24, dcx = 0.5f * (dx0 + x1), dw = x1 - dx0;
     const int n = static_cast<int>(s.fa.size());
-    constexpr int kRows = 6;
+    constexpr int kRows = 5;  // r236: 5 rows, each its name + one number (OVR); the rest on the focused one's panel
     const int cur = std::max(0, std::min(n - 1, s.cursor));
     const int first = std::max(0, std::min(std::max(0, n - kRows), cur - kRows / 2));
     for (int i = first; i < n && i < first + kRows; ++i) {
       const PortFranchiseFreeAgent& a = s.fa[static_cast<size_t>(i)];
-      const float y0 = 296 + (i - first) * 134.0f, y1 = y0 + 124;
+      const float y0 = 296 + (i - first) * 160.0f, y1 = y0 + 146;
       const bool on = !onRail && s.faStage == 0 && i == cur;
       if (on) xrmenu::focus(K, x0, y0, lx1, y1, 28);
       K.box(x0, y0, lx1, y1, 28, on ? xrmenu::kRowOn : (a.myRole >= 0 ? 0x22305C : xrmenu::kTile));
-      figs.person(P, a.key, a.shiny, x0 + 8, y0 + 4, x0 + 118, y1 - 4);  // (in 3D)
-      K.left(fr_upper(a.name), x0 + 134, y0 + 40, 48, a.rookie ? 340 : 500, on ? xrmenu::kCream : kWhite, 3.0f);
-      if (a.rookie) {  // r173: a ROOKIE (never played in this career)
-        const float rx = x0 + 134 + std::min(340.0f, K.width(fr_upper(a.name), 48)) + 18;
-        K.box(rx, y0 + 16, rx + 158, y0 + 64, 24, 0x2EA043);
-        K.text("ROOKIE", rx + 79, y0 + 41, 40, 146, kWhite, 2.0f);
-      }
-      K.left("OVR " + std::to_string(a.rating) + "  LV " + std::to_string(a.level) + (a.captainType ? "" : "  SIDEKICK"), x0 + 134,
-             y0 + 92, 40, 500, kSoft, 2.0f);
-      const float ix = lx1 - 340;
-      if (a.refusesMe) {
-        K.box(ix, y0 + 30, lx1 - 20, y1 - 30, 32, 0x8E2A2A);
-        K.text("BEEF: WON'T SIGN", 0.5f * (ix + lx1 - 20), 0.5f * (y0 + y1), 40, lx1 - 40 - ix, kWhite, 2.0f);
-      } else if (a.interested > 0) {
-        if (a.leader >= 0) P.image(logo(a.leader), ix, y0 + 14, ix + 96, y0 + 110, false);
-        K.left(std::to_string(a.interested) + (a.interested == 1 ? " CLUB" : " CLUBS"), ix + 110, y0 + 40, 40, 220, kWhite, 2.0f);
-        const bool mine = a.myRole >= 0;
-        K.left(mine ? (a.myLead ? "YOU LEAD" : "YOU TRAIL") : "INTERESTED", ix + 110, y0 + 92, 40, 220,
-               mine ? (a.myLead ? 0x6ED36E : 0xFF8A7A) : kSoft, 2.0f);
-      } else {
-        K.left("NO OFFERS", ix + 110, 0.5f * (y0 + y1), 40, 220, xrmenu::kInkDim, 2.0f);
-      }
+      figs.person(P, a.key, a.shiny, x0 + 8, y0 + 4, x0 + 128, y1 - 4);  // (in 3D)
+      K.left(fr_upper(a.name), x0 + 150, 0.5f * (y0 + y1), 52, lx1 - x0 - 420, on ? xrmenu::kCream : (a.refusesMe ? xrmenu::kInkDim : kWhite), 3.0f);
+      if (a.myRole >= 0) xrmenu::chip(K, a.myLead ? "YOU LEAD" : "YOU TRAIL", lx1 - 200, 0.5f * (y0 + y1), a.myLead ? 0x2EA043 : 0x8E2A2A, 'r', 30);
+      K.right(std::to_string(a.rating), lx1 - 30, 0.5f * (y0 + y1), 64, 150, kGoldC, 3.0f);
     }
     if (n == 0)
       K.text(s.faFilter == 3 ? "NO OFFERS OUT" : (s.faFilter == 4 ? "NO ROOKIES LEFT" : "NO FREE AGENTS RIGHT NOW"), 0.5f * (x0 + lx1), 640, 56, lx1 - x0 - 60, kSoft, 3.0f);
@@ -4966,41 +5601,37 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
       figs.person(P, a.key, a.shiny, dx0 + 90, 306, x1 - 90, 600);
       if (a.formerClub >= 0) P.image(logo(a.formerClub), x1 - 120, 310, x1 - 20, 410, false, 0.8f);
       K.text(fr_upper(a.name) + (a.shiny ? " (SHINY)" : ""), dcx, 638, 56, dw - 40, xrmenu::kCream, 4.0f);
+      // r236: the focused one's details in a few short lines (was 10): who, the role / form, the race for him, when it decides
       std::vector<std::pair<std::string, uint32_t>> ln;
-      ln.push_back({"OVR " + std::to_string(a.rating) + "  -  LV " + std::to_string(a.level) + "  -  VALUE " + std::to_string(a.value), kWhite});
+      ln.push_back({"OVR " + std::to_string(a.rating) + "  -  LV " + std::to_string(a.level) + (a.rookie ? "  -  ROOKIE" : ""), kWhite});  // r173
       ln.push_back({std::string(a.captainType ? "CAPTAIN" : "SIDEKICK") + (a.stages > 1 ? "  -  FORM " + std::to_string(a.stage) + " OF " + std::to_string(a.stages) : ""),
-                    kWhite});
-      ln.push_back({std::string(a.game) + "  -  " + a.persName, kSoft});
-      if (a.rookie) ln.push_back({"ROOKIE: NEVER PLAYED, FIRST FORM", 0x6ED36E});  // r173
+                    kSoft});
       ln.push_back({a.home[0] != '\0' ? std::string("HOME: ") + a.home : std::string("HOME: ANYWHERE"), kSoft});
-      if (a.formerClub >= 0) ln.push_back({"RELEASED BY " + place(a.formerClub), kSoft});
       if (a.refusesMe) {
-        ln.push_back({"BEEF WITH YOUR CAPTAIN", 0xFF8A7A});
-        ln.push_back({"WON'T SIGN WITH YOU", 0xFF8A7A});
+        ln.push_back({"BEEF: WON'T SIGN WITH YOU", 0xFF8A7A});
       } else if (a.interested > 0) {
-        ln.push_back({"WANTED BY " + std::to_string(a.interested) + (a.interested == 1 ? " CLUB" : " CLUBS"), kWhite});
+        ln.push_back({std::to_string(a.interested) + (a.interested == 1 ? " CLUB WANTS HIM" : " CLUBS WANT HIM"), kWhite});
         if (a.leader >= 0) {
           ln.push_back({a.leader == me ? std::string("YOUR OFFER LEADS") : "LEADS: " + place(a.leader), a.leader == me ? 0x6ED36E : kGoldC});
-          ln.push_back({std::string("AS ") + kRoleWord[std::max(0, std::min(4, a.leaderRole))] + (a.leaderPromise ? " + STARTS" : "") + ": " +
-                            a.leaderWhy,
-                        kSoft});
+          ln.push_back({std::string("AS ") + kRoleWord[std::max(0, std::min(4, a.leaderRole))] + (a.leaderPromise ? " + STARTS" : ""), kSoft});
         }
       } else {
         ln.push_back({"NO OFFERS YET", xrmenu::kInkDim});
       }
       if (a.decideWeek > 0) ln.push_back({"DECIDES AFTER WEEK " + std::to_string(a.decideWeek), kGoldC});
       else if (fw.offSeason && a.interested > 0) ln.push_back({"DECIDES AT THE SEASON'S START", kGoldC});
-      for (size_t k = 0; k < ln.size() && k < 10; ++k) K.text(ln[k].first, dcx, 700 + k * 44.0f, 40, dw - 30, ln[k].second, 2.0f);
+      for (size_t k = 0; k < ln.size() && k < 7; ++k) K.text(ln[k].first, dcx, 710 + k * 56.0f, 40, dw - 30, ln[k].second, 2.0f);
     }
-    // your last result (green signed, red lost), else how it works
+    // your last result (green signed, red lost) - only when there is one (r236: no always-on "how it works" sentence)
     {
       const std::string last = fr_upper(fw.last);
       const bool good = last.find("SIGNED WITH YOU") != std::string::npos || last.starts_with("OFFER OUT");
       const bool bad = last.find("SPURNED") != std::string::npos || last.find("TURNED DOWN") != std::string::npos ||
                        last.find("WON'T") != std::string::npos;
-      K.box(x0, 1130, x1, 1180, 25, last.empty() ? xrmenu::kDark : (good ? 0x2EA043 : (bad ? 0x8E2A2A : xrmenu::kSlate)), last.empty() ? 0.6f : 1.0f);
-      K.text(last.empty() ? std::string("NO COINS: AN OFFER IS A ROLE. THE BEST ROLE + CLUB FOR THEM WINS") : last, 0.5f * (x0 + x1), 1156, 40,
-             x1 - x0 - 40, kWhite, 2.0f);
+      if (!last.empty()) {
+        K.box(x0, 1130, x1, 1180, 25, good ? 0x2EA043 : (bad ? 0x8E2A2A : xrmenu::kSlate), 1.0f);
+        K.text(last, 0.5f * (x0 + x1), 1156, 40, x1 - x0 - 40, kWhite, 2.0f);
+      }
     }
     if (!onRail && s.faStage == 0) {
       const bool can = fw.open && n > 0 && !s.fa[static_cast<size_t>(cur)].refusesMe;
@@ -5096,7 +5727,7 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
       K.box(x0, y0, x1, y1, 30, on ? xrmenu::kTileOn : xrmenu::kTile);
       for (int k = 0; k <= i; ++k) xrmenu::icon(K, "star", cxc + (k - 0.5f * i) * 80.0f, y0 + 200, 90, on ? kGoldC : 0x6A748A);
       K.text(kLevels[i], cxc, y0 + 450, 70, cw - 40, cur ? xrmenu::kCream : kWhite, 4.0f);
-      K.text(kOne[i], cxc, y0 + 550, 40, cw - 40, kSoft, 2.0f);
+      if (cur || (onRail && on)) K.text(kOne[i], cxc, y0 + 550, 40, cw - 40, kSoft, 2.0f);  // (r236: the line on the focused card only)
       if (on) {  // a green check: the one you're on
         K.box(cxc - 110, y0 + 650, cxc + 110, y0 + 720, 35, 0x2EA043);
         K.text("ON", cxc, y0 + 686, 52, 180, kWhite, 3.0f);
@@ -5123,6 +5754,19 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
       K.right(m.done ? "PLAYED" : "TO PLAY", x1 - 24, y0 + 126, 40, 250, m.done ? kGoldC : 0xB8C2D6, 2.0f);
     }
     if (lg.owner && lg.canSimRest) hints.push_back({"A", "SIM THE REST", 0x2EA043});
+  } else if (page == kPgBook) {
+    // r199: CLUB > SPORTSBOOK (xr_book.cpp): the page area is the sportsbook's own page (1650 x 958), the same drawing as the
+    // machine's screen; its A word and X (the next board) in the hint bar, Y the machine's switch
+    xrbook::draw(P.v, kHubPageX0, kHubPageY0, (kHubPageX1 - kHubPageX0) / xrbook::kW, false, 0.0f, g.bookMachine);
+    std::string bw, bx;
+    bool bd = true;
+    xrbook::hub_hints(&bw, &bd, &bx);
+    if (!onRail) {
+      aWord = bw;
+      aDim = bd;
+    }
+    extras.push_back({"X", bx, onRail});
+    extras.push_back({"Y", g.bookMachine ? "MACHINE: ON" : "MACHINE: OFF", false});
   } else if (page == kPgTrades) {
     // r157: CLUB > TRADES (r77's trades screen, was Y from anywhere) in the kit's sizes: who you give (side by side), then
     // who you could get and whether they'd say yes (7 at a time, the list follows the ring)
@@ -5210,9 +5854,7 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     } else if (!s.tradeMsg.empty()) {
       K.box(bcx - 0.5f * bw, 1090, bcx + 0.5f * bw, 1170, 40, s.tradeMsg.compare(0, 4, "DONE") == 0 ? 0x2EA043 : 0x8E2A2A);
       K.text(fr_upper(s.tradeMsg), bcx, 1131, 40, bw - 40, kWhite, 2.0f);
-    } else {
-      K.text("THEY SAY YES WHEN THEY GET 90% OF WHAT THEY GIVE", bcx, 1131, 40, bw - 40, 0x9AA6BE, 2.0f);
-    }
+    }  // (r236: the always-on "THEY SAY YES WHEN THEY GET 90% ..." is the YES / NO pill on each offer now)
   }
   P.ox = P.oy = 0.0f;  // (back to the panel's own pixels)
   P.k = 1.0f;
@@ -5245,7 +5887,7 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
   // r167: free agency's offer confirm, the EVO selector's
   const bool faAsk = page == kPgFreeAgents && s.faStage == 2 && !s.fa.empty();
   const bool formAsk = page == kPgEvo && s.formAsk && s.evoView == 0 && !s.forms.empty();
-  if (s.ask == kFrAskSimSeason || (page == kPgCards && !cardsPage.confirm.empty()) || faAsk || formAsk) {
+  if (s.ask == kFrAskSimSeason || s.ask == kFrAskSim || (page == kPgCards && !cardsPage.confirm.empty()) || faAsk || formAsk) {
     // (a confirm asking: its own bar, drawn with it below)
   } else if (popup) {
     xrmenu::hint_bar(K, 30, W - 30, 1246, popupHints);
@@ -5256,7 +5898,26 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     xrmenu::hint_bar(K, 30, W - 30, 1246, bar);
   }
   // the one confirm, over it all, with its own hint bar (A YES, B NO: the hub's hidden under it)
-  if (s.ask == kFrAskSimSeason) {
+  if (s.ask == kFrAskSim) {
+    // r236: HOME's SIM - THIS WEEK (your next match played for you) or TO PLAYOFFS (every week left: the old confirm's yes); the
+    // stick picks, A sims, B closes. TO PLAYOFFS only in the regular season of a career of your own (as before)
+    const bool toPlayoffs = v.phase == PORT_FR_PHASE_REGULAR && !lg.active;
+    const int pick = toPlayoffs ? std::max(0, std::min(1, s.askSlot)) : 0;
+    K.box(0, 0, W, H, 0, 0x03050A, 0.74f);
+    K.v.back().styled = true;
+    const float bw = 1240, bh = 470, bx0 = 0.5f * (W - bw), by0 = 0.5f * (H - bh), bx1 = bx0 + bw, by1 = by0 + bh, bcx = 0.5f * W;
+    xrmenu::panel(K, bx0, by0, bx1, by1, clubAccent, 0.98f, 34.0f);
+    K.box(bx0 + 34, by0, bx1, by0 + 10, 0, clubAccent);
+    K.v.back().styled = true;
+    xrmenu::say(K, "SIM", bcx, by0 + 96, 80, 0xFFFFFF, 'c', bw - 80, true, 0.0f, 3.0f);
+    const float cw = toPlayoffs ? 500.0f : 620.0f, gy = by0 + 200;
+    for (int k = 0; k < (toPlayoffs ? 2 : 1); ++k) {
+      const float cx0 = toPlayoffs ? bcx - cw - 20 + k * (cw + 40) : bcx - cw / 2;
+      xrmenu::button(K, cx0, gy, cx0 + cw, gy + 110, k == 0 ? "THIS WEEK" : "TO PLAYOFFS", "", k == pick, k == pick);
+    }
+    xrmenu::say(K, pick == 0 ? "YOUR NEXT MATCH, PLAYED FOR YOU" : "EVERY WEEK LEFT, PLAYED FOR YOU", bcx, by1 - 90, 40, xrmenu::kBSoft, 'c', bw - 80);
+    xrmenu::hint_bar(K, 30, W - 30, 1246, {{"L", "PICK"}, {"A", "SIM"}, {"B", "BACK"}});
+  } else if (s.ask == kFrAskSimSeason) {
     xrmenu::confirm(K, W, H, "SIM TO THE PLAYOFFS?", "EVERY WEEK LEFT IS PLAYED OUT FOR YOU", "SIM IT", "NO");
     xrmenu::hint_bar(K, 30, W - 30, 1246, {{"A", "SIM IT"}, {"B", "NO"}});
   } else if (page == kPgCards && !cardsPage.confirm.empty()) {
@@ -5288,9 +5949,10 @@ bool draw_hub(uint8_t* px, int w, int h, const FrSnapshot& s) {
     const PortFranchiseForms& f = s.forms[static_cast<size_t>(std::max(0, std::min(static_cast<int>(s.forms.size()) - 1, s.evoSlot)))];
     const int t = std::max(0, std::min(std::max(1, std::min(6, f.count)) - 1, s.evoTile));
     xrmenu::confirm(K, W, H, "PLAY AS " + fr_upper(f.name[t]) + "?",
-                    "YOUR " + std::string(f.role) + " FROM NOW ON. CHANGE BACK ANY TIME", "PLAY IT", "NO");
+                    "YOUR " + std::string(f.role) + " FROM NOW ON  -  LEVEL, XP AND SHINY STAY", "PLAY IT", "NO");
     xrmenu::hint_bar(K, 30, W - 30, 1246, {{"A", "PLAY IT"}, {"B", "NO"}});
   }
+  xrmenu::broadcast_pieces(P.v, 0);  // r236: every page's own pieces in LOOK B (the kit's own left as they are)
   xrtext::board(px, w, h, P.v);
   fr_figs_publish(s.serial, std::move(figs.asks), W, H);  // r131
   return true;
@@ -6009,12 +6671,12 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
       return "  LV " + std::to_string(level) + (shiny ? "  SHINY" : "");
     };
     xrtext::FrLine cap = line("CAPTAIN: " + std::string(v.captain) + lv(v.captainLevel, v.captainShiny),
-                              std::to_string(v.captainGoals) + " G" + (v.startsBackup ? "" : "  STARTS"));
+                              std::to_string(v.captainGoals) + " G " + std::to_string(v.captainAssists) + " A" + (v.startsBackup ? "" : "  STARTS"));  // r232: + assists
     cap.gold = !v.startsBackup;
     club.lines.push_back(cap);
     if (v.backup[0] != '\0') {
       xrtext::FrLine bk = line("BACKUP: " + std::string(v.backup) + lv(v.backupLevel, v.backupShiny),
-                               std::to_string(v.backupGoals) + " G" + (v.startsBackup ? "  STARTS" : ""));
+                               std::to_string(v.backupGoals) + " G " + std::to_string(v.backupAssists) + " A" + (v.startsBackup ? "  STARTS" : ""));  // r232
       bk.gold = v.startsBackup;
       club.lines.push_back(bk);
     } else {
@@ -6026,7 +6688,7 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
     for (int k = 0; k < 3; ++k) {
       // r71: each one's goals this season; a rookie says so
       xrtext::FrLine sk = line("   " + std::string(v.sidekicks[k]) + (v.sidekickAge[k] == 0 ? "  ROOKIE" : ""),
-                               std::to_string(v.sidekickGoals[k]) + " G");
+                               std::to_string(v.sidekickGoals[k]) + " G " + std::to_string(v.sidekickAssists[k]) + " A");  // r232
       sk.dim = true;
       club.lines.push_back(sk);
     }
@@ -6325,7 +6987,8 @@ void draw_franchise(uint8_t* px, int w, int h, const FrSnapshot& s) {
     race.weight = 1.3f;
     for (int i = 0; i < v.leaderCount; ++i) {
       const PortFranchiseView::Leader& l = v.leaders[i];
-      xrtext::FrLine ln = line(std::to_string(i + 1) + ". " + l.name + " (" + place_of(l.club) + ")", std::to_string(l.goals));
+      xrtext::FrLine ln = line(std::to_string(i + 1) + ". " + l.name + " (" + place_of(l.club) + ")",
+                               std::to_string(l.goals) + " G " + std::to_string(l.assists) + " A");  // r232: + assists
       logo_line(ln, l.club);
       ln.gold = l.club == me;
       race.lines.push_back(ln);
@@ -6668,7 +7331,7 @@ void draw_franchise_intro(uint8_t* px, int w, int h, const PortFranchiseCard& c)
   {
     // r137: tonight's weather (the match's: PortWeatherNewMatch ran at the match's set-up, before this card)
     const int wx = PortWeatherCurrent();
-    const char* label = PortWeatherLabel(wx);
+    const char* label = PortWeatherMatchLabel();  // r198: RAIN GAME / SNOW GAME / NIGHT GAME (no tier names)
     if (label[0] != '\0') {
       const bool pill = playoff && (c.seriesWins[0] == 2 || c.seriesWins[1] == 2);
       const float y = playoff ? (pill ? 493.0f : 440.0f) : (c.spectating ? 446.0f : 395.0f);
@@ -7584,6 +8247,7 @@ bool init_loader() {
 
 // r137: the compositor's per-layer colour scale / bias (the weather's grade on the eye layers: free, no extra pass)
 bool g_hasColorScaleBias = false;
+bool g_hasPerfMetrics = false;  // r221: XR_META_performance_metrics (perf_init / the compositor line)
 
 bool create_instance() {
   uint32_t count = 0;
@@ -7632,6 +8296,26 @@ bool create_instance() {
   g_hasColorScaleBias = has(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);  // r137: the weather's grade
   if (g_hasColorScaleBias) {
     exts.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
+  }
+  // r221: the runtime's own performance counters (the app's / compositor's GPU time, dropped frames): read only, for the
+  // log's once-a-second compositor line - nothing is changed by them
+  g_hasPerfMetrics = has(XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
+  if (g_hasPerfMetrics) {
+    exts.push_back(XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
+  }
+  XLOG("extensions: performance metrics (XR_META_performance_metrics) %s", g_hasPerfMetrics ? "on" : "not offered");
+  {  // r197: Meta's scene (your room scan) where the runtime lists it (props above: the count was asked first)
+    int n = 0;
+    const char* const* want = xrscene::wanted_extensions(&n);
+    std::string got;
+    for (int i = 0; i < n; ++i) {
+      if (!has(want[i])) continue;
+      exts.push_back(want[i]);
+      xrscene::set_extension_enabled(want[i]);
+      got += got.empty() ? "" : " ";
+      got += want[i];
+    }
+    XLOG("extensions (room scan): %s", got.empty() ? "none" : got.c_str());
   }
   XLOG("extensions: passthrough=%d refresh_rate=%d perf_settings=%d thread_settings=%d render_model=%d "
        "color_scale_bias=%d",
@@ -7908,6 +8592,8 @@ void create_passthrough() {
     XWARN("passthrough entry points missing");
     return;
   }
+  // r196: the passthrough's style (the lightning's flash / the blizzard's whiteout on your room) - optional
+  if (!get_proc(g.instance, "xrPassthroughLayerSetStyleFB", &pt.setStyle)) pt.setStyle = nullptr;
   XrPassthroughCreateInfoFB info{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
   info.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
   if (!xr_ok(pt.create(g.session, &info, &pt.handle), "xrCreatePassthroughFB")) {
@@ -8733,6 +9419,791 @@ void update_home_spot(bool gripL, bool gripR, bool haveL, bool haveR, const XrVe
   }
 }
 
+// --- r199: the TIZM SPORTSBOOK machine in your room (SPORTSBOOK.md; xr_book.h has the sportsbook itself) ---
+// A real arcade cabinet (tools/outside/sportsbook199/cabinet199.py: ALL-22's upright shape, our own art, its light baked)
+// standing on your floor while a franchise career is loaded and no match is on: walk up to it and play it with your
+// controller - the left stick moves, A picks / places, B backs out, X the next board, Y the next stake - and its own
+// joystick tilts and its buttons sink and light with yours (ALL-22's cabinet's way); a pointer + trigger on its screen
+// work too. The screen is the sportsbook's own drawing (xr_book.cpp) in a quad layer behind the cabinet's screen hole.
+// LEFT GRIP moves it (along your floor), BOTH GRIPS turn it and size it (0.85 - 1.15); it never floats (the room scan's
+// floor or the Guardian's) and, with a room scan, never goes into a wall or your furniture. Its spot is kept per room
+// (STRIKERS_HOME/xr_bookmachine.txt: per scanned room in the scan's own frame, else in the Guardian's - a recenter keeps
+// it where it was). Bets placed there print a paper ticket out of its slot (grab it; let go and it's gone); a collect there
+// is the full show (lights, coins out of the tray, the jackpot). SETTINGS > ROOM > SPORTSBOOK MACHINE IN MY ROOM (or Y on
+// CLUB > SPORTSBOOK) switches it off: the hub page does everything without it.
+namespace bookcab {
+// the cabinet's own space (cabinet199.py's export: x right, y up from its feet, z toward the player; metres at size 1)
+constexpr float kFootX = 0.34f, kFootZ0 = -0.40f, kFootZ1 = 0.56f, kHeight = 1.83f;
+constexpr float kScreenC[3] = {0.0f, 1.2248f, 0.1968f};  // the screen's middle (at the back of its 3 cm recess)
+constexpr float kScreenTilt = -0.3092f;                  // it leans back 17.7 degrees (a turn about x)
+constexpr float kScreenW = 0.50f, kScreenH = 0.281f;
+constexpr float kTray[3] = {0.0f, 0.15f, 0.415f};        // the payout tray (coins pour out of it)
+constexpr float kSlot[3] = {0.20f, 0.70f, 0.371f};       // the ticket printer's slot (paper comes out along +z)
+constexpr float kMarquee[3] = {0.0f, 1.635f, 0.26f};
+constexpr float kMinScale = 0.85f, kMaxScale = 1.15f;
+constexpr uint32_t kScreenPxW = 1320, kScreenPxH = 766;  // (xrbook's page at 0.8)
+}  // namespace bookcab
+
+struct BookCab {
+  // its model (loaded once on a thread: STRIKERS_HOME/franchise/book/), up in xrfx's kBookSlot
+  bool loadStarted = false, modelUp = false, loadFailed = false;
+  std::atomic<bool> loaded{false};
+  xrfx::Model model;
+  // where it stands: in its room's frame (rx rz ryaw; the scan's or the Guardian's), and in LOCAL this frame
+  std::string key;  // the room ("scan:..." / "guardian"); "" not placed yet
+  bool placed = false;
+  float rx = 0.0f, rz = 0.0f, ryaw = 0.0f, scale = 1.0f;
+  XrVector3f at{0.0f, 0.0f, 0.0f};  // LOCAL, its feet (on the floor)
+  float yaw = 0.0f;                 // LOCAL (its front: (sin, 0, cos))
+  bool shown = false;               // drawn this frame
+  // the grab (LEFT grip moves it, BOTH turn + size it)
+  bool handL = false, handR = false, prevGrip[2] = {false, false};
+  int grabHands = 0;
+  XrVector3f grabOff{0.0f, 0.0f, 0.0f}, twoPos{0.0f, 0.0f, 0.0f}, twoMid{0.0f, 0.0f, 0.0f};
+  float twoAngle = 0.0f, twoYaw = 0.0f, twoDist = 1.0f, twoScale = 1.0f;
+  bool dirty = false;  // moved since saved
+  bool grabMoved = false;  // r234: this grab has moved it (logged once)
+  int heldBack = 0;        // r234: this grab's moves held back by your walls / furniture (the first one logged)
+  // at it: the controller drives it (the hub closed, on the main menu)
+  bool engaged = false;
+  float stick[2] = {0.0f, 0.0f};
+  unsigned buttons = 0;  // bits: 0 A, 1 B, 2 X, 3 Y, 4 START (the cabinet's buttons)
+  int dir = 0;
+  uint64_t repeatNs = 0;
+  bool prevA = false, prevB = false, prevX = false, prevY = false;
+  // r202 (Lance's r199 test: A at the machine started a match - the stand-in-front takeover never caught): ENGAGED only by a
+  // hand gripping its joystick's ball (book_engage); that grip is the machine's, never the move-the-machine grab
+  int engagedHand = -1;
+  float handStick[2] = {0.0f, 0.0f};  // the hand pushing the 3D stick (-1..1 each way)
+  // r203: the gripping hand in the cabinet's own frame (metres, world-sized) - xrmachine pushes the stick from where it took hold
+  bool handValid = false;
+  float handAt[3] = {0.0f, 0.0f, 0.0f};
+  bool swallow = false;               // just let go: what's still held stays away from the game until released
+  // r205: engaged = MACHINE CONTROL ON (xrmachine::control: a hand holding the stick, or LATCHED hands free); held: a hand on it
+  bool held = false;
+  bool pokeIn[2][5] = {};             // a fingertip (the controller's tip) on the cabinet's A B X Y START button now
+  bool poke[5] = {};                  // ... pressed this frame (xrmachine's)
+  // r205: the screen's frame-thread work + the display frames (the log's "screen (r205)" line every 5 s while you're at it)
+  uint64_t statNs = 0, lastFrameNs = 0;
+  double svcMsSum = 0.0, svcMsMax = 0.0, dtMax = 0.0;
+  int svcFrames = 0, slowFrames = 0, uploads = 0, uploadRows = 0, curUploads = 0;
+  bool aimOn[2] = {false, false}, trigSwallow = false;  // a pointer on its screen: the triggers are the machine's
+  uint64_t aimNs = 0;                  // the last time a pointer was on its screen (it stays live a while)
+  bool prevGripE[2] = {false, false};
+  // r202: the SLOTS handle on its right side (out while SLOTS is up): how far out (0..1), its angle (degrees from up, + toward
+  // you: rest -12, pulled 95) and swing, the hand holding it (-1 none), its pull fired this swing, the spin it last swung for
+  float leverOut = 0.0f, leverAng = -12.0f, leverVel = 0.0f;
+  int leverHand = -1;
+  bool leverFired = false;
+  double leverSpun = -1.0;
+  // the screen (a quad layer)
+  uint64_t nextDrawNs = 0;
+  int drawGen = 0;
+  bool attract = true;
+  bool pointing = false, prevTrig[2] = {false, false};
+  // the light shows: a bet placed (short), a collect at the machine (the full show)
+  uint64_t flashNs = 0, showNs = 0;
+  uint64_t ambienceNs = 0;
+  // the printed ticket: 0 none, 1 printing out of the slot, 2 hanging from it, 3 in a hand, 4 let go (it flutters down and
+  // fades); the paper itself is a verlet chain (paper_step): kPaperN + 1 points down its middle, their last places
+  int ticketState = 0;
+  uint32_t ticketId = 0;
+  uint64_t ticketNs = 0;
+  float ticketW = 0.09f, ticketL = 0.15f;  // (r204: 9 cm wide - r199's 8 - with its print twice as sharp)
+  int ticketHand = -1;
+  xrmachine::Hold hold;     // r204: held, it's stiff card (xrmachine::ticket_hold): where the fingers have it, facing your eyes
+  uint64_t pressBuzzNs = 0; // r204: the haptic ticks while it's pressed flat against the cabinet (posting it)
+  int pendingHand = -1;  // a posted slip taken off the machine: the hand it goes to once its paper is built
+  XrVector3f pp[16], ppPrev[16];
+  XrVector3f pSide{1.0f, 0.0f, 0.0f};
+  bool chainLive = false;
+  float ticketAlpha = 1.0f;
+  std::vector<float> ticketVerts;  // its posed vertices this frame (LOCAL; xr_fx copies them up)
+  std::atomic<int> ticketReady{0};  // a ticket's model built (its id), waiting to go up
+  xrfx::Model ticketModel;
+  float readyL = 0.15f;
+  std::mutex ticketMutex;
+  std::vector<uint32_t> printQueue;
+  // r199 round 4: slips POSTED on the machine (let go against its side / front): up to 3, sagging against it, in its own
+  // space (they move with it); taken off by a grip on them. This session only.
+  struct Posted {
+    uint32_t id;
+    float top[3], down[3], side[3], n[3];  // the cabinet's own space
+    float L;
+  };
+  std::vector<Posted> posted;
+  std::atomic<int> postedReady{0};
+  xrfx::Model postedModel;
+  std::vector<float> postedVerts;
+  int postedGen = 0, postedUpGen = -1;
+  // the stage (Guardian) pose this frame (LOCAL), for the no-scan frame
+  bool stageValid = false;
+  XrPosef stage{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+};
+BookCab g_cab;
+
+std::string book_spots_path() {
+  const char* home = std::getenv("STRIKERS_HOME");
+  return std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/xr_bookmachine.txt";
+}
+// the room the cabinet's spot belongs to: a scanned room (its floor's area and walls: the same scan reads the same) or
+// your Guardian's play area
+std::string book_room_key(const xrroom::Room* r) {
+  if (r == nullptr || !r->valid || r->outlineN < 3) return "guardian";
+  double a = 0.0;
+  for (int i = 0; i < r->outlineN; ++i) {
+    const int j = (i + 1) % r->outlineN;
+    a += static_cast<double>(r->outline[i][0]) * r->outline[j][1] - static_cast<double>(r->outline[j][0]) * r->outline[i][1];
+  }
+  return "scan:" + std::to_string(static_cast<int>(std::lround(std::fabs(0.5 * a) * 10.0))) + ":" + std::to_string(r->nWalls);
+}
+// room frame <-> LOCAL. scan: the room's build frame (xr_room's fc fs ft: now = R build + t); Guardian: STAGE's pose
+void book_to_local(const xrroom::Room* r, float rx, float rz, float ryaw, float* x, float* z, float* yaw) {
+  float dx = std::sin(ryaw), dz = std::cos(ryaw);
+  if (r != nullptr && r->valid) {
+    *x = r->fc * rx + r->fs * rz + r->ft[0];
+    *z = -r->fs * rx + r->fc * rz + r->ft[2];
+    const float ex = r->fc * dx + r->fs * dz, ez = -r->fs * dx + r->fc * dz;
+    *yaw = std::atan2(ex, ez);
+  } else if (g_cab.stageValid) {
+    const XrVector3f p = q_rot(g_cab.stage.orientation, XrVector3f{rx, 0.0f, rz});
+    const XrVector3f d = q_rot(g_cab.stage.orientation, XrVector3f{dx, 0.0f, dz});
+    *x = g_cab.stage.position.x + p.x;
+    *z = g_cab.stage.position.z + p.z;
+    *yaw = std::atan2(d.x, d.z);
+  } else {
+    *x = rx;
+    *z = rz;
+    *yaw = ryaw;
+  }
+}
+void book_from_local(const xrroom::Room* r, float x, float z, float yaw, float* rx, float* rz, float* ryaw) {
+  const float dx = std::sin(yaw), dz = std::cos(yaw);
+  if (r != nullptr && r->valid) {
+    const float px = x - r->ft[0], pz = z - r->ft[2];
+    *rx = r->fc * px - r->fs * pz;
+    *rz = r->fs * px + r->fc * pz;
+    *ryaw = std::atan2(r->fc * dx - r->fs * dz, r->fs * dx + r->fc * dz);
+  } else if (g_cab.stageValid) {
+    const XrQuaternionf inv = q_conj(g_cab.stage.orientation);
+    const XrVector3f p = q_rot(inv, XrVector3f{x - g_cab.stage.position.x, 0.0f, z - g_cab.stage.position.z});
+    const XrVector3f d = q_rot(inv, XrVector3f{dx, 0.0f, dz});
+    *rx = p.x;
+    *rz = p.z;
+    *ryaw = std::atan2(d.x, d.z);
+  } else {
+    *rx = x;
+    *rz = z;
+    *ryaw = yaw;
+  }
+}
+void book_save_spot() {
+  // every room's spot kept: this one's line replaced
+  std::vector<std::string> lines;
+  if (FILE* f = std::fopen(book_spots_path().c_str(), "r")) {
+    char buf[256];
+    while (std::fgets(buf, sizeof(buf), f) != nullptr) {
+      std::string l(buf);
+      while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+      if (l.empty() || l.compare(0, g_cab.key.size() + 1, g_cab.key + " ") == 0) continue;
+      lines.push_back(l);
+    }
+    std::fclose(f);
+  }
+  char me[200];
+  std::snprintf(me, sizeof(me), "%s %.3f %.3f %.4f %.3f", g_cab.key.c_str(), g_cab.rx, g_cab.rz, g_cab.ryaw, g_cab.scale);
+  lines.push_back(me);
+  const std::string path = book_spots_path(), tmp = path + ".tmp";
+  if (FILE* f = std::fopen(tmp.c_str(), "w")) {
+    for (const std::string& l : lines) std::fprintf(f, "%s\n", l.c_str());
+    std::fclose(f);
+    std::rename(tmp.c_str(), path.c_str());
+  }
+  g_cab.dirty = false;
+}
+bool book_load_spot(const std::string& key) {
+  bool found = false;
+  if (FILE* f = std::fopen(book_spots_path().c_str(), "r")) {
+    char k[128];
+    float x = 0, z = 0, yaw = 0, sc = 1;
+    while (std::fscanf(f, "%127s %f %f %f %f", k, &x, &z, &yaw, &sc) == 5) {
+      if (key == k && std::isfinite(x + z + yaw + sc)) {
+        g_cab.rx = x;
+        g_cab.rz = z;
+        g_cab.ryaw = yaw;
+        g_cab.scale = std::max(bookcab::kMinScale, std::min(bookcab::kMaxScale, sc));
+        found = true;
+      }
+    }
+    std::fclose(f);
+  }
+  return found;
+}
+
+// Can it stand here (LOCAL, its feet)? With a room scan: its footprint inside your walls and clear of your furniture; without
+// one anywhere (the Guardian keeps you inside your play area).
+// r234: HOW blocked a spot is - of its footprint's 15 points, how many are outside your walls or on something of your scan
+// (0 = clear; no scan: 0). `outside` / `onTop` / `topUp` (optional): the outside ones, the ones on something, the highest
+// top over the floor (m). Lance 11-12 (r233): "i can no longer move the arcade" - r228 made the room scan load on his
+// headset for the first time (every log up to r227: the spot "guardian", no scan, every spot clear); the machine's spot in
+// his scanned living room had a blocked point, and a move had to land on a CLEAR spot (even staying put had to be clear),
+// so not one move was ever taken (r233's log: 11 grabs, 0 "left at"). Now a move is taken when it's no more blocked than
+// where it stands (a cabinet in a blocked spot always comes out; a clear one still never goes into a wall / furniture).
+int book_spot_blocked(const xrroom::Room* r, float x, float z, float yaw, float sc, int* outside = nullptr, int* onTop = nullptr,
+                      float* topUp = nullptr) {
+  if (outside != nullptr) *outside = 0;
+  if (onTop != nullptr) *onTop = 0;
+  if (topUp != nullptr) *topUp = 0.0f;
+  if (r == nullptr || !r->valid) return 0;
+  const float fy = xrroom::floor_y(*r);
+  const float c = std::cos(yaw), s = std::sin(yaw);
+  int n = 0;
+  for (int i = 0; i <= 2; ++i)
+    for (int j = 0; j <= 4; ++j) {
+      const float lx = (-1.0f + i) * bookcab::kFootX * sc;
+      const float lz = (bookcab::kFootZ0 + (bookcab::kFootZ1 - bookcab::kFootZ0) * j / 4.0f) * sc;
+      const float wx = x + c * lx + s * lz, wz = z - s * lx + c * lz;
+      if (!xrroom::inside(*r, wx, wz)) {
+        ++n;
+        if (outside != nullptr) ++*outside;
+        continue;
+      }
+      const float top = xrroom::top_at(*r, wx, wz);
+      if (top != xrroom::kNoTop && top > fy + 0.06f) {
+        ++n;
+        if (onTop != nullptr) ++*onTop;
+        if (topUp != nullptr) *topUp = std::max(*topUp, top - fy);
+      }
+    }
+  return n;
+}
+bool book_spot_ok(const xrroom::Room* r, float x, float z, float yaw, float sc) { return book_spot_blocked(r, x, z, yaw, sc) == 0; }
+
+// A hand on (or right by) it: inside its footprint grown 12 cm, between its feet and a little over its top
+bool book_near(const XrVector3f& h, float floorY) {
+  const float c = std::cos(g_cab.yaw), s = std::sin(g_cab.yaw);
+  const float dx = h.x - g_cab.at.x, dz = h.z - g_cab.at.z;
+  const float lx = (c * dx - s * dz) / g_cab.scale, lz = (s * dx + c * dz) / g_cab.scale;
+  const float ly = (h.y - floorY) / g_cab.scale;
+  return std::fabs(lx) < bookcab::kFootX + 0.12f && lz > bookcab::kFootZ0 - 0.12f && lz < bookcab::kFootZ1 + 0.16f && ly > -0.05f &&
+         ly < bookcab::kHeight + 0.1f;
+}
+
+// A hand on the printed ticket (hanging out of the slot, or in that hand): the ticket's, never the cabinet's
+bool book_hand_on_ticket(int h, const XrVector3f& p) {
+  const BookCab& c = g_cab;
+  for (const BookCab::Posted& ps : c.posted) {  // (a slip posted on the machine: a grip on it takes the slip, not the machine)
+    const float mid[3] = {ps.top[0] + ps.down[0] * ps.L * 0.5f, ps.top[1] + ps.down[1] * ps.L * 0.5f, ps.top[2] + ps.down[2] * ps.L * 0.5f};
+    const XrVector3f r = q_rot(XrQuaternionf{0.0f, std::sin(0.5f * c.yaw), 0.0f, std::cos(0.5f * c.yaw)},
+                               XrVector3f{mid[0] * c.scale, mid[1] * c.scale, mid[2] * c.scale});
+    const XrVector3f m{c.at.x + r.x, c.at.y + r.y, c.at.z + r.z};
+    const float dx = p.x - m.x, dy = p.y - m.y, dz = p.z - m.z;
+    if (dx * dx + dy * dy + dz * dz < 0.12f * 0.12f) return true;
+  }
+  if (c.ticketState == 3) return c.ticketHand == h;
+  if ((c.ticketState != 1 && c.ticketState != 2) || !c.chainLive) return false;
+  for (int i = 0; i <= 10; ++i) {  // (r204: any part of it, 14 cm - r199: every other point, 12 cm)
+    const float dx = p.x - c.pp[i].x, dy = p.y - c.pp[i].y, dz = p.z - c.pp[i].z;
+    if (dx * dx + dy * dy + dz * dz < 0.14f * 0.14f) return true;
+  }
+  return false;
+}
+
+// The grips (sync_input, before the shelf / table / screen get them): LEFT moves it along your floor, BOTH turn it (as the
+// hands turn round each other) and size it (as they part); the right grip alone is never the cabinet's (the item swap).
+void update_book_grab(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL, const XrVector3f& handR) {
+  BookCab& c = g_cab;
+  const xrroom::Room* room = g.mrMode ? xrscene::room() : nullptr;
+  const float floorY = room != nullptr ? xrroom::floor_y(*room) : g.floorY;
+  if (!c.shown) {
+    c.handL = c.handR = false;
+  } else {
+    if (gripL && !c.prevGrip[0] && haveL && book_near(handL, floorY) && !book_hand_on_ticket(0, handL)) {
+      c.handL = true;
+      c.grabMoved = false;
+      c.heldBack = 0;
+      int out = 0, on = 0;
+      float up = 0.0f;
+      const int bad = book_spot_blocked(room, c.at.x, c.at.z, c.yaw, c.scale, &out, &on, &up);
+      XLOG("sportsbook: the machine taken by the left grip at (%.2f, %.2f) %.0f deg, size %.2f (%s) - its spot %s%d of 15 points "
+           "blocked (%d outside your walls, %d on something up to %.0f cm)%s", c.at.x, c.at.z, c.yaw * 57.29578f, c.scale,
+           c.key.c_str(), bad == 0 ? "clear: " : "", bad, out, on, up * 100.0f, bad > 0 ? " - r234: it still moves (out of it)" : "");
+    }
+    if (gripR && !c.prevGrip[1] && haveR && c.handL && !book_hand_on_ticket(1, handR)) {  // (the second hand joins anywhere: turn + size)
+      c.handR = true;
+      XLOG("sportsbook: both grips on the machine (turn + size)");
+    }
+    if (!gripL || !haveL) c.handL = false;
+    if (!gripR || !haveR || !c.handL) c.handR = false;
+  }
+  c.prevGrip[0] = gripL;
+  c.prevGrip[1] = gripR;
+  const int hands = (c.handL ? 1 : 0) | (c.handR ? 2 : 0);
+  if (hands != c.grabHands) {
+    if (hands == 3) {
+      c.twoAngle = std::atan2(handR.x - handL.x, handR.z - handL.z);
+      c.twoYaw = c.yaw;
+      c.twoPos = c.at;
+      c.twoMid = {0.5f * (handL.x + handR.x), 0.0f, 0.5f * (handL.z + handR.z)};
+      c.twoDist = std::max(0.05f, std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) +
+                                            (handR.z - handL.z) * (handR.z - handL.z)));
+      c.twoScale = c.scale;
+    } else if (hands == 1) {
+      c.grabOff = {c.at.x - handL.x, 0.0f, c.at.z - handL.z};
+    } else if (hands == 0 && c.dirty) {
+      book_save_spot();
+      XLOG("sportsbook: the machine left at (%.2f, %.2f) %.0f deg, size %.2f (%s) - saved for this room (%d move(s) held back by "
+           "your walls / furniture)", c.at.x, c.at.z, c.yaw * 57.29578f, c.scale, c.key.c_str(), c.heldBack);
+    } else if (hands == 0) {
+      XLOG("sportsbook: the machine let go without moving (%s; %d move(s) held back by your walls / furniture)", c.key.c_str(),
+           c.heldBack);
+    }
+    c.grabHands = hands;
+  }
+  if (hands == 0) return;
+  float x = c.at.x, z = c.at.z, yaw = c.yaw, sc = c.scale;
+  if (hands == 3) {
+    float turn = std::atan2(handR.x - handL.x, handR.z - handL.z) - c.twoAngle;
+    while (turn > 3.14159265f) turn -= 6.2831853f;
+    while (turn < -3.14159265f) turn += 6.2831853f;
+    yaw = c.twoYaw + turn;
+    x = c.twoPos.x + 0.5f * (handL.x + handR.x) - c.twoMid.x;
+    z = c.twoPos.z + 0.5f * (handL.z + handR.z) - c.twoMid.z;
+    const float d = std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) +
+                              (handR.z - handL.z) * (handR.z - handL.z));
+    sc = std::max(bookcab::kMinScale, std::min(bookcab::kMaxScale, c.twoScale * d / c.twoDist));
+  } else {
+    x = handL.x + c.grabOff.x;
+    z = handL.z + c.grabOff.z;
+  }
+  // a room scan: never further into a wall or your furniture (it slides along them) - r234: "further" = no more of its
+  // footprint blocked than where it stands now (r199-r233: the new spot had to be clear, so a cabinet standing on a blocked
+  // point could never move at all)
+  {
+    const int now = book_spot_blocked(room, c.at.x, c.at.z, c.yaw, c.scale);
+    const float tx[4] = {x, x, c.at.x, c.at.x}, tz[4] = {z, c.at.z, z, c.at.z};
+    int pick = -1;
+    for (int i = 0; i < 4 && pick < 0; ++i)
+      if (book_spot_blocked(room, tx[i], tz[i], yaw, sc) <= now) pick = i;
+    if (pick < 0) {
+      if (c.heldBack++ == 0) {
+        int out = 0, on = 0;
+        float up = 0.0f;
+        const int bad = book_spot_blocked(room, x, z, yaw, sc, &out, &on, &up);
+        XLOG("sportsbook: a move held back at (%.2f, %.2f): %d of 15 points blocked there (%d outside your walls, %d on something "
+             "up to %.0f cm), %d where it stands", x, z, bad, out, on, up * 100.0f, now);
+      }
+      return;
+    }
+    x = tx[pick];
+    z = tz[pick];
+  }
+  if (!c.grabMoved && (std::fabs(x - c.at.x) > 0.005f || std::fabs(z - c.at.z) > 0.005f || std::fabs(yaw - c.yaw) > 0.01f ||
+                       std::fabs(sc - c.scale) > 0.005f)) {
+    c.grabMoved = true;
+    XLOG("sportsbook: the machine moving (%s)", hands == 3 ? "both grips: turn + size" : "left grip");
+  }
+  c.at.x = x;
+  c.at.z = z;
+  c.yaw = yaw;
+  c.scale = sc;
+  book_from_local(room, x, z, yaw, &c.rx, &c.rz, &c.ryaw);
+  c.dirty = true;
+}
+
+// --- r201: the CARD MUSEUM in your room (COIN-SINKS.md 2; xr_museum.h has the pieces, their contents, the page) ---
+// Each piece out in your room is a baked model (tools/outside/museum201/museum201.py: its light baked in Blender - spotlights,
+// LED strips, the picture light, contact shadows - into one atlas; STRIKERS_HOME/franchise/museum/) in a model slot of its own
+// (xrfx::kMuseumSlot0 + 0..5), its cards drawn into a CARD ATLAS of its own (xrcards::museum_atlas, a worker thread) mapped on
+// its card faces; each card's 3D figure stands in the case with it (the franchise figures' loader: fr_figs_want). The sportsbook
+// machine's rules for the room: floor pieces stand on your floor (the scan's or the Guardian's), never in a wall or your
+// furniture with a scan; the WALL FRAME hangs on a wall of your room scan (none: it waits, the page says so). LEFT GRIP moves a
+// piece (a frame: along / between your walls, up and down), BOTH GRIPS turn + size it (0.8 - 1.2; a frame: size only). Spots
+// kept per room in the career's museum file. Hidden in matches, the cup suite, the evolution rooms.
+namespace muscab {
+const char* const kFile[xrmuseum::kKinds] = {"frame", "pedestal", "rack", "cabinet", "vault"};
+constexpr float kMinScale = 0.8f, kMaxScale = 1.2f;
+constexpr int kMaxFigs = 8;  // (the franchise figures' 18 slots: the hub keeps the rest)
+}  // namespace muscab
+struct MusKind {
+  bool started = false, failed = false;
+  std::atomic<bool> loaded{false};
+  xrfx::Model model;  // its mesh + pictures 0 the baked light, 1 the floor / wall round it, 2 (the card atlas: per piece), 3 the beam
+  float footX = 0.3f, footZ = 0.3f, height = 1.0f;
+  bool wall = false;
+  struct Fig {
+    float p[3];
+    float maxH, maxR;
+  };
+  std::vector<Fig> figs;
+};
+MusKind g_musKind[xrmuseum::kKinds];
+struct MusSlot {
+  uint32_t id = 0;
+  int kind = -1;
+  std::vector<xrmarket::Variant> items;
+  std::string sig, upSig;
+  bool modelUp = false;
+  std::atomic<int> building{0};  // 1 building, 2 built (pending)
+  std::mutex m;
+  xrfx::Model pending;
+  std::string pendingSig;
+  // its spot
+  std::string key;
+  bool placed = false, shown = false;
+  xrmuseum::Spot spot;
+  XrVector3f at{0.0f, 0.0f, 0.0f};
+  float yaw = 0.0f;
+  // the grab
+  bool handL = false, handR = false;
+  int grabHands = 0;
+  XrVector3f grabOff{0.0f, 0.0f, 0.0f}, twoPos{0.0f, 0.0f, 0.0f}, twoMid{0.0f, 0.0f, 0.0f};
+  float twoAngle = 0.0f, twoYaw = 0.0f, twoDist = 1.0f, twoScale = 1.0f, offY = 0.0f, offU = 0.0f;
+  int grabWall = -1;
+  bool dirty = false;
+};
+MusSlot g_musSlot[xrfx::kMuseumSlots];
+bool g_musPrevGrip[2] = {false, false};
+
+// a wall of the scan in its build frame (the spots' frame) nearest to (x, z): its index, the point on it, how far along
+int mus_wall_near(const xrroom::Room* r, float x, float z, float* px, float* pz, float* u) {
+  if (r == nullptr || !r->valid) return -1;
+  int best = -1;
+  float bd = 1e9f;
+  for (int i = 0; i < r->wallN; ++i) {
+    const xrroom::Wall& w = r->walls[i];
+    if (w.len < 0.5f || (w.labels & xrroom::kLabInvisible) != 0) continue;
+    const float t = std::max(0.0f, std::min(w.len, (x - w.x0) * w.dx + (z - w.z0) * w.dz));
+    const float qx = w.x0 + w.dx * t, qz = w.z0 + w.dz * t;
+    const float d = (x - qx) * (x - qx) + (z - qz) * (z - qz);
+    if (d < bd) {
+      bd = d;
+      best = i;
+      *px = qx;
+      *pz = qz;
+      *u = t;
+    }
+  }
+  return best;
+}
+// LOCAL -> the scan's build frame (xr_room's fc fs ft: now = R build + t)
+void mus_to_build(const xrroom::Room* r, float x, float z, float* bx, float* bz) {
+  const float px = x - r->ft[0], pz = z - r->ft[2];
+  *bx = r->fc * px - r->fs * pz;
+  *bz = r->fs * px + r->fc * pz;
+}
+// a wall piece's spot on wall i at u along it (kept clear of its ends), `y` over the floor
+void mus_wall_spot(const xrroom::Room* r, int i, float u, float y, float halfW, xrmuseum::Spot* s) {
+  const xrroom::Wall& w = r->walls[i];
+  const float lo = std::min(halfW + 0.05f, 0.5f * w.len), hi = w.len - lo;
+  u = std::max(lo, std::min(hi, u));
+  s->x = w.x0 + w.dx * u + w.nx * 0.004f;
+  s->z = w.z0 + w.dz * u + w.nz * 0.004f;
+  s->yaw = std::atan2(w.nx, w.nz);  // (its front into the room)
+  s->wall = i;
+  const float top = r->hasCeiling ? r->ceilY - r->floorY : 2.4f;
+  s->y = std::max(0.35f, std::min(top - 0.8f, y));
+}
+// can a floor piece stand here (LOCAL, its feet)? With a scan: its footprint inside your walls, clear of your furniture
+bool mus_spot_ok(const xrroom::Room* r, const MusKind& k, float x, float z, float yaw, float sc) {
+  if (r == nullptr || !r->valid) return true;
+  const float fy = xrroom::floor_y(*r);
+  const float c = std::cos(yaw), s = std::sin(yaw);
+  for (int i = 0; i <= 2; ++i)
+    for (int j = 0; j <= 2; ++j) {
+      const float lx = (-1.0f + i) * k.footX * sc, lz = (-1.0f + j) * k.footZ * sc;
+      const float wx = x + c * lx + s * lz, wz = z - s * lx + c * lz;
+      if (!xrroom::inside(*r, wx, wz)) return false;
+      const float top = xrroom::top_at(*r, wx, wz);
+      if (top != xrroom::kNoTop && top > fy + 0.06f) return false;
+    }
+  return true;
+}
+// a hand on (or right by) a piece: inside its footprint grown 10 cm, from its feet to a little over its top
+bool mus_near(const MusSlot& s, const MusKind& k, const XrVector3f& h) {
+  const float c = std::cos(s.yaw), sn = std::sin(s.yaw);
+  const float dx = h.x - s.at.x, dz = h.z - s.at.z, sc = std::max(0.1f, s.spot.scale);
+  const float lx = (c * dx - sn * dz) / sc, lz = (sn * dx + c * dz) / sc, ly = (h.y - s.at.y) / sc;
+  if (k.wall) return std::fabs(lx) < k.footX + 0.08f && lz > -0.25f && lz < 0.35f && ly > -0.1f && ly < k.height + 0.1f;
+  return std::fabs(lx) < k.footX + 0.1f && std::fabs(lz) < k.footZ + 0.1f && ly > -0.05f && ly < k.height + 0.1f;
+}
+// The grips (sync_input, after the machine's): LEFT moves a piece, BOTH turn + size it; a grip a piece took is nobody else's
+void update_museum_grab(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL, const XrVector3f& handR) {
+  const xrroom::Room* room = g.mrMode ? xrscene::room() : nullptr;
+  const float floorY = room != nullptr ? xrroom::floor_y(*room) : g.floorY;
+  for (int i = 0; i < xrfx::kMuseumSlots; ++i) {
+    MusSlot& s = g_musSlot[i];
+    if (s.kind < 0 || !s.shown) {
+      s.handL = s.handR = false;
+      continue;
+    }
+    const MusKind& k = g_musKind[s.kind];
+    bool takenL = false;
+    for (int j = 0; j < xrfx::kMuseumSlots; ++j) takenL = takenL || (j != i && g_musSlot[j].handL);
+    if (gripL && !g_musPrevGrip[0] && haveL && !takenL && mus_near(s, k, handL)) {
+      s.handL = true;
+      XLOG("museum: piece %u (%s) taken by the left grip", s.id, muscab::kFile[s.kind]);
+    }
+    if (gripR && !g_musPrevGrip[1] && haveR && s.handL) s.handR = true;
+    if (!gripL || !haveL) s.handL = false;
+    if (!gripR || !haveR || !s.handL) s.handR = false;
+    const int hands = (s.handL ? 1 : 0) | (s.handR ? 2 : 0);
+    if (hands != s.grabHands) {
+      if (hands == 3) {
+        s.twoAngle = std::atan2(handR.x - handL.x, handR.z - handL.z);
+        s.twoYaw = s.yaw;
+        s.twoPos = s.at;
+        s.twoMid = {0.5f * (handL.x + handR.x), 0.0f, 0.5f * (handL.z + handR.z)};
+        s.twoDist = std::max(0.05f, std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) +
+                                              (handR.z - handL.z) * (handR.z - handL.z)));
+        s.twoScale = s.spot.scale;
+      } else if (hands == 1) {
+        s.grabOff = {s.at.x - handL.x, 0.0f, s.at.z - handL.z};
+        s.offY = s.spot.y - (handL.y - floorY);
+        s.grabWall = s.spot.wall;
+        s.offU = 0.0f;
+        if (k.wall && room != nullptr && s.spot.wall >= 0 && s.spot.wall < room->wallN) {
+          float bx, bz;
+          mus_to_build(room, handL.x, handL.z, &bx, &bz);
+          const xrroom::Wall& w = room->walls[s.spot.wall];
+          const float uh = (bx - w.x0) * w.dx + (bz - w.z0) * w.dz, us = (s.spot.x - w.x0) * w.dx + (s.spot.z - w.z0) * w.dz;
+          s.offU = us - uh;
+        }
+      } else if (hands == 0 && s.dirty) {
+        xrmuseum::set_spot(s.id, s.key, s.spot);
+        s.dirty = false;
+        XLOG("museum: piece %u left at (%.2f, %.2f) %.0f deg, size %.2f (%s)", s.id, s.at.x, s.at.z, s.yaw * 57.29578f, s.spot.scale, s.key.c_str());
+      }
+      s.grabHands = hands;
+    }
+    if (hands == 0) continue;
+    xrmuseum::Spot sp = s.spot;
+    if (k.wall) {  // along / between your walls, up and down; both hands: its size
+      if (room == nullptr || !room->valid) continue;
+      if (hands == 3) {
+        const float d = std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) + (handR.z - handL.z) * (handR.z - handL.z));
+        sp.scale = std::max(muscab::kMinScale, std::min(muscab::kMaxScale, s.twoScale * d / s.twoDist));
+      } else {
+        float bx, bz, px, pz, u;
+        mus_to_build(room, handL.x, handL.z, &bx, &bz);
+        const int wi = mus_wall_near(room, bx, bz, &px, &pz, &u);
+        if (wi < 0) continue;
+        if (wi != s.grabWall) {
+          s.grabWall = wi;
+          s.offU = 0.0f;
+        }
+        mus_wall_spot(room, wi, u + s.offU, handL.y - floorY + s.offY, k.footX * sp.scale, &sp);
+      }
+    } else {
+      float x = s.at.x, z = s.at.z, yaw = s.yaw, sc = sp.scale;
+      if (hands == 3) {
+        float turn = std::atan2(handR.x - handL.x, handR.z - handL.z) - s.twoAngle;
+        while (turn > 3.14159265f) turn -= 6.2831853f;
+        while (turn < -3.14159265f) turn += 6.2831853f;
+        yaw = s.twoYaw + turn;
+        x = s.twoPos.x + 0.5f * (handL.x + handR.x) - s.twoMid.x;
+        z = s.twoPos.z + 0.5f * (handL.z + handR.z) - s.twoMid.z;
+        const float d = std::sqrt((handR.x - handL.x) * (handR.x - handL.x) + (handR.y - handL.y) * (handR.y - handL.y) + (handR.z - handL.z) * (handR.z - handL.z));
+        sc = std::max(muscab::kMinScale, std::min(muscab::kMaxScale, s.twoScale * d / s.twoDist));
+      } else {
+        x = handL.x + s.grabOff.x;
+        z = handL.z + s.grabOff.z;
+      }
+      if (!mus_spot_ok(room, k, x, z, yaw, sc)) {  // (a scan: it slides along walls / furniture)
+        if (mus_spot_ok(room, k, x, s.at.z, yaw, sc)) z = s.at.z;
+        else if (mus_spot_ok(room, k, s.at.x, z, yaw, sc)) x = s.at.x;
+        else if (mus_spot_ok(room, k, s.at.x, s.at.z, yaw, sc)) x = s.at.x, z = s.at.z;
+        else continue;
+      }
+      book_from_local(room, x, z, yaw, &sp.x, &sp.z, &sp.yaw);
+      sp.scale = sc;
+    }
+    sp.set = true;
+    s.spot = sp;
+    s.dirty = true;
+  }
+  g_musPrevGrip[0] = gripL;
+  g_musPrevGrip[1] = gripR;
+}
+bool museum_hand(int h) {
+  for (const MusSlot& s : g_musSlot)
+    if (h == 0 ? s.handL : s.handR) return true;
+  return false;
+}
+
+// ---- r202: the machine's joystick (ENGAGE) and its SLOTS handle
+// a point of the cabinet's own space in LOCAL (book_point's math: turned by its yaw about +y, sized, at its feet)
+XrVector3f book_pt(const float p[3]) {
+  const float c = std::cos(g_cab.yaw), s = std::sin(g_cab.yaw), k = g_cab.scale;
+  return {g_cab.at.x + (p[0] * c + p[2] * s) * k, g_cab.at.y + p[1] * k, g_cab.at.z + (-p[0] * s + p[2] * c) * k};
+}
+// a short tick on the controllers (engage, let go, the handle's pull)
+void book_haptic(float amp, float sec) {
+  if (g.session == XR_NULL_HANDLE || g.actions.haptic == XR_NULL_HANDLE) return;
+  XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+  info.action = g.actions.haptic;
+  XrHapticVibration v{XR_TYPE_HAPTIC_VIBRATION};
+  v.amplitude = amp;
+  v.duration = static_cast<XrDuration>(sec * 1e9f);
+  v.frequency = XR_FREQUENCY_UNSPECIFIED;
+  xrApplyHapticFeedback(g.session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&v));
+}
+// a LOCAL point in the cabinet's own space (book_point's inverse)
+XrVector3f book_local(const XrVector3f& w) {
+  const float c = std::cos(g_cab.yaw), s = std::sin(g_cab.yaw), k = 1.0f / std::max(0.01f, g_cab.scale);
+  const float dx = w.x - g_cab.at.x, dz = w.z - g_cab.at.z;
+  return {(c * dx - s * dz) * k, (w.y - g_cab.at.y) * k, (s * dx + c * dz) * k};
+}
+constexpr float kStickBall[3] = {-0.17f, 1.0436f, 0.4387f};  // the joystick's ball at rest (cabinet199.py: pivot + panel normal x 7 cm)
+constexpr float kLeverHubY = 1.00f, kLeverHubZ = -0.22f, kLeverArm = 0.34f, kLeverRest = -12.0f, kLeverPull = 95.0f;  // cabinet202.py
+float book_smooth(float a, float b, float x) {
+  const float t = std::max(0.0f, std::min(1.0f, (x - a) / (b - a)));
+  return t * t * (3.0f - 2.0f * t);
+}
+// the handle pops out of its port (it grows out of it with a little overshoot, its hub sliding out, flipping up from pointing at
+// you) - the hub's x, its size, the angle shown: the vertex shader's own
+float lever_hub_x() { return 0.33f + 0.07f * book_smooth(0.0f, 0.55f, g_cab.leverOut); }
+float lever_shown_angle() { return 80.0f + (kLeverRest - 80.0f) * book_smooth(0.35f, 1.0f, g_cab.leverOut) + (g_cab.leverAng - kLeverRest); }
+// r205: who has the machine changed (xrmachine::control_update / update's MENU twice / control_off): the cabinet follows - the log,
+// the haptic, the engage blip, the casino's MACHINE CONTROL bar (held: the arcade stick, latched: CONTROL ON ... GRIP STICK: OFF),
+// and once it's off whatever is still held stays away from the game until released
+void book_apply_control(int e) {
+  BookCab& c = g_cab;
+  const xrmachine::Control k = xrmachine::control();
+  const bool wasOn = c.engaged;
+  c.engaged = k.on;
+  c.held = k.held;
+  if (k.hand >= 0) c.engagedHand = k.hand;
+  if (k.on) {
+    xrcasino::set_engaged(true);
+    xrcasino::set_control_mode(k.held ? 1 : 2);
+  }
+  if (e == xrmachine::kNoEvent) return;
+  XLOG("sportsbook: %s%s", xrmachine::event_text(e), k.on ? " - nothing reaches the game" : " - the controller is the game's again");
+  if (!wasOn && k.on) {
+    c.swallow = false;
+    xrcards::play_sound("casino_engage", 0.7f);
+    book_haptic(0.45f, 0.04f);
+  } else if (wasOn && !k.on) {
+    c.engagedHand = -1;
+    c.handStick[0] = c.handStick[1] = 0.0f;
+    c.handValid = false;
+    c.held = false;
+    c.swallow = true;
+    xrcasino::set_engaged(false);
+    book_haptic(0.25f, 0.03f);
+  } else {
+    book_haptic(0.2f, 0.02f);  // (held <-> latched)
+  }
+}
+void book_release(const char* why) {
+  (void)why;
+  xrmachine::control_off(xrmachine::kOffGone);
+  book_apply_control(xrmachine::take_event());
+}
+// The grips (before the move-the-machine grab): a grip closing within 12 cm of the joystick's ball takes the machine (r205: held =
+// the arcade stick - tilt it; a QUICK grip LATCHES it hands free, until you walk away 1.2 m, press MENU twice or grip it quickly
+// again); a fingertip (the controller's tip) on one of its 3D buttons presses it; while SLOTS is up a grip on the handle's ball
+// takes the handle (pull it down past 70 degrees = a spin). Returns the grips they took (1 left, 2 right).
+constexpr float kBookButtons[5][3] = {{0.12f, 0.965f, 0.475f}, {0.19f, 0.975f, 0.425f}, {0.05f, 0.975f, 0.425f},
+                                      {0.12f, 0.985f, 0.375f}, {0.0f, 0.992f, 0.34f}};  // A B X Y START (cabinet199.py's)
+constexpr float kBookPanelN[3] = {0.0f, 0.98058f, 0.19612f};
+unsigned book_engage(bool gripL, bool gripR, bool haveL, bool haveR, const XrVector3f& handL, const XrVector3f& handR) {
+  BookCab& c = g_cab;
+  const bool grip[2] = {gripL, gripR}, have[2] = {haveL, haveR};
+  const XrVector3f hand[2] = {handL, handR};
+  unsigned took = 0;
+  for (int k = 0; k < 5; ++k) c.poke[k] = false;
+  if (!c.shown) {
+    if (c.engaged) book_release("the machine is away");
+    c.leverHand = -1;
+    c.prevGripE[0] = gripL;
+    c.prevGripE[1] = gripR;
+    for (int h = 0; h < 2; ++h)
+      for (int k = 0; k < 5; ++k) c.pokeIn[h][k] = false;
+    return 0;
+  }
+  const XrVector3f ball = book_pt(kStickBall);
+  const float la = lever_shown_angle() * 0.0174533f;
+  const float lb[3] = {lever_hub_x(), kLeverHubY + kLeverArm * std::cos(la), kLeverHubZ + kLeverArm * std::sin(la)};
+  const XrVector3f lball = book_pt(lb);
+  const float reach = 0.12f * c.scale;
+  auto d2 = [](const XrVector3f& a, const XrVector3f& b) {
+    return (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z);
+  };
+  xrmachine::Grip gi;
+  for (int h = 0; h < 2; ++h) {
+    const bool down = grip[h] && have[h] && !c.prevGripE[h];
+    if (down && c.leverOut > 0.95f && c.leverHand < 0 && d2(hand[h], lball) < reach * reach) {
+      c.leverHand = h;
+      c.leverFired = false;
+      book_haptic(0.3f, 0.025f);
+      XLOG("sportsbook: the SLOTS handle taken by the %s hand", h == 0 ? "left" : "right");
+    } else if (down && d2(hand[h], ball) < reach * reach) {
+      gi.down[h] = true;
+    }
+    gi.held[h] = grip[h] && have[h];
+    if (c.leverHand == h && (!grip[h] || !have[h])) {
+      c.leverHand = -1;
+      if (c.leverAng > kLeverRest + 15.0f) xrcards::play_sound("casino_lever", 0.85f);
+      XLOG("sportsbook: the SLOTS handle let go at %.0f deg", c.leverAng);
+    }
+    c.prevGripE[h] = grip[h];
+  }
+  // r205: a fingertip poking one of its 3D buttons (within 3 cm of its top; off again past 5 cm) - not the hand holding the stick
+  for (int h = 0; h < 2; ++h) {
+    const bool can = g.aimValid[h] && !(c.held && c.engagedHand == h);
+    const XrVector3f tip = book_local(g.aim[h].position);
+    for (int k = 0; k < 5; ++k) {
+      const float top[3] = {kBookButtons[k][0] + kBookPanelN[0] * 0.016f, kBookButtons[k][1] + kBookPanelN[1] * 0.016f,
+                            kBookButtons[k][2] + kBookPanelN[2] * 0.016f};
+      const float dx = tip.x - top[0], dy = tip.y - top[1], dz = tip.z - top[2];
+      const float d = std::sqrt(dx * dx + dy * dy + dz * dz) * c.scale;
+      if (can && !c.pokeIn[h][k] && d < 0.03f) {
+        c.pokeIn[h][k] = true;
+        c.poke[k] = true;
+        gi.poke = true;
+        book_haptic(0.35f, 0.02f);
+        XLOG("sportsbook: the cabinet's %s button poked (the %s hand)", k == 0 ? "A" : (k == 1 ? "B" : (k == 2 ? "X" : (k == 3 ? "Y" : "START"))),
+             h == 0 ? "left" : "right");
+      } else if (c.pokeIn[h][k] && (!can || d > 0.05f)) {
+        c.pokeIn[h][k] = false;
+      }
+    }
+  }
+  const XrVector3f& hp = g.headPose.position;
+  gi.away = std::sqrt((hp.x - ball.x) * (hp.x - ball.x) + (hp.z - ball.z) * (hp.z - ball.z));
+  gi.now = static_cast<double>(now_ns()) * 1e-9;
+  book_apply_control(xrmachine::control_update(gi));
+  if (c.engaged && c.held && c.engagedHand >= 0) {
+    // r203: the hand in the cabinet's frame, world-sized (xrmachine tilts the stick from where it TOOK HOLD)
+    const XrVector3f lh = book_local(hand[c.engagedHand]);
+    c.handValid = have[c.engagedHand];
+    c.handAt[0] = (lh.x - kStickBall[0]) * c.scale;
+    c.handAt[1] = (lh.y - kStickBall[1]) * c.scale;
+    c.handAt[2] = (lh.z - kStickBall[2]) * c.scale;
+    took |= 1u << c.engagedHand;
+  } else {
+    c.handValid = false;
+  }
+  if (c.leverHand >= 0) {  // the handle held: it follows the hand round its hub; past 70 degrees = the pull (once a swing)
+    const XrVector3f lh = book_local(hand[c.leverHand]);
+    const float ang = std::atan2(lh.z - kLeverHubZ, lh.y - kLeverHubY) * 57.29578f;
+    c.leverAng = std::max(kLeverRest, std::min(kLeverPull, ang));
+    c.leverVel = 0.0f;
+    if (c.leverAng >= 70.0f && !c.leverFired) {
+      c.leverFired = true;
+      const bool spun = xrcasino::lever_pull();
+      xrcards::play_sound("casino_lever", 0.6f);
+      book_haptic(0.7f, 0.06f);
+      XLOG("sportsbook: the SLOTS handle pulled (%s)", spun ? "a spin" : "no spin: reels running / not enough coins");
+    }
+    if (c.leverAng < 30.0f) c.leverFired = false;
+    took |= 1u << c.leverHand;
+  }
+  return took;
+}
+
 void sync_input() {
   PADStatus status{};
   status.err = PAD_ERR_NONE;
@@ -8903,8 +10374,17 @@ void sync_input() {
       // it stays off there; r156's right-stick panel and the game's own menu on the left stick work as before)
       g.pzOnline = PortNetOnline() != 0;
       g.pzUp = kPauseKit && !g.pzOnline && g.paused && !g.achOpen && PortPauseMenuState() > 0;
-      const bool gripL = gripRawL && !g.magHand[0] && !g.magSpent[0] && !xrcards::hand_busy(0) && !g.pzUp && !g.goalFxHands;  // r137: nor a card's (r161: nor a room takeover's)
-      const bool gripR = gripRawR && !g.magHand[1] && !g.magSpent[1] && !xrcards::hand_busy(1) && !g.pzUp && !g.goalFxHands;
+      const bool gripL0e = gripRawL && !g.magHand[0] && !g.magSpent[0] && !xrcards::hand_busy(0) && !g.pzUp && !g.goalFxHands;  // r137: nor a card's (r161: nor a room takeover's)
+      const bool gripR0e = gripRawR && !g.magHand[1] && !g.magSpent[1] && !xrcards::hand_busy(1) && !g.pzUp && !g.goalFxHands;
+      // r202: before everything that grips: a grip on the machine's joystick ENGAGES it, a grip on its SLOTS handle pulls it -
+      // those grips are nobody else's (never the move-the-machine grab, the museum's, the table's, the item swap)
+      const unsigned bookTook = book_engage(gripL0e, gripR0e, haveL, haveR, handL, handR);
+      const bool gripL0 = gripL0e && !(bookTook & 1u), gripR0 = gripR0e && !(bookTook & 2u);
+      // r199: the TIZM SPORTSBOOK machine first (left grip moves it, both turn + size it): a grip it took is nobody else's
+      update_book_grab(gripL0, gripR0, haveL, haveR, handL, handR);
+      // r201: then the CARD MUSEUM's pieces (left grip moves one, both turn + size it)
+      update_museum_grab(gripL0 && !g_cab.handL, gripR0 && !g_cab.handR, haveL, haveR, handL, handR);
+      const bool gripL = gripL0 && !g_cab.handL && !museum_hand(0), gripR = gripR0 && !g_cab.handR && !museum_hand(1);
       // r57: the trophy shelf first: a grip that closes on it takes it from the table and screen.
       if (g.mrMode && !g.shelf.placed && g.headValid) place_shelf(g.headPose);
       {
@@ -9040,6 +10520,31 @@ void sync_input() {
       }
       apply_stick(moveL, dzL, kGameStickRadius, &status.stickX, &status.stickY);
       apply_stick(moveR, dzR, kGameSubstickRadius, &status.substickX, &status.substickY);
+      // r203: both thumbsticks as they are, for the machine (xrmachine, below) - while it's engaged nobody else gets them: r202's
+      // franchise hub (open behind him) took the left stick and walked HOME -> NEWS > MAGAZINE while he pushed the machine's
+      // (r206: strikers.ini machine_right_stick = 0 drops the RIGHT thumbstick inside xrmachine::update - xrmachine::set_right_stick)
+      const XrVector2f machStick[2] = {moveL, moveR};
+      if (g_cab.engaged) moveL = moveR = XrVector2f{0.0f, 0.0f};
+      // r202: the TIZM SPORTSBOOK machine ENGAGED (a hand on its joystick): nothing of this controller reaches the game - and once
+      // it's let go, what's still held stays away until released (the A that collected must never start a match)
+      {
+        BookCab& bc = g_cab;
+        const bool trig = src[kSrcTrigL] > 0.3f || src[kSrcTrigR] > 0.3f;
+        const bool held = get_bool(a.a) || get_bool(a.b) || get_bool(a.x) || get_bool(a.y) || get_bool(a.menu) || trig;
+        if (bc.swallow && !held) bc.swallow = false;
+        if (bc.engaged || bc.swallow) {
+          status.button = 0;
+          status.stickX = status.stickY = status.substickX = status.substickY = 0;
+          status.triggerLeft = status.triggerRight = 0;
+        }
+        // a pointer on its screen: the triggers are the machine's (a click there never reaches the game)
+        if ((bc.aimOn[0] || bc.aimOn[1]) && trig) bc.trigSwallow = true;
+        if (bc.trigSwallow && !trig) bc.trigSwallow = false;
+        if (bc.trigSwallow) {
+          status.triggerLeft = status.triggerRight = 0;
+          status.button &= static_cast<u16>(~(PAD_TRIGGER_L | PAD_TRIGGER_R));
+        }
+      }
       // r51: the achievements list, while it is open: the left stick (or the pad's D-pad) scrolls it a
       // row a push, held: on and on; B closes it. Neither those nor A reach the game's pause menu,
       // which would otherwise move its own pick, or take one, underneath the list.
@@ -9505,7 +11010,7 @@ void sync_input() {
         const bool yDown = (status.button & PAD_BUTTON_Y) != 0;
         const bool backFromMatch = onMenu && g.frAfterMatch && PortFranchiseActive();
         if (onMenu) g.frAfterMatch = false;
-        if (onMenu && !g.frOpen && !PortFranchiseMatchStarting() && ((yDown && !g.frPrevY) || backFromMatch)) {
+        if (onMenu && !g.frOpen && !PortFranchiseMatchStarting() && ((yDown && !g.frPrevY && !g_cab.engaged) || backFromMatch)) {
           g.frOpen = true;
           g.frMode = PortFranchiseActive() ? 2 : 0;
           fr_hub_home();  // r157: on HOME
@@ -9974,15 +11479,17 @@ void sync_input() {
               g.frSec = sec;
               g.frRail[sec] = std::max(0, std::min(static_cast<int>(pg.size()) - 1, rail));
               g.frPage = pg[static_cast<size_t>(g.frRail[sec])];
-              if (sec == kFrSecCards) xrcards::set_rail_page(g.frRail[sec]);
-              else xrcards::binder_put_away();  // r163: leaving CARDS puts your 3D binder away
+              if (fr_cards_sec(sec)) xrcards::set_rail_page(fr_cards_first(sec) + g.frRail[sec]);  // (r236: CARDS 0-6, LOCKER 7-10)
+              if (sec != kFrSecCards) xrcards::binder_put_away();  // r163: leaving CARDS puts your 3D binder away
               g.frOnRail = toRail && pg.size() > 1;
               g.frScroll = 0;
-              if (g.frPage == kPgPlayoffs) {  // (the bracket opens on your own conference's half)
-                const int me = g_frSnap.view.myClub;
-                g.frScroll = me >= 0 && me < static_cast<int>(g_frSnap.clubs.size()) && g_frSnap.clubs[me].conf != "Crown" ? 1 : 0;
-              }
+              const int meC = g_frSnap.view.myClub;
+              const bool starConf = meC >= 0 && meC < static_cast<int>(g_frSnap.clubs.size()) && g_frSnap.clubs[meC].conf != "Crown";
+              if (g.frPage == kPgPlayoffs || g.frPage == kPgTable) g.frScroll = starConf ? 1 : 0;  // (the bracket / r236 the table: your conference first)
               g.frCursor = g.frPage == kPgLevel ? std::max(0, std::min(3, PortFranchiseDifficulty() - 1)) : 0;
+              if (g.frPage == kPgTable)  // r236: the ring starts on your club's row
+                for (int i = 0; i < 16; ++i)
+                  if (g_frSnap.view.conference[starConf ? 1 : 0][i].mine) g.frCursor = i;
               if (g.frPage == kPgTrades) {
                 g.frTradeStage = 0;
                 g.frTradeMsg.clear();
@@ -9995,7 +11502,12 @@ void sync_input() {
               }
               changed = true;
             };
-            g.frRail[kFrSecCards] = xrcards::rail_page();  // (the cards keep their own page: a career loaded resets it)
+            if (fr_cards_sec(g.frSec)) {  // (the cards keep their own page: a career loaded resets it - r236: CARDS 0-6 / LOCKER 7-10)
+              const int cr = xrcards::rail_page() - fr_cards_first(g.frSec);
+              const int cn = static_cast<int>(hub_pages(g.frSec, lgv.active).size());
+              if (cr >= 0 && cr < cn) g.frRail[g.frSec] = cr;
+              else xrcards::set_rail_page(fr_cards_first(g.frSec) + std::max(0, std::min(cn - 1, g.frRail[g.frSec])));
+            }
             {  // the page in step with the rail (a league joined / left changes LEAGUE's pages)
               const std::vector<int> pg = hub_pages(g.frSec, lgv.active);
               if (g.frSec < 0 || g.frSec >= kFrSecs || g.frRail[g.frSec] >= static_cast<int>(pg.size())) go(g.frSec < 0 || g.frSec >= kFrSecs ? 0 : g.frSec, 0, true);
@@ -10011,7 +11523,29 @@ void sync_input() {
             if (!bDown) g.frBHeld = false;
             const bool holdHome = g.frBHeld && nowFr - g.frBDownNs > 650000000ull;
             bool used = false;
-            if (g.frAsk == kFrAskSimSeason) {
+            if (g.frAsk == kFrAskSim) {
+              // r236: HOME's SIM pop-up - left / right THIS WEEK / TO PLAYOFFS (a career of your own, the regular season), A sims
+              // the one picked (TO PLAYOFFS: the pop-up is its confirm), B closes; nothing else moves
+              PortFranchiseView sv;
+              PortFranchiseGetView(&sv);
+              const bool toPlayoffs = sv.phase == PORT_FR_PHASE_REGULAR && !lgv.active;
+              if (step && (dir == 1 || dir == 3)) g.frAskSlot = 0;
+              if (step && (dir == 2 || dir == 4) && toPlayoffs) g.frAskSlot = 1;
+              if (!toPlayoffs) g.frAskSlot = 0;
+              if (aPress && sv.nextOpponent >= 0 && !PortFranchiseCoopGuest()) {
+                if (g.frAskSlot == 1) {
+                  PortFranchiseSimMine(true);
+                  XLOG("franchise: simmed to the playoffs (HOME > SIM)");
+                } else {
+                  PortFranchiseSimMine(false);
+                  XLOG("franchise: simmed this week (HOME > SIM)");
+                }
+                g.frCursor = 0;
+              }
+              if (aPress || bPress) g.frAsk = kFrAskNone;
+              if (step || aPress || bPress) changed = true;
+              used = true;
+            } else if (g.frAsk == kFrAskSimSeason) {
               // the one confirm: A sims every week left to the playoffs, B says no; nothing else moves
               if (aPress) {
                 PortFranchiseSimMine(true);
@@ -10032,14 +11566,16 @@ void sync_input() {
               ci.a = in && aPress;
               ci.b = in && bPress;
               ci.x = in && xPress;
-              ci.y = yPress && (in || xrcards::rail_page() == 0);
+              ci.y = yPress && (in || xrcards::rail_page() == xrcards::kRailPacks);  // (r236: PACKS - was BINDER)
               ci.lt = ltDown;
               ci.rt = rtDown;
               ci.turn = scene ? 0 : turn;  // r171: the right stick turns the binder's page (on the rail too)
               if (turn != 0) changed = true;
               bool redraw = false, cardsStick = false;
               const bool got = xrcards::hub_input(ci, &redraw, &cardsStick);
-              if (!scene && g.frOnRail && xPress) {  // r163: X on the CARDS rail (any of its pages): your 3D binder out / away
+              if (xrmarket::pad_open() || xrmarket::search_open()) used = true;  // r210: the market's number pad up - LT / RT (its pointer's trigger) never switch sections (r235: + the search's letter grid)
+              if (xrtrade::pad_open()) used = true;   // r213: the collectors' coin pad the same
+              if (!scene && g.frOnRail && xPress && g.frSec == kFrSecCards) {  // r163: X on the CARDS rail (any of its pages): your 3D binder out / away (r236: not LOCKER's)
                 xrcards::binder_toggle();
                 changed = true;
               }
@@ -10081,7 +11617,7 @@ void sync_input() {
               PortFranchiseGetView(&v);
               const int last = hub_home_last(g_frSnap);
               const std::vector<HubWait> wait = hub_waiting(g_frSnap);
-              const int nWait = std::min(4, static_cast<int>(wait.size()));
+              const int nWait = std::min(kHubWaitMax, static_cast<int>(wait.size()));  // (r236: 3 at most)
               const bool row = v.nextOpponent >= 0 || v.phase == PORT_FR_PHASE_DONE;  // r173: AWARDS NIGHT | SEASON n+1 side by side
               const bool vsPerson = lgv.active && lgv.vsMember >= 0;
               int c = g.frCursor;
@@ -10118,9 +11654,17 @@ void sync_input() {
                 // WAITING FOR YOU: A goes where it lives
                 switch (wait[static_cast<size_t>(c - 10)].kind) {
                   case 0: go(kFrSecClub, 1, false); break;   // CLUB > EVO
-                  case 1: go(kFrSecCards, 0, true); break;   // CARDS > BINDER (Y opens one)
+                  case 1: go(kFrSecCards, xrcards::kRailPacks, false); break;   // r236: CARDS > PACKS (A opens one)
                   case 2: go(kFrSecNews, 0, true); break;    // NEWS > MAGAZINE (A reads it)
                   case 4: go(kFrSecClub, 3, false); break;   // r167: CLUB > FREE AGENTS
+                  case 6:  // r199: LEAGUE > SPORTSBOOK (r236: was CLUB's), on MY BETS (its COLLECT first)
+                    go(kFrSecLeague, 5, false);
+                    xrbook::open_tab(3);
+                    break;
+                  case 7:  // r213: CARDS > COLLECTORS, on OFFERS FOR YOU
+                    go(kFrSecCards, xrcards::kRailCollectors, false);
+                    xrtrade::open_tab(1);
+                    break;
                   default: go(kFrSecClub, 2, false); break;  // CLUB > TRADES
                 }
               } else if (aPress && vsPerson && v.nextOpponent >= 0 && c == 0) {
@@ -10129,11 +11673,11 @@ void sync_input() {
                 PortFranchiseLeagueGetView(&now);
                 if (PortFranchiseLeagueSetReady(!now.meReady))
                   XLOG("franchise: league: %s", now.meReady ? "not ready" : "ready for the online game");
-              } else if (aPress && v.nextOpponent >= 0 && c == 2) {
-                g.frAsk = kFrAskSimSeason;  // r157: SIM TO PLAYOFFS asks first (it plays out every week left)
               } else if (aPress && v.nextOpponent >= 0 && c == 1) {
-                PortFranchiseSimMine(false);
-                g.frCursor = 0;
+                if (!PortFranchiseCoopGuest()) {  // r236: the quiet SIM - its pop-up (THIS WEEK / TO PLAYOFFS)
+                  g.frAsk = kFrAskSim;
+                  g.frAskSlot = 0;
+                }
               } else if (aPress && c == 0 && PortFranchisePlayNext()) {
                 XLOG("franchise: playing week %d", v.week);
                 g.frOpen = false;
@@ -10352,10 +11896,28 @@ void sync_input() {
               if (step && dir == 1) g.frScroll = std::max(0, g.frScroll - 1);
               if (step && dir == 2) g.frScroll = std::max(0, std::min(g_frSnap.view.nemCount - 3, g.frScroll + 1));
               if (bPress) g.frOnRail = true;
+            } else if (!used && page == kPgTable) {
+              // r236: up / down the conference's 16 clubs (its details at the right), left / right the other conference
+              if (step && dir == 3) g.frCursor = std::max(0, g.frCursor - 1);
+              if (step && dir == 4) g.frCursor = std::min(15, g.frCursor + 1);
+              if (step && (dir == 1 || dir == 2)) {
+                const int conf = dir == 1 ? 0 : 1;
+                if (conf != g.frScroll) {
+                  g.frScroll = conf;
+                  for (int i = 0; i < 16; ++i)
+                    if (g_frSnap.view.conference[conf][i].mine) g.frCursor = i;
+                }
+              }
+              if (bPress) g.frOnRail = true;
             } else if (!used && page == kPgPlayoffs) {
               // r157 round 2: left / right: the CROWN half, the STAR half, the SUPER STRIKE SERIES
               if (step && dir == 1) g.frScroll = std::max(0, g.frScroll - 1);
               if (step && dir == 2) g.frScroll = std::min(2, g.frScroll + 1);
+              if (bPress) g.frOnRail = true;
+            } else if (!used && page == kPgStars) {
+              // r232: left / right: the GOLDEN BOOT, ASSISTS, POINTS
+              if (step && dir == 1) g.frScroll = std::max(0, g.frScroll - 1);
+              if (step && dir == 2) g.frScroll = std::min(kStarsViews - 1, g.frScroll + 1);
               if (bPress) g.frOnRail = true;
             } else if (!used && page == kPgHistory) {
               // r157 round 2: up / down scrolls the awards + the hall of fame (10 rows shown)
@@ -10364,6 +11926,22 @@ void sync_input() {
               if (step && dir == 3) g.frScroll = std::max(0, g.frScroll - 1);
               if (step && dir == 4) g.frScroll = std::max(0, std::min(total - 10, g.frScroll + 1));
               if (bPress) g.frOnRail = true;
+            } else if (!used && page == kPgBook) {
+              // r199: CLUB > SPORTSBOOK - the stick, A, X are the sportsbook's (xr_book.cpp); B backs out of its slip, else to the
+              // rail; Y switches the machine in your room on / off (SPORTSBOOK MACHINE IN MY ROOM)
+              xrbook::Input bi;
+              bi.dir = dir;
+              bi.step = step;
+              bi.a = aPress;
+              bi.b = bPress;
+              bi.x = xPress;
+              const bool got = xrbook::input(bi, false);
+              if (yPress) {
+                g.bookMachine = !g.bookMachine;
+                save_room_options();
+                XLOG("sportsbook machine in my room %s (CLUB > SPORTSBOOK)", g.bookMachine ? "on" : "off");
+              }
+              if (bPress && !got) g.frOnRail = true;
             } else if (!used && page == kPgLevel) {
               // r97: the difficulty (r157: side by side, left / right picks), A sets it
               if (step && dir == 1) g.frCursor = std::max(0, g.frCursor - 1);
@@ -10402,6 +11980,20 @@ void sync_input() {
             fr_refresh();
           }
           {
+            static int s_bookGen = -1;  // r199: the sportsbook changed / is animating: its page drawn again
+            static uint64_t s_bookAnimNs = 0;
+            if (g.frOpen && g.frPage == kPgBook) {
+              const int bg = xrbook::generation();
+              const uint64_t tb = now_ns();
+              if (bg != s_bookGen) {
+                s_bookGen = bg;
+                s_bookAnimNs = tb;
+                fr_refresh();
+              } else if (xrbook::animating() && tb - s_bookAnimNs > 70000000ull) {
+                s_bookAnimNs = tb;
+                fr_refresh();
+              }
+            }
             static int s_cardsGen = -1;  // r137: the trading cards changed (a pack earned / opened, one out): drawn again
             if (g.frOpen && xrcards::generation() != s_cardsGen) {
               s_cardsGen = xrcards::generation();
@@ -10443,10 +12035,67 @@ void sync_input() {
           if (frRawB) status.button &= static_cast<u16>(~PAD_BUTTON_B);
           else g.frHoldB = false;
         }
+        // r199 / r202: the TIZM SPORTSBOOK machine ENGAGED (a hand on its joystick: book_engage): that hand's stick - or the
+        // hand itself pushing the 3D stick - and A, B, X, Y are the machine's (ALL-22's cabinet's way); nothing reaches the
+        // game (this pad was emptied in sync_input). The cabinet's own joystick and buttons follow (pressed: sunk and lit).
+        // r203 (Lance's r202 test: "it did not let me move it, select anything, nor would it let me access the casino games" -
+        // his log: ON / OFF a dozen times, not one input): r202 ran this only with the franchise hub CLOSED (the hub is open
+        // behind you whenever a career is loaded, so it never ran) and read one controller's buttons (A / B are the right
+        // controller's: a left hand on the stick had no pick and no casino). Now xrmachine (xr_machine.cpp, the PC proof's
+        // own code) takes BOTH controllers, the hand pushing the 3D stick, the triggers, MENU - whether the hub is open or not.
+        {
+          BookCab& bc = g_cab;
+          const bool rawA = get_bool(a.a), rawB = get_bool(a.b), rawX = get_bool(a.x), rawY = get_bool(a.y), rawM = get_bool(a.menu);
+          bc.buttons = (rawA ? 1u : 0u) | (rawB ? 2u : 0u) | (rawX ? 4u : 0u) | (rawY ? 8u : 0u) | (rawM ? 16u : 0u);
+          for (int k = 0; k < 5; ++k)  // r205: a fingertip on a 3D button sinks + lights it too
+            if (bc.pokeIn[0][k] || bc.pokeIn[1][k]) bc.buttons |= 1u << k;
+          static bool s_hooked = false;
+          if (!s_hooked) {
+            s_hooked = true;
+            xrmachine::set_hooks([](const char* line) { XLOG("%s", line); }, [](float amp, float sec) { book_haptic(amp, sec); });
+            // r206 (Lance's right stick drifts badly): strikers.ini machine_right_stick = 0 -> the RIGHT THUMBSTICK does nothing at
+            // the machine (no move on any screen, latched or held; the 3D stick doesn't lean with it); the right trigger + its
+            // pointer and the whole left controller as before. Default 1 (as r205).
+            xrmachine::set_right_stick(machine_right_stick());
+          }
+          {  // r206: the right-stick setting, said at each engage
+            static bool s_wasEngaged = false;
+            if (bc.engaged && !s_wasEngaged)
+              XLOG("sportsbook: machine_right_stick = %d (%s)", machine_right_stick() ? 1 : 0,
+                   machine_right_stick() ? "both thumbsticks move it" : "strikers.ini: the RIGHT thumbstick does nothing here - the left stick, "
+                                                                        "the buttons, the triggers and the pointer do");
+            s_wasEngaged = bc.engaged;
+          }
+          xrmachine::Pad mp;
+          mp.engaged = bc.engaged;
+          mp.held = bc.held;  // r205: held = the arcade stick (tilt it); engaged but not held = LATCHED (hands free)
+          mp.hand = bc.engagedHand;
+          for (int k = 0; k < 5; ++k) mp.poke[k] = bc.poke[k];
+          mp.stick[0][0] = machStick[0].x, mp.stick[0][1] = machStick[0].y;
+          mp.stick[1][0] = machStick[1].x, mp.stick[1][1] = machStick[1].y;
+          mp.handValid = bc.handValid;
+          for (int k = 0; k < 3; ++k) mp.handAt[k] = bc.handAt[k];
+          mp.a = rawA, mp.b = rawB, mp.x = rawX, mp.y = rawY, mp.menu = rawM;
+          mp.trig[0] = src[kSrcTrigL];
+          mp.trig[1] = src[kSrcTrigR];
+          mp.trigOnScreen[0] = bc.aimOn[0];
+          mp.trigOnScreen[1] = bc.aimOn[1];
+          mp.now = static_cast<double>(now_ns()) * 1e-9;
+          float lean[2] = {0.0f, 0.0f};
+          xrmachine::update(mp, lean);
+          bc.stick[0] = lean[0];
+          bc.stick[1] = lean[1];
+          for (int k = 0; k < 5; ++k) bc.poke[k] = false;
+          if (const int ev = xrmachine::take_event()) book_apply_control(ev);  // r205: MENU twice = let go
+          if (bc.engaged) {
+            status.stickX = status.stickY = status.substickX = status.substickY = 0;
+            status.button = 0;
+          }
+        }
       }
       // r42/r44/r44g: while paused, the settings panel (r51: not while the achievements list covers it). r157: the
       // right-stick panel is gone - the pause panel (one cursor, the left stick) has every row (kPauseKit false: r156's)
-      if (!kPauseKit || g.pzOnline) settings_input(g.achOpen ? XrVector2f{0.0f, 0.0f} : stickR);
+      if (!kPauseKit || g.pzOnline) settings_input(g.achOpen || g_cab.engaged ? XrVector2f{0.0f, 0.0f} : stickR);
       update_crowd_mix();
 
       // Stick clicks, the two buttons a GameCube pad never had. Double taps switch modes, so a
@@ -10460,7 +12109,7 @@ void sync_input() {
       const bool clickL = get_bool(a.stickClickL);
       const bool clickR = get_bool(a.stickClickR);
       // r157: not while the pause panel is up (the left stick is its cursor: a hard push clicked it); in play as ever
-      if (clickL && !g.prevStickClickL && !g.pzUp) {
+      if (clickL && !g.prevStickClickL && !g.pzUp && !g_cab.engaged) {  // (r202: nor while the machine has the controller)
         if (g.pendingTapL != 0 && t - g.pendingTapL < kDoubleTapNs) {
           g.pendingTapL = 0;
           if (g.inSuite) {  // r61: your own choice ends the cup suite until the cup's hub is left
@@ -10489,7 +12138,7 @@ void sync_input() {
         // click here only puts an open one away (as B does)
         if (g.achOpen) g.achOpen = false;
         else if (!kPauseKit || g.pzOnline) ach_list_open();  // (online: r51's click - no panel there)
-      } else if (clickR && !g.prevStickClickR) {
+      } else if (clickR && !g.prevStickClickR && !g_cab.engaged) {
         if (g.pendingTapR != 0 && t - g.pendingTapR < kDoubleTapNs) {
           g.pendingTapR = 0;
           if (g.inSuite) {  // r61: as above
@@ -10817,7 +12466,7 @@ void upload_latest_frame() {
 
 // r42: a CPU picture (RGBA8, sRGB, premultiplied alpha) into a panel's own quad swapchain, made on
 // first use. Only when the picture changes (a goal's banner, a crowd volume step).
-bool panel_upload(Panel& p, const uint8_t* rgba, uint32_t width, uint32_t height) {
+bool panel_upload(Panel& p, const uint8_t* rgba, uint32_t width, uint32_t height, bool preSwizzled = false) {
   UploadSlot& u = p.upload;
   if (p.swapchain == XR_NULL_HANDLE || p.width != width || p.height != height) {
     if (p.swapchain != XR_NULL_HANDLE) xrDestroySwapchain(p.swapchain);
@@ -10864,7 +12513,7 @@ bool panel_upload(Panel& p, const uint8_t* rgba, uint32_t width, uint32_t height
     return false;
   }
   auto* dst = static_cast<uint8_t*>(u.mapped);
-  if (g.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB) {
+  if (g.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB && !preSwizzled) {  // (r206: a drawing thread's picture comes swizzled already)
     for (size_t i = 0; i < bytes; i += 4) {
       dst[i + 0] = rgba[i + 2];
       dst[i + 1] = rgba[i + 1];
@@ -10947,26 +12596,65 @@ void request_panel(AsyncPanel& a, int generation, uint32_t w, uint32_t h, Draw d
   if (a.forGeneration == generation) return;
   a.forGeneration = generation;
   const int gen = ++a.requested;
-  std::thread([&a, w, h, gen, draw]() {
-    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
-    // r187 crash fix: a drawing that throws (r185: std::length_error from the character select's hint row, on this
-    // detached thread, uncaught = std::terminate = the whole game gone) is logged and that picture skipped instead -
-    // the panel keeps its last one.
-    try {
-      draw(px.data(), static_cast<int>(w), static_cast<int>(h));
-    } catch (const std::exception& e) {
-      XLOG("panel draw %dx%d threw (%s) - picture skipped", static_cast<int>(w), static_cast<int>(h), e.what());
-      return;
-    } catch (...) {
-      XLOG("panel draw %dx%d threw - picture skipped", static_cast<int>(w), static_cast<int>(h));
-      return;
+  const bool bgra = a.swizzleInWorker && g.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+  // r206 (the r205 market crash): asks go to the panel's ONE drawing thread - started if it isn't up, else the ask waits for
+  // it, replacing any older ask still waiting (never two drawings of one panel at once, never a pile of threads / canvases)
+  {
+    std::lock_guard<std::mutex> lk(a.jobMutex);
+    if (a.jobGen != 0) ++g_panelDropped;
+    a.jobGen = gen;
+    a.jobW = w;
+    a.jobH = h;
+    a.job = draw;
+    if (a.drawing) return;
+    a.drawing = true;
+  }
+  ++g_panelThreads;
+  std::thread([&a, bgra]() {
+    for (;;) {
+      int jg = 0;
+      uint32_t jw = 0, jh = 0;
+      std::function<void(uint8_t*, int, int)> fn;
+      {
+        std::lock_guard<std::mutex> lk(a.jobMutex);
+        if (a.jobGen == 0) {
+          a.drawing = false;
+          break;
+        }
+        jg = a.jobGen;
+        jw = a.jobW;
+        jh = a.jobH;
+        fn = std::move(a.job);
+        a.job = nullptr;
+        a.jobGen = 0;
+      }
+      std::vector<uint8_t> px(static_cast<size_t>(jw) * jh * 4);
+      // r187 crash fix: a drawing that throws (r185: std::length_error from the character select's hint row, on this
+      // detached thread, uncaught = std::terminate = the whole game gone) is logged and that picture skipped instead -
+      // the panel keeps its last one.
+      try {
+        fn(px.data(), static_cast<int>(jw), static_cast<int>(jh));
+      } catch (const std::exception& e) {
+        XLOG("panel draw %dx%d threw (%s) - picture skipped", static_cast<int>(jw), static_cast<int>(jh), e.what());
+        continue;
+      } catch (...) {
+        XLOG("panel draw %dx%d threw - picture skipped", static_cast<int>(jw), static_cast<int>(jh));
+        continue;
+      }
+      fn = nullptr;  // (its captures go before the picture is handed over)
+      if (bgra) {    // r206: the swapchain's byte order here, off the frame thread (panel_upload only copies it then)
+        for (size_t i = 0; i < px.size(); i += 4) std::swap(px[i], px[i + 2]);
+      }
+      ++g_panelDraws;
+      std::lock_guard<std::mutex> lock(a.mutex);
+      if (jg < a.ready.load()) continue;  // (a newer one got there first)
+      a.pixels = std::move(px);
+      a.width = jw;
+      a.height = jh;
+      a.bgra = bgra;
+      a.ready = jg;
     }
-    std::lock_guard<std::mutex> lock(a.mutex);
-    if (gen < a.ready.load()) return;  // a newer one got there first
-    a.pixels = std::move(px);
-    a.width = w;
-    a.height = h;
-    a.ready = gen;
+    --g_panelThreads;
   }).detach();
 }
 
@@ -10980,7 +12668,7 @@ bool show_panel(AsyncPanel& a, Panel& p) {
   if (a.ready.load() > a.shown) {
     std::lock_guard<std::mutex> lock(a.mutex);
     const int ready = a.ready.load();
-    panel_upload(p, a.pixels.data(), a.width, a.height);
+    panel_upload(p, a.pixels.data(), a.width, a.height, a.bgra);
     a.shown = ready;
   }
   return p.hasImage;
@@ -13688,6 +15376,65 @@ M4 scorer_model() {
   return m4_game_to_room(scale, yaw, pos);
 }
 
+// r222 (Lance 11-12, MR Jumbotron "not 72"; his r221 logs: the compositor's Stale frames 5.1 a second while the scorer's
+// eye layer is out against 0.7 without it, the app's GPU time +1.3-2.2 ms over the same effects load; the layer is a whole
+// 1680 x 1760 image an eye, blitted into the runtime's image every game frame (2 x 11.8 MB read + 11.8 MB written) and
+// composited over your whole view, for one character standing in ~a quarter of it): the part of each eye's half of the
+// main image the life-size scorer can be in this send. Its body's box in its own game space (feet at the origin, Z up):
+// the most it has reached round its feet this show (r144 reach[], top - only ever grows), 35% of its height more every
+// way (what its solid body - the r143 posting - leaves out: hair, a tail's flame, a guest's gas or glow; its pose a frame
+// on) and a quarter of it under its feet, put in the room as its layer is (scorer_model) and seen from each eye the slot
+// is drawn for, 8 pixels more round that, in whole pixels. Everything outside it is the eye pass's clear (transparent:
+// nothing else is drawn into this image in this mode), so leaving it out changes no pixel you see. False (the whole
+// image, as before) when its shape isn't known yet or any corner is at or behind an eye.
+bool scorer_rect(const StereoSlot& slot, const M4& model, int32_t rect[2][4]) {
+  const auto& sc = g.scorer;
+  if (!sc.shapeOk || !(sc.top > 0.0f) || g.eyeWidth == 0 || g.eyeHeight == 0) return false;
+  const float h = sc.top;
+  const float grow = 0.35f * h;
+  const float bx0 = -std::max(0.0f, sc.reach[4]) - grow, bx1 = std::max(0.0f, sc.reach[0]) + grow;
+  const float by0 = -std::max(0.0f, sc.reach[6]) - grow, by1 = std::max(0.0f, sc.reach[2]) + grow;
+  const float bz0 = -0.25f * h, bz1 = h + grow;
+  const float W = static_cast<float>(g.eyeWidth), H = static_cast<float>(g.eyeHeight);
+  for (int eye = 0; eye < 2; ++eye) {
+    const M4 m = m4_mul(model, m4_view_from_pose(slot.views[eye].pose));
+    const XrFovf& fov = slot.views[eye].fov;
+    const float tl = std::tan(fov.angleLeft), tr = std::tan(fov.angleRight);
+    const float tu = std::tan(fov.angleUp), td = std::tan(fov.angleDown);
+    if (!(tr > tl) || !(tu > td)) return false;
+    float px0 = 1e30f, px1 = -1e30f, py0 = 1e30f, py1 = -1e30f;
+    for (int c = 0; c < 8; ++c) {
+      const float x = (c & 1) ? bx1 : bx0, y = (c & 2) ? by1 : by0, z = (c & 4) ? bz1 : bz0;
+      const float ex = x * m.m[0][0] + y * m.m[1][0] + z * m.m[2][0] + m.m[3][0];
+      const float ey = x * m.m[0][1] + y * m.m[1][1] + z * m.m[2][1] + m.m[3][1];
+      const float ez = x * m.m[0][2] + y * m.m[1][2] + z * m.m[2][2] + m.m[3][2];
+      if (!(ez < -0.05f)) return false;  // at or behind the eye: the whole image
+      const float tx = ex / -ez, ty = ey / -ez;
+      const float px = (tx - tl) / (tr - tl) * W, py = (tu - ty) / (tu - td) * H;  // (row 0 = the top of the view)
+      px0 = std::min(px0, px);
+      px1 = std::max(px1, px);
+      py0 = std::min(py0, py);
+      py1 = std::max(py1, py);
+    }
+    const float clampX0 = std::max(0.0f, std::min(W, std::floor(px0) - 8.0f));
+    const float clampX1 = std::max(0.0f, std::min(W, std::ceil(px1) + 8.0f));
+    const float clampY0 = std::max(0.0f, std::min(H, std::floor(py0) - 8.0f));
+    const float clampY1 = std::max(0.0f, std::min(H, std::ceil(py1) + 8.0f));
+    int32_t* r = rect[eye];
+    r[0] = static_cast<int32_t>(clampX0);
+    r[1] = static_cast<int32_t>(clampY0);
+    r[2] = static_cast<int32_t>(clampX1);
+    r[3] = static_cast<int32_t>(clampY1);
+    if (r[2] - r[0] < 8 || r[3] - r[1] < 8) {  // (out of this eye's view: a little corner of nothing)
+      r[0] = 0;
+      r[1] = 0;
+      r[2] = 8;
+      r[3] = 8;
+    }
+  }
+  return true;
+}
+
 // r144: the smallest slope m (from kPortXrBodySlopes) with s x support(m) - m x D - off <= 0, i.e. every point of the
 // body under (or beside) the line from your eyes at that slope: g(m) falls as m grows and is convex, so between the
 // last slope it fails and the first it holds the chord's root is a safe bound. False when even the steepest fails.
@@ -14097,6 +15844,58 @@ void dump_eye(StereoSlot& slot, const char* modeName) {
   XLOG("dumped %s (%s) to xr_eye.ppm", g.singlePass ? "both eyes" : "left eye", modeName);
 }
 
+// r222: the eye layer's hand-off on the GPU (Vulkan timestamps round the blit, read when its slot comes round again) and
+// how much of the two eyes' images went (the compositor line). Measures only.
+struct EyeBlitProbe {
+  VkQueryPool pool = VK_NULL_HANDLE;
+  bool tried = false;
+  double periodNs = 1.0;
+  uint64_t mask = ~0ull;
+  bool timed[kStereoSlots] = {};
+  uint64_t sumNs = 0, maxNs = 0;
+  uint32_t n = 0;
+  double shareSum = 0.0;  // the share of the two eyes' images blitted, summed over blits
+  uint32_t shareN = 0, narrowed = 0;
+};
+EyeBlitProbe g_eyeBlit;
+
+void eye_blit_probe_init() {
+  EyeBlitProbe& p = g_eyeBlit;
+  if (p.tried || g.device == VK_NULL_HANDLE || g.physical == VK_NULL_HANDLE) return;
+  p.tried = true;
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(g.physical, &props);
+  uint32_t familyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(g.physical, &familyCount, nullptr);
+  std::vector<VkQueueFamilyProperties> families(familyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(g.physical, &familyCount, families.data());
+  const uint32_t bits = g.queueFamily < familyCount ? families[g.queueFamily].timestampValidBits : 0;
+  if (bits == 0 || props.limits.timestampPeriod <= 0.0f) return;
+  VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  qi.queryCount = 2 * kStereoSlots;
+  if (vkCreateQueryPool(g.device, &qi, nullptr, &p.pool) != VK_SUCCESS) {
+    p.pool = VK_NULL_HANDLE;
+    return;
+  }
+  p.periodNs = props.limits.timestampPeriod;
+  p.mask = bits >= 64 ? ~0ull : ((1ull << bits) - 1ull);
+}
+
+// (once a second, the compositor line): avg / max ms of the blits timed, the share of the images they moved
+bool eye_blit_take(char* out, size_t n) {
+  EyeBlitProbe& p = g_eyeBlit;
+  if (p.n == 0 && p.shareN == 0) return false;
+  std::snprintf(out, n, "%.2f ms avg, %.2f max (%u timed), %.0f%% of the image (%u of %u narrowed)",
+                p.n > 0 ? p.sumNs / 1e6 / p.n : 0.0, p.maxNs / 1e6, p.n,
+                p.shareN > 0 ? 100.0 * p.shareSum / p.shareN : 100.0, p.narrowed, p.shareN);
+  p.sumNs = p.maxNs = 0;
+  p.n = 0;
+  p.shareSum = 0.0;
+  p.shareN = p.narrowed = 0;
+  return true;
+}
+
 // Hands slot `s`'s eye images to the compositor: blits them into the eye swapchains, gated on Dawn's
 // fences (no CPU wait in the normal case). Images still in Dawn's access are released first (the
 // per-eye path, after synchronize()); r43 single pass finds them released by the render worker.
@@ -14184,11 +15983,48 @@ void finish_stereo_frame(uint32_t s) {
     xr_ok(xrWaitSwapchainImage(chain_of(blits[i]), &wait), "xrWaitSwapchainImage(eye)");
   }
   g.swapNs += now_ns() - swapStart;
+  gp::add_sub(gp::kSwapWait, now_ns() - swapStart);  // r221
 
+  // r222: the part of each eye that goes (scorer_rect; a dump takes the whole) - the inner rect is what the compositor
+  // gets (imageRect, its own field of view below), 2 pixels more round it are blitted too, so a filter that reaches a
+  // pixel past the rect's edge reads this frame's clear, never an older picture left in the runtime's image
+  const bool narrow = slot.rectOn && g.singlePass && !g.dumpRequested;
+  auto blit_box = [&](int eye, int32_t b[4]) {
+    if (!narrow) {
+      b[0] = 0;
+      b[1] = 0;
+      b[2] = static_cast<int32_t>(g.eyeWidth);
+      b[3] = static_cast<int32_t>(g.eyeHeight);
+      return;
+    }
+    const int32_t* r = slot.rect[eye];
+    b[0] = std::max(0, r[0] - 2);
+    b[1] = std::max(0, r[1] - 2);
+    b[2] = std::min(static_cast<int32_t>(g.eyeWidth), r[2] + 2);
+    b[3] = std::min(static_cast<int32_t>(g.eyeHeight), r[3] + 2);
+  };
+  eye_blit_probe_init();
+  if (g_eyeBlit.timed[s] && g_eyeBlit.pool != VK_NULL_HANDLE) {  // r222: this slot's last blit (its fence was waited)
+    uint64_t ts[2] = {0, 0};
+    if (vkGetQueryPoolResults(g.device, g_eyeBlit.pool, s * 2, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) ==
+        VK_SUCCESS) {
+      const uint64_t ns = static_cast<uint64_t>(static_cast<double>((ts[1] - ts[0]) & g_eyeBlit.mask) * g_eyeBlit.periodNs);
+      if (ns < 1000000000ull) {
+        g_eyeBlit.sumNs += ns;
+        g_eyeBlit.maxNs = std::max(g_eyeBlit.maxNs, ns);
+        ++g_eyeBlit.n;
+      }
+    }
+    g_eyeBlit.timed[s] = false;
+  }
+  const bool timeIt = g_eyeBlit.pool != VK_NULL_HANDLE;
   vkResetCommandBuffer(slot.cmd, 0);
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(slot.cmd, &begin);
+  if (timeIt) vkCmdResetQueryPool(slot.cmd, g_eyeBlit.pool, s * 2, 2);
+  bool started = false;
+  double share = 0.0;
   for (int i = 0; i < blitCount; ++i) {
     // r43: single pass reads both eyes from the halves of slot.eye[0]; its second half finds the
     // image already moved to TRANSFER_SRC.
@@ -14214,15 +16050,25 @@ void finish_stereo_frame(uint32_t s) {
     barriers[1].image = dst;
     vkCmdPipelineBarrier(slot.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                          nullptr, srcReady ? 1 : 2, srcReady ? &barriers[1] : barriers);
+    if (timeIt && !started) {  // r222: (after the first barrier: Dawn's work this waits on is not counted)
+      vkCmdWriteTimestamp(slot.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, g_eyeBlit.pool, s * 2);
+      started = true;
+    }
     // A same-format blit is a byte copy, and records in microseconds where vkCmdCopyImage into the
     // runtime's gralloc image costs milliseconds on Adreno (TPVR's measurement).
+    // r222: the stadium's own image and a whole frame as before; the scorer alone: its part (blit_box)
     const int32_t srcX = blits[i].srcX;
+    int32_t b[4] = {0, 0, static_cast<int32_t>(g.eyeWidth), static_cast<int32_t>(g.eyeHeight)};
+    if (!blits[i].stadium) blit_box(eye, b);
+    share += static_cast<double>(b[2] - b[0]) * static_cast<double>(b[3] - b[1]) /
+             (static_cast<double>(g.eyeWidth) * static_cast<double>(g.eyeHeight) * static_cast<double>(blitCount));
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[0] = {srcX, 0, 0};
-    blit.srcOffsets[1] = {srcX + static_cast<int32_t>(g.eyeWidth), static_cast<int32_t>(g.eyeHeight), 1};
+    blit.srcOffsets[0] = {srcX + b[0], b[1], 0};
+    blit.srcOffsets[1] = {srcX + b[2], b[3], 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.dstOffsets[1] = {static_cast<int32_t>(g.eyeWidth), static_cast<int32_t>(g.eyeHeight), 1};
+    blit.dstOffsets[0] = {b[0], b[1], 0};
+    blit.dstOffsets[1] = {b[2], b[3], 1};
     vkCmdBlitImage(slot.cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    1, &blit, VK_FILTER_NEAREST);
     VkImageMemoryBarrier toColor = barriers[1];
@@ -14233,6 +16079,7 @@ void finish_stereo_frame(uint32_t s) {
     vkCmdPipelineBarrier(slot.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
                          nullptr, 0, nullptr, 1, &toColor);
   }
+  if (timeIt && started) vkCmdWriteTimestamp(slot.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_eyeBlit.pool, s * 2 + 1);
   vkEndCommandBuffer(slot.cmd);
   const VkPipelineStageFlags waitStages[3] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                               VK_PIPELINE_STAGE_TRANSFER_BIT};
@@ -14244,6 +16091,10 @@ void finish_stereo_frame(uint32_t s) {
   submit.pCommandBuffers = &slot.cmd;
   if (vk_ok(vkQueueSubmit(g.queue, 1, &submit, slot.fence), "vkQueueSubmit(eyes)")) {
     slot.pending = true;
+    g_eyeBlit.timed[s] = timeIt && started;  // r222
+    g_eyeBlit.shareSum += share;
+    ++g_eyeBlit.shareN;
+    if (narrow) ++g_eyeBlit.narrowed;
   }
   bool mainBlitted = false;
   for (int i = 0; i < blitCount; ++i) {
@@ -14257,6 +16108,21 @@ void finish_stereo_frame(uint32_t s) {
     view.subImage.swapchain = chain_of(blits[i]);
     view.subImage.imageRect.offset = {0, 0};
     view.subImage.imageRect.extent = {static_cast<int32_t>(g.eyeWidth), static_cast<int32_t>(g.eyeHeight)};
+    if (narrow && !blits[i].stadium) {
+      // r222: only the scorer's part: that rect of the image, and the field of view its pixels were drawn over (the
+      // eye's own, cut at the same pixel edges: a projection is straight in tangents, so every pixel lands where it did)
+      const int32_t* r = slot.rect[eye];
+      const XrFovf& f = slot.views[eye].fov;
+      const float tl = std::tan(f.angleLeft), tr = std::tan(f.angleRight);
+      const float tu = std::tan(f.angleUp), td = std::tan(f.angleDown);
+      const float W = static_cast<float>(g.eyeWidth), H = static_cast<float>(g.eyeHeight);
+      view.fov.angleLeft = std::atan(tl + (tr - tl) * static_cast<float>(r[0]) / W);
+      view.fov.angleRight = std::atan(tl + (tr - tl) * static_cast<float>(r[2]) / W);
+      view.fov.angleUp = std::atan(tu - (tu - td) * static_cast<float>(r[1]) / H);
+      view.fov.angleDown = std::atan(tu - (tu - td) * static_cast<float>(r[3]) / H);
+      view.subImage.imageRect.offset = {r[0], r[1]};
+      view.subImage.imageRect.extent = {r[2] - r[0], r[3] - r[1]};
+    }
     view.subImage.imageArrayIndex = 0;
     if (blits[i].stadium) {
       g.stadiumValid[eye] = true;
@@ -14520,7 +16386,7 @@ void finish_screen_slots() {
     }
     g_screenState[s].store(0, std::memory_order_release);
   }
-  if (waiting) ++g.screenNotDoneSinceStats;
+  if (waiting) ++g.screenNotDoneSinceStats, ++gp::g_screenLate;  // r221: (the probe's too)
   if (newest < 0) return;
 
   const uint64_t start = now_ns();
@@ -14643,6 +16509,14 @@ void finish_screen_slots() {
 
 void set_perf_levels(int cpu, int gpu);
 
+// r222: the CPU boost for a goal's show (goal_boost_start / goal_boost_tick, by set_perf_levels)
+struct GoalBoost {
+  bool enabled = true;
+  bool on = false;
+  uint64_t startNs = 0;
+};
+GoalBoost g_goalBoost;
+
 // Self-test hooks, polled about once a second: a file /storage/emulated/0/Strikers/xr_mode holding
 // "jumbotron mr", "jumbotron vr", "tabletop mr" or "tabletop vr" sets the mode (then is deleted);
 // a file xr_dump requests one left-eye dump.
@@ -14717,6 +16591,12 @@ void poll_triggers() {
       } else if (std::strncmp(line, "screendirect", 12) == 0) {
         // r131 "screendirect <0|1>": the big screen's picture GPU-direct (0: read back + uploaded, as before r131)
         g.screenDirectOn = std::atoi(line + 12) != 0;
+      } else if (std::strncmp(line, "goalboost", 9) == 0) {
+        // r222 "goalboost <0|1>": the CPU boosted for a goal's show in Jumbotron in your room (0: sustained high always)
+        g_goalBoost.enabled = std::atoi(line + 9) != 0;
+      } else if (std::strncmp(line, "scorerrect", 10) == 0) {
+        // r222 "scorerrect <0|1>": the life-size scorer's eye layer blitted / composited only where it can be (0: whole)
+        g.scorerRectOn = std::atoi(line + 10) != 0;
       } else if (std::strncmp(line, "handoffwait", 11) == 0) {
         // r44 "handoffwait <0|1>": wait briefly for this frame's eyes before ending the XR frame
         g.handoffWait = std::atoi(line + 11) != 0;
@@ -14836,6 +16716,61 @@ void set_perf_levels(int cpu, int gpu) {
         "xrPerfSettingsSetPerformanceLevelEXT(GPU)");
 }
 
+// r222 (Lance 11-12, MR Jumbotron; his r221 tethered VrApi: the CPU at level 2 / 1382 MHz every second from 02:09:03 to
+// 02:26:39 - both matches, all 14 goals' shows - while the game thread's work in the replay ran 14-15 ms of the 13.9 ms frame and the show's
+// state changes 18-33 ms; the GPU level 3 / 492 MHz, and 492 MHz still in the seconds VrApi showed GPU level 4-5, so a GPU
+// boost buys nothing in passthrough): the CPU asked for BOOST for a goal's show only, in Jumbotron in your room - from the
+// goal until the show is over (play live / skipped + its 3 s, r130's celebEndNs) or 25 s at most - then back to sustained
+// high. r42b's test: boost gave CPU level 8 / 2361 MHz for about a minute before the headset stopped granting it, so never
+// for longer than a show. The GPU's level is left as it is. xr_tune "goalboost <0|1>" (on). (g_goalBoost: above poll_triggers)
+void set_cpu_level(int level) {
+  if (!g.hasPerfSettingsExt || g.session == XR_NULL_HANDLE) return;
+  PFN_xrPerfSettingsSetPerformanceLevelEXT setLevel = nullptr;
+  if (!get_proc(g.instance, "xrPerfSettingsSetPerformanceLevelEXT", &setLevel)) return;
+  xr_ok(setLevel(g.session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT,
+                 level >= 3 ? XR_PERF_SETTINGS_LEVEL_BOOST_EXT : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT),
+        "xrPerfSettingsSetPerformanceLevelEXT(CPU, goal show)");
+}
+
+void goal_boost_start() {
+  GoalBoost& b = g_goalBoost;
+  if (!b.enabled || !g.hasPerfSettingsExt || !g.mrMode || stereo_mode() || g.inSuite) return;
+  if (!b.on) {
+    set_cpu_level(3);
+    XLOG("perf: CPU boost for the goal's show (Jumbotron in your room; back to sustained high when it ends)");
+  }
+  b.on = true;
+  b.startNs = now_ns();
+}
+
+// Once a display frame (PortXrEndFrame): the show over, or 25 s on - back to sustained high.
+void goal_boost_tick() {
+  GoalBoost& b = g_goalBoost;
+  if (!b.on) return;
+  const uint64_t now = now_ns();
+  const bool showOver = g.celebEndNs != 0 && now > g.celebEndNs;
+  if (showOver || now - b.startNs > 25000000000ull || !g.mrMode || stereo_mode()) {
+    set_cpu_level(2);
+    b.on = false;
+    XLOG("perf: CPU back to sustained high (the goal's show over after %.1f s)", static_cast<double>(now - b.startNs) / 1e9);
+  }
+}
+
+// r222: the CPU cores' clocks now (the highest of them, MHz; the compositor line), 0 when the system doesn't show them
+int cpu_mhz_now() {
+  int best = 0;
+  for (int c = 0; c < 8; ++c) {
+    char path[80];
+    std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", c);
+    if (FILE* f = std::fopen(path, "r")) {
+      long khz = 0;
+      if (std::fscanf(f, "%ld", &khz) == 1) best = std::max(best, static_cast<int>(khz / 1000));
+      std::fclose(f);
+    }
+  }
+  return best;
+}
+
 // Without these the runtime keeps the app on its default (dynamic, low) clocks and schedules the
 // game and render threads like any background thread. Five sends a frame in Tabletop · Stadium
 // need the sustained-high CPU and GPU levels and the big cores.
@@ -14867,13 +16802,19 @@ void apply_performance_settings() {
 void on_session_began() {
   init_refresh_rate();
   apply_performance_settings();
+  gp::perf_init();  // r221: the runtime's performance counters (read only)
   set_mr_mode(g.mrMode);
   xrctrl::start(g.instance, g.session, g.renderModelsSupported);  // r54: the controllers' models
+  xrscene::start(g.instance, g.session, g.local, g.vm, g.activity);  // r197: your room scan (once allowed)
 }
 
 void poll_events() {
   XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};
   while (xrPollEvent(g.instance, &event) == XR_SUCCESS) {
+    if (xrscene::on_event(&event)) {  // r197: the room scan's queries answering
+      event = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
+      continue;
+    }
     switch (event.type) {
     case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
       const auto* e = reinterpret_cast<const XrEventDataSessionStateChanged*>(&event);
@@ -14897,6 +16838,7 @@ void poll_events() {
         break;
       case XR_SESSION_STATE_FOCUSED:
         g.focused = true;
+        xrscene::on_focus();  // r197: back from the Quest menu (Space setup, the permission): look at the scan again
         // r124 (r123's refresh_rate = 80 stayed at 72: the runtime ignored the ask made before the session ran):
         // asked again each time the app has focus, and what the display runs at checked a moment later
         if (g.requestRefreshRate != nullptr && g.wantRefresh != 72.0f) {
@@ -14944,8 +16886,443 @@ void poll_events() {
   }
 }
 
+// r206 (Lance's r205 market crash: "using 6.3 GiB", no evidence left): the game's memory into the log - every 30 s, entering
+// the card market / museum, and whenever it has grown 512 MB since the last line. RSS / its peak / swapped (the kernel's), the
+// native heap (malloc's), the GPU memory the driver counts for this process (Adreno kgsl, when readable), the hub's drawing
+// threads up and its pictures drawn / asks replaced by a newer one.
+void log_memory(const char* why) {
+  long long rssKb = -1, hwmKb = -1, swapKb = -1;
+  if (FILE* f = std::fopen("/proc/self/status", "r")) {
+    char line[256];
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+      long long v = 0;
+      if (std::sscanf(line, "VmRSS: %lld", &v) == 1) rssKb = v;
+      else if (std::sscanf(line, "VmHWM: %lld", &v) == 1) hwmKb = v;
+      else if (std::sscanf(line, "VmSwap: %lld", &v) == 1) swapKb = v;
+    }
+    std::fclose(f);
+  }
+  long long gpuB = -1;
+  {
+    char path[96];
+    std::snprintf(path, sizeof path, "/sys/class/kgsl/kgsl/proc/%d/mem", static_cast<int>(getpid()));
+    if (FILE* f = std::fopen(path, "r")) {
+      long long v = 0;
+      if (std::fscanf(f, "%lld", &v) == 1) gpuB = v;
+      std::fclose(f);
+    }
+  }
+  const struct mallinfo mi = mallinfo();
+  XLOG("memory (%s): RSS %lld MB (peak %lld MB, swapped %lld MB), native heap %lld MB, GPU %s, hub drawing threads %d, "
+       "pictures drawn %lld, asks replaced by a newer one %lld",
+       why, rssKb / 1024, hwmKb / 1024, swapKb / 1024, static_cast<long long>(static_cast<unsigned>(mi.uordblks)) / (1024 * 1024),
+       gpuB >= 0 ? (std::to_string(gpuB / (1024 * 1024)) + " MB").c_str() : "n/a (kgsl not readable)", g_panelThreads.load(),
+       g_panelDraws.load(), g_panelDropped.load());
+}
+void log_memory_tick() {
+  static uint64_t s_last = 0;
+  static long long s_lastRssKb = 0;
+  static uint64_t s_peek = 0;
+  static std::string s_cardsPage;
+  {  // entering CARDS > MARKET / MUSEUM: a line at once
+    const char* rn = g.frOpen && g.frPage == kPgCards ? xrcards::rail_name(xrcards::rail_page()) : "";
+    const std::string now = rn != nullptr ? rn : "";
+    if (now != s_cardsPage) {
+      s_cardsPage = now;
+      if (now == "MARKET" || now == "MUSEUM") log_memory(now == "MARKET" ? "entering the CARD MARKET" : "entering the CARD MUSEUM");
+    }
+  }
+  const uint64_t t = now_ns();
+  if (t - s_peek < 1000000000ull) return;  // (looked at once a second)
+  s_peek = t;
+  long long rssKb = 0;
+  if (FILE* f = std::fopen("/proc/self/statm", "r")) {
+    long long size = 0, res = 0;
+    if (std::fscanf(f, "%lld %lld", &size, &res) == 2) rssKb = res * (sysconf(_SC_PAGESIZE) / 1024);
+    std::fclose(f);
+  }
+  const bool grew = s_lastRssKb > 0 && rssKb - s_lastRssKb > 512 * 1024;
+  if (s_last != 0 && t - s_last < 30000000000ull && !grew) return;
+  s_last = t;
+  s_lastRssKb = rssKb;
+  log_memory(grew ? "it grew 512 MB" : "every 30 s");
+}
+
+// ---------------------------------------------------------------------------------------------
+// r221 (Lance 11-12, MR Jumbotron: "its deffffinitely not 72FPS"; his r220 log: every goal 15-20 display frames missed
+// in the replay's first seconds; the tethered VrApi capture: the compositor's Stale frames in 217 of 456 s, following the
+// app's GPU time): the FRAME PROBE. Measures only - changes nothing it measures.
+//   - every display interval (one xrWaitFrame return to the next) is split into where the game thread's time went
+//     (main.cpp's loop phases, PortXrEndFrame's parts, the effects block's parts; eye-fence / swapchain waits and the
+//     takeover's coin payments inside them);
+//   - a GOAL WINDOW (PortXrGoal .. play live + 3 s): every interval with a missed display frame or over 13.9 ms of work
+//     logged with its breakdown (40 a goal at most), then one summary line a goal;
+//   - once a second in a match: the COMPOSITOR line - display frames, missed (the predicted display time jumping),
+//     not rendered, the effects layer's GPU time (timestamps), how often our last effects frame / the big screen's
+//     picture were still on the GPU a frame later (the app-side view of a Stale frame), and the runtime's own counters
+//     (XR_META_performance_metrics: the app's / compositor's GPU time, dropped frames, GPU use) when it has them.
+// ---------------------------------------------------------------------------------------------
+namespace gp {
+const char* const kSecName[kNSec] = {"begin (input)", "game", "aurora-end", "audio", "pre-wait", "xrBeginFrame", "screen+eyes",
+                                     "select/evo", "cards", "museum/figs", "book", "fx", "layers", "xrEndFrame", "stats"};
+const char* const kSubName[kNSub] = {"eye-fence", "swapchain-wait", "fx update", "fx draw", "coins"};
+struct Interval {
+  uint64_t sec[kNSec];
+  uint64_t sub[kNSub];
+  uint32_t coinPays;
+  // r222 (inside "game"): the game's slowest task this interval (nlTask.cpp, its GetName) and how long its Run took, the
+  // game's state change if one ran (every task's StateTransition, from -> to), the disc reads (dvd.c, any thread)
+  char task[32];  // (copied: a task can go away before the line is written)
+  uint64_t taskNs;
+  uint64_t transNs;
+  uint32_t transFrom, transTo;
+  uint32_t discN;
+  uint64_t discNs;
+};
+struct State {
+  Interval cur{};
+  uint64_t startNs = 0;
+  uint64_t lastLiveNs = 0;
+  // the goal window
+  bool celeb = false;
+  int goalNo = 0;
+  uint64_t goalNs = 0, replayNs = 0, replayEndNs = 0, liveNs = 0;
+  uint32_t frames = 0, slow = 0, missed = 0, missedBefore = 0, missedReplay = 0, missedAfter = 0, printed = 0, unprinted = 0;
+  uint32_t coinPays = 0, fxLate = 0, screenLate = 0;
+  double worstMs = 0.0, worstAt = 0.0;
+  uint64_t secSum[kNSec] = {}, secMax[kNSec] = {}, subSum[kNSub] = {}, subMax[kNSub] = {};
+  uint64_t overSec[kNSec] = {};  // (the slow intervals' own, for the biggest share)
+  double gpuSum = 0.0, gpuMax = 0.0;
+  uint32_t gpuN = 0;
+  // r222: the window's slowest task Run, its slowest state change, its disc reads
+  char worstTask[32] = {};
+  uint64_t worstTaskNs = 0, worstTransNs = 0, discNs = 0;
+  uint32_t worstTransFrom = 0, worstTransTo = 0, discN = 0;
+  // the second
+  uint64_t secStartNs = 0;
+  uint32_t sFrames = 0, sMissed = 0, sNoRender = 0, sSlow = 0, sFxLate = 0, sScreenLate = 0, sFxNotYet = 0;
+  double sLongestWork = 0.0;
+};
+State st;
+uint32_t g_screenLate = 0;  // (finish_screen_slots: a display frame whose newest picture was still on the GPU)
+
+// XR_META_performance_metrics
+struct Metric {
+  XrPath path;
+  std::string name;
+  double last = 0.0;
+  bool have = false;
+};
+std::vector<Metric> g_metrics;
+PFN_xrQueryPerformanceMetricsCounterMETA g_queryMetric = nullptr;
+int g_metricAppGpu = -1;
+
+void perf_init() {
+  if (!g_hasPerfMetrics || g.session == XR_NULL_HANDLE || g_queryMetric != nullptr) return;
+  PFN_xrSetPerformanceMetricsStateMETA setState = nullptr;
+  PFN_xrEnumeratePerformanceMetricsCounterPathsMETA enumPaths = nullptr;
+  if (!get_proc(g.instance, "xrSetPerformanceMetricsStateMETA", &setState) ||
+      !get_proc(g.instance, "xrEnumeratePerformanceMetricsCounterPathsMETA", &enumPaths) ||
+      !get_proc(g.instance, "xrQueryPerformanceMetricsCounterMETA", &g_queryMetric)) {
+    g_queryMetric = nullptr;
+    XLOG("perf metrics: the runtime's functions are missing");
+    return;
+  }
+  XrPerformanceMetricsStateMETA state{XR_TYPE_PERFORMANCE_METRICS_STATE_META};
+  state.enabled = XR_TRUE;
+  if (!xr_ok(setState(g.session, &state), "xrSetPerformanceMetricsStateMETA")) {
+    g_queryMetric = nullptr;
+    return;
+  }
+  uint32_t n = 0;
+  if (!xr_ok(enumPaths(g.instance, 0, &n, nullptr), "xrEnumeratePerformanceMetricsCounterPathsMETA") || n == 0) {
+    g_queryMetric = nullptr;
+    return;
+  }
+  std::vector<XrPath> paths(n);
+  enumPaths(g.instance, n, &n, paths.data());
+  std::string all;
+  for (uint32_t i = 0; i < n; ++i) {
+    char buf[XR_MAX_PATH_LENGTH] = {};
+    uint32_t len = 0;
+    if (!XR_SUCCEEDED(xrPathToString(g.instance, paths[i], sizeof(buf), &len, buf))) continue;
+    Metric m;
+    m.path = paths[i];
+    m.name = buf;
+    const std::string pre = "/perfmetrics_meta/";
+    if (m.name.compare(0, pre.size(), pre) == 0) m.name = m.name.substr(pre.size());
+    if (m.name == "app/gpu_frametime") g_metricAppGpu = static_cast<int>(g_metrics.size());
+    all += (all.empty() ? "" : ", ") + m.name;
+    g_metrics.push_back(m);
+  }
+  XLOG("perf metrics: %u of the runtime's counters read once a second in a match: %s", static_cast<unsigned>(g_metrics.size()),
+       all.c_str());
+}
+
+bool read_metric(Metric& m, double* v) {
+  if (g_queryMetric == nullptr) return false;
+  XrPerformanceMetricsCounterMETA c{XR_TYPE_PERFORMANCE_METRICS_COUNTER_META};
+  if (!XR_SUCCEEDED(g_queryMetric(g.session, m.path, &c))) return false;
+  if (c.counterFlags & XR_PERFORMANCE_METRICS_COUNTER_FLOAT_VALUE_VALID_BIT_META) {
+    *v = c.floatValue;
+  } else if (c.counterFlags & XR_PERFORMANCE_METRICS_COUNTER_UINT_VALUE_VALID_BIT_META) {
+    *v = c.uintValue;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+double app_gpu_ms() {
+  if (g_metricAppGpu < 0) return -1.0;
+  double v = 0.0;
+  return read_metric(g_metrics[g_metricAppGpu], &v) ? v : -1.0;
+}
+
+void add(int sec, uint64_t ns) { st.cur.sec[sec] += ns; }
+void add_sub(int sub, uint64_t ns) { st.cur.sub[sub] += ns; }
+
+bool in_match(uint64_t t) { return st.celeb || (st.lastLiveNs != 0 && t - st.lastLiveNs < 15000000000ull); }
+
+double since(uint64_t from, uint64_t t) { return from != 0 && t > from ? static_cast<double>(t - from) / 1e9 : 0.0; }
+
+void goal_summary(uint64_t t) {
+  State& s = st;
+  std::string per;
+  char b[160];
+  const double n = s.frames > 0 ? static_cast<double>(s.frames) : 1.0;
+  for (int k = 0; k < kNSec; ++k) {
+    if (s.secMax[k] < 50000) continue;  // (under 0.05 ms at most: left out)
+    std::snprintf(b, sizeof b, "%s%s %.2f/%.1f", per.empty() ? "" : ", ", kSecName[k], s.secSum[k] / 1e6 / n, s.secMax[k] / 1e6);
+    per += b;
+  }
+  for (int k = 0; k < kNSub; ++k) {
+    if (s.subMax[k] < 50000) continue;
+    std::snprintf(b, sizeof b, ", [%s %.2f/%.1f]", kSubName[k], s.subSum[k] / 1e6 / n, s.subMax[k] / 1e6);
+    per += b;
+  }
+  int top = -1;
+  uint64_t topNs = 0, overAll = 0;
+  for (int k = 0; k < kNSec; ++k) {
+    overAll += s.overSec[k];
+    if (s.overSec[k] > topNs) topNs = s.overSec[k], top = k;
+  }
+  char gpu[96] = "n/a";
+  if (s.gpuN > 0) std::snprintf(gpu, sizeof gpu, "avg %.1f, max %.1f ms (%u frames)", s.gpuSum / s.gpuN, s.gpuMax, s.gpuN);
+  char tasks[192];  // r222
+  std::snprintf(tasks, sizeof tasks, "slowest task Run %s %.1f ms, slowest state change 0x%x -> 0x%x %.1f ms, disc reads %u (%.1f ms)",
+                s.worstTask[0] != '\0' ? s.worstTask : "-", s.worstTaskNs / 1e6, s.worstTransFrom, s.worstTransTo,
+                s.worstTransNs / 1e6, s.discN, s.discNs / 1e6);
+  XLOG("goal-summary #%d (%s): %.1f s, %u display intervals, %u display frames missed (%u before the replay, %u in it, %u "
+       "after), %u intervals over 13.9 ms of work or missed, worst %.1f ms at +%.2f s | per interval avg/max ms: %s | takeover "
+       "coins paid %u times | app GPU (runtime) %s | effects frame still on the GPU a frame later: %u, big screen's picture: %u | "
+       "the slow intervals' biggest share: %s (%.0f%%) | %s | detail lines %u (+%u not printed)",
+       s.goalNo, mode_name(), since(s.goalNs, t), s.frames, s.missed, s.missedBefore, s.missedReplay, s.missedAfter, s.slow,
+       s.worstMs, s.worstAt, per.c_str(), s.coinPays, gpu, s.fxLate, s.screenLate, top >= 0 ? kSecName[top] : "-",
+       overAll > 0 ? 100.0 * topNs / overAll : 0.0, tasks, s.printed, s.unprinted);
+  s.celeb = false;
+}
+
+// Called the moment xrWaitFrame returns: the interval since the last return closes.
+void close_interval(uint64_t t, uint64_t waitNs, uint32_t missed, bool shouldRender) {
+  State& s = st;
+  {  // the takeover's coins paid on the frame thread (xr_cards: the sum since the last call)
+    long long ns = 0;
+    int pays = 0;
+    xrcards::take_coin_probe(&ns, &pays);
+    s.cur.sub[kCoins] += static_cast<uint64_t>(ns);
+    s.cur.coinPays += static_cast<uint32_t>(pays);
+  }
+  {  // r222: the disc reads since the last call (dvd.c, any thread)
+    unsigned long long ns = 0;
+    unsigned n = 0;
+    port_dvd_take_read_stats(&ns, &n);
+    s.cur.discNs += ns;
+    s.cur.discN += n;
+  }
+  const int fxDone = g.fxReady ? xrfx::last_frame_done() : -1;
+  const uint32_t screenLate = g_screenLate;
+  g_screenLate = 0;
+  if (s.startNs == 0) {
+    s.startNs = t;
+    s.secStartNs = t;
+    s.cur = Interval{};
+    return;
+  }
+  const double intervalMs = static_cast<double>(t - s.startNs) / 1e6;
+  const double workMs = intervalMs - static_cast<double>(waitNs) / 1e6;
+  const bool slow = missed > 0 || workMs > 13.9;
+  // the second
+  ++s.sFrames;
+  s.sMissed += missed;
+  if (!shouldRender) ++s.sNoRender;
+  if (slow) ++s.sSlow;
+  if (fxDone == 0) ++s.sFxLate;
+  s.sScreenLate += screenLate;
+  s.sLongestWork = std::max(s.sLongestWork, workMs);
+  // the goal window
+  if (s.celeb) {
+    ++s.frames;
+    s.missed += missed;
+    if (s.replayNs == 0) s.missedBefore += missed;
+    else if (s.replayEndNs == 0) s.missedReplay += missed;
+    else s.missedAfter += missed;
+    if (fxDone == 0) ++s.fxLate;
+    s.screenLate += screenLate;
+    s.coinPays += s.cur.coinPays;
+    if (s.cur.task[0] != '\0' && s.cur.taskNs > s.worstTaskNs) {  // r222
+      s.worstTaskNs = s.cur.taskNs;
+      std::memcpy(s.worstTask, s.cur.task, sizeof s.worstTask);
+    }
+    if (s.cur.transNs > s.worstTransNs)
+      s.worstTransNs = s.cur.transNs, s.worstTransFrom = s.cur.transFrom, s.worstTransTo = s.cur.transTo;
+    s.discNs += s.cur.discNs;
+    s.discN += s.cur.discN;
+    for (int k = 0; k < kNSec; ++k) {
+      s.secSum[k] += s.cur.sec[k];
+      s.secMax[k] = std::max(s.secMax[k], s.cur.sec[k]);
+    }
+    for (int k = 0; k < kNSub; ++k) {
+      s.subSum[k] += s.cur.sub[k];
+      s.subMax[k] = std::max(s.subMax[k], s.cur.sub[k]);
+    }
+    const double gpu = app_gpu_ms();
+    if (gpu >= 0.0) {
+      s.gpuSum += gpu;
+      s.gpuMax = std::max(s.gpuMax, gpu);
+      ++s.gpuN;
+    }
+    if (slow) {
+      ++s.slow;
+      for (int k = 0; k < kNSec; ++k) s.overSec[k] += s.cur.sec[k];
+      if (intervalMs > s.worstMs) s.worstMs = intervalMs, s.worstAt = since(s.goalNs, t);
+      if (s.printed < 40) {
+        ++s.printed;
+        std::string parts;
+        char b[96];
+        for (int k = 0; k < kNSec; ++k) {
+          if (s.cur.sec[k] < 50000) continue;
+          std::snprintf(b, sizeof b, "%s%s %.2f", parts.empty() ? "" : ", ", kSecName[k], s.cur.sec[k] / 1e6);
+          parts += b;
+        }
+        uint64_t attributed = 0;
+        for (int k = 0; k < kNSec; ++k) attributed += s.cur.sec[k];
+        std::snprintf(b, sizeof b, ", other %.2f", std::max(0.0, workMs - attributed / 1e6));
+        parts += b;
+        for (int k = 0; k < kNSub; ++k) {
+          if (s.cur.sub[k] < 50000) continue;
+          std::snprintf(b, sizeof b, ", [%s %.2f]", kSubName[k], s.cur.sub[k] / 1e6);
+          parts += b;
+        }
+        char gpuTxt[48] = "n/a";
+        if (gpu >= 0.0) std::snprintf(gpuTxt, sizeof gpuTxt, "%.1f ms", gpu);
+        char tasks[160];  // r222: inside "game" - its slowest task, a state change, the disc
+        int tn = std::snprintf(tasks, sizeof tasks, "slowest task %s %.2f ms", s.cur.task[0] != '\0' ? s.cur.task : "-",
+                               s.cur.taskNs / 1e6);
+        if (s.cur.transNs > 0 && tn > 0 && tn < static_cast<int>(sizeof tasks))
+          tn += std::snprintf(tasks + tn, sizeof tasks - tn, ", state 0x%x -> 0x%x %.2f ms", s.cur.transFrom, s.cur.transTo,
+                              s.cur.transNs / 1e6);
+        if (s.cur.discN > 0 && tn > 0 && tn < static_cast<int>(sizeof tasks))
+          std::snprintf(tasks + tn, sizeof tasks - tn, ", disc %u reads %.2f ms", s.cur.discN, s.cur.discNs / 1e6);
+        XLOG("goal-frame #%d +%.2f s (%s%s, 3D %s): %.1f ms, %u display frames missed, work %.1f ms (wait %.1f) | %s | %s | coins "
+             "paid %u | app GPU (runtime) %s | last effects frame %s, big screen picture late %u",
+             s.goalNo, since(s.goalNs, t),
+             s.replayNs == 0 ? "goal" : (s.replayEndNs == 0 ? "replay" : (s.liveNs == 0 ? "replay over" : "live again")),
+             scorer_shown() ? ", scorer out" : "", g.hasProjection ? "on" : "off", intervalMs, missed, workMs, waitNs / 1e6,
+             parts.c_str(), tasks, s.cur.coinPays, gpuTxt, fxDone == 0 ? "still on the GPU" : (fxDone == 1 ? "done" : "-"),
+             screenLate);
+      } else {
+        ++s.unprinted;
+      }
+    }
+    if ((s.liveNs != 0 && t - s.liveNs > 3000000000ull) || t - s.goalNs > 40000000000ull) goal_summary(t);
+  }
+  // the compositor line, once a second in a match
+  if (t - s.secStartNs >= 1000000000ull) {
+    if (in_match(t)) {
+      uint64_t fxSum = 0, fxMax = 0;
+      uint32_t fxFrames = 0;
+      char fxGpu[80] = "off";
+      if (g.fxReady && xrfx::take_gpu_stats(&fxSum, &fxMax, &fxFrames))
+        std::snprintf(fxGpu, sizeof fxGpu, fxFrames > 0 ? "%.2f ms avg, %.2f max (%u frames)" : "not drawn", fxSum / 1e6 / std::max(1u, fxFrames),
+                      fxMax / 1e6, fxFrames);
+      std::string meta;
+      for (Metric& m : g_metrics) {
+        double v = 0.0;
+        if (!read_metric(m, &v)) continue;
+        char b[96];
+        const bool counter = m.name.find("count") != std::string::npos;
+        if (counter && m.have) std::snprintf(b, sizeof b, "%s%s %.0f (+%.0f)", meta.empty() ? "" : ", ", m.name.c_str(), v, v - m.last);
+        else std::snprintf(b, sizeof b, "%s%s %.2f", meta.empty() ? "" : ", ", m.name.c_str(), v);
+        meta += b;
+        m.last = v;
+        m.have = true;
+      }
+      char eyeBlit[128] = "none";  // r222: the scorer's eye layer hand-off (eye_blit_take)
+      eye_blit_take(eyeBlit, sizeof eyeBlit);
+      char cpu[48] = "n/a";  // r222: the CPU's clock now and whether a goal's show has it boosted
+      const int mhz = cpu_mhz_now();
+      if (mhz > 0) std::snprintf(cpu, sizeof cpu, "%d MHz", mhz);
+      XLOG("compositor (1 s, %s, 3D %s): %u display frames, %u missed (app side), %u not rendered, %u over 13.9 ms of work "
+           "(longest %.1f ms) | still on the GPU a frame later: effects layer %u, big screen picture %u | effects layer GPU %s | "
+           "eye layer blit GPU %s | CPU %s%s | runtime: %s",
+           mode_name(), g.hasProjection ? "on" : "off", s.sFrames, s.sMissed, s.sNoRender, s.sSlow, s.sLongestWork, s.sFxLate,
+           s.sScreenLate, fxGpu, eyeBlit, cpu, g_goalBoost.on ? " (goal boost asked)" : "", meta.empty() ? "n/a" : meta.c_str());
+    } else {
+      if (g.fxReady) {
+        uint64_t a = 0, b = 0;
+        uint32_t c = 0;
+        xrfx::take_gpu_stats(&a, &b, &c);  // (outside a match: dropped)
+      }
+      char drop[128];
+      eye_blit_take(drop, sizeof drop);  // r222 (outside a match: dropped)
+    }
+    s.secStartNs = t;
+    s.sFrames = s.sMissed = s.sNoRender = s.sSlow = s.sFxLate = s.sScreenLate = 0;
+    s.sLongestWork = 0.0;
+  }
+  s.startNs = t;
+  s.cur = Interval{};
+}
+
+void goal(uint64_t t) {
+  if (st.celeb) goal_summary(t);  // (a goal inside the last one's window: that one's summary first)
+  State& s = st;
+  const int no = s.goalNo + 1;
+  const uint64_t live = s.lastLiveNs;
+  const uint64_t secStart = s.secStartNs, start = s.startNs;
+  const Interval cur = s.cur;
+  const uint32_t sF = s.sFrames, sM = s.sMissed, sN = s.sNoRender, sS = s.sSlow, sFx = s.sFxLate, sSc = s.sScreenLate;
+  const double sL = s.sLongestWork;
+  s = State{};
+  s.goalNo = no;
+  s.lastLiveNs = live;
+  s.secStartNs = secStart;
+  s.startNs = start;
+  s.cur = cur;
+  s.sFrames = sF, s.sMissed = sM, s.sNoRender = sN, s.sSlow = sS, s.sFxLate = sFx, s.sScreenLate = sSc, s.sLongestWork = sL;
+  s.celeb = true;
+  s.goalNs = t;
+}
+
+void phase(int p, uint64_t t) {
+  if (!st.celeb) return;
+  if (p == 1 && st.replayNs == 0) st.replayNs = t;
+  if ((p == 2 || p == 3) && st.replayEndNs == 0) {  // played out / skipped
+    if (st.replayNs == 0) st.replayNs = t;
+    st.replayEndNs = t;
+  }
+  if (p == 4 && st.liveNs == 0) {
+    if (st.replayNs == 0) st.replayNs = t;
+    if (st.replayEndNs == 0) st.replayEndNs = t;
+    st.liveNs = t;
+  }
+}
+}  // namespace gp
+
 void log_stats() {
   const uint64_t t = now_ns();
+  log_memory_tick();  // r206
   if (g.lastStatsNs == 0) {
     g.lastStatsNs = t;
     return;
@@ -15292,14 +17669,17 @@ extern "C" int PortXrStereoFrameBegin(void) {
     }
     finish_stereo_frame(g.slot);
     g.eyeFenceNs += now_ns() - waitStart;
+    gp::add_sub(gp::kEyeFence, now_ns() - waitStart);  // r221
   }
   slot.views[0] = g.views[0];  // r43: what this frame's eyes are drawn for (finish_stereo_frame)
   slot.views[1] = g.views[1];
+  slot.rectOn = false;  // r222: the whole image unless the scorer's send narrows it (PortXrStereoEyeLayer)
   if (slot.pending) {
     // This slot's blit from two frames ago must be done before Dawn draws into its images again.
     const uint64_t fenceStart = now_ns();
     vkWaitForFences(g.device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
     g.eyeFenceNs += now_ns() - fenceStart;
+    gp::add_sub(gp::kEyeFence, now_ns() - fenceStart);  // r221
     vkResetFences(g.device, 1, &slot.fence);
     slot.pending = false;
   }
@@ -15458,6 +17838,12 @@ extern "C" int PortXrStereoEyeLayer(int eye, int layer, float view[16], float pr
   // end puts the mode back.
   if (kind == kLayerScorer && g.mrMode) GXAuroraXrCoverage(2);
   const M4 model = kind == kLayerTable ? table_model() : (kind == kLayerScorer ? scorer_model() : stadium_model());
+  // r222: Jumbotron in your room - the scorer alone in this slot's main image: only the part it can be in goes on
+  // (finish_stereo_frame); any other layer in the image, or a dump asked for, keeps the whole image
+  if (kind == kLayerScorer && eye == 2 && g.singlePass && g.scorerRectOn && !stereo_mode() && !g.splitThisFrame &&
+      g.stereoLayers == 1 && !g.dumpRequested) {
+    slot.rectOn = scorer_rect(slot, model, slot.rect);
+  }
   // r43: single pass sends from the centre with the union field of view (plan_single_pass); the
   // split stadium from the one eye it is drawn for this frame.
   const int viewEye = stadiumHere ? slot.stadiumEye : (eye == 2 ? 0 : eye);
@@ -15574,6 +17960,33 @@ extern "C" void PortXrStereoFrameEnd(void) {
 
 extern "C" int PortXrShouldQuit(void) { return g.quit ? 1 : 0; }
 
+// r221: the frame probe (gp): this loop iteration's steps before PortXrEndFrame
+extern "C" void PortXrProbeLoop(unsigned long long begin, unsigned long long tasks, unsigned long long auroraEnd,
+                                unsigned long long audio) {
+  if (!g.active) return;
+  gp::add(gp::kBegin, begin);
+  gp::add(gp::kGame, tasks);
+  gp::add(gp::kAurEnd, auroraEnd);
+  gp::add(gp::kAudio, audio);
+}
+
+// r222: nlTask.cpp, once a RunAllTasks (the game thread): its slowest task's Run and the state change it ran (0 none) -
+// into this display interval's probe (the slowest of them if two game frames fall in one). Measures only.
+extern "C" void PortXrProbeTasks(const char* slowest, unsigned long long slowestNs, unsigned long long transitionNs,
+                                 unsigned from, unsigned to) {
+  if (!g.active) return;
+  gp::Interval& c = gp::st.cur;
+  if (slowest != nullptr && slowestNs > c.taskNs) {
+    c.taskNs = slowestNs;
+    std::snprintf(c.task, sizeof c.task, "%s", slowest);
+  }
+  if (transitionNs > c.transNs) {
+    c.transNs = transitionNs;
+    c.transFrom = from;
+    c.transTo = to;
+  }
+}
+
 extern "C" void PortXrNoteLoopTimes(int ranGameFrame, unsigned long long xrBegin, unsigned long long auroraBegin,
                                     unsigned long long tasks, unsigned long long auroraEnd, unsigned long long xrEnd) {
   if (!g.active || !ranGameFrame) {
@@ -15603,6 +18016,8 @@ extern "C" void PortXrGoal(int team, int character, int superStrike, int hyper, 
   const char* who = (character >= 0 && character < 12) ? kNames[character] : "?";
   XLOG("celebration: GOAL team %d by %s (class %d)%s%s%s, scorer pad %d", team, who, character,
        superStrike ? " SUPER STRIKE" : "", hyper ? " perfect" : "", ownGoal ? " own goal" : "", humanPad);
+  gp::goal(now_ns());  // r221: the frame probe's goal window
+  goal_boost_start();  // r222: the CPU boosted for the show (Jumbotron in your room)
 
   g.lastGoalOwn = ownGoal != 0;  // r85: the scorer card says so
   g.celebStartNs = now_ns();  // r130: a goal's show: its slowness doesn't hold the view at 60
@@ -15674,11 +18089,23 @@ static void ensure_fx() {
     }
     XLOG("fx: effects layer %ux%u per eye, %ux multisampled", dev.width, dev.height, dev.fxSamples);
     g.fxReady = xrfx::init(dev);
+    if (g.fxReady && g.physical != VK_NULL_HANDLE) {  // r221: its own GPU time per frame (the compositor line)
+      VkPhysicalDeviceProperties props{};
+      vkGetPhysicalDeviceProperties(g.physical, &props);
+      uint32_t familyCount = 0;
+      vkGetPhysicalDeviceQueueFamilyProperties(g.physical, &familyCount, nullptr);
+      std::vector<VkQueueFamilyProperties> families(familyCount);
+      vkGetPhysicalDeviceQueueFamilyProperties(g.physical, &familyCount, families.data());
+      const uint32_t bits = g.queueFamily < familyCount ? families[g.queueFamily].timestampValidBits : 0;
+      xrfx::set_gpu_timing(props.limits.timestampPeriod, props.limits.timestampComputeAndGraphics ? bits : 0);
+      XLOG("fx: GPU timestamps %s (period %.2f ns, %u valid bits)", bits > 0 ? "on" : "off", props.limits.timestampPeriod, bits);
+    }
   }
 }
 
 extern "C" void PortXrSetGameplayLive(int live) {
   g.gameplayLive = live != 0;
+  if (g.gameplayLive) gp::st.lastLiveNs = now_ns();  // r221: "in a match" for the compositor line
   if (g.gameplayLive) {
     g.replayRunning = false;  // r53: play is back, whatever the phases said
     g.worldless = false;
@@ -15868,7 +18295,8 @@ void save_crowd_level() {
 void update_crowd_mix() {
   float fx = 0.0f, fz = -1.0f;
   if (g.headValid) floor_forward(g.headPose, &fx, &fz);
-  PortAudioSetCrowdUser(static_cast<float>(g.crowdLevel) / 6.0f, g.mrMode ? 0 : 1, std::atan2(fx, -fz));
+  PortAudioSetCrowdUser(static_cast<float>(g.crowdLevel) / 6.0f * (1.0f - 0.92f * std::min(1.0f, std::max(0.0f, xrcards::room_gallery()))),  // (r230: hushed in the EXQUISITE gallery)
+                          g.mrMode ? 0 : 1, std::atan2(fx, -fz));
 }
 
 // r44g: your eye height in the life-size stadium (a friend of Lance's: "more controllability for the
@@ -15903,6 +18331,12 @@ std::string room_options_path() {
 }
 
 void load_room_options() {
+  {  // r194: strikers.ini room_weather (STRIKERS_ROOM_WEATHER) = on / off, else on; the file's line wins
+    const char* v = std::getenv("STRIKERS_ROOM_WEATHER");
+    if (v != nullptr && *v != '\0')
+      g.roomWeather = !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F' ||
+                        ((v[0] == 'o' || v[0] == 'O') && (v[1] == 'f' || v[1] == 'F')));
+  }
   if (FILE* f = std::fopen(room_options_path().c_str(), "r")) {
     char key[32];
     int value = 0;
@@ -15912,20 +18346,27 @@ void load_room_options() {
       else if (std::strcmp(key, "popups") == 0) g.raPopups = std::max(0, std::min(2, value));
       else if (std::strcmp(key, "weather") == 0) PortWeatherSetMode(value);  // r137 (else strikers.ini `weather`)
       else if (std::strcmp(key, "music") == 0) PortMenuMusicSetMode(value);  // r147 (else strikers.ini `menu_music`)
+      else if (std::strcmp(key, "roomweather") == 0) g.roomWeather = value != 0;  // r194 (else strikers.ini `room_weather`)
+      else if (std::strcmp(key, "roomscan") == 0) g.useRoomScan = value != 0;  // r197
+      else if (std::strcmp(key, "bookmachine") == 0) g.bookMachine = value != 0;  // r199
     }
     std::fclose(f);
   }
   xrra::set_popups(g.raPopups);
-  XLOG("room options: home ground %s, trophy shelf + badge board %s, achievement pop-ups %s, weather %s, menu music %s", g.showHome ? "on" : "off", g.showShelf ? "on" : "off",
+  XLOG("room options: home ground %s, trophy shelf + badge board %s, achievement pop-ups %s, weather %s, menu music %s, weather in my room %s", g.showHome ? "on" : "off", g.showShelf ? "on" : "off",
        g.raPopups == 2 ? "all" : (g.raPopups == 1 ? "unlocks only" : "off"), PortWeatherModeName(PortWeatherMode()),
-       PortMenuMusicModeName(PortMenuMusicMode()));
+       PortMenuMusicModeName(PortMenuMusicMode()), g.roomWeather ? "on" : "off");
+  XLOG("room options: use my room scan %s", g.useRoomScan ? "on" : "off");  // r197
 }
 
 void save_room_options() {
   if (FILE* f = std::fopen(room_options_path().c_str(), "w")) {
     // r147: + music (the launcher's Menu music button writes the same line: LobbyActivity / MenuMusic.java)
-    std::fprintf(f, "shelf %d\npopups %d\nhome %d\nweather %d\nmusic %d\n", g.showShelf ? 1 : 0, g.raPopups, g.showHome ? 1 : 0,
-                 PortWeatherMode(), PortMenuMusicMode());
+    // r194: + roomweather (the launcher's SETTINGS > HOME GROUND row writes the same line: LobbyActivity)
+    // r197: + roomscan (the launcher's SETTINGS > HOME GROUND row writes the same line: LobbyActivity)
+    std::fprintf(f, "shelf %d\npopups %d\nhome %d\nweather %d\nmusic %d\nroomweather %d\nroomscan %d\nbookmachine %d\n", g.showShelf ? 1 : 0,
+                 g.raPopups, g.showHome ? 1 : 0, PortWeatherMode(), PortMenuMusicMode(), g.roomWeather ? 1 : 0,
+                 g.useRoomScan ? 1 : 0, g.bookMachine ? 1 : 0);  // r199: + bookmachine
     std::fclose(f);
   }
 }
@@ -16026,7 +18467,7 @@ std::vector<int> pause_rows(int page, int sub, int ctx) {
     // r157 round 2: the game's own AUDIO / VISUAL OPTIONS are rows here (no opening its screen)
     if (sub == 0) return {kRowCrowd, kRowMusicVol, kRowSfxVol, kRowVoiceVol, kRowSoundMode, kRowMenuMusic, kRowVoice};
     if (sub == 1) return {kRowAutoZoom, kRowZoom, kRowWidescreen};
-    return {kRowWeather, kRowHome, kRowShelf};
+    return {kRowWeather, kRowRoomWeather, kRowRoomScan, kRowHome, kRowShelf, kRowBookMachine};  // r199: + SPORTSBOOK MACHINE  // r194: + WEATHER IN MY ROOM; r197: + ROOM SCAN
   }
   if (page == kPzAch) return {kRowList, kRowPopups};
   if (page == kPzMatch) return ctx == 2 ? std::vector<int>{kRowLessons} : std::vector<int>{kRowSides, kRowStats};
@@ -16084,6 +18525,36 @@ bool pause_row_step(int row, int step) {
       PortWeatherSetMode(mode);
       save_room_options();
       XLOG("weather %s", PortWeatherModeName(mode));
+      return true;
+    }
+    case kRowRoomWeather: {  // r194: at once - the effects layer gets (or stops getting) the match's weather next frame
+      const bool on = step == 0 ? !g.roomWeather : step > 0;
+      if (on == g.roomWeather) return false;
+      g.roomWeather = on;
+      save_room_options();
+      XLOG("weather in my room %s", on ? "on" : "off");
+      return true;
+    }
+    case kRowRoomScan: {  // r197: A on a scan that needs something (the permission, Space setup, a retry) does it; else on / off
+      const xrscene::State st = xrscene::state();
+      if (step == 0 && g.useRoomScan && (st == xrscene::kNoPermission || st == xrscene::kNoScan || st == xrscene::kFailed)) {
+        xrscene::act();
+        XLOG("use my room scan: A (state %d)", static_cast<int>(st));
+        return true;
+      }
+      const bool on = step == 0 ? !g.useRoomScan : step > 0;
+      if (on == g.useRoomScan) return false;
+      g.useRoomScan = on;
+      save_room_options();
+      XLOG("use my room scan %s", on ? "on" : "off");
+      return true;
+    }
+    case kRowBookMachine: {  // r199: the sportsbook's cabinet in your room (CLUB > SPORTSBOOK works without it)
+      const bool on = step == 0 ? !g.bookMachine : step > 0;
+      if (on == g.bookMachine) return false;
+      g.bookMachine = on;
+      save_room_options();
+      XLOG("sportsbook machine in my room %s", on ? "on" : "off");
       return true;
     }
     case kRowMenuMusic: {
@@ -16246,6 +18717,11 @@ struct PauseView {
   bool onRail = true, hasScore = false;
   int crowd = 6, voice = 0, heightCm = 0, popups = 2, weather = 0, music = 0, mySongs = -1, view = 0, preset = 0;
   bool shelf = true, home = true, room = true, tabletop = false;
+  bool roomWeather = true;  // r194
+  bool roomScan = true;     // r197
+  bool bookMachine = true;  // r199: USE MY ROOM SCAN, the scan's state (xrscene::State) and its status line
+  int scanState = 0;
+  std::string scanStatus;
   float screenW = 0.0f;
   uint32_t achUnlocked = 0, achTotal = 0;
   int opt[7] = {10, 10, 10, 0, 1, 5, 0};  // r157 round 2: the game's own options (PORT_OPT_*)
@@ -16257,7 +18733,8 @@ std::string pause_key(const PauseView& p) {
                 p.sub, p.ctx, p.onRail, p.hasScore, p.score[0], p.score[1], p.crowd, p.voice, p.heightCm, p.popups, p.weather,
                 p.music, p.mySongs, p.view, p.preset, p.shelf, p.home, p.room, p.tabletop, p.screenW, p.achUnlocked, p.achTotal,
                 p.opt[0], p.opt[1], p.opt[2], p.opt[3], p.opt[4], p.opt[5], p.opt[6]);
-  return k;
+  return std::string(k) + (p.roomWeather ? " W1" : " W0") + (p.roomScan ? " S1 " : " S0 ") + (p.bookMachine ? "B1 " : "B0 ") +  // r194, r197, r199
+         std::to_string(p.scanState) + p.scanStatus;
 }
 // A small picture of a view: your room (grey walls, a floor) or the stadium (stands, the pitch); a big screen or a table
 void pause_view_pic(xrmenu::Kit& K, float x0, float y0, float x1, float y1, bool room, bool screen) {
@@ -16329,6 +18806,9 @@ void draw_pause(uint8_t* px, int w, int h, const PauseView& pv) {
         static const char* const kWx[6] = {"RANDOM", "CLEAR", "RAIN", "SNOW", "NIGHT", "OFF"};
         return kWx[std::max(0, std::min(5, pv.weather))];
       }
+      case kRowRoomWeather: return pv.roomWeather ? "ON" : "OFF";  // r194
+      case kRowRoomScan: return pv.roomScan ? "ON" : "OFF";        // r197
+      case kRowBookMachine: return pv.bookMachine ? "ON" : "OFF";  // r199
       case kRowHome: return pv.home ? "ON" : "OFF";
       case kRowShelf:
         if (!pv.home) *why = "NEEDS HOME GROUND ON";
@@ -16347,7 +18827,8 @@ void draw_pause(uint8_t* px, int w, int h, const PauseView& pv) {
                                            "AUTO-ZOOM, ZOOM, WIDESCREEN", "WEATHER", "HOME GROUND", "TROPHY SHELF + BADGES",
                                            "SHOW THE LIST", "POP-UPS", "CHOOSE SIDES", "STATISTICS", "LESSONS",
                                            "SCREEN SIZE", "STADIUM HEIGHT (STADIUM ONLY)", "MUSIC VOLUME", "EFFECTS VOLUME",
-                                           "VOICES VOLUME", "SOUND MODE", "AUTO-ZOOM CAMERA", "CAMERA ZOOM", "WIDESCREEN"};
+                                           "VOICES VOLUME", "SOUND MODE", "AUTO-ZOOM CAMERA", "CAMERA ZOOM", "WIDESCREEN",
+                                           "WEATHER IN MY ROOM", "USE MY ROOM SCAN", "SPORTSBOOK MACHINE IN MY ROOM"};
   // what the picked row does, always in the same spot
   static const char* const kRowNote[kRowCount] = {
       "THE CROWD ROUND YOU. YOU HEAR IT WHEN YOU RESUME.", "TALK TO YOUR FRIEND IN AN ONLINE MATCH.",
@@ -16358,7 +18839,10 @@ void draw_pause(uint8_t* px, int w, int h, const PauseView& pv) {
       "A: WHICH CONTROLLER PLAYS WHICH SIDE.", "A: THE MATCH SO FAR.", "A: STRIKERS 101'S LESSONS.", "", "",
       "THE MATCH'S MUSIC (THE GAME'S OWN SOUND OPTION).", "THE BALL, THE HITS, THE ITEMS.", "THE CHARACTERS' VOICES.",
       "THE GAME CHANGES IT ON ITS MAIN MENU ONLY (IT RELOADS THE MUSIC).", "THE CAMERA ZOOMS WITH THE PLAY.",
-      "HOW CLOSE THE CAMERA IS. FROM THE NEXT CAMERA CUT.", "THE GAME'S OWN WIDE PICTURE SETTING."};
+      "HOW CLOSE THE CAMERA IS. FROM THE NEXT CAMERA CUT.", "THE GAME'S OWN WIDE PICTURE SETTING.",
+      "THE MATCH'S RAIN AND SNOW IN YOUR OWN ROOM (MR). THIS HEADSET ONLY.",
+      "SO WEATHER AND EFFECTS LAND ON YOUR REAL FURNITURE. THIS HEADSET ONLY.",
+      "THE STRIKERZ SPORTSBOOK ARCADE MACHINE (FRANCHISE). CLUB > SPORTSBOOK WORKS WITHOUT IT."};  // r199  // r197 (+ the scan's status over it)
   if (page == kPzPaused) {
     const float y0 = 150, y1 = 772;
     TileSpec r;
@@ -16472,7 +18956,13 @@ void draw_pause(uint8_t* px, int w, int h, const PauseView& pv) {
         value_row(K, x0, y, x1, y + 70, kRowName[row], val.empty() ? std::string("A") : val, on, -1, 0, !why.empty(), why);
       y += 79;
     }
-    if (cur >= 0 && kRowNote[rows[static_cast<size_t>(cur)]][0] != '\0') {
+    if (cur >= 0 && rows[static_cast<size_t>(cur)] == kRowRoomScan) {
+      // r197: the scan's status (what was found / what to do), then why
+      K.box(x0, y + 4, x1, y + 136, 24, kDark, 0.7f);
+      K.left(pv.roomScan ? pv.scanStatus : std::string("OFF: WEATHER AND EFFECTS USE YOUR FLOOR, AS BEFORE"), x0 + 26, y + 42, 40,
+             x1 - x0 - 50, pv.roomScan && pv.scanState == xrscene::kReady ? kGreen : kCream, 2.0f);
+      K.left(kRowNote[kRowRoomScan], x0 + 26, y + 100, 36, x1 - x0 - 50, kInkSoft, 2.0f);
+    } else if (cur >= 0 && kRowNote[rows[static_cast<size_t>(cur)]][0] != '\0') {
       K.box(x0, y + 4, x1, y + 78, 24, kDark, 0.7f);
       K.left(kRowNote[rows[static_cast<size_t>(cur)]], x0 + 26, y + 42, 40, x1 - x0 - 50, kInkSoft, 2.0f);
     }
@@ -16484,6 +18974,11 @@ void draw_pause(uint8_t* px, int w, int h, const PauseView& pv) {
                          row == kRowLessons || row == kRowList;
       aWord = opens ? "OPEN" : "CHANGE";
       aDim = (row == kRowShelf && !pv.home) || row == kRowSoundMode;
+      if (row == kRowRoomScan && pv.roomScan) {  // r197: A does what the scan needs
+        if (pv.scanState == xrscene::kNoPermission) aWord = "ALLOW";
+        else if (pv.scanState == xrscene::kNoScan) aWord = "SET UP";
+        else if (pv.scanState == xrscene::kFailed) aWord = "TRY AGAIN";
+      }
     }
     hint_bar(K, 30, W - 30, 838, {{"L", "MOVE"}, {"A", aWord, aDim}, {"B", "BACK"}, {"MENU", "RESUME"}});
   }
@@ -16645,6 +19140,7 @@ extern "C" void PortXrCelebrationPhase(int phase) {
   }
   static const char* kPhases[] = {"?", "replay started", "replay played out", "skipped", "play live"};
   XLOG("celebration: %s", (phase >= 1 && phase <= 4) ? kPhases[phase] : "?");
+  gp::phase(phase, now_ns());  // r221
   g.replayRunning = phase == 1;  // r53 (see replayRunning)
   if (phase == 1) g.replayStartNs = now_ns();
   if (phase == 3 || phase == 4) g.celebEndNs = now_ns() + 3000000000ull;  // r130: the show's over in 3 s
@@ -17056,7 +19552,1548 @@ extern "C" int PortXrBeginFrame(void) {
 
 extern "C" float PortXrFrameScale(void) { return g.frameScale; }
 
+// --- r199: the TIZM SPORTSBOOK machine, each display frame (PortXrEndFrame, before the effects layer) ---
+AsyncPanel g_bookScreenP;  // its screen's picture (xrbook::draw), drawn on a thread (r199-r204; r205: book_live_service below)
+// ---- r205 (Lance's r204 test: "any time I do move, it gets CHOPPY and it induces that SICKNESS feeling"; logs\r204-choppy: 72 ->
+// 50.1 -> 24.5 fps, the machine's frame work 0.46 -> 2.47 -> 8.83 ms a frame): THE MACHINE'S SCREEN OFF THE FRAME THREAD
+// (xr_screen.h). r199-r204: request_panel above - a NEW thread per picture (the whole 1320 x 766, ~85 ms in WebAssembly) on every
+// move and then 20 a second while the cursor popped, several at once against the game's threads, and show_panel on the frame
+// thread: a 4 MB swizzle + copy and a WAIT for the last upload's fence (behind all of the frame's GPU work). Now two workers:
+//   PIECES (nice 4): the newest request -> xrbook::draw's pieces with the cursor SINK on (the cursor noted, not drawn) -> the
+//     same as the last picture's? Only the cursor moved: its box goes to the frame thread at once. Changed: the rows that
+//     changed (xrscreen::Board::diff) go to the raster thread; the cursor goes at once too unless the change touches its item
+//     (a list scrolled: then it waits for that picture). The cursor's own picture (xrscreen::cursor_atlas, 4 cells) is drawn
+//     here when its size / colour changes, into the overlay's staging buffer.
+//   RASTER (nice 10): those rows drawn into the kept picture (exactly what a whole redraw gives), the picture copied into a free
+//     staging buffer (swizzled there if the swapchain is BGRA).
+//   FRAME THREAD (book_live_service): a staging buffer's fence polled (never waited), a filled one copied into the next swapchain
+//     image - only the rows that image is missing (xrscreen::History) - one command buffer submit. The cursor overlay is its own
+//     quad over the screen (under the effects layer, through the cabinet's screen hole): its pop / press = its size + cell.
+struct BookStage {
+  VkBuffer buf = VK_NULL_HANDLE;
+  VkDeviceMemory mem = VK_NULL_HANDLE;
+  void* mapped = nullptr;
+  VkDeviceSize size = 0;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  VkFence fence = VK_NULL_HANDLE;
+  std::atomic<int> state{-1};  // -1 not made, 0 free, 1 being filled (a worker), 2 filled (for the frame thread), 3 copying (GPU)
+  uint64_t version = 0;        // (written before state 2)
+  int rows = 0, cols = 0;      // the rows / columns filled (the overlay: its used part)
+  xrscreen::Atlas atlas;       // (the overlay's)
+  xrbook::CursorBox look;      // (the overlay's)
+};
+struct BookLive {
+  Panel panel;
+  BookStage st[2];
+  std::vector<uint64_t> imgVer;  // what each swapchain image holds (frame thread)
+  uint64_t shown = 0;            // the newest version copied up (frame thread)
+  std::mutex hm;
+  xrscreen::History hist;        // (under hm)
+  uint32_t w = 0, h = 0;
+  bool partial = true;           // rows only (STRIKERS_XR_SCREEN_FULL=1: every copy the whole picture)
+  xrscreen::Atlas atlas;         // (the overlay: the cells up now)
+  xrbook::CursorBox look;
+};
+BookLive g_bookPic, g_bookCur;
+// the request (frame thread -> pieces)
+struct BookReq {
+  uint64_t slot = 0;  // the board's clock step (a new one: its clock moves on - the ticker, the pulses, the reels)
+  int gen = 0;
+  bool attract = false;
+  float t = 0.0f;
+};
+std::mutex g_bwM;
+std::condition_variable g_bwCv;
+BookReq g_bwReq;
+uint64_t g_bwSerial = 0;
+bool g_bwStarted = false;
+// the raster job (pieces -> raster): merged into while it waits
+struct BookJob {
+  bool on = false;
+  std::vector<xrtext::BoardPiece> pieces;
+  xrscreen::Change change;
+  uint64_t version = 0;
+  bool cursorAfter = false;
+  xrbook::CursorBox box;
+};
+std::mutex g_brM;
+std::condition_variable g_brCv;
+BookJob g_brJob;
+// the cursor (workers -> frame thread): its box, for the picture version it fits (0: any)
+std::mutex g_bcM;
+xrbook::CursorBox g_bcBox;
+uint64_t g_bcFor = 0;
+// the workers' numbers (the log's "screen (r205)" line)
+std::atomic<int> g_bsPics{0}, g_bsRows{0}, g_bsCursorOnly{0}, g_bsAtlas{0};
+std::atomic<int64_t> g_bsRasterUs{0}, g_bsRasterMaxUs{0}, g_bsPiecesUs{0}, g_bsPiecesMaxUs{0};
+
+void book_publish_cursor(const xrbook::CursorBox& b, uint64_t forVersion) {
+  std::lock_guard<std::mutex> lk(g_bcM);
+  g_bcBox = b;
+  g_bcFor = forVersion;
+}
+void book_max(std::atomic<int64_t>& m, int64_t v) {
+  int64_t cur = m.load();
+  while (v > cur && !m.compare_exchange_weak(cur, v)) {
+  }
+}
+// a free (or filled-but-not-taken) staging buffer of L for a worker; -1 none now
+int book_take_stage(BookLive& L) {
+  for (int k = 0; k < 2; ++k) {
+    int s = 0;
+    if (L.st[k].state.compare_exchange_strong(s, 1)) return k;
+  }
+  // (a filled one the frame thread hasn't taken: the older of them is replaced - its rows are in the history either way)
+  int best = -1;
+  for (int k = 0; k < 2; ++k)
+    if (L.st[k].state.load() == 2 && (best < 0 || L.st[k].version < L.st[best].version)) best = k;
+  if (best >= 0) {
+    int s = 2;
+    if (L.st[best].state.compare_exchange_strong(s, 1)) return best;
+  }
+  return -1;
+}
+// rows of an RGBA picture into a staging buffer (BGRA swapchains swizzled here, off the frame thread)
+void book_fill(BookStage& s, const uint8_t* rgba, int stridePx, int cols, int rows) {
+  uint8_t* dst = static_cast<uint8_t*>(s.mapped);
+  const bool bgra = g.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+  for (int y = 0; y < rows; ++y) {
+    const uint8_t* a = rgba + static_cast<size_t>(y) * stridePx * 4;
+    uint8_t* d = dst + static_cast<size_t>(y) * stridePx * 4;
+    if (!bgra) {
+      std::memcpy(d, a, static_cast<size_t>(cols) * 4);
+    } else {
+      for (int x = 0; x < cols; ++x) d[x * 4] = a[x * 4 + 2], d[x * 4 + 1] = a[x * 4 + 1], d[x * 4 + 2] = a[x * 4], d[x * 4 + 3] = a[x * 4 + 3];
+    }
+  }
+}
+
+void book_raster_loop() {
+  setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 10);  // (behind the game's own threads)
+  const int W = static_cast<int>(bookcab::kScreenPxW), H = static_cast<int>(bookcab::kScreenPxH);
+  std::vector<uint8_t> canvas(static_cast<size_t>(W) * H * 4, 0);
+  for (;;) {
+    BookJob job;
+    {
+      std::unique_lock<std::mutex> lk(g_brM);
+      g_brCv.wait(lk, [] { return g_brJob.on; });
+      job = std::move(g_brJob);
+      g_brJob = BookJob();
+    }
+    const uint64_t t0 = now_ns();
+    try {
+      xrscreen::Board::draw(job.pieces, W, H, canvas.data(), job.change);
+    } catch (...) {
+      XLOG("sportsbook: the screen's picture threw - skipped");
+      continue;
+    }
+    const int64_t us = static_cast<int64_t>((now_ns() - t0) / 1000);
+    g_bsRasterUs += us;
+    book_max(g_bsRasterMaxUs, us);
+    ++g_bsPics;
+    g_bsRows += job.change.full ? H : xrscreen::band_rows(job.change.bands);
+    {
+      std::lock_guard<std::mutex> lk(g_bookPic.hm);
+      g_bookPic.hist.add(job.version, job.change.full ? std::vector<xrscreen::Band>{xrscreen::Band{0, H}} : job.change.bands, H);
+    }
+    int k = -1;
+    for (int tries = 0; (k = book_take_stage(g_bookPic)) < 0 && tries < 500; ++tries) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (k < 0) continue;  // (the frame thread is away: the next picture carries these rows in its history)
+    BookStage& s = g_bookPic.st[k];
+    book_fill(s, canvas.data(), W, W, H);
+    s.version = job.version;
+    s.rows = H;
+    s.cols = W;
+    s.state = 2;
+    if (job.cursorAfter) book_publish_cursor(job.box, job.version);
+  }
+}
+
+void book_pieces_loop() {
+  setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 4);
+  const int W = static_cast<int>(bookcab::kScreenPxW), H = static_cast<int>(bookcab::kScreenPxH);
+  xrscreen::Board board;
+  uint64_t done = 0, lastSlot = ~0ull, lastHash = 0, version = 0;
+  float lastT = 0.0f;
+  xrbook::CursorBox lastBox, atlasLook;
+  std::vector<uint8_t> atlas(static_cast<size_t>(xrscreen::kAtlasW) * xrscreen::kAtlasH * 4, 0);
+  for (;;) {
+    BookReq r;
+    {
+      std::unique_lock<std::mutex> lk(g_bwM);
+      g_bwCv.wait(lk, [&] { return g_bwSerial != done; });
+      done = g_bwSerial;
+      r = g_bwReq;
+    }
+    // the board's clock moves on only on a new clock step: a move alone draws the same picture (only the cursor differs)
+    const float t = r.slot != lastSlot ? r.t : lastT;
+    lastSlot = r.slot;
+    lastT = t;
+    const uint64_t t0 = now_ns();
+    std::vector<xrtext::BoardPiece> pieces;
+    xrbook::CursorBox box;
+    try {
+      xrbook::set_cursor_sink(&box);
+      xrbook::draw(pieces, 0.0f, 0.0f, static_cast<float>(W) / xrbook::kW, true, t, true, r.attract);
+      xrbook::set_cursor_sink(nullptr);
+    } catch (...) {
+      xrbook::set_cursor_sink(nullptr);
+      XLOG("sportsbook: the screen's pieces threw - skipped");
+      continue;
+    }
+    // the cursor's own picture: drawn again only when its size / colour / glow changed
+    if (box.on && !xrscreen::same_look(box, atlasLook)) {
+      int k = -1;
+      for (int tries = 0; (k = book_take_stage(g_bookCur)) < 0 && tries < 100; ++tries) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      if (k >= 0) {
+        BookStage& s = g_bookCur.st[k];
+        const xrscreen::Atlas a = xrscreen::cursor_atlas(box, atlas.data(), xrscreen::kAtlasW);
+        book_fill(s, atlas.data(), xrscreen::kAtlasW, 2 * a.cellW, 2 * a.cellH);
+        s.atlas = a;
+        s.look = box;
+        s.cols = 2 * a.cellW;
+        s.rows = 2 * a.cellH;
+        s.version = ++g_bsAtlas;
+        s.state = 2;
+        atlasLook = box;
+      }
+    }
+    const uint64_t h = xrscreen::pieces_hash(pieces);
+    const int64_t us = static_cast<int64_t>((now_ns() - t0) / 1000);
+    g_bsPiecesUs += us;
+    book_max(g_bsPiecesMaxUs, us);
+    if (h == lastHash && version > 0) {  // only the cursor moved: nothing to draw
+      ++g_bsCursorOnly;
+      book_publish_cursor(box, version);
+      lastBox = box;
+      continue;
+    }
+    lastHash = h;
+    xrscreen::Change ch = board.diff(pieces, W, H);
+    if (!ch.any && version > 0) {
+      ++g_bsCursorOnly;
+      book_publish_cursor(box, version);
+      lastBox = box;
+      continue;
+    }
+    // the change touches the cursor's item (a list scrolled, a page changed)? Then the cursor waits for that picture
+    const bool atOnce = !ch.full && !xrscreen::touches(ch, lastBox.x0, lastBox.y0, lastBox.x1, lastBox.y1, 24.0f) &&
+                        !xrscreen::touches(ch, box.x0, box.y0, box.x1, box.y1, 24.0f);
+    {
+      std::lock_guard<std::mutex> lk(g_brM);
+      if (g_brJob.on) {  // (the last one not started yet: this one folds into it, the same version)
+        g_brJob.change.add(ch);
+        g_brJob.pieces = std::move(pieces);
+        g_brJob.box = box;
+        g_brJob.cursorAfter = g_brJob.cursorAfter || !atOnce;
+      } else {
+        g_brJob.on = true;
+        g_brJob.pieces = std::move(pieces);
+        g_brJob.change = ch;
+        g_brJob.version = ++version;
+        g_brJob.box = box;
+        g_brJob.cursorAfter = !atOnce;
+      }
+      if (atOnce) book_publish_cursor(box, g_brJob.version - 1);
+    }
+    g_brCv.notify_one();
+    lastBox = box;
+  }
+}
+
+// the frame thread: a new board clock step / generation -> the pieces worker (never waits for it)
+void book_screen_request(uint64_t slot, int gen, bool attract, float t) {
+  static uint64_t s_slot = ~0ull;
+  static int s_gen = -1;
+  static bool s_attract = false;
+  if (!g_bwStarted) {
+    g_bwStarted = true;
+    g_bookPic.w = bookcab::kScreenPxW;
+    g_bookPic.h = bookcab::kScreenPxH;
+    g_bookCur.w = xrscreen::kAtlasW;
+    g_bookCur.h = xrscreen::kAtlasH;
+    const char* full = std::getenv("STRIKERS_XR_SCREEN_FULL");
+    g_bookPic.partial = !(full != nullptr && full[0] == '1');
+    std::thread(book_pieces_loop).detach();
+    std::thread(book_raster_loop).detach();
+    XLOG("sportsbook: the screen's workers up (r205: the picture's rows + the cursor overlay off the frame thread%s)",
+         g_bookPic.partial ? "" : "; STRIKERS_XR_SCREEN_FULL: whole copies");
+  }
+  if (slot == s_slot && gen == s_gen && attract == s_attract) return;
+  s_slot = slot, s_gen = gen, s_attract = attract;
+  {
+    std::lock_guard<std::mutex> lk(g_bwM);
+    g_bwReq = BookReq{slot, gen, attract, t};
+    ++g_bwSerial;
+  }
+  g_bwCv.notify_one();
+}
+
+// the frame thread: staging buffers made (once), their copies' fences polled, a filled one copied into the next swapchain image -
+// the rows that image is missing only. Never waits on a fence. True once it has a picture up.
+bool book_live_service(BookLive& L, bool rowsOnly, int* rowsCopied) {
+  *rowsCopied = 0;
+  const VkDeviceSize bytes = static_cast<VkDeviceSize>(L.w) * L.h * 4;
+  for (BookStage& s : L.st) {
+    if (s.state.load() == -1) {
+      VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+      ai.commandPool = g.pool;
+      ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      ai.commandBufferCount = 1;
+      VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      if (!ensure_host_buffer(s.buf, s.mem, s.mapped, s.size, bytes, "machine screen") ||
+          !vk_ok(vkAllocateCommandBuffers(g.device, &ai, &s.cmd), "vkAllocateCommandBuffers(machine screen)") ||
+          !vk_ok(vkCreateFence(g.device, &fi, nullptr, &s.fence), "vkCreateFence(machine screen)"))
+        return L.panel.hasImage;
+      s.state = 0;
+    } else if (s.state.load() == 3 && vkGetFenceStatus(g.device, s.fence) == VK_SUCCESS) {
+      vkResetFences(g.device, 1, &s.fence);
+      s.state = 0;
+    }
+  }
+  int k = -1;
+  for (int i = 0; i < 2; ++i)
+    if (L.st[i].state.load() == 2 && L.st[i].version > L.shown && (k < 0 || L.st[i].version > L.st[k].version)) k = i;
+  if (k < 0) return L.panel.hasImage;
+  {
+    int s2 = 2;
+    if (!L.st[k].state.compare_exchange_strong(s2, 3)) return L.panel.hasImage;
+  }
+  BookStage& s = L.st[k];
+  Panel& p = L.panel;
+  if (p.swapchain == XR_NULL_HANDLE) {
+    XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    info.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    info.format = g.swapchainFormat != 0 ? g.swapchainFormat : VK_FORMAT_R8G8B8A8_SRGB;
+    info.sampleCount = 1;
+    info.width = L.w;
+    info.height = L.h;
+    info.faceCount = 1;
+    info.arraySize = 1;
+    info.mipCount = 1;
+    if (!xr_ok(xrCreateSwapchain(g.session, &info, &p.swapchain), "xrCreateSwapchain(machine screen)")) {
+      p.swapchain = XR_NULL_HANDLE;
+      s.state = 2;
+      return false;
+    }
+    uint32_t count = 0;
+    xrEnumerateSwapchainImages(p.swapchain, 0, &count, nullptr);
+    p.images.assign(count, XrSwapchainImageVulkanKHR{XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR});
+    xrEnumerateSwapchainImages(p.swapchain, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(p.images.data()));
+    p.width = L.w;
+    p.height = L.h;
+    L.imgVer.assign(count, 0);
+  }
+  uint32_t index = 0;
+  XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  if (!xr_ok(xrAcquireSwapchainImage(p.swapchain, &acquire, &index), "xrAcquireSwapchainImage(machine screen)")) {
+    s.state = 2;
+    return p.hasImage;
+  }
+  XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  wait.timeout = XR_INFINITE_DURATION;
+  xr_ok(xrWaitSwapchainImage(p.swapchain, &wait), "xrWaitSwapchainImage(machine screen)");
+  // what this image is missing: rows since the picture it holds, or (new to it / too far behind / switched off) all of it
+  std::vector<xrscreen::Band> bands;
+  bool partial = false;
+  if (rowsOnly && L.partial && index < L.imgVer.size()) {
+    std::lock_guard<std::mutex> lk(L.hm);
+    partial = L.hist.since(L.imgVer[index], s.version, static_cast<int>(L.h), &bands);
+  }
+  std::vector<VkBufferImageCopy> regions;
+  if (partial) {
+    for (const xrscreen::Band& b : bands) {
+      VkBufferImageCopy r{};
+      r.bufferOffset = static_cast<VkDeviceSize>(b.y0) * L.w * 4;
+      r.bufferRowLength = L.w;
+      r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      r.imageOffset = {0, b.y0, 0};
+      r.imageExtent = {L.w, static_cast<uint32_t>(b.y1 - b.y0), 1};
+      regions.push_back(r);
+      *rowsCopied += b.y1 - b.y0;
+    }
+  } else {
+    VkBufferImageCopy r{};
+    r.bufferRowLength = L.w;  // (the overlay: its used part only, out of a kAtlasW-wide buffer)
+    r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.imageExtent = {static_cast<uint32_t>(std::max(1, s.cols)), static_cast<uint32_t>(std::max(1, s.rows)), 1};
+    regions.push_back(r);
+    *rowsCopied = s.rows;
+  }
+  VkCommandBuffer cmd = s.cmd;
+  vkResetCommandBuffer(cmd, 0);
+  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd, &begin);
+  VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  toTransfer.srcAccessMask = partial ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0;
+  toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  // (rows only: what's there is kept - from COLOR_ATTACHMENT_OPTIMAL, the layout the runtime hands images back in)
+  toTransfer.oldLayout = partial ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+  toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toTransfer.image = p.images[index].image;
+  toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdPipelineBarrier(cmd, partial ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+  if (!regions.empty())
+    vkCmdCopyBufferToImage(cmd, s.buf, p.images[index].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(regions.size()),
+                           regions.data());
+  VkImageMemoryBarrier toColor = toTransfer;
+  toColor.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  toColor.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                       &toColor);
+  vkEndCommandBuffer(cmd);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &cmd;
+  if (!vk_ok(vkQueueSubmit(g.queue, 1, &submit, s.fence), "vkQueueSubmit(machine screen)")) s.state = 0;  // (state 3: its fence)
+  XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  xr_ok(xrReleaseSwapchainImage(p.swapchain, &release), "xrReleaseSwapchainImage(machine screen)");
+  if (index < L.imgVer.size()) L.imgVer[index] = s.version;
+  L.shown = s.version;
+  L.atlas = s.atlas;
+  L.look = s.look;
+  p.hasImage = true;
+  return true;
+}
+
+
+// a pose's matrix (column-major) with a uniform scale: xr_fx's ModelDraw::toWorld
+void pose_matrix(const XrPosef& p, float s, float out[16]) {
+  const XrQuaternionf& q = p.orientation;
+  const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z, xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z, wx = q.w * q.x,
+              wy = q.w * q.y, wz = q.w * q.z;
+  out[0] = (1 - 2 * (yy + zz)) * s, out[1] = 2 * (xy + wz) * s, out[2] = 2 * (xz - wy) * s, out[3] = 0;
+  out[4] = 2 * (xy - wz) * s, out[5] = (1 - 2 * (xx + zz)) * s, out[6] = 2 * (yz + wx) * s, out[7] = 0;
+  out[8] = 2 * (xz + wy) * s, out[9] = 2 * (yz - wx) * s, out[10] = (1 - 2 * (xx + yy)) * s, out[11] = 0;
+  out[12] = p.position.x, out[13] = p.position.y, out[14] = p.position.z, out[15] = 1;
+}
+XrQuaternionf book_yaw_q(float yaw) { return {0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw)}; }
+XrQuaternionf book_xrot_q(float a) { return {std::sin(0.5f * a), 0.0f, 0.0f, std::cos(0.5f * a)}; }
+// a point of the cabinet's own space in LOCAL
+XrVector3f book_point(const float p[3]) {
+  const XrVector3f r = q_rot(book_yaw_q(g_cab.yaw), XrVector3f{p[0] * g_cab.scale, p[1] * g_cab.scale, p[2] * g_cab.scale});
+  return {g_cab.at.x + r.x, g_cab.at.y + r.y, g_cab.at.z + r.z};
+}
+
+// Its model: STRIKERS_HOME/franchise/book/cabinet.sbk (cabinet199.py's SBK1: parts by picture, solid before soft, 8 floats a
+// vertex - position, normal (its length the part's code, xr_fx_model.frag cab_main), uv) + its three pictures (the baked
+// light, a bulb's halo, the floor round it)
+void book_load_model() {
+  const char* home = std::getenv("STRIKERS_HOME");
+  const std::string dir = std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/franchise/book/";
+  xrfx::Model m;
+  bool ok = false;
+  if (FILE* f = std::fopen((dir + "cabinet.sbk").c_str(), "rb")) {
+    char magic[4] = {};
+    uint32_t hdr[4] = {};
+    if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SBK1", 4) == 0 && std::fread(hdr, 4, 4, f) == 4 && hdr[0] > 0 &&
+        hdr[0] < 400000 && hdr[1] > 0 && hdr[1] < 3000000 && hdr[2] > 0 && hdr[2] < 64) {
+      const uint32_t nv = hdr[0], ni = hdr[1], np = hdr[2];
+      std::vector<uint32_t> parts(static_cast<size_t>(np) * 4);
+      std::vector<float> verts(static_cast<size_t>(nv) * 8);
+      m.indices.resize(ni);
+      ok = std::fread(parts.data(), 4, parts.size(), f) == parts.size() && std::fread(verts.data(), 4, verts.size(), f) == verts.size() &&
+           std::fread(m.indices.data(), 4, ni, f) == ni;
+      if (ok) {
+        m.vertexCount = nv;
+        m.frameCount = 1;
+        m.frames.resize(static_cast<size_t>(nv) * 6);
+        m.uv.resize(static_cast<size_t>(nv) * 2);
+        for (uint32_t i = 0; i < nv; ++i) {
+          for (int k = 0; k < 6; ++k) m.frames[i * 6 + k] = verts[i * 8 + k];
+          m.uv[i * 2] = verts[i * 8 + 6];
+          m.uv[i * 2 + 1] = verts[i * 8 + 7];
+        }
+        for (uint32_t i = 0; i < np; ++i) {
+          xrfx::ModelPart p;
+          p.tex = static_cast<int>(parts[i * 4]);
+          p.soft = parts[i * 4 + 1] != 0;
+          p.firstIndex = parts[i * 4 + 2];
+          p.indexCount = parts[i * 4 + 3];
+          if (p.firstIndex + p.indexCount > ni) ok = false;
+          m.parts.push_back(p);
+        }
+        for (uint32_t i = 0; i < ni && ok; ++i) ok = m.indices[i] < nv;
+      }
+    }
+    std::fclose(f);
+  }
+  for (const char* name : {"cabinet_lit.png", "halo.png", "cabinet_floor.png"}) {
+    int w = 0, h = 0, n = 0;
+    unsigned char* px = ok ? stbi_load((dir + name).c_str(), &w, &h, &n, 4) : nullptr;
+    if (px == nullptr) {
+      ok = false;
+      break;
+    }
+    m.texRgba.emplace_back(px, px + static_cast<size_t>(w) * h * 4);
+    m.texW.push_back(static_cast<uint32_t>(w));
+    m.texH.push_back(static_cast<uint32_t>(h));
+    stbi_image_free(px);
+  }
+  if (!ok) {
+    XLOG("sportsbook: the machine's model couldn't be read (%s) - the hub page still has everything", dir.c_str());
+    g_cab.loadFailed = true;
+    return;
+  }
+  XLOG("sportsbook: the machine's model read: %u vertices, %zu triangles, %zu parts", m.vertexCount, m.indices.size() / 3, m.parts.size());
+  g_cab.model = std::move(m);
+  g_cab.loaded = true;
+}
+
+// A printed ticket's paper: thin thermal-receipt paper, a strip of kPaperN segments down its length and 3 points across (its
+// edges curl a little, as a receipt off a roll), its picture (xrbook::ticket) on the front, plain paper behind. Its shape is
+// posed every frame from a verlet chain (book_paper_step): it droops, sways and flutters. xr_fx_model.frag cab_main code 12:
+// soft shading, a little light through it, an edge sheen, a faint crinkle.
+constexpr int kPaperN = 10;
+constexpr int kPaperVerts = (kPaperN + 1) * 3 * 2;
+constexpr float kTicketWm = 0.09f;  // r204: its width (r199: 8 cm)
+bool book_paper_picture(uint32_t id, std::vector<uint8_t>* px, int* w, int* h) {
+  std::vector<xrtext::BoardPiece> pieces;
+  if (!xrbook::ticket(id, &pieces, w, h)) return false;
+  px->assign(static_cast<size_t>(*w) * *h * 4, 0);
+  xrtext::board(px->data(), *w, *h, pieces);
+  for (size_t i = 0; i < px->size(); i += 4)  // (the board is premultiplied; the model's picture straight)
+    if ((*px)[i + 3] > 0 && (*px)[i + 3] < 255)
+      for (int k = 0; k < 3; ++k) (*px)[i + k] = static_cast<uint8_t>(std::min(255, (*px)[i + k] * 255 / (*px)[i + 3]));
+  return true;
+}
+// the strip's triangles for `papers` papers, paper k's front with picture k, its back with the last picture (paper white)
+void book_paper_topology(xrfx::Model& m, int papers) {
+  for (int k = 0; k < papers; ++k)
+    for (int side = 0; side < 2; ++side) {
+      const uint32_t base = static_cast<uint32_t>(k * kPaperVerts + side * (kPaperN + 1) * 3);
+      for (int j = 0; j <= kPaperN; ++j)
+        for (int i = 0; i < 3; ++i) {
+          m.uv.push_back(side == 0 ? 0.5f * i : 0.5f);
+          m.uv.push_back(side == 0 ? static_cast<float>(j) / kPaperN : 0.5f);
+        }
+      const uint32_t first = static_cast<uint32_t>(m.indices.size());
+      for (int j = 0; j < kPaperN; ++j)
+        for (int i = 0; i < 2; ++i) {
+          const uint32_t a = base + j * 3 + i, b = a + 3;
+          m.indices.insert(m.indices.end(), {a, a + 1, b + 1, a, b + 1, b});
+        }
+      xrfx::ModelPart p;
+      p.tex = side == 0 ? k : papers;
+      p.firstIndex = first;
+      p.indexCount = static_cast<uint32_t>(m.indices.size()) - first;
+      m.parts.push_back(p);
+    }
+  m.vertexCount = static_cast<uint32_t>(papers * kPaperVerts);
+  m.frameCount = 0;  // (posed every frame: ModelDraw::posNrm)
+  m.texRgba.push_back(std::vector<uint8_t>(16, 0));
+  for (size_t i = 0; i < 16; i += 4) m.texRgba.back()[i] = 246, m.texRgba.back()[i + 1] = 243, m.texRgba.back()[i + 2] = 234, m.texRgba.back()[i + 3] = 255;
+  m.texW.push_back(2);
+  m.texH.push_back(2);
+}
+void book_build_ticket(uint32_t id) {
+  std::vector<uint8_t> px;
+  int w = 0, h = 0;
+  if (!book_paper_picture(id, &px, &w, &h)) return;
+  xrfx::Model m;
+  m.texRgba.push_back(std::move(px));
+  m.texW.push_back(static_cast<uint32_t>(w));
+  m.texH.push_back(static_cast<uint32_t>(h));
+  book_paper_topology(m, 1);
+  std::lock_guard<std::mutex> lock(g_cab.ticketMutex);
+  g_cab.ticketModel = std::move(m);
+  g_cab.readyL = kTicketWm * static_cast<float>(h) / static_cast<float>(w);
+  g_cab.ticketReady = static_cast<int>(id);
+}
+// the posted slips' model (all of them, one each)
+void book_build_posted(std::vector<uint32_t> ids, int gen) {
+  xrfx::Model m;
+  for (uint32_t id : ids) {
+    std::vector<uint8_t> px;
+    int w = 0, h = 0;
+    if (!book_paper_picture(id, &px, &w, &h)) {
+      px.assign(16, 200);
+      w = h = 2;
+    }
+    m.texRgba.push_back(std::move(px));
+    m.texW.push_back(static_cast<uint32_t>(w));
+    m.texH.push_back(static_cast<uint32_t>(h));
+  }
+  book_paper_topology(m, static_cast<int>(ids.size()));
+  std::lock_guard<std::mutex> lock(g_cab.ticketMutex);
+  g_cab.postedModel = std::move(m);
+  g_cab.postedReady = gen;
+}
+XrVector3f v_add(XrVector3f a, XrVector3f b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+XrVector3f v_sub(XrVector3f a, XrVector3f b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+XrVector3f v_mul(XrVector3f a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+float v_dot(XrVector3f a, XrVector3f b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+XrVector3f v_cross(XrVector3f a, XrVector3f b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+XrVector3f v_norm(XrVector3f a, XrVector3f fallback) {
+  const float l = std::sqrt(v_dot(a, a));
+  return l > 1e-6f ? v_mul(a, 1.0f / l) : fallback;
+}
+// A strip's vertices from its middle line `p` (kPaperN + 1 points, top first) and its across direction: 3 across, the edges
+// curled toward its front a little (a receipt off a roll), the back a hair behind; normals 12 long (cab_main's paper)
+void book_paper_pose(const XrVector3f* p, XrVector3f side, float W, float* out) {
+  for (int s = 0; s < 2; ++s)
+    for (int j = 0; j <= kPaperN; ++j) {
+      const XrVector3f tng = v_norm(v_sub(p[std::min(kPaperN, j + 1)], p[std::max(0, j - 1)]), XrVector3f{0.0f, -1.0f, 0.0f});
+      const XrVector3f sd = v_norm(v_sub(side, v_mul(tng, v_dot(side, tng))), XrVector3f{1.0f, 0.0f, 0.0f});
+      const XrVector3f n = v_norm(v_cross(tng, sd), XrVector3f{0.0f, 0.0f, 1.0f});
+      for (int i = 0; i < 3; ++i) {
+        const float c = static_cast<float>(i - 1);
+        XrVector3f v = v_add(p[j], v_mul(sd, c * 0.5f * W));
+        v = v_add(v, v_mul(n, 0.0025f * c * c - (s == 1 ? 0.0006f : 0.0f)));  // (r204: card - a flatter curl; each face drawn from its own side)
+        float* o = out + (static_cast<size_t>(s) * (kPaperN + 1) * 3 + j * 3 + i) * 6;
+        o[0] = v.x, o[1] = v.y, o[2] = v.z;
+        const float k = s == 0 ? 12.0f : -12.0f;
+        o[3] = n.x * k, o[4] = n.y * k, o[5] = n.z * k;
+      }
+    }
+}
+// One verlet step of the chain: gravity, air (more when it's falling loose: it flutters), the segments' lengths, a little
+// stiffness along it (paper, not string), the anchor(s), your floor
+void book_paper_step(float dt, float seg, const XrVector3f* a0, const XrVector3f* a1, float floorY, bool loose, float tsec,
+                     float stiff) {
+  BookCab& c = g_cab;
+  const float damp = loose ? 0.90f : 0.975f;
+  for (int i = 0; i <= kPaperN; ++i) {
+    const XrVector3f v = v_mul(v_sub(c.pp[i], c.ppPrev[i]), damp);
+    c.ppPrev[i] = c.pp[i];
+    XrVector3f acc{0.0f, loose ? -2.2f : -9.8f, 0.0f};  // (a loose slip sails down slowly)
+    if (loose) {  // (it sways a little as it falls - r204: card, 0.9 - r199's 3.0 flapped)
+      acc.x += 0.9f * std::sin(tsec * 4.0f + i * 0.5f);
+      acc.z += 0.9f * std::cos(tsec * 3.3f + i * 0.6f);
+    }
+    c.pp[i] = v_add(v_add(c.pp[i], v), v_mul(acc, dt * dt));
+  }
+  for (int it = 0; it < 10; ++it) {
+    if (a0 != nullptr) c.pp[0] = *a0;
+    if (a1 != nullptr) c.pp[1] = *a1;
+    auto free_w = [&](int i) { return (i == 0 && a0 != nullptr) || (i == 1 && a1 != nullptr) ? 0.0f : 1.0f; };
+    for (int i = 0; i < kPaperN; ++i) {  // its length
+      const float w0 = free_w(i), w1 = free_w(i + 1);
+      if (w0 + w1 <= 0.0f) continue;
+      const XrVector3f d = v_sub(c.pp[i + 1], c.pp[i]);
+      const float l = std::max(1e-6f, std::sqrt(v_dot(d, d)));
+      const XrVector3f corr = v_mul(d, (l - seg) / l / (w0 + w1));
+      c.pp[i] = v_add(c.pp[i], v_mul(corr, w0));
+      c.pp[i + 1] = v_sub(c.pp[i + 1], v_mul(corr, w1));
+    }
+    for (int i = 0; i + 2 <= kPaperN; ++i) {  // a little stiffness (two segments apart: a soft push back toward nearly straight)
+      const float w0 = free_w(i), w1 = free_w(i + 2);
+      if (w0 + w1 <= 0.0f) continue;
+      const XrVector3f d = v_sub(c.pp[i + 2], c.pp[i]);
+      const float l = std::max(1e-6f, std::sqrt(v_dot(d, d)));
+      const float want = 1.97f * seg;
+      if (l >= want) continue;
+      const XrVector3f corr = v_mul(d, stiff * (l - want) / l / (w0 + w1));
+      c.pp[i] = v_add(c.pp[i], v_mul(corr, w0));
+      c.pp[i + 2] = v_sub(c.pp[i + 2], v_mul(corr, w1));
+    }
+    for (int i = 0; i <= kPaperN; ++i) c.pp[i].y = std::max(c.pp[i].y, floorY + 0.002f);  // (it lands on your floor)
+  }
+}
+
+// Where the cabinet goes the first time in a room: in front of you, a little to your right, its front to you, on a free spot
+// of your floor (with a scan: inside your walls, clear of your furniture)
+void book_place_new(const xrroom::Room* room) {
+  const XrQuaternionf& o = g.headPose.orientation;
+  float fx = -(2 * (o.x * o.z + o.w * o.y)), fz = -(1 - 2 * (o.x * o.x + o.y * o.y));
+  const float len = std::max(1e-3f, std::sqrt(fx * fx + fz * fz));
+  fx /= len;
+  fz /= len;
+  const float base = std::atan2(fx, fz);
+  bool found = false;
+  float x = 0, z = 0, yaw = 0;
+  for (float dist : {1.6f, 1.3f, 2.0f, 1.0f})
+    for (float off : {0.45f, 0.0f, 0.9f, -0.45f, 1.3f, -0.9f, 1.8f, -1.3f, 2.4f, -1.8f, 3.14f}) {
+      if (found) break;
+      const float a = base - off;  // (right of where you look first)
+      x = g.headPose.position.x + std::sin(a) * dist;
+      z = g.headPose.position.z + std::cos(a) * dist;
+      yaw = std::atan2(g.headPose.position.x - x, g.headPose.position.z - z);
+      found = book_spot_ok(room, x, z, yaw, 1.0f);
+    }
+  g_cab.scale = 1.0f;
+  g_cab.placed = true;
+  book_from_local(room, x, z, yaw, &g_cab.rx, &g_cab.rz, &g_cab.ryaw);
+  book_save_spot();
+  XLOG("sportsbook: the machine placed (%s) at (%.2f, %.2f)%s", g_cab.key.c_str(), x, z, found ? "" : " (no clear spot found: in front of you)");
+}
+
+// ---- r201: the CARD MUSEUM's pieces (their models, their card atlases, their spots, their figures) ----
+// A piece's model: STRIKERS_HOME/franchise/museum/museum_<kind>.sbk (museum201.py's SBK1: 8 floats a vertex - position, normal
+// (its length the part's code, xr_fx_model.frag mus_main), uv; parts 0 baked [tex 0], 1 cards [tex 2], 2 floor / wall [tex 1],
+// 3 glass [tex 0], 4 beams [tex 3]) + museum_<kind>_lit.png, museum_<kind>_floor.png, beam.png and museum_<kind>.txt (its
+// footprint, height, wall or floor, its figures' spots: "foot x z", "height h", "wall 0|1", "fig x y z maxH maxR").
+void mus_load_kind(int kind) {
+  const char* home = std::getenv("STRIKERS_HOME");
+  const std::string dir = std::string(home != nullptr && *home != '\0' ? home : "/storage/emulated/0/Strikers") + "/franchise/museum/";
+  const std::string base = dir + "museum_" + muscab::kFile[kind];
+  MusKind& k = g_musKind[kind];
+  xrfx::Model m;
+  bool ok = false;
+  if (FILE* f = std::fopen((base + ".sbk").c_str(), "rb")) {
+    char magic[4] = {};
+    uint32_t hdr[4] = {};
+    if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SBK1", 4) == 0 && std::fread(hdr, 4, 4, f) == 4 && hdr[0] > 0 && hdr[0] < 400000 &&
+        hdr[1] > 0 && hdr[1] < 3000000 && hdr[2] > 0 && hdr[2] < 64) {
+      const uint32_t nv = hdr[0], ni = hdr[1], np = hdr[2];
+      std::vector<uint32_t> parts(static_cast<size_t>(np) * 4);
+      std::vector<float> verts(static_cast<size_t>(nv) * 8);
+      m.indices.resize(ni);
+      ok = std::fread(parts.data(), 4, parts.size(), f) == parts.size() && std::fread(verts.data(), 4, verts.size(), f) == verts.size() &&
+           std::fread(m.indices.data(), 4, ni, f) == ni;
+      if (ok) {
+        m.vertexCount = nv;
+        m.frameCount = 1;
+        m.frames.resize(static_cast<size_t>(nv) * 6);
+        m.uv.resize(static_cast<size_t>(nv) * 2);
+        for (uint32_t i = 0; i < nv; ++i) {
+          for (int j = 0; j < 6; ++j) m.frames[i * 6 + j] = verts[i * 8 + j];
+          m.uv[i * 2] = verts[i * 8 + 6];
+          m.uv[i * 2 + 1] = verts[i * 8 + 7];
+        }
+        for (uint32_t i = 0; i < np; ++i) {
+          xrfx::ModelPart p;
+          p.tex = static_cast<int>(parts[i * 4]);
+          p.soft = parts[i * 4 + 1] != 0;
+          p.firstIndex = parts[i * 4 + 2];
+          p.indexCount = parts[i * 4 + 3];
+          if (p.firstIndex + p.indexCount > ni || p.tex > 3) ok = false;
+          m.parts.push_back(p);
+        }
+        for (uint32_t i = 0; i < ni && ok; ++i) ok = m.indices[i] < nv;
+      }
+    }
+    std::fclose(f);
+  }
+  const std::string pics[4] = {base + "_lit.png", base + "_floor.png", "", dir + "beam.png"};
+  for (int t = 0; t < 4 && ok; ++t) {
+    if (t == 2) {  // (the card atlas: each piece's own, added when it's built - a dark placeholder here)
+      m.texRgba.emplace_back(std::vector<uint8_t>{14, 16, 34, 255});
+      m.texW.push_back(1);
+      m.texH.push_back(1);
+      continue;
+    }
+    int w = 0, h = 0, n = 0;
+    unsigned char* px = stbi_load(pics[t].c_str(), &w, &h, &n, 4);
+    if (px == nullptr) {
+      ok = false;
+      break;
+    }
+    m.texRgba.emplace_back(px, px + static_cast<size_t>(w) * h * 4);
+    m.texW.push_back(static_cast<uint32_t>(w));
+    m.texH.push_back(static_cast<uint32_t>(h));
+    stbi_image_free(px);
+  }
+  if (ok) {
+    if (FILE* f = std::fopen((base + ".txt").c_str(), "r")) {
+      char line[256];
+      while (std::fgets(line, sizeof(line), f) != nullptr) {
+        MusKind::Fig fg{};
+        int w = 0;
+        if (std::sscanf(line, "foot %f %f", &k.footX, &k.footZ) == 2) continue;
+        if (std::sscanf(line, "height %f", &k.height) == 1) continue;
+        if (std::sscanf(line, "wall %d", &w) == 1) {
+          k.wall = w != 0;
+          continue;
+        }
+        if (std::sscanf(line, "fig %f %f %f %f %f", &fg.p[0], &fg.p[1], &fg.p[2], &fg.maxH, &fg.maxR) == 5) k.figs.push_back(fg);
+      }
+      std::fclose(f);
+    } else {
+      ok = false;
+    }
+  }
+  if (!ok) {
+    XLOG("museum: the %s's model couldn't be read (%s)", muscab::kFile[kind], dir.c_str());
+    k.failed = true;
+    return;
+  }
+  XLOG("museum: the %s's model read: %u vertices, %zu triangles, %zu figures' spots", muscab::kFile[kind], m.vertexCount, m.indices.size() / 3,
+       k.figs.size());
+  k.model = std::move(m);
+  k.loaded = true;
+}
+std::string mus_sig(const std::vector<xrmarket::Variant>& items) {
+  std::string s;
+  for (const xrmarket::Variant& v : items)
+    s += std::to_string(v.card) + ":" + std::to_string(v.parallel) + ":" + std::to_string(v.shiny) + ":" + std::to_string(v.hit) + ":" +
+         std::to_string(v.serial) + ":" + std::to_string(v.grade) + ":" + std::to_string(v.cert) + "|";
+  return s;
+}
+// (a worker thread) a piece's model: its kind's mesh + pictures, its own card atlas - r210: at its FULL 1024 x 2048 (r201-r209 halved
+// it to 512 x 1024: a card cell 170 px, softer than the screen's pixels from ~0.5 m in) with its mip chain made here, sampled 16x
+// anisotropic; an empty spot's BACK pointed at a clear corner of the atlas (seen from behind, an empty spot shows no card back either)
+void mus_build(int slot, int kind, std::vector<xrmarket::Variant> items, std::string sig) {
+  MusSlot& s = g_musSlot[slot];
+  xrfx::Model m;
+  {
+    const MusKind& k = g_musKind[kind];
+    m.uv = k.model.uv;
+    m.indices = k.model.indices;
+    m.parts = k.model.parts;
+    m.vertexCount = k.model.vertexCount;
+    m.frames = k.model.frames;
+    m.frameCount = k.model.frameCount;
+    m.texRgba = k.model.texRgba;
+    m.texW = k.model.texW;
+    m.texH = k.model.texH;
+  }
+  std::vector<uint8_t> big;
+  if (xrcards::museum_atlas(items, &big) && big.size() == static_cast<size_t>(1024) * 2048 * 4 && m.texRgba.size() >= 3) {
+    const auto t0 = std::chrono::steady_clock::now();
+    m.texMips.resize(m.texRgba.size());
+    m.texMips[2] = xrcards::mip_chain_srgb(big, 1024, 2048);
+    m.texSharp.assign(m.texRgba.size(), 0);
+    m.texSharp[2] = 1;
+    m.texRgba[2] = std::move(big);
+    m.texW[2] = 1024;
+    m.texH[2] = 2048;
+    // the empty spots' backs: a card back's quad (a card face whose atlas v is in the back's band, 1719 / 2048 on) belongs to the
+    // front nearest it (the same spot); that front's cell says which item - an empty one's back goes to the clear corner
+    struct Face {
+      float cx, cy, cz;
+      int cell;
+    };
+    std::vector<Face> fronts;
+    std::vector<std::pair<Face, std::vector<uint32_t>>> backs;
+    for (const xrfx::ModelPart& p : m.parts) {
+      if (p.tex != 2) continue;
+      for (uint32_t t = p.firstIndex; t + 2 < p.firstIndex + p.indexCount; t += 3) {
+        const uint32_t a = m.indices[t], b = m.indices[t + 1], c = m.indices[t + 2];
+        const float* fa = &m.frames[static_cast<size_t>(a) * 6];
+        const float* fb = &m.frames[static_cast<size_t>(b) * 6];
+        const float* fc = &m.frames[static_cast<size_t>(c) * 6];
+        Face f{(fa[0] + fb[0] + fc[0]) / 3, (fa[1] + fb[1] + fc[1]) / 3, (fa[2] + fb[2] + fc[2]) / 3, -1};
+        const float u = (m.uv[a * 2] + m.uv[b * 2] + m.uv[c * 2]) / 3, v = (m.uv[a * 2 + 1] + m.uv[b * 2 + 1] + m.uv[c * 2 + 1]) / 3;
+        if (v > 1719.0f / 2048.0f) {
+          backs.push_back({f, {a, b, c}});
+        } else if (v < 1428.0f / 2048.0f) {
+          f.cell = std::min(2, static_cast<int>(u * 1024.0f / 341.0f)) + 3 * std::min(2, static_cast<int>(v * 2048.0f / 476.0f));
+          fronts.push_back(f);
+        }
+      }
+    }
+    int cleared = 0;
+    for (const auto& bk : backs) {
+      int cell = -1;
+      float best = 1e9f;
+      for (const Face& f : fronts) {
+        const float d = (f.cx - bk.first.cx) * (f.cx - bk.first.cx) + (f.cy - bk.first.cy) * (f.cy - bk.first.cy) + (f.cz - bk.first.cz) * (f.cz - bk.first.cz);
+        if (d < best) best = d, cell = f.cell;
+      }
+      if (cell < 0 || (cell < static_cast<int>(items.size()) && items[static_cast<size_t>(cell)].card >= 0)) continue;
+      for (uint32_t vi : bk.second) {
+        m.uv[vi * 2] = 0.75f;  // (x 768, y 1884: past the back's 236 x 329, nothing drawn there - clear)
+        m.uv[vi * 2 + 1] = 0.92f;
+      }
+      ++cleared;
+    }
+    XLOG("museum: a card atlas 1024 x 2048 + %zu mips made in %.0f ms (%zu cards, %d empty spots' backs cleared)", m.texMips[2].size(),
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), items.size(), cleared / 2);
+  }
+  std::lock_guard<std::mutex> lock(s.m);
+  s.pending = std::move(m);
+  s.pendingSig = sig;
+  s.building = 2;
+}
+// Where a new piece goes in a room: a floor piece in front of you, a little left of where you look, on a free spot clear of
+// the other pieces; a wall piece on the wall you look at (a room scan's), its bottom 1.15 m up
+bool mus_place_new(MusSlot& s, const MusKind& k, const xrroom::Room* room) {
+  const XrQuaternionf& o = g.headPose.orientation;
+  float fx = -(2 * (o.x * o.z + o.w * o.y)), fz = -(1 - 2 * (o.x * o.x + o.y * o.y));
+  const float len = std::max(1e-3f, std::sqrt(fx * fx + fz * fz));
+  fx /= len;
+  fz /= len;
+  xrmuseum::Spot sp;
+  sp.scale = 1.0f;
+  if (k.wall) {
+    if (room == nullptr || !room->valid || room->wallN == 0) return false;
+    float hx, hz;
+    mus_to_build(room, g.headPose.position.x + fx * 1.2f, g.headPose.position.z + fz * 1.2f, &hx, &hz);
+    float px, pz, u;
+    const int wi = mus_wall_near(room, hx, hz, &px, &pz, &u);
+    if (wi < 0) return false;
+    mus_wall_spot(room, wi, u, 1.15f, k.footX, &sp);
+  } else {
+    const float base = std::atan2(fx, fz);
+    bool found = false;
+    float x = 0, z = 0, yaw = 0;
+    for (float dist : {1.4f, 1.1f, 1.8f, 2.3f})
+      for (float off : {-0.5f, 0.0f, -1.0f, 0.5f, -1.5f, 1.0f, -2.1f, 1.6f, 2.6f, 3.14f}) {
+        if (found) break;
+        const float a = base - off;
+        x = g.headPose.position.x + std::sin(a) * dist;
+        z = g.headPose.position.z + std::cos(a) * dist;
+        yaw = std::atan2(g.headPose.position.x - x, g.headPose.position.z - z);
+        bool clear = mus_spot_ok(room, k, x, z, yaw, 1.0f);
+        for (const MusSlot& t : g_musSlot)  // (clear of the other pieces and the machine)
+          if (&t != &s && t.kind >= 0 && t.placed && (t.at.x - x) * (t.at.x - x) + (t.at.z - z) * (t.at.z - z) < 0.75f * 0.75f) clear = false;
+        if (g_cab.placed && (g_cab.at.x - x) * (g_cab.at.x - x) + (g_cab.at.z - z) * (g_cab.at.z - z) < 0.9f * 0.9f) clear = false;
+        found = clear;
+      }
+    book_from_local(room, x, z, yaw, &sp.x, &sp.z, &sp.yaw);
+  }
+  sp.set = true;
+  s.spot = sp;
+  s.placed = true;
+  xrmuseum::set_spot(s.id, s.key, sp);
+  XLOG("museum: piece %u (%s) placed in %s", s.id, muscab::kFile[s.kind], s.key.c_str());
+  return true;
+}
+// Every display frame (before the franchise figures): the pieces out in your room - their models up, their spots, drawn,
+// their cards' figures asked for
+void museum_frame(xrfx::Scene& scene, bool fxOk, uint64_t nowNs) {
+  const xrroom::Room* room = scene.room;
+  int walls = 0;
+  if (room != nullptr && room->valid)
+    for (int i = 0; i < room->wallN; ++i) walls += room->walls[i].len >= 0.5f && (room->walls[i].labels & xrroom::kLabInvisible) == 0 ? 1 : 0;
+  xrmuseum::set_room_scan(walls > 0);
+  const bool want = PortFranchiseActive() && !PortFranchiseMatchActive() && !PortFranchiseMatchStarting() && !g.inSuite && !g.evoRoomOn &&
+                    g.headValid && fxOk;
+  static int s_roomGen = -1;
+  static std::vector<xrmuseum::Piece> s_pieces;
+  static uint64_t s_hiddenSince = 0;  // r210: when the pieces went out of sight (0 shown)
+  if (!want) {
+    for (int i = 0; i < xrfx::kMuseumSlots; ++i) {
+      scene.models[xrfx::kMuseumSlot0 + i].on = false;
+      g_musSlot[i].shown = false;
+    }
+    // r210: out of sight 30 s (a match, the cup suite, an evolution room, no career): their models and card atlases let go of
+    // (~16 MB of GPU memory a piece with its full-size cards); built again off the frame thread when they're back
+    if (s_hiddenSince == 0) s_hiddenSince = nowNs == 0 ? 1 : nowNs;
+    if (nowNs > s_hiddenSince + 30000000000ull) {
+      int dropped = 0;
+      for (int i = 0; i < xrfx::kMuseumSlots; ++i) {
+        MusSlot& s = g_musSlot[i];
+        if (!s.modelUp || s.building.load() != 0 || s.grabHands != 0) continue;
+        xrfx::set_model(xrfx::kMuseumSlot0 + i, xrfx::Model{});
+        s.modelUp = false;
+        s.upSig.clear();
+        ++dropped;
+      }
+      if (dropped > 0) XLOG("museum: %d piece(s) out of sight 30 s - their models + card atlases let go (built again when back)", dropped);
+    }
+    return;
+  }
+  s_hiddenSince = 0;
+  if (xrmuseum::room_generation() != s_roomGen) {
+    s_roomGen = xrmuseum::room_generation();
+    s_pieces = xrmuseum::shown();
+  }
+  // the slots: a piece gone frees its own, a new one takes a free one
+  for (int i = 0; i < xrfx::kMuseumSlots; ++i) {
+    MusSlot& s = g_musSlot[i];
+    if (s.kind < 0) continue;
+    bool still = false;
+    for (const xrmuseum::Piece& p : s_pieces) still = still || p.id == s.id;
+    if (!still && s.building.load() != 1) {
+      if (s.grabHands != 0) continue;
+      if (s.modelUp) xrfx::set_model(xrfx::kMuseumSlot0 + i, xrfx::Model{});
+      scene.models[xrfx::kMuseumSlot0 + i].on = false;
+      s.kind = -1;
+      s.id = 0;
+      s.modelUp = false;
+      s.upSig.clear();
+      s.key.clear();
+      s.placed = s.shown = false;
+      s.building = 0;
+    }
+  }
+  for (const xrmuseum::Piece& p : s_pieces) {
+    int at = -1, freeSlot = -1;
+    for (int i = 0; i < xrfx::kMuseumSlots; ++i) {
+      if (g_musSlot[i].kind >= 0 && g_musSlot[i].id == p.id) at = i;
+      if (g_musSlot[i].kind < 0 && freeSlot < 0) freeSlot = i;
+    }
+    if (at < 0 && freeSlot >= 0) {
+      at = freeSlot;
+      g_musSlot[at].id = p.id;
+      g_musSlot[at].kind = p.kind;
+    }
+    if (at >= 0) {
+      g_musSlot[at].items = p.items;
+      g_musSlot[at].sig = mus_sig(p.items);
+    }
+  }
+  // each piece: its model (its kind read once; its own card atlas built when its cards change), its spot, its draw
+  const float floorY = room != nullptr ? xrroom::floor_y(*room) : g.floorY;
+  const std::string key = book_room_key(room);
+  struct FigAsk {
+    float d;
+    FrFigWant w;
+  };
+  std::vector<FigAsk> figs;
+  for (int i = 0; i < xrfx::kMuseumSlots; ++i) {
+    MusSlot& s = g_musSlot[i];
+    xrfx::Scene::ModelDraw& md = scene.models[xrfx::kMuseumSlot0 + i];
+    md.on = false;
+    s.shown = false;
+    if (s.kind < 0) continue;
+    MusKind& k = g_musKind[s.kind];
+    if (!k.started) {
+      k.started = true;
+      std::thread(mus_load_kind, s.kind).detach();
+    }
+    if (k.failed || !k.loaded) continue;
+    if (s.modelUp && !xrfx::model_up(xrfx::kMuseumSlot0 + i)) {  // (the renderer restarted: up again)
+      s.modelUp = false;
+      s.upSig.clear();
+    }
+    if (s.building.load() == 2) {
+      std::lock_guard<std::mutex> lock(s.m);
+      xrfx::set_model(xrfx::kMuseumSlot0 + i, std::move(s.pending));
+      s.pending = xrfx::Model();
+      s.modelUp = xrfx::model_up(xrfx::kMuseumSlot0 + i);
+      s.upSig = s.pendingSig;
+      s.building = 0;
+      XLOG("museum: piece %u (%s) up in slot %d%s", s.id, muscab::kFile[s.kind], xrfx::kMuseumSlot0 + i, s.modelUp ? "" : " - it didn't go up");
+    } else if (s.building.load() == 0 && s.sig != s.upSig) {
+      s.building = 1;
+      std::thread(mus_build, i, s.kind, s.items, s.sig).detach();
+    }
+    if (!s.modelUp) continue;
+    // its spot in this room
+    if (key != s.key) {
+      if (s.dirty && !s.key.empty()) xrmuseum::set_spot(s.id, s.key, s.spot);
+      s.dirty = false;
+      s.key = key;
+      s.spot = xrmuseum::spot(s.id, key);
+      s.placed = s.spot.set;
+    }
+    if (k.wall && (room == nullptr || !room->valid || walls == 0)) continue;  // (a frame hangs on a scanned wall only)
+    if (!s.placed && !mus_place_new(s, k, room)) continue;
+    float x = 0, z = 0, yaw = 0;
+    book_to_local(room, s.spot.x, s.spot.z, s.spot.yaw, &x, &z, &yaw);
+    s.at = {x, k.wall ? floorY + s.spot.y : floorY, z};
+    s.yaw = yaw;
+    s.shown = true;
+    md = xrfx::Scene::ModelDraw{};
+    md.on = true;
+    md.frame = 0;
+    md.at = s.at;
+    md.yaw = s.yaw;
+    md.scale = s.spot.scale;
+    md.under = -10.0f;
+    md.alpha = 1.0f;
+    // its cards' figures, standing in it (the nearest pieces' first)
+    const XrVector3f& hp = g.headPose.position;
+    const float d = (hp.x - s.at.x) * (hp.x - s.at.x) + (hp.z - s.at.z) * (hp.z - s.at.z);
+    const float c = std::cos(s.yaw), sn = std::sin(s.yaw), sc = s.spot.scale;
+    for (size_t f = 0; f < k.figs.size() && f < s.items.size(); ++f) {
+      const xrmarket::Variant& v = s.items[f];
+      if (v.card < 0) continue;
+      std::string ck = xrmarket::card_key(v.card);
+      // r217: a JAM '96 card's figure is its character's (its id is the key + "_j96")
+      if (ck.size() > 4 && ck.compare(ck.size() - 4, 4, "_j96") == 0) ck.resize(ck.size() - 4);
+      if (!fr_fig_key(ck)) continue;
+      const MusKind::Fig& fg = k.figs[f];
+      FrFigWant w;
+      w.name = fr_fig_name(ck, v.shiny);
+      w.shiny = v.shiny;
+      w.bake = 17;
+      w.base = {s.at.x + (c * fg.p[0] + sn * fg.p[2]) * sc, s.at.y + fg.p[1] * sc, s.at.z + (-sn * fg.p[0] + c * fg.p[2]) * sc};
+      w.out = {0.0f, 0.0f, 0.0f};
+      w.maxH = fg.maxH * sc;
+      w.maxR = fg.maxR * sc;
+      w.grow = true;
+      figs.push_back({d, w});
+    }
+  }
+  std::stable_sort(figs.begin(), figs.end(), [](const FigAsk& a, const FigAsk& b) { return a.d < b.d; });
+  for (size_t f = 0; f < figs.size() && static_cast<int>(f) < muscab::kMaxFigs; ++f) fr_figs_want(figs[f].w);
+  (void)nowNs;
+}
+
+// Every display frame: the machine shown (or not), its model's draw, its screen's quad (true: `quad` to show, under the
+// effects layer), the pointer on its screen, the printed ticket, the light shows
+bool book_cabinet_frame(xrfx::Scene& scene, bool fxOk, uint64_t nowNs, XrCompositionLayerQuad& quad, XrCompositionLayerQuad& cursorQuad,
+                        bool& cursorOn) {
+  cursorOn = false;
+  BookCab& c = g_cab;
+  const double tsec = std::fmod(static_cast<double>(nowNs) * 1e-9, 3600.0);
+  const bool want = g.bookMachine && PortFranchiseActive() && !PortFranchiseMatchActive() && !PortFranchiseMatchStarting() && !g.inSuite &&
+                    !g.evoRoomOn && g.headValid && fxOk && !c.loadFailed;
+  c.shown = false;
+  if (!want) {
+    if (c.engaged) book_release("the machine is away");
+    c.leverHand = -1;
+    c.leverOut = 0.0f;
+    if (c.ticketState != 0) {
+      c.ticketState = 0;
+      scene.models[xrfx::kTicketSlot].on = false;
+    }
+    return false;
+  }
+  if (!c.loadStarted) {
+    c.loadStarted = true;
+    std::thread(book_load_model).detach();
+  }
+  if (c.modelUp && !xrfx::model_up(xrfx::kBookSlot)) {  // (the renderer restarted: up again)
+    c.modelUp = false;
+    c.loaded = false;
+    c.loadStarted = false;
+    return false;
+  }
+  if (!c.modelUp) {
+    if (!c.loaded) return false;
+    xrfx::set_model(xrfx::kBookSlot, std::move(c.model));
+    c.modelUp = xrfx::model_up(xrfx::kBookSlot);
+    c.model = xrfx::Model();
+    if (!c.modelUp) {
+      c.loadFailed = true;
+      XLOG("sportsbook: the machine's model didn't go up - the hub page still has everything");
+      return false;
+    }
+  }
+  // its room, its spot (kept per room), on your floor
+  const xrroom::Room* room = scene.room;
+  const float floorY = room != nullptr ? xrroom::floor_y(*room) : g.floorY;
+  const std::string key = book_room_key(room);
+  if (key != c.key) {
+    if (c.dirty && !c.key.empty()) book_save_spot();
+    c.key = key;
+    c.placed = book_load_spot(key);
+    if (c.placed) XLOG("sportsbook: the machine's spot for %s", key.c_str());
+  }
+  if (!c.placed) book_place_new(room);
+  if (c.grabHands == 0) book_to_local(room, c.rx, c.rz, c.ryaw, &c.at.x, &c.at.z, &c.yaw);
+  c.at.y = floorY;  // (never floating: it stands on the floor, the scan's or the Guardian's)
+  c.shown = true;
+  // r202: no more stand-in-front takeover (Lance's r199 test: it never caught) - the machine is ENGAGED only by a hand on its
+  // joystick (book_engage, sync_input), let go when the grip opens or you step 1.2 m off
+  // r234 (Lance 11-12: "whatever clicking you added in the background ... of the arcade, cut that shit out"): the casino air
+  // is gone - r199's book_ambience (an 11.2 s loop of chips clacking + distant slot bells + a room hum) replayed every 11 s
+  // whenever your head was within 2 m of its screen or a hand had it. Nothing plays at the machine unless you do something.
+  // a collect made at the machine: the full show (its lights, coins pouring out of the tray, the jackpot's sound is xrbook's)
+  if (xrbook::take_machine_collect() > 0) {
+    c.showNs = nowNs;
+    XLOG("sportsbook: a collect at the machine - the light show");
+  }
+  // r202: a casino win shown on its screen: a small one a flash, a big one the full show (the coin shower out of the tray)
+  if (const int tier = xrcasino::take_show()) {
+    if (tier >= 2) c.showNs = nowNs;
+    else c.flashNs = nowNs;
+    // r207 (Lance 11-10: the CASINO WIN PARTY): the win goes off in your room by its size - the room flashes gold, coins fountain
+    // out of the tray onto your floor, confetti + fireworks over the machine, the siren light on its top, giant 3D letters (BIG
+    // WIN / HUGE WIN / JACKPOT) rising over it, facing you (xr_goalfx.cpp casino_party; the win music is xrcasino's)
+    const float topP[3] = {0.0f, bookcab::kHeight, 0.05f};
+    const XrVector3f front = q_rot(book_yaw_q(c.yaw), XrVector3f{0.0f, 0.0f, 1.0f});
+    xrgoalfx::casino_party(tier, book_point(bookcab::kTray), book_point(topP), front, c.scale, floorY);
+    XLOG("sportsbook: a casino win at the machine (tier %d) - the light show + the room's party (%s)", tier,
+         tier >= 4 ? "JACKPOT" : (tier == 3 ? "HUGE WIN" : (tier == 2 ? "BIG WIN" : "a pop")));
+  }
+  // r202: the SLOTS handle - out of its port while SLOTS is up, back in otherwise; let go it springs back (a damped spring); a
+  // spin started by A / the stick / the pointer swings it down by itself
+  {
+    const float dt = std::min(0.05f, std::max(0.0f, scene.dt));
+    const float target = xrcasino::screen() == xrcasino::kSlots ? 1.0f : 0.0f;
+    if (c.leverOut != target) {
+      const float before = c.leverOut;
+      c.leverOut = target > c.leverOut ? std::min(target, c.leverOut + dt / 0.7f) : std::max(target, c.leverOut - dt / 0.5f);
+      if (before <= 0.0f && c.leverOut > 0.0f) {
+        xrcards::play_sound("casino_lever", 0.45f);
+        XLOG("sportsbook: the SLOTS handle comes out");
+      }
+    }
+    if (c.leverOut < 0.95f) c.leverHand = -1;
+    const double spun = xrcasino::slot_spun_at();
+    if (spun >= 0.0 && spun != c.leverSpun) {
+      c.leverSpun = spun;
+      if (c.leverHand < 0 && c.leverOut > 0.95f) c.leverVel = 1600.0f;  // (spun by A / the stick: it swings itself)
+    }
+    if (c.leverHand < 0) {
+      c.leverVel += (-260.0f * (c.leverAng - kLeverRest) - 13.0f * c.leverVel) * dt;
+      c.leverAng += c.leverVel * dt;
+      if (c.leverAng > kLeverPull) c.leverAng = kLeverPull, c.leverVel = -std::fabs(c.leverVel) * 0.3f;
+      if (c.leverAng < kLeverRest - 8.0f) c.leverAng = kLeverRest - 8.0f, c.leverVel = std::fabs(c.leverVel) * 0.3f;
+    }
+  }
+  const float showT = c.showNs != 0 ? static_cast<float>(nowNs - c.showNs) * 1e-9f : 99.0f;
+  const float flashT = c.flashNs != 0 ? static_cast<float>(nowNs - c.flashNs) * 1e-9f : 99.0f;
+  float show = showT < 4.8f ? (showT < 0.2f ? showT / 0.2f : std::max(0.0f, 1.0f - std::max(0.0f, showT - 3.6f) / 1.2f)) : 0.0f;
+  if (flashT < 0.6f) show = std::max(show, 0.45f * (1.0f - flashT / 0.6f));
+  show = std::max(show, xrcasino::lights());  // r202: the casino's (reels / ball running: the bulbs go wild; a win's show)
+  if (showT < 2.8f && scene.dt > 0.0f) {
+    const XrVector3f tray = book_point(bookcab::kTray), marq = book_point(bookcab::kMarquee);
+    xrfx::card_sparkle(tray, 0.16f * c.scale, 0.35f * c.scale, 160.0f, scene.dt, 0xFFD23F, 0xFFF0A0);
+    xrfx::card_sparkle(marq, 0.38f * c.scale, 0.18f * c.scale, 70.0f, scene.dt, 0xFFD23F, 0xFF2E88);
+  }
+  // the model
+  {
+    xrfx::Scene::ModelDraw& md = scene.models[xrfx::kBookSlot];
+    md = xrfx::Scene::ModelDraw{};
+    md.on = true;
+    md.frame = 0;
+    md.at = c.at;
+    md.yaw = c.yaw;
+    md.scale = c.scale;
+    md.under = -9.0f;
+    md.white = c.stick[0];  // (the joystick: look.x / look.z; r205: springs back to the middle when let go - xrmachine)
+    md.glow = c.stick[1];
+    md.shine = c.leverOut;                                   // r202: the SLOTS handle (xr_fx_model.vert: out of its port ..)
+    md.dim = (lever_shown_angle() + 90.0f) / 190.0f;         // (.. its angle, -90 folded .. +100)
+    int tickets = 0;
+    const unsigned flags = (xrbook::ready_to_collect(&tickets) > 0 ? 1u : 0u) | (c.engaged ? 2u : 0u);
+    unsigned pokeBits = 0;  // (r205: a fingertip on one lights it, the machine off too)
+    for (int k = 0; k < 5; ++k)
+      if (c.pokeIn[0][k] || c.pokeIn[1][k]) pokeBits |= 1u << k;
+    const unsigned bits = c.engaged ? (c.buttons & 31u) : pokeBits;
+    md.glowRgb = (bits << 16) | (static_cast<unsigned>(std::lround(std::min(1.0f, show) * 255.0f)) << 8) | flags;
+  }
+  // its screen: the sportsbook's own drawing, ~10 a second while you're at it (its ticker, its flashes), slower farther off
+  {
+    const XrVector3f& hp = g.headPose.position;
+    const float dx = hp.x - c.at.x, dz = hp.z - c.at.z;
+    const float dist = std::sqrt(dx * dx + dz * dz);
+    // r202: live while a hand has the joystick or a pointer was on it lately; ~20 a second while a casino spin runs
+    const bool live = c.engaged || nowNs - c.aimNs < 4000000000ull;
+    // r204: a move / pick redraws at once (xrbook's generation moves with the casino's too now), then ~20 a second while its
+    // cursor pops / presses (xrbook::animating). r205: a move redraws NOTHING (the cursor is its overlay: its pop / press too) -
+    // the board's clock steps 20 a second only while its content animates (a spin, a collect, a flash), else 10 (the ticker)
+    const uint64_t every = xrcasino::animating_board() || xrbook::animating_board()
+                               ? 50000000ull
+                               : (live ? 100000000ull : (dist < 4.0f ? 330000000ull : 1500000000ull));
+    const bool attract = !live;
+    book_screen_request((nowNs / every) * 4 + (every == 50000000ull ? 0 : (every == 100000000ull ? 1 : 2)), xrbook::generation(), attract,
+                        static_cast<float>(tsec));
+  }
+  bool showQuad = false;
+  c.aimOn[0] = c.aimOn[1] = false;
+  cursorOn = false;
+  // r205: the frame thread's whole share of the screen: fences polled, ready rows copied up (never a wait, never a drawing)
+  const uint64_t svc0 = now_ns();
+  int rowsUp = 0, curUp = 0;
+  const bool picUp = book_live_service(g_bookPic, true, &rowsUp);
+  book_live_service(g_bookCur, false, &curUp);
+  static xrbook::CursorBox s_box;  // the cursor shown (adopted once the picture it fits is up)
+  {
+    std::lock_guard<std::mutex> lk(g_bcM);
+    if (g_bcFor <= g_bookPic.shown) s_box = g_bcBox;
+  }
+  {
+    const double ms = static_cast<double>(now_ns() - svc0) * 1e-6;
+    c.svcMsSum += ms;
+    c.svcMsMax = std::max(c.svcMsMax, ms);
+    ++c.svcFrames;
+    if (rowsUp > 0) ++c.uploads, c.uploadRows += rowsUp;
+    if (curUp > 0) ++c.curUploads;
+    const double dt = c.lastFrameNs != 0 ? static_cast<double>(nowNs - c.lastFrameNs) * 1e-6 : 0.0;
+    c.lastFrameNs = nowNs;
+    if (dt < 1000.0) {
+      c.dtMax = std::max(c.dtMax, dt);
+      if (dt > 16.5) ++c.slowFrames;  // (a 72 Hz frame is 13.9 ms: over 16.5 = one missed)
+    }
+    const bool atIt = c.engaged || nowNs - c.aimNs < 4000000000ull;
+    if (c.statNs == 0) c.statNs = nowNs;
+    if (nowNs - c.statNs >= 5000000000ull) {
+      if (atIt || c.uploads > 0) {
+        const int pics = g_bsPics.exchange(0), rows = g_bsRows.exchange(0), only = g_bsCursorOnly.exchange(0);
+        const int64_t rus = g_bsRasterUs.exchange(0), rmax = g_bsRasterMaxUs.exchange(0), pus = g_bsPiecesUs.exchange(0), pmax = g_bsPiecesMaxUs.exchange(0);
+        XLOG("sportsbook: screen (r205): %d pictures drawn off the frame thread (%d rows avg of %d, %.1f ms avg / %.1f max), pieces %.2f ms avg / %.2f max, "
+             "%d moves only the cursor; frame thread %.3f ms avg / %.3f max a frame (%d uploads, %d rows avg; %d cursor pictures); display frames: "
+             "longest %.1f ms, %d over 16.5 ms in %d",
+             pics, pics > 0 ? rows / pics : 0, static_cast<int>(bookcab::kScreenPxH), pics > 0 ? rus * 1e-3 / pics : 0.0, rmax * 1e-3,
+             (pics + only) > 0 ? pus * 1e-3 / (pics + only) : 0.0, pmax * 1e-3, only, c.svcFrames > 0 ? c.svcMsSum / c.svcFrames : 0.0, c.svcMsMax,
+             c.uploads, c.uploads > 0 ? c.uploadRows / c.uploads : 0, c.curUploads, c.dtMax, c.slowFrames, c.svcFrames);
+      }
+      c.statNs = nowNs;
+      c.svcMsSum = c.svcMsMax = c.dtMax = 0.0;
+      c.svcFrames = c.slowFrames = c.uploads = c.uploadRows = c.curUploads = 0;
+    }
+  }
+  if (picUp) {
+    const XrVector3f scr = book_point(bookcab::kScreenC);
+    const XrQuaternionf q = q_mul(book_yaw_q(c.yaw), book_xrot_q(bookcab::kScreenTilt));
+    const XrVector3f n = q_rot(q, XrVector3f{0.0f, 0.0f, 1.0f});
+    const XrVector3f& hp = g.headPose.position;
+    if ((hp.x - scr.x) * n.x + (hp.y - scr.y) * n.y + (hp.z - scr.z) * n.z > 0.0f) {  // (from behind: the cabinet hides it)
+      place_panel(quad, g_bookPic.panel, scr, bookcab::kScreenW * c.scale);
+      quad.pose.orientation = q;
+      quad.pose.position = scr;
+      quad.size.width = bookcab::kScreenW * c.scale;
+      quad.size.height = bookcab::kScreenH * c.scale;
+      showQuad = true;
+      // r205: the cursor overlay - its own quad over the screen (posed from its item's box; its pop / press = its size + cell)
+      if (s_box.on && g_bookCur.panel.hasImage && g_bookCur.atlas.on) {
+        float ma = 99.0f, pa = 99.0f;
+        xrbook::cursor_anim(&ma, &pa);
+        const xrscreen::Pose ps = xrscreen::cursor_pose(s_box, g_bookCur.atlas, ma, pa);
+        if (ps.on) {
+          const float W = static_cast<float>(bookcab::kScreenPxW), H = static_cast<float>(bookcab::kScreenPxH);
+          const float ox = (ps.cx / W - 0.5f) * quad.size.width, oy = (0.5f - ps.cy / H) * quad.size.height;
+          const XrVector3f off = q_rot(q, XrVector3f{ox, oy, 0.0005f});
+          cursorQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;  // premultiplied
+          cursorQuad.space = g.local;
+          cursorQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+          cursorQuad.subImage.swapchain = g_bookCur.panel.swapchain;
+          cursorQuad.subImage.imageRect.offset = {(ps.cell % 2) * g_bookCur.atlas.cellW, (ps.cell / 2) * g_bookCur.atlas.cellH};
+          cursorQuad.subImage.imageRect.extent = {g_bookCur.atlas.cellW, g_bookCur.atlas.cellH};
+          cursorQuad.subImage.imageArrayIndex = 0;
+          cursorQuad.pose.orientation = q;
+          cursorQuad.pose.position = {scr.x + off.x, scr.y + off.y, scr.z + off.z};
+          cursorQuad.size.width = std::max(0.001f, ps.w / W * quad.size.width);
+          cursorQuad.size.height = std::max(0.001f, ps.h / H * quad.size.height);
+          cursorOn = c.engaged || nowNs - c.aimNs < 4000000000ull;  // (the attract screen has none)
+        }
+      }
+      // a pointer on it: hover moves the cursor, the trigger picks (as A)
+      for (int h = 0; h < 2; ++h) {  // (r203: the franchise hub open behind you no longer turns the pointer off - r202 did)
+        float qx = 0, qy = 0, d = 0;
+        const bool trig = scene.hands[h].valid && scene.hands[h].trigger > 0.6f;
+        if (g.aimValid[h] && ray_quad(g.aim[h], quad.pose, &qx, &qy, &d) && d < 3.0f && std::fabs(qx) < 0.5f * quad.size.width &&
+            std::fabs(qy) < 0.5f * quad.size.height) {
+          const bool click = trig && !c.prevTrig[h];
+          const float u = qx / quad.size.width + 0.5f, v = 0.5f - qy / quad.size.height;
+          c.aimOn[h] = true;  // r202: its trigger is the machine's now (sync_input keeps it from the game)
+          c.aimNs = nowNs;
+          xrbook::point(u, v, click, true);
+          {  // (r204: the laser dot wherever the ray is on the screen - r203 only over something)
+            const XrVector3f dir = q_rot(g.aim[h].orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+            scene.pointerValid[h] = true;
+            scene.pointers[h] = {g.aim[h].position.x + dir.x * d, g.aim[h].position.y + dir.y * d, g.aim[h].position.z + dir.z * d};
+          }
+        }
+        c.prevTrig[h] = trig;
+      }
+    }
+  }
+  // the printer: a ticket asked for (a bet placed at the machine, or SLIPS > A) is drawn, then prints out of the slot
+  if (const uint32_t id = xrbook::take_print()) {
+    c.flashNs = nowNs;
+    xrcards::play_sound("book_print", 0.9f);
+    c.pendingHand = -1;
+    std::thread(book_build_ticket, id).detach();
+    XLOG("sportsbook: printing ticket #%u", id);
+  }
+  const XrVector3f outDir = v_norm(q_rot(book_yaw_q(c.yaw), XrVector3f{0.0f, -0.25f, 1.0f}), XrVector3f{0.0f, 0.0f, 1.0f});
+  const XrVector3f slotW = book_point(bookcab::kSlot);
+  if (const int ready = c.ticketReady.exchange(0)) {
+    std::lock_guard<std::mutex> lock(c.ticketMutex);
+    xrfx::set_model(xrfx::kTicketSlot, std::move(c.ticketModel));
+    c.ticketModel = xrfx::Model();
+    c.ticketId = static_cast<uint32_t>(ready);
+    c.ticketL = c.readyL;
+    c.ticketNs = nowNs;
+    c.ticketAlpha = 1.0f;
+    c.ticketVerts.assign(static_cast<size_t>(kPaperVerts) * 6, 0.0f);
+    if (!xrfx::model_up(xrfx::kTicketSlot)) {
+      c.ticketState = 0;
+    } else if (c.pendingHand >= 0 && scene.hands[c.pendingHand].valid) {  // (a posted slip taken off: straight into that hand)
+      c.ticketState = 3;
+      c.ticketHand = c.pendingHand;
+      c.hold = xrmachine::Hold();  // (r204: held near its head, turning to face you from the first frame)
+      c.hold.grabU = 0.1f;
+      const XrPosef& gp = scene.hands[c.ticketHand].grip;
+      const XrVector3f top = v_add(gp.position, q_rot(gp.orientation, XrVector3f{0.0f, 0.0f, -0.06f}));
+      for (int i = 0; i <= kPaperN; ++i) c.pp[i] = c.ppPrev[i] = v_add(top, XrVector3f{0.0f, -c.ticketL * i / kPaperN, 0.0f});
+      c.pSide = q_rot(gp.orientation, XrVector3f{1.0f, 0.0f, 0.0f});
+      c.chainLive = true;
+    } else {
+      c.ticketState = 1;  // (out of the slot: it starts inside, folded at the slot)
+      for (int i = 0; i <= kPaperN; ++i) c.pp[i] = c.ppPrev[i] = slotW;
+      c.pSide = q_rot(book_yaw_q(c.yaw), XrVector3f{1.0f, 0.0f, 0.0f});
+      c.chainLive = true;
+    }
+    c.pendingHand = -1;
+  }
+  // the posted slips: (re)built when they change, posed against the cabinet each frame
+  if (c.postedUpGen != c.postedReady.load()) {
+    std::lock_guard<std::mutex> lock(c.ticketMutex);
+    if (!c.posted.empty() && c.postedReady.load() == c.postedGen) xrfx::set_model(xrfx::kPinSlot, std::move(c.postedModel));
+    c.postedModel = xrfx::Model();
+    c.postedUpGen = c.postedReady.load();
+    c.postedVerts.assign(static_cast<size_t>(c.posted.size()) * kPaperVerts * 6, 0.0f);
+  }
+  xrfx::Scene::ModelDraw& pm = scene.models[xrfx::kPinSlot];
+  pm = xrfx::Scene::ModelDraw{};
+  if (!c.posted.empty() && c.postedUpGen == c.postedGen && xrfx::model_up(xrfx::kPinSlot) &&
+      c.postedVerts.size() == c.posted.size() * kPaperVerts * 6) {
+    for (size_t k = 0; k < c.posted.size(); ++k) {
+      const BookCab::Posted& ps = c.posted[k];
+      XrVector3f pts[kPaperN + 1];
+      for (int j = 0; j <= kPaperN; ++j) {  // (it sags a touch away from the cabinet in the middle, as paper stuck at its top)
+        const float u = static_cast<float>(j) / kPaperN;
+        const float lp[3] = {ps.top[0] + ps.down[0] * ps.L * u + ps.n[0] * 0.006f * std::sin(u * 3.14159f) * (0.3f + u),
+                             ps.top[1] + ps.down[1] * ps.L * u + ps.n[1] * 0.006f * std::sin(u * 3.14159f) * (0.3f + u),
+                             ps.top[2] + ps.down[2] * ps.L * u + ps.n[2] * 0.006f * std::sin(u * 3.14159f) * (0.3f + u)};
+        pts[j] = book_point(lp);
+      }
+      const XrVector3f sideW = q_rot(book_yaw_q(c.yaw), XrVector3f{ps.side[0], ps.side[1], ps.side[2]});
+      book_paper_pose(pts, sideW, kTicketWm, c.postedVerts.data() + k * kPaperVerts * 6);
+    }
+    pm.on = true;
+    pm.under = -9.0f;
+    pm.posNrm = c.postedVerts.data();
+  }
+  // a grip on a posted slip takes it off the machine (into that hand)
+  for (int h = 0; h < 2; ++h) {
+    const xrfx::Scene::Hand& hd = scene.hands[h];
+    static bool s_prev[2] = {false, false};
+    const bool grip = hd.valid && hd.squeeze > 0.6f;
+    if (grip && !s_prev[h] && c.ticketHand != h) {
+      for (size_t k = 0; k < c.posted.size(); ++k) {
+        const BookCab::Posted& ps = c.posted[k];
+        const float mid[3] = {ps.top[0] + ps.down[0] * ps.L * 0.5f, ps.top[1] + ps.down[1] * ps.L * 0.5f, ps.top[2] + ps.down[2] * ps.L * 0.5f};
+        const XrVector3f mw = book_point(mid);
+        const XrVector3f d = v_sub(hd.grip.position, mw);
+        if (v_dot(d, d) < 0.12f * 0.12f) {
+          const uint32_t id = ps.id;
+          c.posted.erase(c.posted.begin() + static_cast<long>(k));
+          ++c.postedGen;
+          std::vector<uint32_t> ids;
+          for (const BookCab::Posted& q : c.posted) ids.push_back(q.id);
+          if (!ids.empty()) std::thread(book_build_posted, ids, c.postedGen).detach();
+          else c.postedReady = c.postedGen;
+          c.pendingHand = h;
+          std::thread(book_build_ticket, id).detach();
+          XLOG("sportsbook: ticket #%u taken off the machine", id);
+          break;
+        }
+      }
+    }
+    s_prev[h] = grip;
+  }
+  xrfx::Scene::ModelDraw& tm = scene.models[xrfx::kTicketSlot];
+  tm = xrfx::Scene::ModelDraw{};
+  if (c.ticketState != 0 && c.chainLive) {
+    const float tt = static_cast<float>(nowNs - c.ticketNs) * 1e-9f;
+    // a grip closing on any part of the paper takes it (either hand, 14 cm). r204 (Lance's r203 test: posted on the machine
+    // twice when he only let go near it; "hard to pick up in ways that feel natural"): held, it's stiff card that turns its
+    // print to your eyes (xrmachine::ticket_hold); POSTING is deliberate - press it flat against the machine's side / front
+    // (printed side out, within 4 cm) and hold it there 0.5 s (haptic ticks build, then it sticks); letting go anywhere -
+    // by the machine too - lets it go: it falls and fades.
+    for (int h = 0; h < 2; ++h) {
+      const xrfx::Scene::Hand& hd = scene.hands[h];
+      const bool grip = hd.valid && hd.squeeze > 0.6f;
+      if ((c.ticketState == 1 || c.ticketState == 2) && grip && book_hand_on_ticket(h, hd.grip.position)) {
+        float pts[kPaperN + 1][3];
+        for (int i = 0; i <= kPaperN; ++i) pts[i][0] = c.pp[i].x, pts[i][1] = c.pp[i].y, pts[i][2] = c.pp[i].z;
+        const float side[3] = {c.pSide.x, c.pSide.y, c.pSide.z}, hand[3] = {hd.grip.position.x, hd.grip.position.y, hd.grip.position.z};
+        if (!xrmachine::ticket_grab(c.hold, pts, kPaperN, side, hand, 0.30f)) c.hold = xrmachine::Hold();
+        c.ticketState = 3;
+        c.ticketHand = h;
+        XLOG("sportsbook: ticket #%u taken by the %s hand (%.0f%% down it)", c.ticketId, h == 0 ? "left" : "right", c.hold.grabU * 100.0f);
+      }
+      if (c.ticketState == 3 && c.ticketHand == h && !grip) {
+        c.ticketState = 4;
+        c.ticketNs = nowNs;
+        XLOG("sportsbook: ticket #%u let go - gone%s", c.ticketId, c.hold.pressT > 0.0f ? " (it wasn't held flat on the machine long enough to post)" : "");
+        c.hold = xrmachine::Hold();
+      }
+    }
+    const float dt = std::max(0.002f, std::min(1.0f / 30.0f, scene.dt));
+    const float floorY = c.at.y;
+    if (c.ticketState == 1 || c.ticketState == 2) {
+      // out of the slot: the length outside grows over 2 s, coming out straight, then curving down a little under its own
+      // weight (r204: card - stiffer), a wobble from the printer's steps; after 40 s untouched it's gone
+      const float e = std::min(1.0f, tt / 2.0f);
+      if (tt >= 2.0f) c.ticketState = 2;
+      const float seg = std::max(0.002f, c.ticketL * e) / kPaperN;
+      const float wob = tt < 2.0f ? 0.0025f * std::sin(tt * 38.0f) : 0.0f;
+      const XrVector3f a0 = slotW, a1 = v_add(slotW, v_add(v_mul(outDir, seg), XrVector3f{0.0f, wob, 0.0f}));
+      for (int s = 0; s < 2; ++s) book_paper_step(dt * 0.5f, seg, &a0, &a1, floorY, false, static_cast<float>(tsec), 1.0f);
+      if (tt > 40.0f) {
+        c.ticketState = 4;
+        c.ticketNs = nowNs;
+      }
+    } else if (c.ticketState == 3 && c.ticketHand >= 0 && scene.hands[c.ticketHand].valid) {
+      // r204: in your hand: stiff card where your fingers took it, its print turning to your eyes (r199-r203: hung from the
+      // grip by its top as a verlet chain - it drooped, swung and fluttered, edge-on to you as often as not)
+      const XrPosef& gp = scene.hands[c.ticketHand].grip;
+      const XrVector3f gxV = q_rot(gp.orientation, XrVector3f{1.0f, 0.0f, 0.0f}), gyV = q_rot(gp.orientation, XrVector3f{0.0f, 1.0f, 0.0f});
+      const XrVector3f gzV = q_rot(gp.orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+      const float grip3[3] = {gp.position.x, gp.position.y, gp.position.z}, gx[3] = {gxV.x, gxV.y, gxV.z}, gy[3] = {gyV.x, gyV.y, gyV.z},
+                  gz[3] = {gzV.x, gzV.y, gzV.z};
+      const XrVector3f& hp = g.headPose.position;
+      const float eye[3] = {hp.x, hp.y, hp.z};
+      float out[kPaperN + 1][3], side[3];
+      xrmachine::ticket_hold(c.hold, grip3, gx, gy, gz, eye, c.ticketL, dt, out, kPaperN, side);
+      for (int i = 0; i <= kPaperN; ++i) {
+        c.ppPrev[i] = c.pp[i];  // (its last place: let go, it carries the hand's swing into its fall)
+        c.pp[i] = XrVector3f{out[i][0], out[i][1], out[i][2]};
+      }
+      c.pSide = XrVector3f{side[0], side[1], side[2]};
+      // pressed flat against the machine? (its middle or where it's held within 4 cm of a side / the front, printed side out)
+      const XrQuaternionf inv = q_conj(book_yaw_q(c.yaw));
+      int face = -1;
+      float dist = 1e9f;
+      const XrVector3f probes[2] = {c.pp[kPaperN / 2], c.pp[std::max(0, std::min(kPaperN, static_cast<int>(std::lround(c.hold.grabU * kPaperN))))]};
+      for (const XrVector3f& pw : probes) {
+        const XrVector3f l = v_mul(q_rot(inv, v_sub(pw, c.at)), 1.0f / c.scale);
+        if (l.y > 0.25f && l.y < 1.65f && l.z > -0.38f && l.z < 0.30f) {
+          if (std::fabs(l.x - 0.335f) * c.scale < dist) dist = std::fabs(l.x - 0.335f) * c.scale, face = 0;
+          if (std::fabs(l.x + 0.335f) * c.scale < dist) dist = std::fabs(l.x + 0.335f) * c.scale, face = 1;
+        }
+        if (l.y > 0.12f && l.y < 0.66f && std::fabs(l.x) < 0.27f && std::fabs(l.z - 0.356f) * c.scale < dist)
+          dist = std::fabs(l.z - 0.356f) * c.scale, face = 2;
+      }
+      float facing = -1.0f;
+      if (face >= 0) {
+        const XrVector3f fn = q_rot(book_yaw_q(c.yaw), XrVector3f{face == 0 ? 1.0f : (face == 1 ? -1.0f : 0.0f), 0.0f, face == 2 ? 1.0f : 0.0f});
+        facing = c.hold.n[0] * fn.x + c.hold.n[1] * fn.y + c.hold.n[2] * fn.z;
+      }
+      const float wasT = c.hold.pressT;
+      const float press = xrmachine::ticket_press(c.hold, face >= 0 ? dist : 1e9f, facing, dt);
+      if (press > 0.0f && wasT <= 0.0f) XLOG("sportsbook: ticket #%u pressed against the machine - hold it there to post it", c.ticketId);
+      if (press > 0.0f && press < 1.0f && nowNs >= c.pressBuzzNs) {  // (ticks building as it sticks)
+        book_haptic(0.15f + 0.5f * press, 0.02f);
+        c.pressBuzzNs = nowNs + 90000000ull;
+        if (scene.dt > 0.0f) xrfx::card_sparkle(c.pp[kPaperN / 2], 0.04f, 0.06f, 60.0f + 200.0f * press, scene.dt, 0xFFFFFF, 0xFF2E88);
+      }
+      if (press >= 1.0f && face >= 0) {
+        const XrVector3f l = v_mul(q_rot(inv, v_sub(c.pp[kPaperN / 2], c.at)), 1.0f / c.scale);
+        BookCab::Posted ps;
+        ps.id = c.ticketId;
+        ps.L = c.ticketL / c.scale;
+        const float nx = face == 0 ? 1.0f : (face == 1 ? -1.0f : 0.0f), nz = face == 2 ? 1.0f : 0.0f;
+        const float sx = face == 2 ? 1.0f : 0.0f, sz = face == 0 ? -1.0f : (face == 1 ? 1.0f : 0.0f);  // (reads the right way from outside)
+        const float surf = face == 0 ? 0.337f : (face == 1 ? -0.337f : 0.0f);
+        ps.n[0] = nx, ps.n[1] = 0.0f, ps.n[2] = nz;
+        ps.side[0] = sx, ps.side[1] = 0.0f, ps.side[2] = sz;
+        ps.down[0] = 0.0f, ps.down[1] = -1.0f, ps.down[2] = 0.0f;
+        ps.top[0] = face == 2 ? std::max(-0.22f, std::min(0.22f, l.x)) : surf;
+        ps.top[1] = std::min(face == 2 ? 0.80f : 1.75f, l.y + 0.5f * ps.L);
+        ps.top[2] = face == 2 ? 0.358f : std::max(-0.34f, std::min(0.26f, l.z));
+        if (c.posted.size() >= 3) c.posted.erase(c.posted.begin());  // (3 at most: the oldest comes down)
+        c.posted.push_back(ps);
+        ++c.postedGen;
+        std::vector<uint32_t> ids;
+        for (const BookCab::Posted& q : c.posted) ids.push_back(q.id);
+        std::thread(book_build_posted, ids, c.postedGen).detach();
+        c.ticketState = 0;
+        c.hold = xrmachine::Hold();
+        book_haptic(0.8f, 0.05f);
+        xrcards::play_sound("casino_stop", 0.5f);  // (a short clunk as it sticks)
+        XLOG("sportsbook: ticket #%u posted on the machine (pressed flat %.1f cm off it, 0.5 s; %d up)", ps.id, dist * 100.0f,
+             static_cast<int>(c.posted.size()));
+      }
+    } else if (c.ticketState == 4) {
+      // let go: it sails down and fades (a puff of sparkle); r204: card - a gentle sway, no flapping
+      c.ticketAlpha = std::max(0.0f, 1.0f - tt / 0.8f);
+      for (int s = 0; s < 2; ++s) book_paper_step(dt * 0.5f, c.ticketL / kPaperN, nullptr, nullptr, floorY, true, static_cast<float>(tsec), 0.8f);
+      if (scene.dt > 0.0f && tt > 0.4f)
+        xrfx::card_sparkle(c.pp[kPaperN / 2], 0.06f, 0.08f, 220.0f * c.ticketAlpha, scene.dt, 0xFFFFFF, 0xFFD23F);
+      if (c.ticketAlpha <= 0.0f) c.ticketState = 0;
+    }
+    if (c.ticketState != 0 && c.ticketVerts.size() == static_cast<size_t>(kPaperVerts) * 6) {
+      book_paper_pose(c.pp, c.pSide, c.ticketW, c.ticketVerts.data());
+      tm.on = true;
+      tm.under = -9.0f;
+      tm.alpha = c.ticketAlpha;
+      tm.posNrm = c.ticketVerts.data();
+    }
+  }
+  return showQuad;
+}
+
 extern "C" void PortXrEndFrame(int ranGameFrame) {
+  const uint64_t gpEntryNs = now_ns();  // r221: the frame probe
   // r46: RetroAchievements, after the game frame: this frame's memory against the set (xr_ra.h).
   // r106: still 60 times a second at full rate (the set's hit counts are 60 Hz frames).
   bool raFrame = false;
@@ -17079,6 +21116,16 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   bool frameOk = xr_ok(xrWaitFrame(g.session, &waitInfo, &g.frameState), "xrWaitFrame");
   g.lastWaitReturnNs = now_ns();
   g.xrWaitNsSinceStats += g.lastWaitReturnNs - waitStart;
+  {  // r221: the frame probe - this display interval closes (its missed display frames: the predicted time's jump)
+    gp::add(gp::kPreWait, waitStart - gpEntryNs);
+    uint32_t missed = 0;
+    if (frameOk && g.frameState.predictedDisplayPeriod > 0 && g.lastPredictedDisplayTime != 0) {
+      const int64_t period = g.frameState.predictedDisplayPeriod;
+      const int64_t d = static_cast<int64_t>(g.frameState.predictedDisplayTime - g.lastPredictedDisplayTime);
+      if (d > period * 3 / 2) missed = static_cast<uint32_t>(std::min<int64_t>(8, d / period - 1));
+    }
+    gp::close_interval(g.lastWaitReturnNs, g.lastWaitReturnNs - waitStart, missed, !frameOk || g.frameState.shouldRender);
+  }
   // r130: missed display frames (the predicted display time jumped more than a period and a half) scale the
   // celebration pieces' budget down (xrfx::set_load_scale), 0.8x a half second with 2+ missed; back up 0.1 a half
   // second once it holds every frame
@@ -17110,6 +21157,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       g.scaleCheckNs = t;
     }
   }
+  const uint64_t gpBeginNs = now_ns();  // r221
   if (frameOk) {
     XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
     frameOk = xr_ok(xrBeginFrame(g.session, &beginInfo), "xrBeginFrame");
@@ -17117,6 +21165,13 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   if (frameOk) {
     ++g.displayFramesSinceStats;
   }
+  uint64_t gpMark = now_ns();  // r221: the probe's sections from here (gp_mark)
+  gp::add(gp::kXrBegin, gpMark - gpBeginNs);
+  const auto gp_mark = [&gpMark](int sec) {
+    const uint64_t t = now_ns();
+    gp::add(sec, t - gpMark);
+    gpMark = t;
+  };
 
   // Even without an XR frame to end, this game frame's eye images go back from Dawn (finish).
   int justRecorded = -1;  // r44: the eye slot this game frame drew into
@@ -17273,10 +21328,40 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       if (XR_SUCCEEDED(xrLocateSpace(g.stage, g.local, g.frameState.predictedDisplayTime, &floor)) &&
           (floor.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0) {
         g.floorY = floor.pose.position.y;
+        xrscene::floor_hint(g.floorY);  // r225: a scanned room counts only where its floor is your real floor
+        g_cab.stage = floor.pose;  // r199: the sportsbook machine's spot is kept in the Guardian's frame (no scan)
+        g_cab.stageValid = (floor.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+        // r196: your play area (the Guardian's rectangle round the STAGE origin, asked for every 2 s: no room scan)
+        // for the blizzard's dusting along its edges
+        static XrExtent2Df s_bounds{0.0f, 0.0f};
+        static uint64_t s_boundsNs = 0;
+        if (fxNow - s_boundsNs > 2000000000ull) {
+          s_boundsNs = fxNow;
+          XrExtent2Df b{0.0f, 0.0f};
+          s_bounds = XR_SUCCEEDED(xrGetReferenceSpaceBoundsRect(g.session, XR_REFERENCE_SPACE_TYPE_STAGE, &b)) ? b
+                                                                                                             : XrExtent2Df{0.0f, 0.0f};
+        }
+        if (s_bounds.width > 0.5f && s_bounds.height > 0.5f &&
+            (floor.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
+          scene.playValid = true;
+          scene.playPose = floor.pose;
+          scene.playHalf[0] = 0.5f * s_bounds.width;
+          scene.playHalf[1] = 0.5f * s_bounds.height;
+        }
       }
     }
     // r44g: the stadium's ground in the stadium; r61: the cup suite stands on your own floor.
     scene.floorY = g.inSuite ? g.floorY : mode_floor_y();
+    // r197: YOUR ROOM SCAN (xr_scene.h): read once the headset allows it, followed through a recenter; the effects get it
+    // in MR while SETTINGS > ROOM > USE MY ROOM SCAN is on - not in the cup suite / an evolution's room / the home
+    // screen's room (rooms of their own over your floor)
+    {
+      const float hp[3] = {sceneViews ? 0.5f * (scene.views[0].pose.position.x + scene.views[1].pose.position.x) : g.headPose.position.x,
+                           sceneViews ? 0.5f * (scene.views[0].pose.position.y + scene.views[1].pose.position.y) : g.headPose.position.y,
+                           sceneViews ? 0.5f * (scene.views[0].pose.position.z + scene.views[1].pose.position.z) : g.headPose.position.z};
+      xrscene::frame(g.frameState.predictedDisplayTime, g.mrMode && g.useRoomScan, hp);
+      scene.room = g.mrMode && !g.inSuite && !g.evoRoomOn && !g.homeEnvOn ? xrscene::room() : nullptr;
+    }
     scene.mr = g.mrMode;
     scene.tabletop = g.tabletop && !g.stereoFailed;
     // r46e (players): the field no longer floats up while the scorer celebrates (r44-r46d); the
@@ -17481,12 +21566,15 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       XLOG("home screen: suite off");
     }
     // r137: the weather in the effects layer (xr_fx weather block): rain / snow over the Tabletop field and onto your
-    // table (MR), round you in the life-size stadium with its floodlights at night (VR). Not the Jumbotron in your room
-    // (its picture carries the weather), and only while the game draws its stadium.
+    // table (MR), round you in the life-size stadium with its floodlights at night (VR), and only while the game draws
+    // its stadium. r194 (Lance: the rain stayed inside the Jumbotron's picture): in MR, every view (the Jumbotron Living
+    // Room too) gets it in your own room as well - while WEATHER IN MY ROOM is on (g.roomWeather: read every frame
+    // here, so the pause row's change shows at once; off: nothing of the weather in your room or on your table, the
+    // game's own picture keeps its weather). VR unchanged. Local only: nothing of it goes online.
     {
       const int wx = PortWeatherCurrent();
       if (wx != 0 && now_ns() - g_worldDrawnNs.load(std::memory_order_relaxed) < 1500000000ull && !g.inSuite &&
-          !g.homeEnvOn && !g.evoRoomOn && !g.stereoFailed && (scene.tabletop || !g.mrMode)) {
+          !g.homeEnvOn && !g.evoRoomOn && !g.stereoFailed && (!g.mrMode || g.roomWeather)) {
         scene.weather = static_cast<uint8_t>(wx);
         scene.weatherAmt = PortWeatherFade();
         scene.snowCover = PortWeatherSnowCover();
@@ -17494,7 +21582,25 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         const int n = PortWeatherLights(xyz, 8);
         for (int i = 0; i < n; ++i) scene.wxLights[i] = XrVector3f{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
         scene.wxLightCount = n;
+        // r196: the tier, its wind, the lightning and the snow lying on the pitch (xr_weather.h)
+        scene.wxTier = PortWeatherTier();
+        scene.wxInten = PortWeatherIntensity();
+        PortWeatherWind(&scene.wxWind[0], &scene.wxWind[1], &scene.wxGust);
+        scene.wxFlash = PortWeatherFlash();
+        unsigned boltSeed = 0;
+        if (PortWeatherBolt(&scene.wxBoltId, &scene.wxBoltVis, &scene.wxBoltKind, &scene.wxBoltX, &boltSeed))
+          scene.wxBoltSegs = PortWeatherBoltShape(scene.wxBolt, 200);
+        if (PortWeatherSnowGrid(scene.wxSnow, 32 * 18, &scene.wxSnowCols, &scene.wxSnowRows) == 0)
+          scene.wxSnowCols = scene.wxSnowRows = 0;
         ensure_fx();
+      }
+      // r196: the weather's sound pans with the wind as you turn your head: your head's right (LOCAL) and the game's
+      // x axis in your room (the field's / the stadium's turn)
+      if (g.headValid) {
+        const XrQuaternionf& q = g.headPose.orientation;
+        // rotate (1, 0, 0) by q
+        const float rx = 1.0f - 2.0f * (q.y * q.y + q.z * q.z), rz = 2.0f * (q.x * q.z - q.w * q.y);
+        PortWeatherSetListener(rx, rz, g.table.yaw);
       }
     }
     scene.shelfCups = g.trophyBits;
@@ -17540,6 +21646,44 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     // r134: an evolution's room covers everything while it's up: your room's camera picture (MR) and the game's own
     // picture (below) aren't laid over it
     const bool evoRoomUp = g.evoRoomOn && !g.evoRoomTheme.empty();
+    if (g.mrMode && g.pt.available && g.pt.layerRunning && g.pt.setStyle != nullptr) {
+      // r196 (WEATHER IN MY ROOM): the lightning's flash lights your room (brighter, bluer, a little washed out) and the
+      // blizzard's whiteout washes it with its gusts - the passthrough's own style (no extra pass, nothing drawn). Back
+      // to plain the moment it's over; set only when it changes.
+      const float f = std::min(1.0f, scene.wxFlash);
+      const float w = scene.wxTier == PORT_WX_TIER_BLIZZARD ? scene.wxInten * (0.4f + 0.6f * scene.wxGust) * scene.weatherAmt : 0.0f;
+      // r207: the CASINO WIN PARTY's gold flash - your room brightens with each pulse (the effects layer's gold veil tints it)
+      const float cf = std::min(1.0f, std::max(0.0f, xrgoalfx::casino_flash()));
+      // r219 (BIG PULLS): a BLACK 1/1's build-up darkens your room (brightness down, flatter, the colour drained a little), its reveal
+      // slams the lights back with one white flash (xr_cards room_dark / room_flash: smooth ramps, one flash - xr_pulls.h)
+      const float pd = std::min(1.0f, std::max(0.0f, xrcards::room_dark())), pf = std::min(1.0f, std::max(0.0f, xrcards::room_flash()));
+      // r230 (LANCINI EXQUISITE's private gallery): an EXQUISITE opening dims your room to a soft gallery mood - darker, a little flatter, the
+      // colour quieted (the effects' warm veil round you tints it warm: xr_cards light model) - eased in / out (xr_cards room_gallery); a 1/1's
+      // dark room on top of it
+      const float pg = std::min(1.0f, std::max(0.0f, xrcards::room_gallery()));
+      const float B = std::min(70.0f, 55.0f * f + 16.0f * w + 38.0f * cf + 60.0f * pf) - 55.0f * pd - 24.0f * pg * (1.0f - pd),
+                  C = 1.0f - 0.10f * f - 0.28f * w - 0.15f * pd - 0.06f * pg,
+                  S = 1.0f - 0.35f * f - 0.40f * w - 0.60f * pd - 0.30f * pg * (1.0f - pd);
+      if (std::fabs(B - g.pt.styleB) > 0.4f || std::fabs(C - g.pt.styleC) > 0.008f || std::fabs(S - g.pt.styleS) > 0.008f ||
+          ((B != g.pt.styleB || C != g.pt.styleC || S != g.pt.styleS) && f == 0.0f && w == 0.0f && cf == 0.0f && pd == 0.0f && pf == 0.0f && pg == 0.0f)) {
+        XrPassthroughBrightnessContrastSaturationFB bcs{XR_TYPE_PASSTHROUGH_BRIGHTNESS_CONTRAST_SATURATION_FB};
+        bcs.brightness = B;
+        bcs.contrast = C;
+        bcs.saturation = S;
+        XrPassthroughStyleFB style{XR_TYPE_PASSTHROUGH_STYLE_FB};
+        style.next = &bcs;
+        style.textureOpacityFactor = 1.0f;
+        style.edgeColor = XrColor4f{0.0f, 0.0f, 0.0f, 0.0f};
+        if (XR_SUCCEEDED(g.pt.setStyle(g.pt.layer, &style))) {
+          g.pt.styleB = B;
+          g.pt.styleC = C;
+          g.pt.styleS = S;
+        } else {
+          g.pt.setStyle = nullptr;  // (a runtime without it: never asked again)
+          XLOG("weather: passthrough style not available - no room flash / whiteout");
+        }
+      }
+    }
     if (g.mrMode && g.pt.available && g.pt.layerRunning && !evoRoomUp) {
       ptLayer.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
       ptLayer.space = XR_NULL_HANDLE;
@@ -18129,6 +22273,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         ++g_frFigGen;
       }
       // r131: drawn again too when a character's 3D figure comes to stand in front of it (its portrait left out)
+      g_franchise.swizzleInWorker = true;  // r206: its 11 MB byte swap on the drawing thread, not the frame thread
       request_panel(g_franchise, g.frGen * 64 + (g_frFigGen.load() & 63), kGuestW, kGuestH, [](uint8_t* px, int w, int h) {
         FrSnapshot s;
         {
@@ -18141,6 +22286,31 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         fr_place(frQuad, g.frPanel, g.frPos, g.frPlaced,
                  static_cast<float>(kGuestH) / static_cast<float>(kGuestW), false);
         showFrQuad = true;
+        // r210: a pointer on the CARD MARKET's number pad (LIST FOR SALE / EDIT PRICE): the key under its ray is the cursor, a trigger
+        // pull presses it (the hub's LT / RT section switch stands still while the pad is up: sync_input)
+        {
+          static bool s_prevTrig[2] = {false, false};
+          const float trig[2] = {get_float(g.actions.triggerL), get_float(g.actions.triggerR)};
+          bool taken = false;
+          const bool mpad = xrmarket::pad_open() || xrmarket::search_open(), tpad = xrtrade::pad_open();  // r213: + the collectors' coin pad (the same keys, the same spot); r235: + the market search's letter grid
+          const bool pad = mpad || tpad;
+          for (int h = 1; h >= 0; --h) {
+            const bool down = trig[h] > 0.6f;
+            float qx = 0, qy = 0, d = 0;
+            if (pad && !taken && g.aimValid[h] && ray_quad(g.aim[h], frQuad.pose, &qx, &qy, &d) && d < 4.0f && std::fabs(qx) < 0.5f * frQuad.size.width &&
+                std::fabs(qy) < 0.5f * frQuad.size.height) {
+              const float px = (qx / frQuad.size.width + 0.5f) * static_cast<float>(kGuestW), py = (0.5f - qy / frQuad.size.height) * static_cast<float>(kGuestH);
+              if (mpad ? xrmarket::point(px - 470.0f, py - 222.0f, down && !s_prevTrig[h])
+                       : xrtrade::point(px - 470.0f, py - 222.0f, down && !s_prevTrig[h])) {  // (the market page sits at 470, 222 in the hub's picture)
+                taken = true;
+                const XrVector3f dir = q_rot(g.aim[h].orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+                scene.pointerValid[h] = true;
+                scene.pointers[h] = {g.aim[h].position.x + dir.x * d, g.aim[h].position.y + dir.y * d, g.aim[h].position.z + dir.z * d};
+              }
+            }
+            s_prevTrig[h] = down;
+          }
+        }
       }
       // r113: THE DAILY STRIKE in front of you, 40 cm wide at arm's length, tilted to your eyes.
       // r131: STRIKERS ILLUSTRATED, placed 55 cm in front of you and 12 cm below your eyes, closed on its cover (31 cm
@@ -18552,6 +22722,15 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       pv.home = home_on();
       pv.room = g.mrMode;
       pv.tabletop = g.tabletop && !g.stereoFailed;
+      pv.roomWeather = g.roomWeather;  // r194
+      pv.roomScan = g.useRoomScan;     // r197
+      pv.bookMachine = g.bookMachine;  // r199
+      pv.scanState = static_cast<int>(xrscene::state());
+      {
+        char st[200];
+        xrscene::status(st, sizeof(st));
+        pv.scanStatus = st;
+      }
       pv.achUnlocked = g.pzAchUnlocked;
       pv.achTotal = g.pzAchTotal;
       for (int k = 0; k < 7; ++k) pv.opt[k] = g.pzOpt[k];
@@ -18605,6 +22784,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       }
     }
     // The celebration over everything else.
+    gp_mark(gp::kCompose);  // r221: the screen / eyes / panels up to here
     const uint64_t fxStart = now_ns();
     if (g.fxReady && sceneViews) update_evo(scene, nowNs);  // r96: the 3D evolution
     if (g.fxReady && sceneViews) {
@@ -18636,6 +22816,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     }
     // r137: STRIKERS TRADING CARDS: the packs earned taken every frame; a pack / its cards / a card out of the binder in
     // front of you while the hub is up on its pages (xr_cards.cpp), put away when it isn't; their buzz
+    gp_mark(gp::kSelect);                     // r221
     xrcards::set_evo_backdrop(evo_backdrop);  // r138: a shiny Pokemon card's window shows its evolution room
     xrcards::set_floor(g.floorY);             // r141: where a BLACK 1/1's life-size cameo stands
     const bool cardsShown = xrcards::frame(scene, g.headPose, g.headValid && g.frOpen && g.frMode == 2 && !g.paperOpen,
@@ -18666,6 +22847,9 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         g.rumble.stopPending = false;
       }
     }
+    gp_mark(gp::kCards);  // r221
+    // r201: the CARD MUSEUM's pieces in your room (before the figures: their cards' figures are asked for here)
+    museum_frame(scene, g.fxReady && sceneViews, nowNs);
     // r131: the franchise's characters in 3D: the hub's / trades' in front of its panel, awards night's in your room
     const bool frFigPanel = showFrQuad && g.frOpen && (g.frMode == 2 || g.frMode == 5) && !g.gpOpen;
     const bool frFigsUp = fr_figs_frame(scene, frFigPanel ? &frQuad : nullptr, g.fxReady && sceneViews, nowNs);
@@ -18684,9 +22868,44 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       if (!frFigsUp && scene.panelCount < 4)
         scene.panels[scene.panelCount++] = xrfx::Scene::Panel{frQuad.pose, frQuad.size.width, frQuad.size.height};
     }
-    if (g.fxReady && sceneViews && xrfx::update(scene) && xrfx::render(scene, &fxLayer)) {
-      layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fxLayer);
+    gp_mark(gp::kMuseum);  // r221
+    {  // r199: the TIZM SPORTSBOOK (xr_book.cpp: the day read, kickoff locks, what's in settled) and its machine in your room
+      static bool s_bookWallet = false;
+      if (!s_bookWallet) {
+        s_bookWallet = true;
+        xrbook::Wallet w;
+        w.career = &xrcards::wallet_career;
+        w.balance = &xrcards::coins;
+        w.spend = &xrcards::spend_coins;
+        w.add = &xrcards::add_coins;
+        w.sound = &xrcards::play_sound;
+        w.pack = &xrcards::grant_packs;  // r202: the casino's MEGA JACKPOT pack
+        w.music = &xrcards::play_music;  // r202: its win / lose music (SOUND > EFFECTS volume)
+        xrbook::set_wallet(w);
+        xrbook::set_logo_source(&book_logo);
+        xrcasino::set_picture_source(&casino_picture);  // r202
+      }
+      xrbook::frame(static_cast<double>(nowNs) * 1e-9);
+      static XrCompositionLayerQuad s_bookQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+      static XrCompositionLayerQuad s_bookCurQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r205: its cursor overlay, over the screen
+      bool bookCur = false;
+      if (book_cabinet_frame(scene, g.fxReady && sceneViews, nowNs, s_bookQuad, s_bookCurQuad, bookCur) && layerCount < 30) {
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&s_bookQuad);  // (under the effects layer)
+        if (bookCur) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&s_bookCurQuad);
+      }
     }
+    gp_mark(gp::kBook);  // r221
+    {  // r221: the same calls as before, update and draw timed apart
+      const uint64_t u0 = now_ns();
+      const bool upd = g.fxReady && sceneViews && xrfx::update(scene);
+      const uint64_t u1 = now_ns();
+      if (upd && xrfx::render(scene, &fxLayer)) {
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fxLayer);
+      }
+      gp::add_sub(gp::kFxUpd, u1 - u0);
+      gp::add_sub(gp::kFxDraw, now_ns() - u1);
+    }
+    gp_mark(gp::kFx);
     g.fxNs += now_ns() - fxStart;
     // r68g: the character select menu (and its tip) over everything, the effects layer's flags,
     // pennants and controllers too.
@@ -18900,11 +23119,15 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   }
   endInfo.layerCount = layerCount;
   endInfo.layers = layers;
+  gp_mark(gp::kLayers);  // r221
   const uint64_t endStart = now_ns();
   xr_ok(xrEndFrame(g.session, &endInfo), "xrEndFrame");
   g.xrEndNs += now_ns() - endStart;
+  gp_mark(gp::kXrEnd);
 
+  goal_boost_tick();  // r222
   log_stats();
+  gp_mark(gp::kStats);
 }
 
 extern "C" void PortXrShutdown(void) {
@@ -18916,6 +23139,7 @@ extern "C" void PortXrShutdown(void) {
   aurora_xr_set_surface_suppressed(false);
   xrra::shutdown();
   xrctrl::stop();  // r54: before the session goes
+  xrscene::stop();  // r197: the room scan's spaces
   xrfx::shutdown();
   if (g.device != VK_NULL_HANDLE) {
     vkDeviceWaitIdle(g.device);
@@ -18955,7 +23179,9 @@ extern "C" void PortXrShutdown(void) {
     destroy_staging();
     if (g.fence != VK_NULL_HANDLE) vkDestroyFence(g.device, g.fence, nullptr);
     if (g.pool != VK_NULL_HANDLE) vkDestroyCommandPool(g.device, g.pool, nullptr);
+    if (g_eyeBlit.pool != VK_NULL_HANDLE) vkDestroyQueryPool(g.device, g_eyeBlit.pool, nullptr);  // r222
   }
+  g_eyeBlit = EyeBlitProbe{};
   if (g.local != XR_NULL_HANDLE) xrDestroySpace(g.local);
   if (g.session != XR_NULL_HANDLE) xrDestroySession(g.session);
   if (g.device != VK_NULL_HANDLE) vkDestroyDevice(g.device, nullptr);
@@ -18984,6 +23210,8 @@ extern "C" void PortXrStereoFrameEnd(void) {}
 extern "C" int PortXrShouldQuit(void) { return 0; }
 extern "C" void PortXrNoteLoopTimes(int, unsigned long long, unsigned long long, unsigned long long,
                                     unsigned long long, unsigned long long) {}
+extern "C" void PortXrProbeLoop(unsigned long long, unsigned long long, unsigned long long, unsigned long long) {}  // r221
+extern "C" void PortXrProbeTasks(const char*, unsigned long long, unsigned long long, unsigned, unsigned) {}  // r222
 extern "C" void PortXrGoal(int, int, int, int, int, int) {}
 extern "C" void PortXrCelebrationPhase(int) {}
 extern "C" void PortXrSetGameplayLive(int) {}

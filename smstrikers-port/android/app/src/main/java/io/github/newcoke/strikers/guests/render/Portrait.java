@@ -25,6 +25,10 @@ public final class Portrait {
         // r137 (Big: the big pictures): the pixels' rays on a grid of lightDiv x lightDiv picture pixels a cell (1: every
         // pixel, as the portraits), on this many threads (the same numbers whatever the count)
         public int lightDiv = 1, threads = 1;
+        // r218 (Lance: the card art "washed out"): the lit colour's highlights rolled off WITHOUT changing its hue - above this
+        // level the brightest channel bends smoothly towards 1 and the others scale with it (0: off, each channel clipped at 1
+        // as Blender's Standard view: a pale texture lit x2 went flat white). Big pictures only; the 256 portraits keep 0.
+        public double shoulder = 0;
 
         public static Look from(Map<String, double[]> v) {
             final Look l = new Look();
@@ -663,7 +667,15 @@ public final class Portrait {
                         continue;
                     }
                     final float inv = 1f / fil[3];
-                    for (int c = 0; c < 3; c++) hiRes[o + c] = (byte) toSrgb8(fil[c] * inv * (float) look.exposure);
+                    if (look.shoulder > 0) {  // r218: hue kept, highlights rolled off (see Look.shoulder)
+                        float tone = inv * (float) look.exposure;
+                        final float mx = Math.max(fil[0], Math.max(fil[1], fil[2])) * tone;
+                        final double k = look.shoulder;
+                        if (mx > k) tone *= (float) ((k + (1 - k) * (1 - Math.exp(-(mx - k) / (1 - k)))) / mx);
+                        for (int c = 0; c < 3; c++) hiRes[o + c] = (byte) toSrgb8(fil[c] * tone);
+                    } else {  // (as before r218, to the bit: the 256 portraits)
+                        for (int c = 0; c < 3; c++) hiRes[o + c] = (byte) toSrgb8(fil[c] * inv * (float) look.exposure);
+                    }
                     hiRes[o + 3] = (byte) Math.min(255, Math.max(0, Math.round(a * 255f)));
                 }
             }

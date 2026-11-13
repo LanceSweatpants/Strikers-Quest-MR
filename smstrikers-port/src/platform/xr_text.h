@@ -178,8 +178,20 @@ void character_select(uint8_t* rgba, int w, int h, const char* title, const Sele
 //   kPoly: a convex polygon, `pts` = x, y, x, y ... filled `rgb`.
 //   kBurst: a star burst filling the box: `points` spikes, valleys at `inner` (0..1) of the way out, turned `angle`.
 //   kDots: halftone dots over the box, a dot a `radius` px cell, `dot0` .. `dot1` of the cell wide top to bottom.
+// r236 (LOOK B "BROADCAST PREMIUM", the franchise hub - Lance 11-12):
+//   `face` (texts): kFaceLucky Luckiest Guy (every board until now), kFaceBroadcast Roboto Bold Italic, kFaceBroadcastUp Roboto
+//     Bold (upright: small tracked labels, the buttons' letters) - both drawn kBroadcastPx x the px asked (Luckiest's cap height)
+//     and kBroadcastXs as wide (condensed), so a layout made for Luckiest keeps its sizes; `track` adds that much of px after each
+//     letter (wide-tracked labels).
+//   `cut` (kBox / kRing): the corners cut off that far instead of rounded (`cuts`: 1 top-left, 2 top-right, 4 bottom-right,
+//     8 bottom-left); `lean` (kBox / kRing): a parallelogram, its top edge that far right of its bottom one.
+//   kStripes: thin diagonal lines over the box (`radius` apart, `outline` wide, `slant` x per y), the package's sweep.
+//   `styled`: drawn by the broadcast kit itself (xrmenu::broadcast() leaves it as it is). `art`: a card's own printed face, a mini
+//     card / slab / pack, a button's letter, the coin's B - keeps its own lettering and size (no 30 px floor: it isn't a UI word).
+constexpr int kFaceLucky = 0, kFaceBroadcast = 1, kFaceBroadcastUp = 2;
+constexpr float kBroadcastPx = 1.158f, kBroadcastXs = 0.86f;
 struct BoardPiece {
-  enum Kind { kBox, kRing, kGlow, kImage, kText, kTextLeft, kTextRight, kPoly, kBurst, kDots };
+  enum Kind { kBox, kRing, kGlow, kImage, kText, kTextLeft, kTextRight, kPoly, kBurst, kDots, kStripes };
   Kind kind = kBox;
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
   float radius = 0.0f, alpha = 1.0f, outline = 0.0f;
@@ -197,10 +209,43 @@ struct BoardPiece {
   std::vector<float> pts;
   int points = 12;
   float inner = 0.6f, dot0 = 0.1f, dot1 = 0.4f;
+  // r236
+  int face = kFaceLucky;
+  float track = 0.0f, cut = 0.0f, lean = 0.0f;
+  int cuts = 5;
+  bool styled = false;
+  bool art = false;
 };
 void board(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces);
+// r236: the face board_text_width measures in on this thread (the hub's drawing sets kFaceBroadcast while it lays its pages out, so
+// every page's widths match what it draws; FaceScope puts the old one back). Any thread.
+void set_measure_face(int face);
+int measure_face();
+struct FaceScope {
+  int was;
+  explicit FaceScope(int face) : was(measure_face()) { set_measure_face(face); }
+  ~FaceScope() { set_measure_face(was); }
+};
+// r236: a text's width in a face (its px, tracking), as board() draws it
+float face_text_width(const std::string& text, float px, int face, float track = 0.0f);
+// r205 (the TIZM machine's screen, drawn off the frame thread a band at a time: Lance's r204 test "CHOPPY"): rows y0 .. y1 of
+// the w x h picture only - rgba is the WHOLE picture's buffer, those rows are written exactly as board() would (the pieces that
+// reach them, in order, from clear), the others left as they are
+void board_band(uint8_t* rgba, int w, int h, const std::vector<BoardPiece>& pieces, int y0, int y1);
+// r205: the rows a piece can touch (conservative)
+void piece_rows(const BoardPiece& p, float* y0, float* y1);
 // The width of `text` (capitals) at `px` (to lay words out beside each other).
 float board_text_width(const std::string& text, float px);
+// r230 (LANCINI EXQUISITE): its second face, Karla (SIL OFL 1.1; xr_font_karla.h), wide-tracked as the mockups: `px` the em's size,
+// `track` the gap between letters in the mockups' units (track x 0.45 % of px). A text's coverage (0..1, w x h, `pad` px round it), its
+// baseline row, its cap height's top / bottom rows, its width. Any thread.
+struct KarlaMask {
+  int w = 0, h = 0, pad = 0;
+  float base = 0.0f, capTop = 0.0f, capBot = 0.0f, width = 0.0f;
+  std::vector<float> a;
+};
+KarlaMask karla_mask(const std::string& text, float px, float track, int pad);
+float karla_width(const std::string& text, float px, float track);
 
 // r67: the small "Y: GUEST CHARACTERS" tip shown on a pick screen while the picker is closed.
 void guest_tip(uint8_t* rgba, int w, int h, const char* text);

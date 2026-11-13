@@ -23,6 +23,7 @@
 #include "xr_fx.h"
 #include "xr_home.h"
 #include "xr_net.hpp"
+#include "xr_room.h"  // r197: your room scan's collision model (xrfx::Scene::room)
 
 #include <android/log.h>
 #include <sys/stat.h>
@@ -128,11 +129,18 @@ const std::vector<uint32_t>& palette(int n) {
 //   kTakeover   which        room (s)     -      -                 -                 -           -                 -
 // ------------------------------------------------------------------------------------------------------------------
 enum Base : uint8_t { kT0, kTA };
-enum At : uint8_t { kAtGoal, kAtHead, kAtFloor, kAtFront, kAtSide, kAtTop };
+// r207: + kAtCab (the TIZM machine's cabinet top), kAtAbove (the air ~0.85 m over it) - the CASINO WIN PARTY's anchors (its
+// kAtGoal is the machine's payout tray)
+enum At : uint8_t { kAtGoal, kAtHead, kAtFloor, kAtFront, kAtSide, kAtTop, kAtCab, kAtAbove };
+// r207: + the CASINO WIN PARTY's emitters (casino_party): kCasCoins (coins fountaining out of the tray onto your floor: n over dur,
+// size, speed out, life), kCasConfetti (a cannon-load up out of the cabinet's top that flutters down: n, size, speed up, life),
+// kCasFirework (a shell bursting over the machine: n shells over dur, a = sparks each, size), kCasSiren (the siren light out on
+// its top + its two turning beams: life), kCasLetters (the giant 3D letters rising over it, facing you: size = cap height, life),
+// kCasPulse (the room's gold flash: n pulses over dur, a = their peak)
 enum Em : uint8_t {
   kFlash, kBurst, kRings, kRays, kBolts, kSweep, kStreaks, kVeil, kRain, kRise, kFountain, kStrikes, kShell, kWhirl,
   kFireRing, kJets, kColumns, kPlant, kBomb, kShatter, kGlitter, kPops, kAirBursts, kComets, kPortal, kPuffs, kBuzz,
-  kSound, kTakeover
+  kSound, kTakeover, kCasCoins, kCasConfetti, kCasFirework, kCasSiren, kCasLetters, kCasPulse
 };
 // r161: kTakeover (pack 2): n = which room takeover (Takeover below), dur = how long it has your room (s); the room's
 // own code (room_step) runs it from then on - it reads your hands every frame
@@ -628,6 +636,69 @@ const Def kDefs[] = {
 };
 constexpr int kDefCount = static_cast<int>(sizeof(kDefs) / sizeof(kDefs[0]));
 
+// ---- r207 (Lance 11-10, "go head"): the CASINO WIN PARTY - a SLOTS / ROULETTE win at the TIZM machine goes off in your room, by
+// its size (xr_casino's tier): 1 a pop, 2 BIG WIN the full show, 3 HUGE WIN more of it, 4 JACKPOT everything. Its "goal" is the
+// machine's payout tray (kAtGoal), kAtCab its cabinet's top, kAtAbove the air over it; sizes in metres (x the machine's size).
+// Never in the shop (not in kDefs: no id finds it).
+const Beat kCasPop[] = {
+    B(0.00f, kT0, kCasPulse, kAtHead, 1, 0.00f, 0, 0.00f, 0.00f, 0.30f, 0xFFD040, 0, 0.35f, 0.00f),
+    B(0.00f, kT0, kFlash, kAtGoal, 1, 0.00f, kShSpark, 0.30f, 0.00f, 0.25f, 0xFFFFFF, 0xFFD040, 1.00f, 0.80f),
+    B(0.00f, kT0, kCasCoins, kAtGoal, 10, 0.00f, kMxCoin, 0.042f, 1.50f, 4.20f, 0xFFD21F, 0xC8901E, 0.00f, 0.00f),
+    B(0.00f, kT0, kBurst, kAtCab, 22, 0.00f, kShSpark, 0.022f, 1.60f, 0.70f, 0xFFF4C0, 0xFFC830, 1.50f, 0.30f),
+    B(0.00f, kT0, kBurst, kAtCab, 10, 0.00f, kShTwinkle, 0.05f, 0.90f, 0.60f, 0xFFFFFF, 0xFFE9A0, 1.20f, 0.10f),
+};
+const Beat kCasBig[] = {
+    B(0.00f, kT0, kCasPulse, kAtHead, 2, 0.45f, 0, 0.00f, 0.00f, 0.30f, 0xFFD040, 0, 0.60f, 0.00f),
+    B(0.00f, kT0, kFlash, kAtCab, 1, 0.00f, kShSpark, 0.90f, 0.00f, 0.25f, 0xFFFFFF, 0xFFD040, 1.00f, 1.00f),
+    B(0.00f, kT0, kFlash, kAtCab, 1, 0.00f, kShTwinkle, 1.20f, 0.00f, 0.18f, 0xFFFFFF, 0xFFE9A0, 1.00f, 0.40f),
+    B(0.00f, kT0, kCasSiren, kAtCab, 1, 0.00f, 0, 0.16f, 1.40f, 4.30f, 0xFF2A1A, 0xD8DCE6, 0.00f, 0.00f),
+    B(0.05f, kT0, kCasLetters, kAtCab, 2, 0.00f, 0, 0.26f, 0.00f, 4.00f, 0xFFC830, 0xFF2E88, 0.00f, 0.00f),
+    B(0.10f, kT0, kCasCoins, kAtGoal, 60, 1.60f, kMxCoin, 0.042f, 1.90f, 6.00f, 0xFFD21F, 0xC8901E, 0.00f, 0.00f),
+    B(0.05f, kT0, kCasConfetti, kAtCab, 110, 0.00f, kMxPaper, 0.040f, 3.40f, 3.20f, PAL(kPalConfetti), PAL(kPalConfetti), 0.00f, 0.00f),
+    B(0.05f, kT0, kCasConfetti, kAtCab, 8, 0.00f, kMxStreamer, 0.22f, 3.00f, 3.20f, PAL(kPalConfetti), PAL(kPalConfetti), 0.00f, 0.00f),
+    B(0.40f, kT0, kCasFirework, kAtAbove, 4, 2.40f, kShStreak, 0.10f, 2.20f, 1.20f, PAL(kPalRainbow), 0xFFFFFF, 26.0f, 0.00f),
+    B(0.00f, kT0, kBuzz, kAtHead, 1, 0.00f, 0, 0.00f, 0.00f, 0.00f, 0, 0, 0.70f, 0.30f),
+};
+const Beat kCasHuge[] = {
+    B(0.00f, kT0, kCasPulse, kAtHead, 3, 0.75f, 0, 0.00f, 0.00f, 0.30f, 0xFFD040, 0, 0.75f, 0.00f),
+    B(0.00f, kT0, kFlash, kAtCab, 1, 0.00f, kShSpark, 1.10f, 0.00f, 0.25f, 0xFFFFFF, 0xFFD040, 1.00f, 1.00f),
+    B(0.00f, kT0, kFlash, kAtCab, 1, 0.00f, kShTwinkle, 1.50f, 0.00f, 0.18f, 0xFFFFFF, 0xFFE9A0, 1.00f, 0.40f),
+    B(0.00f, kT0, kRings, kAtCab, 1, 0.00f, kShRing, 2.00f, 0.00f, 0.40f, 0xFFF4D0, 0xFFC830, 1.00f, 0.00f),
+    B(0.00f, kT0, kCasSiren, kAtCab, 1, 0.00f, 0, 0.17f, 1.60f, 5.30f, 0xFF2A1A, 0xD8DCE6, 0.00f, 0.00f),
+    B(0.05f, kT0, kCasLetters, kAtCab, 3, 0.00f, 0, 0.28f, 0.00f, 5.00f, 0xFFC830, 0xFF2E88, 0.00f, 0.00f),
+    B(0.10f, kT0, kCasCoins, kAtGoal, 100, 2.40f, kMxCoin, 0.042f, 2.10f, 6.50f, 0xFFD21F, 0xC8901E, 0.00f, 0.00f),
+    B(0.05f, kT0, kCasConfetti, kAtCab, 180, 0.00f, kMxPaper, 0.040f, 3.80f, 3.60f, PAL(kPalConfetti), PAL(kPalConfetti), 0.00f, 0.00f),
+    B(0.05f, kT0, kCasConfetti, kAtCab, 12, 0.00f, kMxStreamer, 0.24f, 3.40f, 3.60f, PAL(kPalConfetti), PAL(kPalConfetti), 0.00f, 0.00f),
+    B(0.30f, kT0, kCasFirework, kAtAbove, 8, 3.60f, kShStreak, 0.10f, 2.40f, 1.30f, PAL(kPalRainbow), 0xFFFFFF, 28.0f, 0.00f),
+    B(0.00f, kT0, kBuzz, kAtHead, 1, 0.00f, 0, 0.00f, 0.00f, 0.00f, 0, 0, 0.85f, 0.40f),
+};
+const Beat kCasJackpot[] = {
+    B(0.00f, kT0, kCasPulse, kAtHead, 7, 2.40f, 0, 0.00f, 0.00f, 0.30f, 0xFFD040, 0, 1.00f, 0.00f),
+    B(0.00f, kT0, kFlash, kAtCab, 1, 0.00f, kShSpark, 1.40f, 0.00f, 0.30f, 0xFFFFFF, 0xFFD040, 1.00f, 1.20f),
+    B(0.00f, kT0, kFlash, kAtCab, 1, 0.00f, kShTwinkle, 1.90f, 0.00f, 0.20f, 0xFFFFFF, 0xFFE9A0, 1.00f, 0.40f),
+    B(0.00f, kT0, kRings, kAtCab, 2, 0.30f, kShRing, 2.60f, 0.00f, 0.45f, 0xFFF4D0, 0xFFC830, 1.00f, 0.00f),
+    B(0.00f, kT0, kRays, kAtAbove, 14, 0.00f, kShStreak, 1.40f, 0.00f, 0.30f, 0xFFFFFF, 0xFFC830, 0.035f, 0.00f),
+    B(0.00f, kT0, kCasSiren, kAtCab, 1, 0.00f, 0, 0.18f, 1.80f, 7.20f, 0xFF2A1A, 0xD8DCE6, 0.00f, 0.00f),
+    B(0.05f, kT0, kCasLetters, kAtCab, 4, 0.00f, 0, 0.34f, 0.00f, 6.80f, 0xFFC830, 0xFF2E88, 0.00f, 0.00f),
+    B(0.10f, kT0, kCasCoins, kAtGoal, 160, 3.60f, kMxCoin, 0.044f, 2.30f, 7.00f, 0xFFD21F, 0xC8901E, 0.00f, 0.00f),
+    B(0.05f, kT0, kCasConfetti, kAtCab, 220, 0.00f, kMxPaper, 0.040f, 4.20f, 3.80f, PAL(kPalConfetti), PAL(kPalConfetti), 0.00f, 0.00f),
+    B(0.05f, kT0, kCasConfetti, kAtCab, 14, 0.00f, kMxStreamer, 0.26f, 3.60f, 3.80f, PAL(kPalConfetti), PAL(kPalConfetti), 0.00f, 0.00f),
+    B(2.20f, kT0, kCasConfetti, kAtCab, 120, 0.00f, kMxFoil, 0.040f, 3.60f, 3.40f, PAL(kPalGold), 0xC8901E, 0.00f, 0.00f),
+    B(0.25f, kT0, kCasFirework, kAtAbove, 16, 5.60f, kShStreak, 0.11f, 2.60f, 1.40f, PAL(kPalRainbow), 0xFFFFFF, 26.0f, 0.00f),
+    B(0.60f, kT0, kRain, kAtTop, 90, 2.60f, kMxFoil, 0.032f, 0.55f, 2.40f, PAL(kPalGold), 0xC8901E, 0.30f, 0.00f),
+    B(0.00f, kT0, kBuzz, kAtHead, 1, 0.00f, 0, 0.00f, 0.00f, 0.00f, 0, 0, 1.00f, 0.50f),
+    B(1.60f, kT0, kBuzz, kAtHead, 1, 0.00f, 0, 0.00f, 0.00f, 0.00f, 0, 0, 0.60f, 0.30f),
+};
+const Def kCasinoDefs[4] = {
+    {{"casino1", "CASINO POP", "", 0, 0, 0xFFD040, 0xFF2E88, 1.6f}, BEATS(kCasPop), 14.0f},
+    {{"casino2", "BIG WIN", "", 0, 0, 0xFFD040, 0xFF2E88, 4.6f}, BEATS(kCasBig), 14.0f},
+    {{"casino3", "HUGE WIN", "", 0, 0, 0xFFD040, 0xFF2E88, 5.6f}, BEATS(kCasHuge), 14.0f},
+    {{"casino4", "JACKPOT", "", 0, 0, 0xFFD040, 0xFF2E88, 7.6f}, BEATS(kCasJackpot), 14.0f},
+};
+// the giant letters' words by tier (kCasLetters' n): 2 BIG WIN, 3 HUGE WIN, 4 JACKPOT
+const char* cas_word(int tier) { return tier >= 4 ? "JACKPOT" : (tier == 3 ? "HUGE WIN" : "BIG WIN"); }
+#include "xr_goalfx_pulls.inc"  // r219: kPullDefs (the party on big pulls)
+
 const Def* def_of(const char* id) {
   if (id == nullptr || *id == '\0') return nullptr;
   for (const Def& d : kDefs)
@@ -869,6 +940,9 @@ struct P {
   int8_t held = -1;
   float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, b3 = 0.0f;
   V3 h0, h1;
+  // r207: a CASINO WIN PARTY piece (its own ways, casino_step): 1 a coin (bounces, rolls, spins down flat on your floor), 2 a
+  // giant letter, 3 the siren light, 4 one of its beams, 5 its glow
+  uint8_t cas = 0;
 };
 
 // r161: the takeovers' pieces by what they are (P::role), and their sounds (STRIKERS_HOME/franchise/goalfx/fx_<name>.wav,
@@ -930,6 +1004,9 @@ struct Show {
   V3 colTop[12];
   int colCount = 0;
   Rng rng;
+  // r197: your room scan (MR, USE MY ROOM SCAN on; null: the floor plane as before) - the debris, the takeover's pieces
+  // land on your real furniture and bounce off your walls
+  const xrroom::Room* scan = nullptr;
   // r161: the room takeover, your hands, when each takeover sound last played
   Room room;
   HandSt hand[2];
@@ -937,6 +1014,19 @@ struct Show {
   float sfxAt[kSfxCount] = {-9.0f, -9.0f, -9.0f, -9.0f, -9.0f, -9.0f, -9.0f, -9.0f,
                             -9.0f, -9.0f, -9.0f, -9.0f, -9.0f, -9.0f, -9.0f, -9.0f};
   float sfxAny = -9.0f;
+  // r207: the CASINO WIN PARTY (0 a goal explosion): its tier, the machine's cabinet top + its front (out of its screen) + size,
+  // the room's gold pulses so far (when, how strong)
+  int casino = 0;
+  V3 cabTop, mFwd{0.0f, 0.0f, 1.0f};
+  float mScale = 1.0f;
+  float pulseAt[16] = {};
+  float pulsePeak[16] = {};
+  int pulses = 0;
+  // r219: a party on a big pull (pull_party): its giant word's place (2 m out, over your eyes) and the word ("" none); cabTop is then
+  // the floor spot the siren rises out of, its "tray" (O) the card in your hand
+  bool pull = false;
+  V3 stage;
+  char word[16] = {};
 };
 
 // A goal (or a preview) waiting for the next update (it needs the scene: where the goal is in this view)
@@ -947,6 +1037,13 @@ struct Pending {
   float gx = 0.0f, gy = 0.0f, gz = 0.0f, ndcX = 0.0f, ndcY = 0.0f;
   bool ndcValid = false;
   XrPosef where{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+  // r207: a casino party (its tier; the tray, the cabinet's top, the machine's front + size)
+  int casino = 0;
+  V3 tray, cabTop, mFwd{0.0f, 0.0f, 1.0f};
+  float mScale = 1.0f, floorY = 0.0f;
+  bool pull = false;  // r219: a big pull's party (its word's stage, its word)
+  V3 stage;
+  char word[16] = {};
 };
 
 std::mutex g_showMutex;  // g_pending, g_buzz
@@ -958,6 +1055,7 @@ std::vector<P> g_parts;
 uint32_t g_seed = 1;
 std::atomic<bool> g_playing{false};
 int g_peakParts = 0;
+std::atomic<float> g_casFlash{0.0f};  // r207: the casino party's gold room flash now (casino_flash)
 
 // r161: the hands as hands() last saw them (g_showMutex), whether a takeover has them, whether the match is live
 struct HandIn {
@@ -1184,10 +1282,13 @@ V3 anchor(const Show& s, At at) {
     case kAtFront: return s.front;
     case kAtSide: return s.side;
     case kAtTop: return V3{s.H.x, s.top - 0.1f * s.u, s.H.z};
+    case kAtCab: return s.cabTop;                                          // r207
+    case kAtAbove:                                                        // r207 (r219: a pull's - over its word, under your ceiling)
+      return s.pull ? V3{s.stage.x, std::min(s.stage.y + 0.55f, s.top - 0.25f), s.stage.z} : s.cabTop + V3{0.0f, 0.85f * s.mScale, 0.0f};
   }
   return s.H;
 }
-float unit_of(const Show& s, At at) { return at == kAtGoal ? s.g : s.u; }
+float unit_of(const Show& s, At at) { return at == kAtGoal || at == kAtCab || at == kAtAbove ? s.g : s.u; }
 
 // A direction out of an anchor: in the picture's plane on the big screen (a little out of it), else round the goal's
 // outward side; round you from your own anchors (above the floor from the floor's)
@@ -1823,6 +1924,162 @@ void emit(Show& s, const Beat& b, int n, int index) {
       }
       break;
     }
+    // ---- r207: the CASINO WIN PARTY
+    case kCasCoins: {  // out of the payout tray's mouth, along the machine's front and up: they land on your floor, bounce, roll
+      const V3 side{s.mFwd.z, 0.0f, -s.mFwd.x};
+      for (int i = 0; i < n; ++i) {
+        const V3 p = at + side * (s.rng.f(-0.07f, 0.07f) * s.mScale) + V3{0.0f, s.rng.f(0.0f, 0.03f), 0.0f};
+        const float out = b.speed * s.rng.f(0.55f, 1.15f) * std::sqrt(s.mScale);
+        const V3 v = s.mFwd * out + side * s.rng.f(-0.55f, 0.55f) + V3{0.0f, s.rng.f(1.0f, 2.6f), 0.0f};
+        P* q = spawn(s, kMxCoin, p, v, b.size * s.mScale * s.rng.f(0.9f, 1.1f), b.life * s.rng.f(0.85f, 1.15f), b.c1, b.c2);
+        if (q == nullptr) return;
+        q->cas = 1;
+        q->mesh = xrfx::casino_coin_mesh();  // (the light coin)
+        q->grav = G(s, 1.0f);
+        q->spin = s.rng.f(8.0f, 18.0f);  // (tumbling end over end)
+        q->axis = norm(side * s.rng.f(0.7f, 1.0f) + s.rng.unit() * 0.3f, side);
+        q->fadeIn = 0.0f;
+        q->fadeOut = 0.8f;
+        q->glow = 0.0f;
+        q->b2 = s.rng.f(0.0f, 6.2831853f);  // (the way it lies when it settles)
+      }
+      break;
+    }
+    case kCasConfetti: {  // a cannon-load up out of the cabinet's top, then it flutters down round the machine
+      for (int i = 0; i < n; ++i) {
+        V3 d = s.rng.unit();
+        d.y = std::fabs(d.y) * 1.6f + 0.8f;
+        d = norm(d + s.mFwd * (s.pull ? 0.8f : 0.35f));  // (r219: out of your hand - away from your face)
+        P* q = spawn(s, b.shape, at + V3{0.0f, 0.04f, 0.0f}, d * (b.speed * s.rng.f(0.6f, 1.15f) * std::sqrt(s.mScale)),
+                     b.size * s.mScale * s.rng.f(0.75f, 1.3f), b.life * s.rng.f(0.8f, 1.2f), b.c1, b.c2);
+        if (q == nullptr) return;
+        q->fall = s.rng.f(0.35f, 0.6f);
+        q->flutter = s.rng.f(0.25f, 0.5f);
+        q->fadeIn = 0.0f;
+      }
+      break;
+    }
+    case kCasFirework: {  // a shell bursting over the machine: a flash, a ring, spark trails out + falling
+      const V3 side{s.mFwd.z, 0.0f, -s.mFwd.x};
+      const V3 c = at + side * (s.rng.f(-0.9f, 0.9f) * s.mScale) + s.mFwd * (s.rng.f(-0.3f, 0.5f) * s.mScale) +
+                   V3{0.0f, s.rng.f(-0.1f, 0.55f) * s.mScale, 0.0f};
+      const uint32_t c1 = pick(s, b.c1);
+      if (P* f = spawn(s, kShSpark, c, V3{}, 0.36f * s.mScale, 0.20f, 0xFFFFFF, c1)) f->fadeIn = 0.0f, f->glow = 1.0f;
+      if (P* r = spawn(s, kShRing, c, V3{}, 0.08f * s.mScale, 0.40f, c1, 0xFFFFFF)) {
+        r->grow = 1.6f * s.mScale / 0.4f;
+        r->orient = kOrFaceRoll;
+        r->glow = 1.0f;
+      }
+      const int each = std::max(8, static_cast<int>(b.a * xrfx::load_scale()));
+      for (int k = 0; k < each; ++k) {
+        const V3 d = s.rng.unit();
+        P* q = spawn(s, b.shape, c, d * (b.speed * s.mScale * s.rng.f(0.75f, 1.05f)), b.size * s.mScale * s.rng.f(0.8f, 1.2f),
+                     b.life * s.rng.f(0.75f, 1.15f), c1, b.c2);
+        if (q == nullptr) return;
+        q->drag = 1.7f;
+        q->grav = 0.32f * G(s, 1.0f);
+        q->floor = kFlDie;
+        q->glow = 1.0f;
+        q->fadeOut = 0.5f * q->life;
+      }
+      buzz(0.25f, 0.05f);
+      break;
+    }
+    case kCasSiren: {  // the siren light on the cabinet's top: the light (3D), its glow, its two beams turning
+      if (P* q = spawn(s, kShSpark, at, V3{}, b.size * s.mScale, b.life, b.c1, b.c2)) {
+        q->cas = 3;
+        q->shape = 50;  // (xr_fx_mesh.frag's themed piece: its surface by aux - the chrome base metal, the lens a shining gem)
+        q->mesh = xrfx::siren_mesh();
+        q->orient = kOrFixed;
+        q->spin = 0.0f;
+        q->floor = kFlNone;
+        q->fadeIn = 0.0f;
+        q->fadeOut = 0.3f;
+        q->a0 = b.size * s.mScale;
+        q->a1 = b.speed;  // (the beams' turns a second)
+        q->a3 = 1.0f;
+      }
+      if (P* q = spawn(s, kShSpark, at, V3{}, 0.5f * s.mScale, b.life, b.c1, 0xFFFFFF)) {
+        q->cas = 5;
+        q->floor = kFlNone;
+        q->fadeIn = 0.15f;
+        q->fadeOut = 0.3f;
+        q->peak = 0.7f;
+        q->a0 = b.size * s.mScale;
+        q->a1 = b.speed;
+      }
+      for (int k = 0; k < 2; ++k)
+        if (P* q = spawn(s, kShCone, at, V3{}, 2.6f * s.mScale, b.life, b.c1, b.c1)) {
+          q->cas = 4;
+          q->floor = kFlNone;
+          q->fadeIn = 0.35f;
+          q->fadeOut = 0.3f;
+          q->peak = 0.34f;
+          q->aspect = 0.26f;
+          q->a0 = b.size * s.mScale;
+          q->a1 = b.speed;
+          q->b0 = static_cast<float>(k);
+        }
+      break;
+    }
+    case kCasLetters: {  // the word, letter by letter, rising over the machine (each its own piece: laid out round its middle)
+      const char* word = s.pull ? s.word : cas_word(b.n);  // (r219: a pull's own word)
+      float widths[16] = {}, total = 0.0f;
+      const int len = static_cast<int>(std::strlen(word));
+      const float gap = 0.10f, space = 0.42f;
+      for (int i = 0; i < len && i < 16; ++i) {
+        float wdt = 0.0f;
+        if (word[i] != ' ') xrfx::glyph_mesh(word[i], &wdt);
+        widths[i] = word[i] == ' ' ? space : wdt;
+        total += widths[i] + (i + 1 < len ? gap : 0.0f);
+      }
+      const float cap = b.size * s.mScale;
+      float x = -0.5f * total;
+      int shown = 0;
+      for (int i = 0; i < len && i < 16; ++i) {
+        const float mid = x + 0.5f * widths[i];
+        x += widths[i] + gap;
+        if (word[i] == ' ') continue;
+        float wdt = 0.0f;
+        const int mesh = xrfx::glyph_mesh(word[i], &wdt);
+        if (mesh < 0) continue;
+        P* q = spawn(s, kShSpark, at, V3{}, cap, b.life, b.c1, b.c2);
+        if (q == nullptr) return;
+        q->cas = 2;
+        q->shape = 1;  // (xr_fx_mesh.frag: all metal - the gold face, its sides in colour 2)
+        q->mesh = mesh;
+        q->orient = kOrFixed;
+        q->spin = 0.0f;
+        q->floor = kFlNone;
+        q->fadeIn = 0.0f;
+        q->fadeOut = 0.45f;
+        q->glow = 0.0f;
+        q->a0 = cap;
+        q->a1 = mid * cap;                      // (its place along the word, metres)
+        q->a2 = static_cast<float>(shown++);   // (its turn: they rise one after another)
+        q->b1 = static_cast<float>(b.n);
+      }
+      break;
+    }
+    case kCasPulse: {  // the room's gold flash: the passthrough's brightness (casino_flash) + a faint gold veil in the effects
+      for (P& v : g_parts)  // (one veil at a time: the last pulse's goes as this one comes - a veil is a whole screen of fill)
+        if (v.orient == kOrVeil && v.b3 == 7.0f) v.life = std::min(v.life, v.age);
+      if (s.pulses < 16) {
+        s.pulseAt[s.pulses] = s.age;
+        s.pulsePeak[s.pulses] = b.a;
+        ++s.pulses;
+      }
+      if (P* q = spawn(s, kShFlash, s.H, V3{}, 3.0f, b.life, b.c1, b.c1)) {
+        q->orient = kOrVeil;
+        q->glow = 1.0f;
+        q->peak = 0.2f * b.a;
+        q->fadeIn = 0.03f;
+        q->fadeOut = std::max(0.05f, b.life - 0.03f);
+        q->a3 = 1.0f;
+        q->b3 = 7.0f;  // (the party's veil)
+      }
+      break;
+    }
     case kBuzz:
       buzz(b.a * (s.theirs ? 0.6f : 1.0f), b.b);
       break;
@@ -1839,6 +2096,7 @@ void emit(Show& s, const Beat& b, int n, int index) {
 int scaled(const Beat& b, int n) {
   switch (b.em) {
     case kSweep: case kVeil: case kColumns: case kPlant: case kBomb: case kPortal: case kBuzz: case kSound: case kTakeover:
+    case kCasSiren: case kCasLetters: case kCasPulse:  // r207
       return n;
     case kFireRing: case kShatter: case kStrikes:
       return std::max(1, static_cast<int>(std::lround(n * std::sqrt(xrfx::load_scale()))));
@@ -3581,8 +3839,10 @@ void room_piece(Show& s, P& q, float rt, float left, float dt, V3 head) {
         q.v.x *= std::exp(-2.0f * dt);
         q.v.z *= std::exp(-2.0f * dt);
       } else if (q.b1 < 3.5f) {  // raining back down
-        if (q.p.y <= s.floor + rest) {
-          q.p.y = s.floor + rest;
+        // r197: onto what's really under it with your room scan (a table, the couch), else the floor
+        const float fl = s.scan != nullptr ? xrroom::surface_below(*s.scan, q.p.x, q.p.y + 0.1f, q.p.z, nullptr) : s.floor;
+        if (q.p.y <= fl + rest) {
+          q.p.y = fl + rest;
           q.v = V3{};
           q.fall = 0.0f;
           q.grav = 0.0f;
@@ -3764,12 +4024,139 @@ void room_step(Show& s, float dt, V3 head) {
   }
 }
 
+// ---- r207: the CASINO WIN PARTY's own pieces
+float ease_back(float x) {  // 0..1 with a little overshoot (a pop)
+  x = clampf(x, 0.0f, 1.0f);
+  const float c = 1.9f;
+  return 1.0f + (c + 1.0f) * (x - 1.0f) * (x - 1.0f) * (x - 1.0f) + c * (x - 1.0f) * (x - 1.0f);
+}
+uint32_t mix_rgb(uint32_t a, uint32_t b, float t) {
+  t = clampf(t, 0.0f, 1.0f);
+  auto ch = [&](int sh) {
+    const float x = static_cast<float>((a >> sh) & 255), y = static_cast<float>((b >> sh) & 255);
+    return static_cast<uint32_t>(x + (y - x) * t + 0.5f) << sh;
+  };
+  return ch(16) | ch(8) | ch(0);
+}
+// a coin on your floor (`y` its resting height): bounces (losing most of it), rolls / slides to a stop, then spins down flat like a
+// real coin (its tilt dying away as it wobbles faster: Euler's disk), lies there a few seconds and fades
+void coin_land(Show& s, P& q, float y, float dt) {
+  q.p.y = y;
+  if (q.v.y < -0.35f) {
+    q.v.y = -q.v.y * 0.38f;
+    q.v.x *= 0.72f;
+    q.v.z *= 0.72f;
+    q.spin *= 0.55f;
+    return;
+  }
+  q.v.y = 0.0f;
+  const float k = std::exp(-2.8f * dt);
+  q.v.x *= k;
+  q.v.z *= k;
+  q.spin *= std::exp(-4.0f * dt);
+  if (q.b1 <= 0.0f && q.v.x * q.v.x + q.v.z * q.v.z < 0.04f) {
+    q.b1 = q.age;                       // (it settles from now)
+    q.a0 = s.rng.f(0.0f, 6.2831853f);   // (its wobble's way round)
+    q.a1 = s.rng.f(0.35f, 0.55f);       // (its tilt as it starts)
+    q.life = std::min(q.life, q.age + s.rng.f(2.6f, 3.8f));
+    q.fadeOut = 0.7f;
+  }
+}
+void coin_settle(P& q, float dt, float floorY) {
+  const float st = q.age - q.b1;
+  const float tilt = q.a1 * std::exp(-2.4f * st);
+  q.a0 += (7.0f + 26.0f * (1.0f - tilt / std::max(0.05f, q.a1))) * dt;  // (the wobble speeds up as it flattens)
+  float flat[4], tq[4], target[4];
+  q_flat(q.b2, flat);
+  const V3 ax{std::cos(q.a0), 0.0f, std::sin(q.a0)};
+  q_axis_angle(ax, tilt, tq);
+  q_mul(tq, flat, target);
+  const float blend = std::min(1.0f, st / 0.15f);  // (from how it landed into the wobble)
+  float dotq = 0.0f;
+  for (int k = 0; k < 4; ++k) dotq += q.q[k] * target[k];
+  const float sgn = dotq < 0.0f ? -1.0f : 1.0f;
+  float len2 = 0.0f;
+  for (int k = 0; k < 4; ++k) q.q[k] = q.q[k] + (sgn * target[k] - q.q[k]) * blend, len2 += q.q[k] * q.q[k];
+  const float inv = 1.0f / std::sqrt(std::max(1e-12f, len2));
+  for (int k = 0; k < 4; ++k) q.q[k] *= inv;
+  q.spin = 0.0f;
+  q.v = V3{};
+  q.grav = 0.0f;
+  q.p.y = floorY + 0.065f * q.size + 0.5f * q.size * std::sin(tilt);
+}
+// the letters, the siren, its beams and glow - posed from the machine every frame (they don't fly)
+void casino_step(Show& s, P& q, V3 head) {
+  const V3 up{0.0f, 1.0f, 0.0f};
+  q.v = V3{};
+  if (q.cas == 2) {  // a giant letter: rises out of the cabinet's top one after another, bobs, faces you, flies off up at the end
+    const float rt = q.age - 0.07f * q.a2;
+    const float cap = q.a0;
+    const float rise = rt <= 0.0f ? 0.0f : ease_back(rt / 0.55f);
+    const float left = q.life - q.age;
+    const float ex = left < 0.6f ? (0.6f - left) / 0.6f : 0.0f;
+    V3 c = (s.pull ? s.stage : s.cabTop) +  // (r219: a pull's word on its own stage, 2 m out)
+           up * (0.05f * s.mScale + (0.22f * s.mScale + 0.5f * cap) * rise + 0.025f * s.mScale * std::sin(q.age * 2.6f + q.a2 * 0.8f) +
+                 1.3f * s.mScale * ex * ex);
+    c = c + s.mFwd * (0.06f * s.mScale);  // (a little out over its front)
+    float qq[4];
+    q_upright(c, head, qq);
+    V3 z{head.x - c.x, 0.0f, head.z - c.z};
+    z = norm(z, s.mFwd);
+    const V3 x{z.z, 0.0f, -z.x};  // (cross(up, z): your right as you face it)
+    q.p = c + x * q.a1;
+    // a wobble as it lands, a little tilt to the beat
+    float wq[4], out[4];
+    q_axis_angle(z, 0.10f * std::sin(q.age * 3.4f + q.a2 * 1.3f) * (0.3f + 0.7f * (1.0f - std::min(1.0f, rt / 0.9f))), wq);
+    q_mul(wq, qq, out);
+    std::memcpy(q.q, out, sizeof(out));
+    q.size = cap * (rt <= 0.0f ? 0.02f : std::max(0.02f, ease_back(rt / 0.4f))) * (1.0f - 0.5f * ex);
+    // the bulbs' chase across the word: a white-hot flash running along it
+    const float chase = std::pow(std::max(0.0f, std::sin(q.age * 8.0f - q.a2 * 0.9f)), 6.0f);
+    q.c1 = mix_rgb(0xFFC830, 0xFFF6D0, 0.75f * chase);
+    return;
+  }
+  // the siren: out of the cabinet's top with a pop, its beams turning, back in at the end
+  const float k = std::min(ease_back(q.age / 0.32f), clampf((q.life - q.age) / 0.35f, 0.0f, 1.0f));
+  const float sz = q.a0;
+  const float ang = q.age * q.a1 * 6.2831853f;
+  const float headAng = std::atan2(head.z - s.cabTop.z, head.x - s.cabTop.x);
+  const float facing = std::max(std::cos(ang - headAng), std::cos(ang + 3.14159265f - headAng));
+  const float glowK = std::pow(std::max(0.0f, facing), 6.0f);
+  const V3 lens = s.cabTop + up * ((0.55f * sz - 0.6f * sz * (1.0f - k)) * 1.0f);
+  if (q.cas == 3) {
+    q.p = s.cabTop + up * (-0.6f * sz * (1.0f - k));
+    q.size = sz * std::max(0.02f, k);
+    q.q[0] = q.q[1] = q.q[2] = 0.0f, q.q[3] = 1.0f;
+    q.glow = 0.35f + 0.65f * glowK;
+  } else if (q.cas == 5) {
+    q.p = lens;
+    q.size = 0.45f * s.mScale * (0.55f + 0.7f * glowK) * k;
+    q.peak = (0.30f + 0.55f * glowK) * k;
+  } else if (q.cas == 4) {
+    const float a = ang + q.b0 * 3.14159265f;
+    const V3 d = norm(V3{std::cos(a), s.pull ? 0.32f : 0.10f, std::sin(a)});  // (r219: a pull's siren stands on your floor: its beams tilted up)
+    q.axis = d;
+    q.p = lens + d * (0.5f * q.size);
+    q.peak = 0.34f * k;
+  }
+}
+
 void step_parts(Show& s, float dt, V3 head) {
   size_t w = 0;
   for (size_t i = 0; i < g_parts.size(); ++i) {
     P q = g_parts[i];
     q.age += dt;
     if (q.age >= q.life) continue;
+    if (q.cas >= 2) {  // r207: the casino party's letters / siren (posed from the machine)
+      casino_step(s, q, head);
+      g_parts[w++] = q;
+      continue;
+    }
+    if (q.cas == 1 && q.b1 > 0.0f) {  // r207: a coin spinning down flat on your floor
+      coin_settle(q, dt, q.h0.y);
+      g_parts[w++] = q;
+      continue;
+    }
     if (q.anim != kAnNone) animate(s, q, dt, head);
     if (q.fall > 0.0f) {
       const float settle = 1.0f - std::exp(-2.6f * dt), side = 1.0f - std::exp(-1.6f * dt);
@@ -3794,6 +4181,7 @@ void step_parts(Show& s, float dt, V3 head) {
       q.v.x = vx * c - vz * sn;
       q.v.z = vx * sn + vz * c;
     }
+    const V3 was = q.p;  // r197: (where it came from: the room scan's surface under it, its walls)
     if (q.anim != kAnColumn && q.anim != kAnStem && q.anim != kAnLeaf && q.anim != kAnHead && q.anim != kAnBomb)
       q.p = q.p + q.v * dt;
     q.size += q.grow * dt;
@@ -3809,11 +4197,30 @@ void step_parts(Show& s, float dt, V3 head) {
       if (d < 0.015f) q.p = q.p + s.D * (0.015f - d);
     }
     // the floor
-    const float rest = q.mesh >= 0 ? 0.3f * q.size : 0.0f;
-    if (q.floor != kFlNone && q.p.y < s.floor + rest && q.anim == kAnNone) {
+    const float rest = q.cas == 1 ? 0.065f * q.size : (q.mesh >= 0 ? 0.3f * q.size : 0.0f);  // (r207: a coin lies thin)
+    // r197: your room scan - what falls lands on what's really under it (a table top, the couch seat, a shelf, the
+    // floor) and bounces off your walls and the furniture's sides; the floor plane (s.floor) without one
+    float floorY = s.floor;
+    if (s.scan != nullptr && q.floor != kFlNone && q.anim == kAnNone && !q.inPicture) {
+      float pp[3] = {q.p.x, q.p.y, q.p.z}, vv[3] = {q.v.x, q.v.y, q.v.z};
+      const float pr[3] = {was.x, was.y, was.z};
+      if (xrroom::collide(*s.scan, pp, vv, pr, std::max(rest, 0.01f), 0.35f, 0.55f, nullptr,
+                          xrroom::kCollWalls | xrroom::kCollSides | xrroom::kCollCeiling) != xrroom::kHitNone) {
+        q.p = V3{pp[0], pp[1], pp[2]};
+        q.v = V3{vv[0], vv[1], vv[2]};
+        q.spin *= 0.7f;
+      }
+      floorY = xrroom::surface_below(*s.scan, q.p.x, was.y - rest, q.p.z, nullptr);
+    }
+    if (q.floor != kFlNone && q.p.y < floorY + rest && q.anim == kAnNone) {
       switch (q.floor) {
         case kFlBounce:
-          q.p.y = s.floor + rest;
+          if (q.cas == 1) {  // r207: a casino coin
+            q.h0.y = floorY;
+            coin_land(s, q, floorY + rest, dt);
+            break;
+          }
+          q.p.y = floorY + rest;
           q.v.y = q.v.y < -0.3f * s.u ? -q.v.y * 0.35f : 0.0f;
           q.v.x *= 0.55f;
           q.v.z *= 0.55f;
@@ -3823,7 +4230,7 @@ void step_parts(Show& s, float dt, V3 head) {
           q.life = q.age;
           break;
         case kFlSettle:
-          q.p.y = s.floor + rest;
+          q.p.y = floorY + rest;
           q.v = V3{};
           q.fall = 0.0f;
           q.grav = 0.0f;
@@ -3836,7 +4243,7 @@ void step_parts(Show& s, float dt, V3 head) {
           for (int k = 0; k < 6; ++k) {
             V3 d = s.rng.unit();
             d.y = std::fabs(d.y);
-            if (P* t = spawn(s, kShTwinkle, V3{q.p.x, s.floor + 0.02f, q.p.z}, d * (0.9f * s.u), 0.04f * s.u, 0.4f, 0xFFFFFF, 0x8FDCFF)) {
+            if (P* t = spawn(s, kShTwinkle, V3{q.p.x, floorY + 0.02f, q.p.z}, d * (0.9f * s.u), 0.04f * s.u, 0.4f, 0xFFFFFF, 0x8FDCFF)) {
               t->grav = 0.5f * G(s, s.u);
               t->drag = 1.5f;
             }
@@ -3889,6 +4296,7 @@ void start(const xrfx::Scene& sc, const Pending& pd) {
     s.u = 1.0f;
     s.R = 2.2f;
     s.top = std::max(s.floor + 2.35f, s.H.y + 0.45f);
+    if (sc.room != nullptr) s.top = std::min(s.top, xrroom::ceiling_y(*sc.room) - 0.05f);  // r197: your real ceiling
   } else if (sc.roomShown || sc.suite) {
     s.u = 1.35f;
     s.R = 3.0f;
@@ -3898,7 +4306,26 @@ void start(const xrfx::Scene& sc, const Pending& pd) {
     s.R = 7.5f;
     s.top = s.floor + 8.5f;
   }
-  if (pd.preview) {
+  if (pd.casino > 0) {
+    // r207: the CASINO WIN PARTY at the TIZM machine: its "goal" the payout tray, its unit the machine's size (metres), the room's
+    // own scale whatever the view (your room in MR, the VR room round you), its floor the machine's
+    view = pd.pull ? "your pull" : "the STRIKERZ machine";
+    s.casino = pd.casino;
+    s.pull = pd.pull;  // r219
+    s.stage = pd.stage;
+    std::memcpy(s.word, pd.word, sizeof(s.word));
+    s.mScale = std::max(0.5f, pd.mScale);
+    s.mFwd = norm(pd.mFwd, V3{0.0f, 0.0f, 1.0f});
+    s.cabTop = pd.cabTop;
+    s.O = pd.tray;
+    s.D = norm(s.mFwd + V3{0.0f, 0.35f, 0.0f});
+    s.g = s.mScale;
+    s.floor = pd.floorY;
+    s.u = 1.0f;
+    s.R = 2.2f;
+    s.top = std::max(s.floor + 2.35f, s.H.y + 0.45f);
+    if (sc.mr && sc.room != nullptr) s.top = std::min(s.top, xrroom::ceiling_y(*sc.room) - 0.05f);
+  } else if (pd.preview) {
     view = "preview";
     s.O = v3(pd.where.position);
     s.D = norm(rot(pd.where.orientation, V3{0.0f, 0.0f, 1.0f}), V3{0.0f, 0.0f, 1.0f});
@@ -3991,7 +4418,7 @@ bool owned(const char* id) {
   return owned_locked(id);
 }
 
-Buy try_buy(const char* id, int* coinsLeft) {
+Buy try_buy(const char* id, long long* coinsLeft) {
   Wallet w;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -4018,10 +4445,10 @@ Buy try_buy(const char* id, int* coinsLeft) {
   }
   ++g_gen;
   if (coinsLeft != nullptr) *coinsLeft = w.balance();
-  GLOG("goalfx: bought %s for %d TIZM coins", d->item.name, d->item.price);
+  GLOG("goalfx: bought %s for %d BIT coins", d->item.name, d->item.price);
   return Buy::kBought;
 }
-bool buy(const char* id, int* coinsLeft) {
+bool buy(const char* id, long long* coinsLeft) {
   const Buy b = try_buy(id, coinsLeft);
   return b == Buy::kBought || b == Buy::kAlreadyOwned;
 }
@@ -4057,6 +4484,50 @@ void preview(const char* id, const XrPosef& where) {
   g_pending.def = d;
   g_pending.preview = true;
   g_pending.where = where;
+  g_playing = true;
+}
+
+void casino_party(int tier, const XrVector3f& tray, const XrVector3f& cabTop, const XrVector3f& front, float scale, float floorY) {
+  if (tier <= 0) return;
+  const int t = std::min(4, tier);
+  std::lock_guard<std::mutex> lock(g_showMutex);
+  g_pending = Pending{};
+  g_pending.on = true;
+  g_pending.def = &kCasinoDefs[t - 1];
+  g_pending.casino = t;
+  g_pending.tray = v3(tray);
+  g_pending.cabTop = v3(cabTop);
+  g_pending.mFwd = V3{front.x, 0.0f, front.z};
+  g_pending.mScale = scale;
+  g_pending.floorY = floorY;
+  g_playing = true;
+}
+float casino_flash() { return g_casFlash.load(); }
+
+// r219: a big pull's party (BIG-PULLS.md 3) - r207's party engine with its own tables (kPullDefs), at the card in your hand: its "tray"
+// the card (coins, confetti, the sparkle out of it), its word's stage 2 m out along where the card is (from your head, level; a little
+// over your eyes), the siren's floor spot 2.2 m out beside the word, the room's own scale (1 m)
+void pull_party(int tier, const char* word, const XrVector3f& card, const XrPosef& head, float floorY) {
+  if (tier <= 0) return;
+  const int t = std::min(4, tier);
+  const V3 c = v3(card), h = v3(head.position);
+  V3 f{c.x - h.x, 0.0f, c.z - h.z};
+  if (len(f) < 0.12f) f = rot(head.orientation, V3{0.0f, 0.0f, -1.0f});  // (the card right under your eyes: where you look)
+  f.y = 0.0f;
+  f = norm(f, V3{0.0f, 0.0f, -1.0f});
+  std::lock_guard<std::mutex> lock(g_showMutex);
+  g_pending = Pending{};
+  g_pending.on = true;
+  g_pending.def = &kPullDefs[t - 1];
+  g_pending.casino = t;
+  g_pending.pull = true;
+  g_pending.tray = c;
+  g_pending.stage = V3{h.x + f.x * 2.0f, h.y + 0.05f, h.z + f.z * 2.0f};
+  g_pending.cabTop = V3{h.x + f.x * 2.2f - f.z * 0.55f, floorY, h.z + f.z * 2.2f + f.x * 0.55f};  // (a little to your right of the word)
+  g_pending.mFwd = f;
+  g_pending.mScale = 1.0f;
+  g_pending.floorY = floorY;
+  std::snprintf(g_pending.word, sizeof(g_pending.word), "%s", word != nullptr ? word : "");
   g_playing = true;
 }
 
@@ -4115,12 +4586,32 @@ bool update(const xrfx::Scene& sc) {
     g_show.room.on = false;  // r161
     for (P& q : g_parts) q.life = std::min(q.life, q.age + 0.25f), q.fadeOut = 0.25f, q.role = kRoNone, q.held = -1;
   }
-  if (pd.on && pd.def != nullptr) {
-    // a new one: what the last one left in the air fades out quickly
-    for (P& q : g_parts) q.life = std::min(q.life, q.age + 0.3f), q.fadeOut = 0.3f, q.role = kRoNone, q.held = -1;
+  if (pd.on && pd.def != nullptr && pd.casino == 1 && g_show.on && g_show.casino >= 2 && pd.pull == g_show.pull) {  // (r219: a pull's pop in a pull's party)
+    // r207: a small win while a big one's party is still going: its pop goes off inside that party (nothing cut short)
+    for (int i = 0; i < pd.def->beatCount; ++i) emit(g_show, pd.def->beats[i], scaled(pd.def->beats[i], pd.def->beats[i].n), 0);
+    GLOG("goalfx: a casino pop inside the party still going");
+  } else if (pd.on && pd.def != nullptr) {
+    // a new one: what the last one left in the air fades out quickly (r207: a casino party after a casino party keeps the coins
+    // lying on your floor and the confetti still falling - only the last one's letters and siren go)
+    const bool keep = pd.casino > 0 && g_show.casino > 0;
+    for (P& q : g_parts) {
+      if (keep && (q.cas == 1 || q.cas == 0)) continue;
+      q.life = std::min(q.life, q.age + 0.3f), q.fadeOut = 0.3f, q.role = kRoNone, q.held = -1;
+    }
     start(sc, pd);
   }
   Show& s = g_show;
+  {  // r207: the casino party's gold room flash (casino_flash): its pulses, each a quick rise and an 0.12 s fall
+    float f = 0.0f;
+    if (s.casino > 0)
+      for (int i = 0; i < s.pulses; ++i) {
+        const float t = s.age - s.pulseAt[i];
+        if (t < 0.0f || t > 1.0f) continue;
+        f += s.pulsePeak[i] * (t < 0.04f ? t / 0.04f : std::exp(-(t - 0.04f) / 0.12f));
+      }
+    g_casFlash = std::min(1.0f, f);
+  }
+  s.scan = sc.mr && !s.preview ? sc.room : nullptr;  // r197
   {  // r161: your hands as hands() last saw them (gone if it hasn't seen them for a quarter second)
     std::lock_guard<std::mutex> lock(g_showMutex);
     const uint64_t now = mono_ns();

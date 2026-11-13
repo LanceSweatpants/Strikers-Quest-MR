@@ -1,0 +1,4 @@
+# r201 museum201.py's constants for the rack (the model's own space: x right, y up, z toward you; metres at size 1)
+foot 0.4500 0.1800
+height 1.4200
+wall 0

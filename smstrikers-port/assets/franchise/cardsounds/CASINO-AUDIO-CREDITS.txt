@@ -1,0 +1,83 @@
+Quest 3 Strikers - the STRIKERZ casino machine's audio (casino_win_*, casino_lose_*, casino_coin*, casino_chips_*,
+casino_roulette_ball_roll). 25 clips are CC0 (public domain); 3 are CC-BY and credited below. Each was trimmed,
+faded, normalized and converted to 16-bit 32 kHz mono. The machine's mechanical sounds (casino_pull, _reels, _stop,
+_tease, _wheel, _nomore, _lever, _engage, _chip) were made for the game in-house (numpy synthesis).
+
+## REQUIRED ATTRIBUTION (CC-BY)
+
+"Sad Trombone" by Joe Lamb (soundbible.com/1830-Sad-Trombone.html, via Wikimedia Commons), CC BY 3.0
+  https://creativecommons.org/licenses/by/3.0/ - trimmed, faded, normalized, converted to 32 kHz mono.
+"Sad Trombone.wav" by Sad Tromboner (Wikimedia Commons), CC BY 4.0
+  https://commons.wikimedia.org/wiki/File:Sad_Trombone.wav - https://creativecommons.org/licenses/by/4.0/ - trimmed, faded, normalized, converted to 32 kHz mono.
+"slide_whistle_down_01.wav" by joedeshon (freesound.org/s/79671, CC BY 4.0), as posted on OpenGameArt by diligentcircle (CC-BY 3.0)
+  https://opengameart.org/content/slide-whistle-down - trimmed, normalized, converted to 32 kHz mono.
+
+## File -> source
+
+| final file | source file | author | license | source URL |
+|---|---|---|---|---|
+| win_small_1_steeldrum.wav | Music Jingles: jingles_STEEL02.ogg | Kenney (kenney.nl) | CC0 | https://kenney.nl/assets/music-jingles |
+| win_small_2_sax.wav | Music Jingles: jingles_SAX02.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| win_small_3_trumpet.wav | castlefanfare.ogg ("Trumpet Fanfare") | gchoc (Graciano Choc) | CC0 | https://opengameart.org/content/trumpet-fanfare |
+| win_small_4_fanfare_lick.wav | fanfare.ogg ("Classic fanfare lick") | fvcalderan | CC0 | https://opengameart.org/content/classic-fanfare-lick |
+| win_small_5_tuba.wav | fanfarehappy.ogg ("Happy and Sad Tuba Fanfare") | Trex0n (Cal McEachern) | CC0 | https://opengameart.org/content/happy-and-sad-tuba-fanfare |
+| win_small_6_brass.wav | winjingle.zip: WinBrass.wav ("Win Jingle") | Fupi | CC0 | https://opengameart.org/content/win-jingle |
+| win_big_1_victory.wav | victory.wav ("Victory"), first 6.4 s + fade | Umplix | CC0 | https://opengameart.org/content/victory-4 |
+| win_big_2_orchestra.wav | 1-ton_fanfare.wav ("1-Ton Fanfare"), first phrase 0-6.25 s | Zane Little Music | CC0 | https://opengameart.org/content/1-ton-fanfare-day-10 |
+| win_jackpot_1_brass_fanfare.wav | fanfare.ogg ("Just a random fanfare") | Spring Spring (Julie Damsgaard) | CC0 | https://opengameart.org/content/just-a-random-fanfare |
+| win_jackpot_2_victory_fanfare.wav | Heavy_ConceptB.wav ("Victory Fanfare Short") | cynicmusic | CC0 | https://opengameart.org/content/victory-fanfare-short |
+| win_jackpot_3_funky_disco.wav | funky-victory-loop.mp3 ("Funky Victory Loop"), end faded | Archonic | CC0 | https://opengameart.org/content/funky-victory-loop |
+| lose_trombone_1.wav | Sad_Trombone-Joe_Lamb-665429450.ogg | Joe Lamb | **CC BY 3.0** | https://commons.wikimedia.org/wiki/File:Sad_Trombone-Joe_Lamb-665429450.ogg |
+| lose_trombone_2.wav | Sad_Trombone.wav (0.50-3.85 s, the end clicks cut off) | Sad Tromboner | **CC BY 4.0** | https://commons.wikimedia.org/wiki/File:Sad_Trombone.wav |
+| lose_tuba.wav | fanfaresad.ogg ("Happy and Sad Tuba Fanfare") | Trex0n (Cal McEachern) | CC0 | https://opengameart.org/content/happy-and-sad-tuba-fanfare |
+| lose_sax_slide.wav | Music Jingles: jingles_SAX07.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| lose_pizzicato.wav | Music Jingles: jingles_PIZZI07.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| lose_womp.wav | Music Jingles: jingles_SAX05.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| lose_slide_whistle.wav | 79671__joedeshon__slide-whistle-down-01.wav | joedeshon (posted by diligentcircle) | **CC BY 4.0 / CC-BY 3.0** | https://opengameart.org/content/slide-whistle-down |
+| lose_fail_sting.wav | total fail.ogg ("Total Fail") | congusbongus | CC0 | https://opengameart.org/content/total-fail |
+| coins_pour_tray.wav | gold_sack.wav ("Sack of Gold") | Amarikah | CC0 | https://opengameart.org/content/sack-of-gold |
+| coins_jingle.wav | snd_purchase.wav ("Purchasing Sound Effect") | Spring Spring | CC0 | https://opengameart.org/content/purchasing-sound-effect |
+| coin_drop_single.wav | coin_drop.wav ("Coin Drop") | Vinrax | CC0 | https://opengameart.org/content/coin-drop |
+| coin_splash.wav | coinsplash.ogg ("Coin Splash") | LordTomorrow | CC0 | https://opengameart.org/content/coin-splash |
+| roulette_ball_roll.wav | qubodup-bowling_roll-nofadeout.ogg (a marble recording), 250 Hz high-pass | qubodup | CC0 | https://opengameart.org/content/bowling-ball-rolling |
+| chips_stack_1.wav | Casino Audio: chips-stack-1.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+| chips_stack_2.wav | Casino Audio: chips-stack-3.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+| chips_collide.wav | Casino Audio: chips-collide-3.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+| chips_handle.wav | Casino Audio: chips-handle-5.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+
+Optional thanks for the CC0 authors (not required): Kenney (kenney.nl), gchoc, fvcalderan, Trex0n, Fupi, Umplix, Zane Little Music, Spring Spring, cynicmusic, Archonic, congusbongus, Amarikah, Vinrax, LordTomorrow, qubodup.
+
+## File -> source
+
+| final file | source file | author | license | source URL |
+|---|---|---|---|---|
+| win_small_1_steeldrum.wav | Music Jingles: jingles_STEEL02.ogg | Kenney (kenney.nl) | CC0 | https://kenney.nl/assets/music-jingles |
+| win_small_2_sax.wav | Music Jingles: jingles_SAX02.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| win_small_3_trumpet.wav | castlefanfare.ogg ("Trumpet Fanfare") | gchoc (Graciano Choc) | CC0 | https://opengameart.org/content/trumpet-fanfare |
+| win_small_4_fanfare_lick.wav | fanfare.ogg ("Classic fanfare lick") | fvcalderan | CC0 | https://opengameart.org/content/classic-fanfare-lick |
+| win_small_5_tuba.wav | fanfarehappy.ogg ("Happy and Sad Tuba Fanfare") | Trex0n (Cal McEachern) | CC0 | https://opengameart.org/content/happy-and-sad-tuba-fanfare |
+| win_small_6_brass.wav | winjingle.zip: WinBrass.wav ("Win Jingle") | Fupi | CC0 | https://opengameart.org/content/win-jingle |
+| win_big_1_victory.wav | victory.wav ("Victory"), first 6.4 s + fade | Umplix | CC0 | https://opengameart.org/content/victory-4 |
+| win_big_2_orchestra.wav | 1-ton_fanfare.wav ("1-Ton Fanfare"), first phrase 0-6.25 s | Zane Little Music | CC0 | https://opengameart.org/content/1-ton-fanfare-day-10 |
+| win_jackpot_1_brass_fanfare.wav | fanfare.ogg ("Just a random fanfare") | Spring Spring (Julie Damsgaard) | CC0 | https://opengameart.org/content/just-a-random-fanfare |
+| win_jackpot_2_victory_fanfare.wav | Heavy_ConceptB.wav ("Victory Fanfare Short") | cynicmusic | CC0 | https://opengameart.org/content/victory-fanfare-short |
+| win_jackpot_3_funky_disco.wav | funky-victory-loop.mp3 ("Funky Victory Loop"), end faded | Archonic | CC0 | https://opengameart.org/content/funky-victory-loop |
+| lose_trombone_1.wav | Sad_Trombone-Joe_Lamb-665429450.ogg | Joe Lamb | **CC BY 3.0** | https://commons.wikimedia.org/wiki/File:Sad_Trombone-Joe_Lamb-665429450.ogg |
+| lose_trombone_2.wav | Sad_Trombone.wav (0.50-3.85 s, the end clicks cut off) | Sad Tromboner | **CC BY 4.0** | https://commons.wikimedia.org/wiki/File:Sad_Trombone.wav |
+| lose_tuba.wav | fanfaresad.ogg ("Happy and Sad Tuba Fanfare") | Trex0n (Cal McEachern) | CC0 | https://opengameart.org/content/happy-and-sad-tuba-fanfare |
+| lose_sax_slide.wav | Music Jingles: jingles_SAX07.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| lose_pizzicato.wav | Music Jingles: jingles_PIZZI07.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| lose_womp.wav | Music Jingles: jingles_SAX05.ogg | Kenney | CC0 | https://kenney.nl/assets/music-jingles |
+| lose_slide_whistle.wav | 79671__joedeshon__slide-whistle-down-01.wav | joedeshon (posted by diligentcircle) | **CC BY 4.0 / CC-BY 3.0** | https://opengameart.org/content/slide-whistle-down |
+| lose_fail_sting.wav | total fail.ogg ("Total Fail") | congusbongus | CC0 | https://opengameart.org/content/total-fail |
+| coins_pour_tray.wav | gold_sack.wav ("Sack of Gold") | Amarikah | CC0 | https://opengameart.org/content/sack-of-gold |
+| coins_jingle.wav | snd_purchase.wav ("Purchasing Sound Effect") | Spring Spring | CC0 | https://opengameart.org/content/purchasing-sound-effect |
+| coin_drop_single.wav | coin_drop.wav ("Coin Drop") | Vinrax | CC0 | https://opengameart.org/content/coin-drop |
+| coin_splash.wav | coinsplash.ogg ("Coin Splash") | LordTomorrow | CC0 | https://opengameart.org/content/coin-splash |
+| roulette_ball_roll.wav | qubodup-bowling_roll-nofadeout.ogg (a marble recording), 250 Hz high-pass | qubodup | CC0 | https://opengameart.org/content/bowling-ball-rolling |
+| chips_stack_1.wav | Casino Audio: chips-stack-1.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+| chips_stack_2.wav | Casino Audio: chips-stack-3.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+| chips_collide.wav | Casino Audio: chips-collide-3.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+| chips_handle.wav | Casino Audio: chips-handle-5.ogg | Kenney | CC0 | https://kenney.nl/assets/casino-audio |
+
+Optional thanks for the CC0 authors (not required): Kenney (kenney.nl), gchoc, fvcalderan, Trex0n, Fupi, Umplix, Zane Little Music, Spring Spring, cynicmusic, Archonic, congusbongus, Amarikah, Vinrax, LordTomorrow, qubodup.

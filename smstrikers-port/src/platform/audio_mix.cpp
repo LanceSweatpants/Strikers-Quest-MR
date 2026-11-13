@@ -104,6 +104,7 @@ s32 s_outS[kFramesPerTick];
 
 extern "C" void PortAudioMixFinishDump(void);
 extern "C" void PortGuestVoiceMix(int* left, int* right, int frames);  // xr_guest_voice.cpp, r68
+extern "C" void PortWeatherAudioMix(int* left, int* right, int frames);  // xr_weather.cpp, r196
 
 // STRIKERS_AUDIO_DUMP=<path> writes exactly what goes to the device, as a WAV.
 std::FILE* s_dump = nullptr;
@@ -757,6 +758,8 @@ extern "C" void PortAudioMixRender(s16* dest) {
 
     // strikers-quest r68: guest characters' own voices, into the device mix like a master studio's.
     PortGuestVoiceMix(s_outL, s_outR, kFramesPerTick);
+    // strikers-quest r196: the weather's sound (rain / wind beds, thunder), into the device mix the same way.
+    PortWeatherAudioMix(s_outL, s_outR, kFramesPerTick);
 
     // The master stage: surround fold, master gain, limiter, soft clip.
     {

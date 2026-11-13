@@ -38,12 +38,20 @@ public final class Big {
         l.rimFull = 220;
         l.keyBust = 900;
         l.rimBust = 500;
-        l.skyRays = 16;
-        l.lightRays = 9;
+        // r218 (Lance: "CLEAN artwork"): twice the light's rays a cell (r137: 16 / 9) - the soft shadows' mottle on wide flat
+        // parts (Bowser Jr.'s belly) smoothed; ~+35% time (PC: Bowser Jr. 1.96 -> 2.69 s)
+        l.skyRays = 32;
+        l.lightRays = 16;
         l.vertexSkyRays = 12;
         l.vertexLightRays = 4;
         l.denoise = 2;
         l.exposure = 1.0;
+        // r218: the root of the washed-out cards - the key light lights a surface ~2x its texture (median, logs/r218-art) and
+        // each channel was clipped at 1, so pale textures (most Colosseum Pokemon: Machop, Chansey, Onix ...) went flat white
+        // (up to 53% of the figure). Highlights now roll off from 0.45 keeping the texture's hue (measured on all 502:
+        // tools/outside/art218/check218.py - clipped white up to 53% -> 0-5%, saturation back to the texture's; Mario /
+        // Gengar / Charizard within 0.05 of their brightness; 0.6 still flattened the palest: Dratini 13%, Linoone 15%)
+        l.shoulder = 0.45;
         l.flames = true;  // (a Charmander's tail flame: the 3D figure shows it too)
         l.ss = size <= 256 ? 4 : 2;
         l.lightDiv = Math.max(1, size / 256);

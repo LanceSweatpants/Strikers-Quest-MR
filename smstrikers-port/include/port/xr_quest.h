@@ -51,6 +51,15 @@ float PortXrFrameScale(void);
 void PortXrNoteLoopTimes(int ranGameFrame, unsigned long long xrBegin, unsigned long long auroraBegin,
                          unsigned long long tasks, unsigned long long auroraEnd, unsigned long long xrEnd);
 
+/* r221: the frame probe (xr_quest.cpp gp): this loop iteration's steps before PortXrEndFrame (ns) - PortXrBeginFrame
+ * (input, events) + aurora_begin_frame, the game's tasks, aurora_end_frame, the audio update. Measures only. */
+void PortXrProbeLoop(unsigned long long begin, unsigned long long tasks, unsigned long long auroraEnd,
+                     unsigned long long audio);
+/* r222: nlTask.cpp, once a RunAllTasks: its slowest task's Run (its GetName, ns) and the state change it ran (every task's
+ * StateTransition, ns; 0 none, from -> to) - into the frame probe's goal lines. Measures only. */
+void PortXrProbeTasks(const char* slowest, unsigned long long slowestNs, unsigned long long transitionNs, unsigned from,
+                      unsigned to);
+
 /* Goal celebrations. Game.cpp calls PortXrGoal from CheckForGoal (team 0 home / 1 away; character
  * = eCharacterClass of whoever gets the credit, -1 unknown; superStrike = a captain's 2-goal Super
  * Strike; hyper = perfect timing; humanPad = the scorer's pad or -1), and PortCelebrationPoll

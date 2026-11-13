@@ -48,75 +48,117 @@ struct Game {
   int derby;
 };
 
+// r198 (Lance, 11-08: "not every rain game should be a thunderstorm and not every snow game a blizzard"): the tier odds,
+// quick matches and franchise alike (xr_weather.cpp pick_tier; online the roll comes from the match's shared seed).
+// rain: 0 DRIZZLE 35% / 1 RAIN 45% / 2 THUNDERSTORM 20%; snow: 0 FLURRY 65% / 1 BLIZZARD 35%.
+inline int rain_tier(uint32_t roll) {
+  const uint32_t r = roll % 100u;
+  return r < 35u ? 0 : (r < 80u ? 1 : 2);
+}
+inline int snow_tier(uint32_t roll) { return roll % 100u < 65u ? 0 : 1; }
+
+// r198: where a game sits in the season: 0 early (the first 30%), 1 mid, 2 late (the last 7 games, as r137)
+inline int phase(int i, int n) {
+  const int late0 = n > 7 ? n - 7 : 0;
+  return i >= late0 ? 2 : (i >= n * 3 / 10 ? 1 : 0);
+}
+
+// r198: up to k games drawn by weight without replacement (w[i] 0 = not allowed), each gets `bit`; a drawn game's
+// neighbours lose their weight for the same bit (no two rain games / snow games in a row when the draw can help it)
+inline int draw(Rng& r, int* w, int n, int k, uint8_t* out, int bit, bool spread) {
+  int got = 0;
+  for (; got < k; got++) {
+    int tot = 0;
+    for (int i = 0; i < n; i++) tot += w[i];
+    if (tot <= 0) break;
+    int x = r.below(tot);
+    int i = 0;
+    for (; i < n - 1; i++) {
+      if (x < w[i]) break;
+      x -= w[i];
+    }
+    out[i] |= static_cast<uint8_t>(bit);
+    w[i] = 0;
+    if (spread) {
+      if (i > 0) w[i - 1] = 0;
+      if (i + 1 < n) w[i + 1] = 0;
+    }
+  }
+  return got;
+}
+
+// r198: how streaky a season is (0 = fine): the same rain / snow back to back, three wet games running, more than 4
+// clear games running, two plain night games running
+inline int streaks(const uint8_t* o, int n) {
+  int s = 0, clearRun = 0, nightRun = 0;
+  for (int i = 0; i < n; i++) {
+    const int wet = o[i] & (kRain | kSnow);
+    if (i > 0 && (o[i] & kRain) && (o[i - 1] & kRain)) s += 10;
+    if (i > 0 && (o[i] & kSnow) && (o[i - 1] & kSnow)) s += 10;
+    if (i > 1 && wet && (o[i - 1] & (kRain | kSnow)) && (o[i - 2] & (kRain | kSnow))) s += 6;
+    clearRun = o[i] == 0 ? clearRun + 1 : 0;
+    if (clearRun > 4) s += 3;
+    nightRun = o[i] == kNight ? nightRun + 1 : 0;
+    if (nightRun > 1) s += 2;
+  }
+  return s;
+}
+
 // A club's regular season (n games in week order) -> out[i] = the weather bits of game i.
-//  - late season = the last 7 games: exactly 3 snowy (where it can snow there), the 3 with the fewest back-to-back
-//    pairs (none when the stadiums allow it), ties broken by the season's dice
-//  - 2 or 3 rain games in the weeks before, never two in a row
-//  - night: every derby, and 2 more picked by the dice (big matchups the schedule doesn't know: the nemesis games and
-//    the playoffs are made night at match time, see playoff() / the nemesis check in franchise.cpp)
+// r198 (Lance, 11-08: "I def want more variety to each 20-game season in terms of weather"): every season its own mix,
+// from the career's seed + the season + the club only (the same on reload and on a league / co-op partner's headset):
+//  - mostly clear games (about 11 of 20)
+//  - 2-4 rain games (where it can rain: weighted to the early and middle weeks), 2-3 snow games (where it can snow: the
+//    winter end of the season - mid-season sometimes, the last 7 games most), so some seasons are wetter, some snowier
+//  - night: every derby (the second meeting with a division rival) + 1-2 more, and 0-2 of the rain / snow games under
+//    the lights; the nemesis games and the playoffs are made night at match time (playoff() / franchise.cpp)
+//  - no streaks: the least streaky of up to 48 tries by the season's dice (streaks() above: no rain / snow twice in a
+//    row, no three wet games running, no more than 4 clear games running, no two plain night games running)
 inline void season(uint32_t seed, int seasonNo, const Game* g, int n, uint8_t* out) {
   Rng r{hash3(seed, static_cast<uint32_t>(seasonNo), 0x57EA7E12u)};
-  for (int i = 0; i < n; i++) out[i] = 0;
-  const int late0 = n > 7 ? n - 7 : 0;
-  // Snow.
-  int elig[7];
-  int ne = 0;
-  for (int i = late0; i < n && ne < 7; i++)
-    if (can_snow(g[i].climate)) elig[ne++] = i;
-  if (ne <= 3) {
-    for (int k = 0; k < ne; k++) out[elig[k]] |= kSnow;
-  } else {
-    int best[3] = {elig[0], elig[1], elig[2]};
-    int bestAdj = 99;
-    uint32_t bestKey = 0;
-    for (int a = 0; a < ne; a++)
-      for (int b = a + 1; b < ne; b++)
-        for (int c = b + 1; c < ne; c++) {
-          const int adj = (elig[b] - elig[a] == 1 ? 1 : 0) + (elig[c] - elig[b] == 1 ? 1 : 0);
-          const uint32_t key = r.next();
-          if (adj < bestAdj || (adj == bestAdj && key > bestKey)) {
-            bestAdj = adj;
-            bestKey = key;
-            best[0] = elig[a];
-            best[1] = elig[b];
-            best[2] = elig[c];
-          }
-        }
-    for (int k = 0; k < 3; k++) out[best[k]] |= kSnow;
+  if (n > 64) {
+    for (int i = 64; i < n; i++) out[i] = 0;
+    n = 64;
   }
-  // Rain: the weeks before the late season, shuffled, taken unless next to one already wet.
-  int cand[64];
-  int nc = 0;
-  for (int i = 0; i < late0 && nc < 64; i++)
-    if (can_rain(g[i].climate)) cand[nc++] = i;
-  for (int i = nc - 1; i > 0; i--) {
-    const int j = r.below(i + 1);
-    const int t = cand[i];
-    cand[i] = cand[j];
-    cand[j] = t;
+  // the season's mix
+  const int wantRain = 2 + r.below(3);
+  const int wantSnow = 2 + r.below(2);
+  const int wantNight = 1 + r.below(2);
+  const int wantWetNight = r.below(3);
+  uint8_t best[64];
+  uint8_t tryOut[64];
+  int w[64];
+  int bestScore = 1 << 30;
+  for (int t = 0; t < 48 && bestScore > 0; t++) {
+    for (int i = 0; i < n; i++) tryOut[i] = g[i].derby ? kNight : 0;
+    // snow: the winter end of the season
+    for (int i = 0; i < n; i++) {
+      const int ph = phase(i, n);
+      w[i] = can_snow(g[i].climate) ? (ph == 2 ? 4 : ph) : 0;
+    }
+    draw(r, w, n, wantSnow, tryOut, kSnow, true);
+    // rain: the autumn weeks most, never on a snow game
+    for (int i = 0; i < n; i++)
+      w[i] = can_rain(g[i].climate) && (tryOut[i] & kSnow) == 0 ? (phase(i, n) == 2 ? 1 : 3) : 0;
+    draw(r, w, n, wantRain, tryOut, kRain, true);
+    // rain / snow under the lights (a derby on a wet game counts)
+    int wetNights = 0;
+    for (int i = 0; i < n; i++) {
+      const bool wet = (tryOut[i] & (kRain | kSnow)) != 0;
+      if (wet && (tryOut[i] & kNight)) wetNights++;
+      w[i] = wet && (tryOut[i] & kNight) == 0 ? 1 : 0;
+    }
+    if (wantWetNight > wetNights) draw(r, w, n, wantWetNight - wetNights, tryOut, kNight, false);
+    // a plain night game or two more
+    for (int i = 0; i < n; i++) w[i] = tryOut[i] == 0 ? 1 : 0;
+    draw(r, w, n, wantNight, tryOut, kNight, false);
+    const int sc = streaks(tryOut, n);
+    if (sc < bestScore) {
+      bestScore = sc;
+      for (int i = 0; i < n; i++) best[i] = tryOut[i];
+    }
   }
-  const int wantRain = 2 + r.below(2);
-  int rained = 0;
-  for (int k = 0; k < nc && rained < wantRain; k++) {
-    const int i = cand[k];
-    const bool nextToWet = (i > 0 && (out[i - 1] & kRain) != 0) || (i + 1 < n && (out[i + 1] & kRain) != 0);
-    if (nextToWet) continue;
-    out[i] |= kRain;
-    rained++;
-  }
-  // Night: the derbies, then 2 more.
-  for (int i = 0; i < n; i++)
-    if (g[i].derby) out[i] |= kNight;
-  nc = 0;
-  for (int i = 0; i < n && nc < 64; i++)
-    if ((out[i] & kNight) == 0) cand[nc++] = i;
-  for (int i = nc - 1; i > 0; i--) {
-    const int j = r.below(i + 1);
-    const int t = cand[i];
-    cand[i] = cand[j];
-    cand[j] = t;
-  }
-  for (int k = 0; k < nc && k < 2; k++) out[cand[k]] |= kNight;
+  for (int i = 0; i < n; i++) out[i] = best[i];
 }
 
 // A playoff game: always under the lights; at most one snowy playoff game a season - the first one a club plays at a

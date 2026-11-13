@@ -569,7 +569,7 @@ static int port_celebration_character(const cPlayer* p)
 }
 
 static void port_celebration_goal(int side, int goalType, int numGoals, int hyper, const cPlayer* scorer,
-                                  const cPlayer* teamTouch, int humanPad)
+                                  const cPlayer* teamTouch, int humanPad, const cPlayer* assister)
 {
     const bool ownGoal = goalType == 5;
     // On an own goal the scorer is on the conceding team; the game credits the scoring team's last
@@ -591,6 +591,18 @@ static void port_celebration_goal(int side, int goalType, int numGoals, int hype
         if (who == 1 && PortSecondCaptain(side) >= 0)
             who = 4;
         PortFranchiseGoal(side, who, numGoals == 2 ? 2 : 1);
+        // strikers-quest r232 (Lance: "i actually count the assists even if the game dont via the goal celebration stats"):
+        // the goal's assister (the game's own, as logged above and counted by the stats the celebration shows), in the same
+        // slots: a fielder of the scoring side who isn't the credited scorer (a keeper or the other side's: none)
+        int assistWho = -1;
+        if (assister != NULL && assister != credited && assister->m_eClassType != GOALIE && assister->m_pTeam != NULL &&
+            assister->m_pTeam->m_nSide == side)
+        {
+            assistWho = (g_pTeams[side] != NULL && assister == g_pTeams[side]->GetCaptain()) ? 0 : (int)assister->m_ID;
+            if (assistWho == 1 && PortSecondCaptain(side) >= 0)
+                assistWho = 4;
+        }
+        PortFranchiseAssist(side, assistWho, who);
     }
     // r42: the crowd keeps roaring, and (but for a Super Strike) the scorer comes over life-size.
     // strikers-quest r43: Plus only; Classic is alpha 1.2's goal (no roar, no scorer, no banner).
@@ -1479,7 +1491,8 @@ void cGame::CheckForGoal()
             pGoalScored->data.pLastTouch[1] = m_pTeamTouch[1];
 
             port_celebration_goal(nSide, (int)g_pBall->m_uGoalType, (int)uNumGoalsScored, (int)g_pBall->m_unk_0xA5,
-                                  m_pScorer, m_pTeamTouch[nSide], pGoalScored->sideOfInterest); // strikers-quest
+                                  m_pScorer, m_pTeamTouch[nSide], pGoalScored->sideOfInterest,
+                                  m_pAssister); // strikers-quest (r232: + the assister)
 
             g_pBall->m_uGoalType = 4;
             m_bBallInNet = true;

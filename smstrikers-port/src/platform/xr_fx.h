@@ -19,6 +19,10 @@
 #include <cstdint>
 #include <vector>
 
+namespace xrroom {
+struct Room;  // r197: xr_room.h
+}
+
 namespace xrfx {
 
 // r117: the 3D character models drawn at once (Scene::models, set_model's slots): the 3D evolution's two /
@@ -35,7 +39,17 @@ namespace xrfx {
 // pages: ModelDraw::under -5.5) and the cards' sleeves / top-loaders (-6.5) - xr_cards.h kBinderSlot / kSleeveSlot; the
 // franchise's 18 stay 3-20 (xr_quest.cpp kFrFigs = kModelSlots - 12), the cards 23-28, the magazine 29
 // r163: + 1 more (20 + 1): the binder's halos / light pool (xr_binderfx.h kBinderFxSlot); the sleeves' slot is the binder's pages'
-constexpr int kModelSlots = 3 + 18 + 1 + 2 + 3 + 1 + 2 + 1;
+// r199: + 3 before the binder's halos (21-23): the slips posted on the TIZM SPORTSBOOK machine (kPinSlot), the cabinet
+// (kBookSlot) and the ticket its printer prints (kTicketSlot) - xr_quest.cpp; the franchise's 18 stay 3-20 (kFrFigs =
+// kModelSlots - 16)
+// r201: + 6 before the sportsbook's (21-26): the CARD MUSEUM's pieces out in your room (kMuseumSlot0 ..; xr_quest.cpp); the
+// franchise's 18 stay 3-20 (kFrFigs = kModelSlots - 22)
+constexpr int kMuseumSlots = 6;
+constexpr int kModelSlots = 3 + 18 + kMuseumSlots + 3 + 1 + 2 + 3 + 1 + 2 + 1;
+constexpr int kMuseumSlot0 = kModelSlots - 13 - kMuseumSlots;
+constexpr int kPinSlot = kModelSlots - 13;
+constexpr int kBookSlot = kModelSlots - 12;
+constexpr int kTicketSlot = kModelSlots - 11;
 // r135: the guests' outline cells in guests/etch.r8 (make_etch, xr_fx_mesh.frag sdGuest): 16 x 32 (r121-r134: 16 x 16),
 // one per pickable roster place; a theme of 100 + a cell from 0 to kEtchCells - 1
 constexpr int kEtchCells = 512;
@@ -223,6 +237,10 @@ struct Scene {
     // r147: a BLACK 1/1's kaleidoscope (xr_fx_model.frag, its slab's back wall): its card's colour 0xRRGGBB (0 none; a
     // local model only)
     uint32_t kaleido = 0;
+    // r193: a special trading card's 3D (xr_fx_model.frag): `reveal` >= 0 cuts it to its face's side (nothing of it while
+    // your eye is behind the card) and shows what stands on its top edge only that far risen (0 none .. 1 all); < 0 no
+    // cut. `dim` darkens its figure / throne (0 .. 1: its autograph's moment)
+    float reveal = -1.0f, dim = 0.0f;
   };
   ModelDraw models[kModelSlots];  // r117: 0-1 the 3D evolution / the menu's figure, 2 the home corner's; r131: 3- franchise
   // r137: the match's weather (xr_weather.h PORT_WX_* bits: 1 rain, 2 snow, 4 night; 0 none here), how far it has come
@@ -233,6 +251,29 @@ struct Scene {
   float weatherAmt = 0.0f, snowCover = 0.0f;
   XrVector3f wxLights[8] = {};
   int wxLightCount = 0;
+  // r196 (WEATHER-UPGRADE.md, looks and sound only): the tier (xr_weather.h PORT_WX_TIER_*), how strong it falls now
+  // (0..1), the wind (GAME world m/s: x along the pitch, y across) + its gust (0..1), the lightning's flash (0..~1.3) and
+  // the bolt showing (its strike id, how much it shows, kind 0 far 1 mid 2 close, x -1..1, its segments x0 y0 x1 y1 w in
+  // its own space), the snow lying on the pitch (a cols x rows grid of 0..1 over the pitch, GAME world) and your play
+  // area (the Guardian's rectangle on the floor: its middle + turn as a pose in LOCAL, half its size) for the dusting.
+  int wxTier = 0;
+  float wxInten = 0.0f;
+  float wxWind[2] = {0.0f, 0.0f};
+  float wxGust = 0.0f;
+  float wxFlash = 0.0f;
+  int wxBoltId = -1, wxBoltKind = 0, wxBoltSegs = 0;
+  float wxBoltVis = 0.0f, wxBoltX = 0.0f;
+  float wxBolt[200 * 5] = {};
+  float wxSnow[32 * 18] = {};
+  int wxSnowCols = 0, wxSnowRows = 0;
+  bool playValid = false;
+  XrPosef playPose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+  float playHalf[2] = {0.0f, 0.0f};
+  // r197 (Lance: "have Strikers use that space as my environment"): YOUR ROOM SCAN (xr_scene.h / xr_room.h) - the walls,
+  // floor, ceiling, furniture tops and the scan's mesh as a collision model in LOCAL, set only in MR while SETTINGS > ROOM >
+  // USE MY ROOM SCAN is on and a scan was read (null: the floor plane / play area as r196). Rain and snow land on your
+  // real furniture and pile against your walls; confetti, hats, embers and the goal explosions' debris land on it too.
+  const xrroom::Room* room = nullptr;
 };
 
 // r96: a character model for Scene::models (xr_evo.cpp builds it from a guest pack): its pictures (RGBA,
@@ -256,12 +297,22 @@ struct Model {
   // to the GPU with it and a frame is picked per draw (ModelDraw::frame), nothing posed or copied per frame
   std::vector<float> frames;
   uint32_t frameCount = 0;
+  // r210: a picture's whole mip chain made ahead on a worker (texMips[i] = levels 1..n of picture i, each half the last, straight
+  // RGBA): it goes up as it is (copies only - no blits on the frame thread); empty = the GPU filters it as before. texSharp[i]:
+  // that picture sampled with up to 16x anisotropy (the museum's card atlas; empty / 0 = the models' usual sampler)
+  std::vector<std::vector<std::vector<uint8_t>>> texMips;
+  std::vector<uint8_t> texSharp;
 };
 // Render thread only: puts a model in slot 0 / 1 (its pictures go up to the GPU now, waiting for it), or
 // with an empty one lets that slot's go.
 void set_model(int slot, Model&& model);
 // r131: a model is up in that slot (set_model worked, the renderer not restarted since)
 bool model_up(int slot);
+// r226: one picture of the model up in that slot replaced (render thread only; waits for the frames in flight, one upload - the
+// rest of the model untouched): a card front drawn again once its big picture came in. mips / sharp as Model::texMips / texSharp.
+// False: no model there / no such picture / the upload failed (the old picture is gone then: grey, as set_model's).
+bool set_model_tex(int slot, int tex, const std::vector<uint8_t>& rgba, uint32_t w, uint32_t h,
+                   const std::vector<std::vector<uint8_t>>* mips = nullptr, bool sharp = false);
 
 // r96 (Lance: "their celebration stuff minus the confetti to fall during that process ... for pichu, it
 // should JUST be lightning that falls, for squirtle it should be water that falls/water cannons,
@@ -278,6 +329,12 @@ void evo_end();
 void evo_sparkle(const XrVector3f& at, float radius, float height, float dt);
 // r138: the same in colours of your own (a trading card's: gold, a rainbow's), `rate` a second
 void card_sparkle(const XrVector3f& at, float radius, float height, float rate, float dt, uint32_t rgb1, uint32_t rgb2);
+// r193: an autograph's moment (xr_cards.cpp sign_air): sparks of light drawing in to `at` from `radius` m round it; tiny
+// sparks dropping off its pen tip (falling, fading); its landing on the card - a ring facing you (`head`) and a burst of
+// sparks, no white-out (`size` m: the autograph's width on the card)
+void ink_gather(const XrVector3f& at, float radius, float rate, float dt, uint32_t core, uint32_t outer);
+void ink_sparks(const XrVector3f& at, float rate, float dt, uint32_t core, uint32_t outer);
+void ink_land(const XrVector3f& at, const XrVector3f& head, float size, uint32_t rgb);
 
 // r61: the cup suite's room, baked in Blender (tools/suites): one mesh with its light in one picture,
 // and the world outside as a 360 picture all round, infinitely far.
@@ -324,6 +381,14 @@ bool render(const Scene& scene, XrCompositionLayerProjection* layer);
 
 // The replay jumbotron, 0 = up and out of the way, 1 = all the way down (eased, may overshoot).
 float jumbotron_drop();
+
+// r221: the effects layer's own GPU time per frame (two timestamps round its command buffer). set_gpu_timing once after
+// init (the device's timestamp period, the queue's valid bits; 0 bits = off); take_gpu_stats: the sum / max / frames
+// since the last call (false when timing is off); last_frame_done: whether the newest effects frame is done on the GPU
+// (1), still running (0), none yet (-1) - asked when the next xrWaitFrame returns
+void set_gpu_timing(float timestampPeriodNs, uint32_t validBits);
+bool take_gpu_stats(uint64_t* sumNs, uint64_t* maxNs, uint32_t* frames);
+int last_frame_done();
 
 // Cannon waves fired since the last goal (xr_quest.cpp buzzes the controllers on each new one).
 int cannon_waves_fired();
@@ -379,6 +444,11 @@ bool pieces_alive();  // r130: any celebration piece up (the load scale only ste
 // waits this long after the goal (what is up already keeps moving).
 int piece_mesh(int shape, int variant);
 void hold_celebration(float seconds);
+// r207 (the CASINO WIN PARTY, xr_goalfx.cpp casino_party): a giant 3D letter's mesh (B I G W N H U E J A C K P O T; -1 none) and
+// its width (cap height 1), the siren light's mesh
+int glyph_mesh(char ch, float* width);
+int siren_mesh();
+int casino_coin_mesh();  // (a light coin: ~100 triangles)
 
 // Self-test: the next rendered left eye of the effects layer is written to `path` as a PPM, the
 // pieces over mid grey so the transparent parts read.

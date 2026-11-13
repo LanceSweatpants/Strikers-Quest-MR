@@ -483,6 +483,35 @@ BOOL DVDClose(DVDFileInfo* fileInfo)
     return TRUE;
 }
 
+/* strikers-quest r222: the frame probe's disc reads (xr_quest.cpp gp: how many, how long inside them, on whichever thread
+   asked - a goal's state changes run on the game thread, so a read there is a stall the goal lines name). Measures only. */
+static unsigned long long s_probeReadNs = 0;
+static unsigned s_probeReads = 0;
+
+static void probe_add_read(unsigned long long ns)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    __atomic_fetch_add(&s_probeReadNs, ns, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&s_probeReads, 1u, __ATOMIC_RELAXED);
+#else
+    s_probeReadNs += ns;
+    s_probeReads += 1u;
+#endif
+}
+
+void port_dvd_take_read_stats(unsigned long long* ns, unsigned* reads)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    *ns = __atomic_exchange_n(&s_probeReadNs, 0ull, __ATOMIC_RELAXED);
+    *reads = __atomic_exchange_n(&s_probeReads, 0u, __ATOMIC_RELAXED);
+#else
+    *ns = s_probeReadNs;
+    *reads = s_probeReads;
+    s_probeReadNs = 0;
+    s_probeReads = 0;
+#endif
+}
+
 s32 DVDReadAsyncPrio(DVDFileInfo* fileInfo, void* addr, s32 length, s32 offset,
                      DVDCallback callback, s32 prio)
 {
@@ -509,6 +538,7 @@ s32 DVDReadAsyncPrio(DVDFileInfo* fileInfo, void* addr, s32 length, s32 offset,
     }
 
     s32 got = -1;
+    const unsigned long long probeT0 = port_monotonic_ns(); /* strikers-quest r222 */
     if (offset < 0)
     {
         got = -1;
@@ -541,6 +571,7 @@ s32 DVDReadAsyncPrio(DVDFileInfo* fileInfo, void* addr, s32 length, s32 offset,
             fclose(f);
         }
     }
+    probe_add_read(port_monotonic_ns() - probeT0); /* strikers-quest r222 */
 
     if (probe_dvd())
         OSReport("[port] dvd: read %s off=%d len=%d -> %d cb=%d\n", e->path,

@@ -62,6 +62,8 @@ int PortMenuMusicInMatch(void);
 // music is playing (src/platform/xr_guest_voice.cpp).
 int PortMovieActive(void);
 int PortEvoMusicPlaying(void);
+// r230: an EXQUISITE pack's private gallery is up (its lounge music: the lofi fades out under it) - src/platform/xr_guest_voice.cpp
+int PortCardGalleryQuiet(void);
 
 #ifdef __cplusplus
 }

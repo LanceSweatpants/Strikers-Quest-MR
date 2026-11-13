@@ -168,6 +168,10 @@ public class LobbyActivity extends Activity {
         }
         checkForUpdate();
         fetchBadgesQuietly();
+        // r197: the room scan's permission, once, with its reason (a moment after the panel is up)
+        getWindow().getDecorView().postDelayed(() -> {
+            if (!isFinishing()) maybeAskScene();
+        }, 1500);
     }
 
     /**
@@ -1635,6 +1639,27 @@ public class LobbyActivity extends Activity {
         openPage(LobbyKit.SETTINGS, this::showHome, RAIL_HOME_GROUND, "SETTINGS", "HOME GROUND");  // r157
         note("Your home team's colours, trophies and rivals show up around you: the shelf, by the big screen,"
                 + " on the Tabletop, in your cup suite.");
+        // r194: WEATHER IN MY ROOM (also PAUSED > SETTINGS > ROOM, the same line in xr_room_options.txt)
+        final boolean roomWx = readRoomWeather();
+        valueRow(new LobbyKit.Icon(LobbyKit.ICON_HOUSE, LobbyKit.INK_SOFT), "WEATHER IN MY ROOM", roomWx ? "ON" : "OFF",
+                roomWx, v -> {
+                    writeRoomWeather(!roomWx);
+                    showHomeGround();
+                });
+        line("A rain or snow match rains / snows in your own room too (MR). This headset only.").setTextColor(MUTED);
+        // r197: USE MY ROOM SCAN (also PAUSED > SETTINGS > ROOM, the same "roomscan" line in xr_room_options.txt)
+        final boolean scanOn = readRoomScan();
+        valueRow(new LobbyKit.Icon(LobbyKit.ICON_HOUSE, LobbyKit.INK_SOFT), "USE MY ROOM SCAN", scanOn ? "ON" : "OFF",
+                scanOn, v -> {
+                    writeRoomScan(!scanOn);
+                    if (!scanOn) askScenePermission();
+                    showHomeGround();
+                });
+        line(!scanOn ? "Off: weather and effects use your floor, as before."
+                : sceneGranted() ? "Rain, snow and goal effects land on your real furniture and pile against your walls."
+                        + " Your scan: Quest Settings > Physical space > Space setup."
+                : "Needs spatial data: press it, choose Allow (so effects land on your real furniture).")
+                .setTextColor(MUTED);
         final String pick = readHomePick();
         // r90 (Lance: "its still only available for the base players"): every character on this headset's
         // roster too, by game; the game takes a guest's pack as well as a captain's number.
@@ -1676,6 +1701,123 @@ public class LobbyActivity extends Activity {
         }
         TextView summary = note(homeSummary(guestNames));
         summary.setTextSize(MIN_SP);
+    }
+
+    // --- strikers-quest r194: WEATHER IN MY ROOM - xr_room_options.txt "roomweather N" (the game's pause row keeps it
+    // there too: xr_quest.cpp load_room_options), else strikers.ini room_weather, else on. The file's other lines kept.
+
+    private File roomOptionsFile() {
+        return new File(StrikersHome.homeDir(this), "xr_room_options.txt");
+    }
+
+    private static List<String> readTextLines(File f) {
+        final List<String> out = new ArrayList<>();
+        if (!f.isFile()) return out;
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String s;
+            while ((s = r.readLine()) != null) out.add(s);
+        } catch (IOException e) {
+            android.util.Log.w("StrikersLobby", "could not read " + f, e);
+        }
+        return out;
+    }
+
+    private boolean readRoomWeather() {
+        for (String line : readTextLines(roomOptionsFile())) {
+            final String[] f = line.trim().split("\\s+");
+            if (f.length == 2 && f[0].equals("roomweather")) return !f[1].equals("0");
+        }
+        for (String line : readTextLines(new File(StrikersHome.homeDir(this), "strikers.ini"))) {
+            final String l = line.trim();
+            if (l.startsWith("#") || l.startsWith(";")) continue;
+            final int eq = l.indexOf('=');
+            if (eq <= 0) continue;
+            final String key = l.substring(0, eq).trim().toLowerCase(java.util.Locale.ROOT);
+            if (!key.equals("room_weather") && !key.equals("strikers_room_weather")) continue;
+            final String v = l.substring(eq + 1).trim().toLowerCase(java.util.Locale.ROOT);
+            return !(v.startsWith("0") || v.startsWith("of") || v.startsWith("n") || v.startsWith("f"));
+        }
+        return true;
+    }
+
+    private void writeRoomWeather(boolean on) {
+        final File f = roomOptionsFile();
+        final StringBuilder sb = new StringBuilder();
+        boolean done = false;
+        for (String line : readTextLines(f)) {
+            if (line.trim().isEmpty()) continue;
+            if (line.trim().startsWith("roomweather ")) {
+                if (!done) sb.append("roomweather ").append(on ? 1 : 0).append('\n');
+                done = true;
+            } else {
+                sb.append(line.trim()).append('\n');
+            }
+        }
+        if (!done) sb.append("roomweather ").append(on ? 1 : 0).append('\n');
+        try (java.io.OutputStream o = new java.io.FileOutputStream(f)) {
+            o.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            android.util.Log.w("StrikersLobby", "could not write " + f, e);
+        }
+    }
+
+    // --- strikers-quest r197: USE MY ROOM SCAN - xr_room_options.txt "roomscan N" (the game's pause row writes it too:
+    // xr_quest.cpp save_room_options), else on. Its permission (spatial data) asked once here, with the reason.
+
+    private static final int REQUEST_SCENE = 45;
+    private static final String SCENE_PERMISSION = "com.oculus.permission.USE_SCENE";
+    private static final String SCENE_ASKED = "scene_asked_r197";
+
+    private boolean readRoomScan() {
+        for (String line : readTextLines(roomOptionsFile())) {
+            final String[] f = line.trim().split("\\s+");
+            if (f.length == 2 && f[0].equals("roomscan")) return !f[1].equals("0");
+        }
+        return true;
+    }
+
+    private void writeRoomScan(boolean on) {
+        final File f = roomOptionsFile();
+        final StringBuilder sb = new StringBuilder();
+        boolean done = false;
+        for (String line : readTextLines(f)) {
+            if (line.trim().isEmpty()) continue;
+            if (line.trim().startsWith("roomscan ")) {
+                if (!done) sb.append("roomscan ").append(on ? 1 : 0).append('\n');
+                done = true;
+            } else {
+                sb.append(line.trim()).append('\n');
+            }
+        }
+        if (!done) sb.append("roomscan ").append(on ? 1 : 0).append('\n');
+        try (java.io.OutputStream o = new java.io.FileOutputStream(f)) {
+            o.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            android.util.Log.w("StrikersLobby", "could not write " + f, e);
+        }
+    }
+
+    private boolean sceneGranted() {
+        return checkSelfPermission(SCENE_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Once (the first panel start with r197), with the reason, while USE MY ROOM SCAN is on. */
+    private void maybeAskScene() {
+        if (sceneGranted() || prefs.getBoolean(SCENE_ASKED, false) || !readRoomScan()) return;
+        prefs.edit().putBoolean(SCENE_ASKED, true).apply();
+        askScenePermission();
+    }
+
+    private void askScenePermission() {
+        if (sceneGranted()) return;
+        notice("Strikers can use your Quest room scan, so rain, snow and goal effects land on your real furniture."
+                + " Choose Allow. (SETTINGS > HOME GROUND > USE MY ROOM SCAN changes it.)", ACCENT);
+        try {
+            requestPermissions(new String[] {SCENE_PERMISSION}, REQUEST_SCENE);
+        } catch (RuntimeException e) {
+            android.util.Log.w("StrikersLobby", "could not ask for the room scan permission", e);
+        }
     }
 
     // --- strikers-quest r66: guest characters (src/platform/xr_guest.cpp) ---
@@ -2173,6 +2315,14 @@ public class LobbyActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQUEST_SCENE) {  // r197
+            final boolean ok = results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            notice(ok ? "Room scan on: weather and effects land on your real furniture (set it up in Quest Settings >"
+                            + " Physical space > Space setup)."
+                      : "No room scan: weather and effects use your floor, as before. SETTINGS > HOME GROUND >"
+                            + " USE MY ROOM SCAN asks again.", ok ? ACCENT : WARN);
+            return;
+        }
         if (requestCode != REQUEST_MIC) return;
         if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             voiceGranted();

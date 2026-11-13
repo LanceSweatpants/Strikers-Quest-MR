@@ -21,9 +21,11 @@ APK.*
 > **NO FILE FROM A GAME = NO GUESTS FROM THAT GAME.** Super Mario Strikers itself still plays as
 > always. See [Guest characters](#guest-characters-alpha-114).
 
-**NEW in alpha 1.18 - THE ORIGINALS:** 10 characters made for this game (5 that evolve in Franchise, 5 with 3
-uniforms each), each with its own goal celebration and Lancini Tizm cards. They are **built into the app**, so they
-need no game file at all - find them on the ORIGINALS tab in character select.
+**NEW in alpha 1.19 - THE STRIKERZ SPORTSBOOK:** a real arcade machine in your room (Franchise) - money lines,
+spreads, futures, parlays up to 25 legs, printed slips - plus slots and roulette with a win party in your room. Every
+card redesigned, the new **LANCINI TIZM JAM '96** die-cut pack, a card market, nine collectors to trade with, a Card
+Museum, thunderstorms and blizzards that snow up your room, and room-scan support. All on **BIT COINS**, the game's own
+coins: no real money, no cash value. See [New in alpha 1.19](#what-it-is).
 
 ### [⬇ Download the latest version](https://github.com/LanceSweatpants/Strikers-Quest-MR/releases/latest)
 
@@ -46,6 +48,54 @@ Four ways to watch the same match, switched any time by clicking the controller 
   field.
 - **Tabletop · Stadium**: the table inside the life-size stadium, with the stands all the way around
   you.
+
+New in alpha 1.19:
+
+- **New menus (Franchise hub, "BROADCAST PREMIUM"):** a sports-TV look - italic condensed caps, glass panels with cut
+  corners, a numbered rail, your club's colours as the accent, every word 30 px or bigger - and a simpler map: **HOME**
+  (next match, one big PLAY, a quiet SIM: this week / to the playoffs, 3 alerts at most), **LEAGUE** (table, results,
+  playoffs, stars, rivals, **sportsbook**), **CLUB** (squad, evo, trades, free agents, difficulty), **CARDS** (cards only:
+  packs, binder + sets, market with search, collectors, grading, trade-ins, museum), the new **LOCKER** (balls, goal FX,
+  room takeovers, binder covers) and **NEWS** (magazine, history). Nothing removed, only sorted.
+- **The STRIKERZ SPORTSBOOK** (Franchise): an arcade machine standing on your floor, and the hub's **LEAGUE > SPORTSBOOK**.
+  Money line and spread on the matchday's other games, **WIN BY** on your own game, **FUTURES** (champion, MVP, Golden
+  Boot, rookie of the year), **parlays up to 25 legs** (same-game pairs, upcoming weeks and futures included), any stake
+  (**CUSTOM** number pad), no cap on wins. Bets print a slip you can grab, and get stamped WINNER / LOSER; collect at the
+  machine. See [The STRIKERZ Sportsbook machine](#the-strikerz-sportsbook-machine-alpha-119).
+- **STRIKERZ SLOTS + ROULETTE** on the same machine (a pull handle, a European wheel), and a **win party** in your room:
+  a gold flash, coins rolling across your floor, confetti, fireworks, a siren and giant 3D BIG WIN / HUGE WIN / JACKPOT.
+- **BIT COINS** (were Tizm Coins, same balance): 64-bit, so balances go far past 2.1 billion. Per career, never real
+  money.
+- **Cards:** every card redesigned (PRIZM CHROME), a new premium pack **LANCINI TIZM JAM '96** (its own 502 cards, a
+  die-cut shape per rarity that punches into shape as you flip it; a win = 1 LANCINI TIZM + 1 JAM '96 pack), new pull
+  rates (SILVER 1 in 50 cards, GOLD /10 1 in 250, BLACK 1/1 1 in 500 packs, BOOM 1 in 1,500, HOMETOWN 1 in 1,200,
+  SIGNED 1 in 2,000, shiny 1 in 512, GOD PACK 1 in 2,000 packs), and **big pulls**: slow-mo with a heartbeat, the room
+  goes dark for a 1/1, then a party. Cleaner card art (the big pictures redraw once after updating).
+- **LANCINI EXQUISITE**, an ultra high-end set (shop only: 1,000 a pack, THE VAULT case of five 5,000): every card serial
+  numbered (GALLERY /399 up to the MASTERPIECE 1/1), one hit a pack (on-card autos, jersey patches, rookie patch autos
+  for the ORIGINALS), EMERALD and SAPPHIRE in shimmering jewel chrome, a black-leather VAULT whose brass latches you flick
+  open yourself, and a warm private-gallery mood in your room for every opening.
+- **The card hobby:** a **CARD MARKET** (live prices from bulk to millions, booms and crashes, **LIST FOR SALE** at your
+  price), **COLLECTORS** (trade cards with nine CPU collectors, each with their own taste), the **CARD MUSEUM** (frames,
+  pedestals, a slab rack, a showcase cabinet and a 1/1 vault in your room) and THE STRIKERZ MARKET pages in Strikers
+  Illustrated.
+- **Weather:** drizzle, rain and thunderstorms with lightning; flurries and blizzards; snow piling up on the pitch, and
+  in your room (your floor, along your walls, your furniture tops, your footprints). A new mix every Franchise season.
+  Looks and sound only.
+- **Your room scan** (Quest Settings > Physical space): weather, confetti, explosions and coins land on your real
+  furniture and bounce off your walls. Asked once; Pause > SETTINGS > ROOM > USE MY ROOM SCAN.
+- **Franchise** games at a random stadium (all 7), smoother MR Jumbotron goal shows, and the card market crash fixed.
+- **32 new Franchise clubs + logos** (Marvel, Strikers / Charged, Pokémon and Melee places, and three of our own): new
+  names, mascots, colours and logos; same conferences, divisions and home stadiums. Saved careers and online leagues
+  carry on - old news, awards and history switch to the new names once, when the career loads.
+
+New in alpha 1.18:
+
+- **THE ORIGINALS:** 10 characters made for this game (5 that evolve in Franchise, 5 with 3 uniforms each), each with
+  its own goal celebration and Lancini Tizm cards. They are **built into the app**, so they need no game file at all -
+  find them on the ORIGINALS tab in character select.
+- **All-new menus** (launcher, pause, Franchise hub), **free agency** with rookies and retirements, **goal explosions**
+  and room takeovers, **ball skins**, the **Stadium Pulse** crowd meter, and a 3D binder with binder skins.
 
 New in alpha 1.17:
 
@@ -338,6 +388,26 @@ A Bluetooth gamepad paired to the headset works too (alpha 1.8): it's the same p
 controllers, so use either, offline or online. Its buttons follow the [Button mapping](#button-mapping)
 (A/B/X/Y as they're labelled, LT/RT for the triggers, RB for the right grip, Start for the menu
 button).
+
+### The STRIKERZ Sportsbook machine (alpha 1.19)
+
+It stands on your floor whenever a Franchise career is open (not during matches). BIT COINS only, per career: no real
+money, no cash value.
+
+- **Take control:** grip the machine's joystick with either hand and **tilt it** to move. A **quick grip** (let go
+  straight away) latches control, so your hands are free: then the thumbsticks and buttons drive it. A quick grip
+  again, **MENU** twice, or walking away hands control back. While you're at the machine nothing reaches the game or
+  the hub.
+- **A / X** (or a trigger) picks, **B / Y** goes back (on a board: the casino games), **MENU** opens the game picker
+  (SPORTSBOOK / SLOTS / ROULETTE), **push up** off the top row for the boards. Or poke the cabinet's 3D buttons with
+  your controller, or point at the screen and pull the trigger.
+- **SLOTS:** pull the chrome handle on the cabinet's side, or A / X. **ROULETTE:** A / X puts a chip, B / Y takes the
+  last one back.
+- **Slips:** grab one with either grip; let go and it flutters away, or press it against the cabinet to post it there.
+- **Move the machine:** **left grip** on the cabinet slides it along your floor; **both grips** turn and size it. With
+  a room scan it stays out of your walls and furniture.
+- **Hide it:** Pause > **SETTINGS > ROOM > SPORTSBOOK MACHINE IN MY ROOM**. The hub's **LEAGUE > SPORTSBOOK** page works
+  without it.
 
 ## Play online with a friend
 
@@ -759,8 +829,32 @@ the same server.
 - TIZM BOOM card sting: the first 3 seconds of ["Retro Twangy Surf Rock"](https://budgetpixel.com/background-music/retro-twangy-surf-rock-b0240c69)
   by BudgetPixel AI, licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Changed: cut to 3 seconds,
   mixed to mono, resampled to 32 kHz, levelled and faded out (`assets/franchise/cardsounds/boom.wav`).
-- Menu font: *Luckiest Guy* by Astigmatic, Apache License 2.0 (text in
-  `smstrikers-port/android/app/src/main/assets/fonts/LuckiestGuy-LICENSE.txt`).
+- STRIKERZ casino machine audio (SLOTS, ROULETTE and the sportsbook machine's wins, losses, coins and chips): 25 CC0
+  clips by Kenney (kenney.nl), gchoc, fvcalderan, Trex0n, Fupi, Umplix, Zane Little Music, Spring Spring, cynicmusic,
+  Archonic, congusbongus, Amarikah, Vinrax, LordTomorrow and qubodup (OpenGameArt), and 3 CC BY clips, each trimmed,
+  faded, normalized and converted to 32 kHz mono:
+  - ["Sad Trombone"](https://commons.wikimedia.org/wiki/File:Sad_Trombone-Joe_Lamb-665429450.ogg) by Joe Lamb
+    (soundbible.com/1830-Sad-Trombone.html, via Wikimedia Commons), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+  - ["Sad Trombone.wav"](https://commons.wikimedia.org/wiki/File:Sad_Trombone.wav) by Sad Tromboner (Wikimedia Commons),
+    [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+  - "slide_whistle_down_01.wav" by joedeshon (freesound.org/s/79671, CC BY 4.0), as posted on
+    [OpenGameArt](https://opengameart.org/content/slide-whistle-down) by diligentcircle (CC-BY 3.0).
+
+  Full list in `smstrikers-port/assets/franchise/cardsounds/CASINO-AUDIO-CREDITS.txt`. The machine's mechanical sounds
+  (handle, reels, wheel) were made for the game.
+- Menu font, and the giant 3D letters of the win parties (alpha 1.19, extruded from the font): *Luckiest Guy* by
+  Astigmatic, Apache License 2.0 (text in `smstrikers-port/android/app/src/main/assets/fonts/LuckiestGuy-LICENSE.txt`
+  and `smstrikers-port/extern/fonts/LuckiestGuy-LICENSE.txt`).
+- LANCINI EXQUISITE's card text (alpha 1.19): *Karla* by Jonathan Pinhorn, SIL Open Font License 1.1 (the copy Dear ImGui ships in
+  `misc/fonts`, compiled into `smstrikers-port/src/platform/xr_font_karla.h`); its license is in `smstrikers-port/extern/fonts/Karla-LICENSE.txt` and in the APK as `assets/fonts/Karla-LICENSE.txt`.
+- The Franchise hub's menus (alpha 1.19, "BROADCAST PREMIUM"): *Roboto* Bold and Bold Italic 3.009, Copyright 2011 The Roboto
+  Project Authors, SIL Open Font License 1.1 (the copies the Tracy profiler ships in `profiler/src/font`, compiled into
+  `smstrikers-port/src/platform/xr_font_roboto.h`); its license is in `smstrikers-port/extern/fonts/Roboto-LICENSE.txt` and in the
+  APK as `assets/fonts/Roboto-LICENSE.txt`.
+- Alpha 1.19's STRIKERZ Sportsbook cabinet, the Card Museum pieces, the PRIZM CHROME, JAM '96 and LANCINI EXQUISITE card designs, THE VAULT case and its lounge music and
+  die-cuts, the BIT COIN, the weather, sportsbook and slot-machine mechanics sounds and the heartbeat: made for the game
+  by the Quest 3 Strikers project in Blender and code, nothing downloaded (`smstrikers-port/assets/franchise/book/`,
+  `museum/`, `weather/` and `cardsounds/book_*.wav`).
 - THE ORIGINALS (alpha 1.18): characters designed for Quest 3 Strikers, modelled with Tripo (paid plan) and
   rigged, fitted and textured for the game by the Quest 3 Strikers project (`smstrikers-port/assets/originals/`).
 - Quest mixed-reality port and the Quest 3 Strikers art: [LanceSweatpants](https://github.com/LanceSweatpants).
@@ -791,8 +885,10 @@ up:
 - **`LICENSE-GPL-2.0.txt`** came with the upstream tree, which does not say which files it covers.
   zstd, below, offers the GPLv2 as one of its two options.
 - **Bundled libraries**, each under its own file: Aurora (MIT, `extern/aurora/LICENSE`), MusyX (MIT,
-  `extern/musyx/LICENSE`), zstd (BSD, `extern/zstd/LICENSE`), and Kenney's button prompts (CC0,
-  `assets/input-prompts/LICENSE-Kenney.txt`). SDL3 (zlib), Dawn (BSD 3-Clause), libadrenotools
+  `extern/musyx/LICENSE`), zstd (BSD, `extern/zstd/LICENSE`), Kenney's button prompts (CC0,
+  `assets/input-prompts/LICENSE-Kenney.txt`), the Luckiest Guy font (Apache 2.0, `extern/fonts/LuckiestGuy-LICENSE.txt`), the Roboto font (SIL OFL 1.1,
+  `extern/fonts/Roboto-LICENSE.txt`)
+  and the casino audio (CC0 and CC BY, `assets/franchise/cardsounds/CASINO-AUDIO-CREDITS.txt`; see Credits). SDL3 (zlib), Dawn (BSD 3-Clause), libadrenotools
   (BSD 2-Clause), the OpenXR loader (Apache 2.0), Opus (BSD 3-Clause), rcheevos (MIT) and Aurora's other dependencies (abseil, fmt,
   FreeType, Dear ImGui, libpng, SQLite, xxHash) are downloaded at build time, each under its own
   license.
@@ -802,8 +898,11 @@ up:
 ## Disclaimer
 
 An unofficial project, not affiliated with or endorsed by Nintendo, Next Level Games, HAL
-Laboratory, Genius Sonority, The Pokémon Company, Game Freak or Creatures. Super Mario Strikers is a
-trademark of Nintendo; Super Smash Bros. Melee, Pokémon Colosseum, Mario Strikers Charged and Pokémon
-belong to their owners. No game files are included in this repository or in the APK; the game runs
-only from a disc image of your own, legally obtained copy, and the guest characters are made on your
-headset only from your own copies of their games.
+Laboratory, Genius Sonority, The Pokémon Company, Game Freak, Creatures, Marvel or Activision. Super Mario Strikers
+is a trademark of Nintendo; Super Smash Bros. Melee, Pokémon Colosseum, Mario Strikers Charged, Pokémon, Marvel:
+Ultimate Alliance and the Marvel characters belong to their owners. No game files are included in this repository or
+in the APK; the game runs only from a disc image of your own, legally obtained copy, and the guest characters are made
+on your headset only from your own copies of their games.
+
+The STRIKERZ Sportsbook, slots, roulette, card packs and card market use BIT COINS, coins earned inside the game.
+They can't be bought, cashed out or sent anywhere: no real money and no cash value.

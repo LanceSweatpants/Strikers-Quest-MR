@@ -760,6 +760,31 @@ bool read_goalfx(Reader& r, std::string* out) {
   return true;
 }
 
+// r196 (no protocol change: looks and sound only, the match plays the same): 'W', the host's WEATHER setting (xr_weather.h
+// PORT_WX_MODE_*, one byte) - the hello's after its 'B', the start's after its 'B'. With the match's shared seed both
+// headsets pick the same weather, tier, wind and lightning (PortWeatherSetShared -> PortWeatherNewMatch). Sent in the
+// start only to a friend whose hello had one; an older friend (none) keeps their own pick as before.
+}  // namespace
+extern "C" int PortWeatherMode(void);                                    // xr_weather.cpp
+extern "C" void PortWeatherSetShared(int on, unsigned seed, int hostMode);  // xr_weather.cpp (r196)
+namespace {
+constexpr uint8_t kWeatherTail = 'W';
+bool g_peerSendsWeather = false;  // the friend's last hello had a 'W'
+
+void write_weather(Writer& w) {
+  w.u8(kWeatherTail);
+  w.u8(static_cast<uint8_t>(PortWeatherMode()));
+}
+
+bool read_weather(Reader& r, int* mode) {
+  if (!r.ok || r.at >= r.v.size() || r.v[r.at] != kWeatherTail) return false;
+  r.u8();
+  const uint8_t m = r.u8();
+  if (!r.ok || m >= 16) return false;
+  *mode = m;
+  return true;
+}
+
 // r168 (no protocol change: cosmetic, the match plays the same): 'B', a headset's equipped BALL SKIN (xr_balls.h: [size
 // u8][its id, lower case, at most 15]) - the hello's after its 'G', the start's after its 'G'. A build before it never
 // reads past the 'G' in a hello, and the host sends it in the start only to a friend whose hello had one (an older guest
@@ -902,6 +927,7 @@ void send_hello() {
   write_slots(w, st.localChoice);
   write_goalfx(w);  // r153: 'G', this headset's goal explosion (the friend's headset plays it when you score)
   write_balls(w);   // r168: 'B', this headset's ball skin (the ball wears it when your side touched it last)
+  write_weather(w);  // r196: 'W', this headset's weather setting (the host's is the match's)
   send(std::move(w.v));
   st.lastHelloMs = now_ms();
 }
@@ -1145,6 +1171,7 @@ void host_start() {
   } else if (!franchise) {
     NLOG("net: the friend's build sends no sidekick slots (an older one): each side's one sidekick pick");
   }
+  bool weatherShared = false;  // r196
   // r153: 'G', this headset's goal explosion - only to a friend whose hello had one, under the room server's limit
   if (g_peerSendsGoalFx) {
     Writer tail;
@@ -1155,10 +1182,25 @@ void host_start() {
       if (g_peerSendsBalls) {
         Writer b;
         write_balls(b);
-        if (w.v.size() + b.v.size() <= kStartMaxBytes) w.bytes(b.v.data(), b.v.size());
+        if (w.v.size() + b.v.size() <= kStartMaxBytes) {
+          w.bytes(b.v.data(), b.v.size());
+          // r196: 'W', the match's weather setting (this host's) - after the 'B', only to a friend whose hello had one
+          if (g_peerSendsWeather) {
+            Writer wx;
+            write_weather(wx);
+            if (w.v.size() + wx.v.size() <= kStartMaxBytes) {
+              w.bytes(wx.v.data(), wx.v.size());
+              weatherShared = true;
+            }
+          }
+        }
       }
     }
   }
+  // r196: both headsets pick the match's weather from this seed + this host's setting (looks / sound only)
+  PortWeatherSetShared(weatherShared ? 1 : 0, st.seed, PortWeatherMode());
+  NLOG("net: weather %s", weatherShared ? "shared with the friend (this host's setting, the match's seed)"
+                                        : "each headset's own (the friend's build is older)");
   st.startMsg = w.v;
   st.match = PortNetMatch{};
   st.match.teams[0] = st.localChoice.team;
@@ -1493,6 +1535,9 @@ void handle(const std::vector<uint8_t>& msg) {
       std::string ball;
       g_peerSendsBalls = g_peerSendsGoalFx && read_balls(tail, &ball);
       xrballs::set_friend_equipped(g_peerSendsBalls ? ball.c_str() : "");
+      // r196: 'W', the friend's weather setting after their 'B' (a build before it sends none: no shared weather)
+      int wxMode = 0;
+      g_peerSendsWeather = g_peerSendsBalls && read_weather(tail, &wxMode);
     }
     if (ready && !st.peerReady) {
       NLOG("net: friend started a %s, waiting at the loading screen",
@@ -1556,13 +1601,19 @@ void handle(const std::vector<uint8_t>& msg) {
       slotSides = sides & 3;
     }
     // r153: 'G', the host's goal explosion (a host before it sends none; its hello's, if any, stands)
+    bool hostWeather = false;  // r196
+    int hostWeatherMode = 0;
     {
       std::string gfx;
       if (read_goalfx(r, &gfx)) {
         xrgoalfx::set_friend_equipped(gfx.c_str());
         // r168: 'B', the host's ball skin after its 'G' (a host before it sends none; its hello's, if any, stands)
         std::string ball;
-        if (read_balls(r, &ball)) xrballs::set_friend_equipped(ball.c_str());
+        if (read_balls(r, &ball)) {
+          xrballs::set_friend_equipped(ball.c_str());
+          // r196: 'W', the host's weather setting after its 'B' (a host before it sends none: each its own weather)
+          hostWeather = read_weather(r, &hostWeatherMode);
+        }
       }
       if (!r.ok) return;
     }
@@ -1577,6 +1628,8 @@ void handle(const std::vector<uint8_t>& msg) {
     if (coop != (st.localChoice.mode != 0 && !franchise)) return;
     st.isHost = false;
     st.seed = seed;
+    PortWeatherSetShared(hostWeather ? 1 : 0, seed, hostWeatherMode);  // r196: the host's weather, the match's seed
+    NLOG("net: weather %s", hostWeather ? "shared with the host" : "this headset's own (the host's build is older)");
     st.delay = std::clamp(delay, 1, 60);
     st.match = PortNetMatch{};
     st.match.teams[0] = home.team;

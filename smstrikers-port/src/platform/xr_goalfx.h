@@ -47,9 +47,9 @@ uint32_t tier_rgb(int tier);       // the tier's colour (0xRRGGBB)
 
 // TIZM COINS live in xr_cards.cpp; set once (at start) by the cards. spend() takes the coins and saves them, false when
 // there aren't enough (then nothing is taken). Both are called on the thread that calls buy().
-struct Wallet {
-  int (*balance)() = nullptr;
-  bool (*spend)(int coins, const char* what) = nullptr;
+struct Wallet {  // r208: 64-bit coins
+  long long (*balance)() = nullptr;
+  bool (*spend)(long long coins, const char* what) = nullptr;
 };
 void set_wallet(const Wallet& wallet);
 // r164: TIZM coins caught in 8-BIT TAKEOVER since the last call (your own goals only; at most 150 a goal) - the cards
@@ -59,8 +59,8 @@ int take_earned();
 bool owned(const char* id);  // the free one always; unknown ids never
 enum class Buy { kBought, kAlreadyOwned, kNotEnough, kNoWallet, kUnknown };
 // Buys it with the wallet's coins (kBought: spent, owned and saved). *coinsLeft (may be null): the balance after.
-Buy try_buy(const char* id, int* coinsLeft);
-bool buy(const char* id, int* coinsLeft);  // try_buy() is kBought or kAlreadyOwned
+Buy try_buy(const char* id, long long* coinsLeft);
+bool buy(const char* id, long long* coinsLeft);  // try_buy() is kBought or kAlreadyOwned
 
 // The one that goes off when you score: an owned id, or "none" / "" for none at all. False (nothing changes): not
 // owned / unknown. Saved at once.
@@ -71,6 +71,24 @@ const char* equipped();  // "classic" until another is equipped; "none" when off
 // the shop's tile, or ~2 m in front of you) - the whole room takeover, as it plays after a goal. Replaces one playing.
 void preview(const char* id, const XrPosef& where);
 bool playing();  // a goal explosion or a preview is going off now
+
+// r207 (Lance 11-10: the CASINO WIN PARTY): a SLOTS / ROULETTE win at the TIZM machine goes off in your room (MR) / the VR room,
+// by its size (xr_casino's tier): 1 a pop (the room blinks gold, a few coins out of the tray, a sparkle), 2 BIG WIN the full show
+// (the room flashes gold, coins fountain out of the tray and bounce, roll and spin down flat on your real floor - the room scan's
+// or the Guardian's -, confetti + fireworks over the machine, the siren light pops out on its top with its turning beams, giant 3D
+// "BIG WIN" letters rise over it facing you), 3 HUGE WIN more of it, 4 JACKPOT everything. `tray`: its payout tray's mouth,
+// `cabTop`: the cabinet's top, `front`: out of its screen (LOCAL), `scale` its size, `floorY` the floor it stands on. Game thread.
+// A small win during a big one's party goes off inside it (nothing cut short); a party after a party keeps the coins on your floor.
+void casino_party(int tier, const XrVector3f& tray, const XrVector3f& cabTop, const XrVector3f& front, float scale, float floorY);
+// The party's gold room flash now (0 none .. 1): xr_quest folds it into the passthrough's brightness (any thread)
+float casino_flash();
+// r219 (Lance 11-11, C:\StrikersMR\BIG-PULLS.md 3): the CASINO PARTY ON BIG PULLS - the same party pieces fired by a hit's reveal in a
+// pack (xr_cards; xr_pulls.h decides the tier + word): 1 POP (a SILVER, a shiny), 2 BIG (a GOLD /10, a case hit), 3 HUGE (a BLACK 1/1),
+// 4 JACKPOT (a GOD PACK as its Olympus show clears, a JAM '96 1/1 of a GRAIL). Its coins / confetti / sparkle out of the card in your
+// hand (`card`), the giant 3D `word` ("" none) 2 m out along where the card is, a little over your eyes (facing you), the siren on
+// your floor beside it, the fireworks over the word; `head` your head (its turn when the card is right under your eyes), `floorY` the
+// floor. The same rules as a casino party (a pop inside a bigger party, the coins kept on your floor). Game thread.
+void pull_party(int tier, const char* word, const XrVector3f& card, const XrPosef& head, float floorY);
 void stop();     // ends it now (what is in the air fades out quickly)
 
 // Changes whenever anything above does (owned / equipped / the friend's): the shop redraws.

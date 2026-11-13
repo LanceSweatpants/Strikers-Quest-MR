@@ -939,6 +939,7 @@ int main(int argc, char* argv[])
             if (ranGameFrame || (s_lastGameFrameNs != 0 && port_monotonic_ns() - s_lastGameFrameNs < 100000000ull))
                 PortAudioUpdate();
             const unsigned long long xt5 = port_monotonic_ns();
+            PortXrProbeLoop(xt2 - xt0, xt3 - xt2, xt4 - xt3, xt5 - xt4);  // r221: the frame probe (measures only)
             PortXrEndFrame(ranGameFrame);          // new frame to the screen, xrEndFrame
             PortXrNoteLoopTimes(ranGameFrame, xt1 - xt0, xt2 - xt1, xt3 - xt2, xt4 - xt3,
                                 port_monotonic_ns() - xt5);

@@ -203,6 +203,37 @@ static void open_log(void)
         snprintf(path, sizeof path, "%s", v);
     }
 
+    // r206 (Lance's r205 market crash: the crashed session's log was gone - each launch wrote over it): the last 3
+    // sessions' logs kept beside it, newest first: strikers-log.prev.txt, .prev2.txt, .prev3.txt (an empty one is
+    // not kept: a launch that died before writing anything never pushes a real log out)
+    {
+        const size_t n = strlen(path);
+        if (n > 4 && n + 16 < sizeof path && strcmp(path + n - 4, ".txt") == 0)
+        {
+            FILE* cur = fopen(path, "rb");
+            long size = 0;
+            if (cur != NULL)
+            {
+                fseek(cur, 0, SEEK_END);
+                size = ftell(cur);
+                fclose(cur);
+            }
+            if (size > 0)
+            {
+                char older[1040], newer[1040], stem[1024];
+                snprintf(stem, sizeof stem, "%.*s", (int)(n - 4), path);
+                snprintf(older, sizeof older, "%s.prev3.txt", stem);
+                remove(older);
+                snprintf(newer, sizeof newer, "%s.prev2.txt", stem);
+                rename(newer, older);
+                snprintf(older, sizeof older, "%s.prev2.txt", stem);
+                snprintf(newer, sizeof newer, "%s.prev.txt", stem);
+                rename(newer, older);
+                if (rename(path, newer) == 0)
+                    fprintf(stderr, "[port] the last session's log kept as %s\n", newer);
+            }
+        }
+    }
     fprintf(stderr, "[port] logging to %s\n", path);
     fflush(stderr);
     // Open the destination first: freopen closes the stream it is given before trying the new

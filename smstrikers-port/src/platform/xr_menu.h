@@ -43,7 +43,68 @@ struct Kit {
   float width(const std::string& t, float px) const;  // (capitals)
 };
 
-// The panel's frame: a gold edge, the navy inside.
+// ---- r236: LOOK B "BROADCAST PREMIUM" (Lance 11-12, logs/r235-menus/optB_*.png) - the franchise hub only. While a
+// BroadcastScope lives on this thread the pieces below draw the sports-TV package (italic condensed Roboto caps, glass panels with
+// cut corners, parallelogram buttons and chips, a numbered rail, the header strip, your club's colour as the accent, the gold
+// focus), board_text_width measures in that face, and broadcast_pieces() turns a page's own pieces (drawn with the old tokens) into
+// the same look. Without one (the pause panel, every other board) nothing changes.
+constexpr uint32_t kBGold = 0xF8C030, kBInk = 0xE6ECF5, kBSoft = 0xB8C4DC, kBDim = 0x7A86A0, kBGlass = 0x101827, kBNight = 0x0A0F1C,
+                   kBRow = 0x111A2E, kBBg0 = 0x05070D, kBBg1 = 0x0B1326;
+// the sections' colours (HOME is the accent: your club's)
+constexpr uint32_t kBLeague = 0x2F8CFF, kBClub = 0xFF8A1E, kBCards = 0xA855F7, kBLocker = 0x14B8A6, kBNews = 0xF8C030;
+bool broadcast();
+uint32_t accent();
+struct BroadcastScope {
+  bool wasOn;
+  uint32_t wasAccent;
+  xrtext::FaceScope face;
+  explicit BroadcastScope(uint32_t accentRgb);
+  ~BroadcastScope();
+};
+// The other way round: a picture drawn on a thread inside the hub's scope that keeps its own look (the sportsbook MACHINE's screen)
+struct PlainScope {
+  bool wasOn;
+  xrtext::FaceScope face;
+  explicit PlainScope(bool active = true);  // (active false: nothing changes)
+  ~PlainScope();
+};
+// A club's two colours -> an accent that reads under white words (saturated, not too dark, not too light); 0xE8402A if neither does
+uint32_t club_accent(uint32_t c1, uint32_t c2);
+// The page's own pieces from `from` on (boxes, rings, words drawn with the old tokens) in the broadcast look: words in the face
+// (no outlines; a soft shadow on the big ones), panels / tiles with cut corners, pills as parallelograms, the old navy / gold
+// tokens as the package's. Pieces marked styled, pictures, glows and small marks stay as they are.
+void broadcast_pieces(std::vector<xrtext::BoardPiece>& v, size_t from);
+// Words in the face: `italic` (kFaceBroadcast) or upright (kFaceBroadcastUp), `track` a share of px between letters; anchor 'l' 'c'
+// 'r'; its width back
+float say(Kit& K, const std::string& t, float x, float y, float px, uint32_t rgb, char anchor = 'l', float room = 0.0f,
+          bool italic = true, float track = 0.0f, float shadow = 0.0f);
+// A small tracked upright label (the mock's "NEXT MATCH - WEEK 7", "FOR YOU")
+float label(Kit& K, const std::string& t, float x, float y, float px, uint32_t rgb = kBSoft, char anchor = 'l', float room = 0.0f);
+// Glass: a panel with its top-left / bottom-right corners cut, a light line along its top; `tint` a soft colour wash (0 none)
+void panel(Kit& K, float x0, float y0, float x1, float y1, uint32_t tint = 0, float alpha = 0.9f, float cut = 30.0f);
+// A parallelogram button: primary = filled in the accent with a gold foot; `on` the gold focus; a glyph ("A") before its label
+void button(Kit& K, float x0, float y0, float x1, float y1, const std::string& label, const std::string& glyphName, bool primary,
+            bool on, bool can = true, float px = 0.0f);
+// A parallelogram chip (a tag: NEMESIS, SNOW, a filter); its width back
+float chip(Kit& K, const std::string& t, float x, float cy, uint32_t rgb, char anchor = 'c', float px = 34.0f, bool solid = true);
+// A gold parallelogram count / word (a badge), its right edge at x1
+void badge(Kit& K, const std::string& t, float x1, float y0, float px = 30.0f);
+// Sub-tabs (MARKET's BUY / SELL / LISTED / OFFERS ...): parallelograms, `at` filled in `rgb`; `focused` the gold ring on it; badges
+// gold; the x after the last back
+float subtabs(Kit& K, const std::vector<std::string>& names, int at, float x0, float y0, const std::vector<std::string>& badges,
+              uint32_t rgb, bool focused = false, float px = 40.0f, float h = 60.0f);
+// The header strip under the tabs: the section (/ page) in its colour with an arrow, then `parts` chevron by chevron (the first
+// white), coins right; logoX: where the caller puts the club's logo (0: none) - the x the parts start at comes back
+struct StripPart {
+  std::string text;
+  uint32_t rgb = kBSoft;
+};
+float header_strip(Kit& K, float w, const std::string& where, uint32_t secRgb, bool logo, const std::vector<StripPart>& parts,
+                   const std::string& coins, float* logoX0 = nullptr);
+// A coin (the B mark) centred on cx, cy, s across
+void bcoin(Kit& K, float cx, float cy, float s);
+
+// The panel's frame: a gold edge, the navy inside. (r236: in a BroadcastScope the package's background instead)
 void frame(Kit& K, float w, float h, uint32_t accent = kGold, float radius = 30.0f);
 // THE focus: a thick gold ring with a soft glow, never anything else.
 void focus(Kit& K, float x0, float y0, float x1, float y1, float r);

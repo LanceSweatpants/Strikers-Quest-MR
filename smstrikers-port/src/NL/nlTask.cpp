@@ -4,6 +4,8 @@
 #include "NL/nlDLRing.h"
 #include "port/framerate.h" // PORT: PortTaskClockFrame
 #include "port/xr_net.h"    // strikers-quest: the online match's fixed step
+#include "port/host.h"      // strikers-quest r222: port_monotonic_ns (the frame probe's task times)
+#include "port/xr_quest.h"  // strikers-quest r222: PortXrProbeTasks
 
 #define assert(condition) ((condition) ? ((void)0) : ((void)0))
 
@@ -45,8 +47,17 @@ void nlTaskManager::RunAllTasks()
     currentTask = nlDLRingGetStart<nlTask>(m_pInstance->m_lTaskList);
     if (currentTask != NULL)
     {
+        // strikers-quest r222: the frame probe (xr_quest.cpp gp, PortXrProbeTasks) - the state change's time and the
+        // slowest task's Run this frame, by name. Measures only: nothing here changes what runs or in which order.
+        unsigned long long probeTransNs = 0;
+        u32 probeFrom = 0, probeTo = 0;
+        unsigned long long probeSlowNs = 0;
+        const char* probeSlow = NULL;
         if ((u32)m_pInstance->m_CurrState != (u32)m_pInstance->m_PendingState)
         {
+            const unsigned long long t0 = port_monotonic_ns();
+            probeFrom = (u32)m_pInstance->m_CurrState;
+            probeTo = (u32)m_pInstance->m_PendingState;
             for (;;)
             {
                 currentTask->StateTransition(m_pInstance->m_CurrState, m_pInstance->m_PendingState);
@@ -56,6 +67,7 @@ void nlTaskManager::RunAllTasks()
             }
             m_pInstance->m_PrevState = (u32)m_pInstance->m_CurrState;
             m_pInstance->m_CurrState = (u32)m_pInstance->m_PendingState;
+            probeTransNs = port_monotonic_ns() - t0;
         }
 
         taskIterator = nlDLRingGetStart<nlTask>(m_pInstance->m_lTaskList);
@@ -86,12 +98,20 @@ void nlTaskManager::RunAllTasks()
                 }
                 deltaTime = clampedDeltaTime * m_pInstance->m_TimeDilation;
                 m_pInstance->m_fCurrentTimeDelta = deltaTime;
+                const unsigned long long r0 = port_monotonic_ns(); // strikers-quest r222 (the probe)
                 taskIterator->Run(deltaTime);
+                const unsigned long long rNs = port_monotonic_ns() - r0;
+                if (rNs > probeSlowNs)
+                {
+                    probeSlowNs = rNs;
+                    probeSlow = taskIterator->GetName(); // (each a string literal; read right after its own Run)
+                }
             }
             if (taskIterator == m_pInstance->m_lTaskList)
                 break;
             taskIterator = taskIterator->m_next;
         }
+        PortXrProbeTasks(probeSlow, probeSlowNs, probeTransNs, probeFrom, probeTo); // strikers-quest r222
     }
 }
 

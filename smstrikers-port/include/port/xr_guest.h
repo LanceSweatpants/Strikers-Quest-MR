@@ -219,6 +219,11 @@ bool PortStrikersVoiceSay(int characterClass);
 void PortEvoMusic(int which);
 // r138: a trading card's own sound (xr_cards.cpp's chimes): a mono 32 kHz clip, centred, at the voice volume x volume.
 void PortCardSound(const short* pcm, int frames, float volume);
+// r202: the same at the game's SOUND > EFFECTS volume (the SFX group) - the casino machine's win / lose music
+void PortCardSoundSfx(const short* pcm, int frames, float volume);
+// r230 (LANCINI EXQUISITE's private gallery): its mood now (0 none .. 1) - the menus' music + the crowd go quiet under it
+void PortCardGallerySet(float level);
+float PortCardGallery();
 void PortGuestVoiceListener(const float* pos, const float* heading, const float* up);
 extern "C" void PortGuestVoiceMix(int* left, int* right, int frames);  // audio_mix.cpp, game thread
 void PortGuestSetOnlineStats(int side, int role, const float* values, unsigned mask);

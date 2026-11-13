@@ -62,6 +62,16 @@ enum Id : uint8_t {
   kBullet, kBrick,
   // r185: LUCHADOR's championship belt (Lance: "a real pro-wrestling title belt"), a unit long, face +z
   kTitleBelt,
+  // r207 (Lance: the CASINO WIN PARTY at the TIZM machine): its giant 3D letters - Luckiest Guy's B I G W N H U E J A C K P O T
+  // extruded + bevelled (xr_fx_glyphs.inc, tools/outside/casino207/glyphs207.py; cap height 1 unit, front +z, mat 0 the gold face,
+  // 1 its sides) - and the siren light that pops out on the cabinet's top (a unit tall: a chrome base, mat 1 / aux 1, its red
+  // lens, mat 0 / aux 3)
+  // r219 (BIG PULLS: the pull party's words GOLD! / CASE HIT! / HOMETOWN! / SIGNED! / 1 OF 1 / GRAIL! / GOD PACK): + L D S M R F 1 !,
+  // after r207's 15 (tools/outside/pulls219/glyphs219.py: made as r207's)
+  kGlyph0,
+  kGlyphLast = kGlyph0 + 22,
+  kSiren,
+  kCasCoin,  // r207: the party's coins - a light coin (~100 triangles: there can be 160 of them on your floor)
   kCount
 };
 
@@ -247,7 +257,21 @@ inline std::pair<float, float> spline(const std::vector<std::pair<float, float>>
 
 using RH = std::pair<float, float>;
 
+#include "xr_fx_glyphs.inc"  // r207: kGlyphs (the casino party's letters)
+
 }  // namespace detail
+
+// r207: a letter's glyph mesh (kGlyph0 + its index in "BIGWNHUEJACKPOT" - r219: + "LDSMRF1!") and its width (cap height 1); -1 / 0: none
+inline int glyph_id(char ch) {
+  for (int i = 0; i < detail::kGlyphCount; ++i)
+    if (detail::kGlyphs[i].ch == ch) return kGlyph0 + i;
+  return -1;
+}
+inline float glyph_width(char ch) {
+  for (int i = 0; i < detail::kGlyphCount; ++i)
+    if (detail::kGlyphs[i].ch == ch) return detail::kGlyphs[i].width;
+  return 0.0f;
+}
 
 inline Set build(float detail) {
   using namespace detail;
@@ -1774,6 +1798,46 @@ inline Set build(float detail) {
     });
   }
   finish(kTitleBelt);
+
+  // r207: the casino party's giant letters (as baked: the same at every detail - a few hundred triangles each)
+  for (int g = 0; g < kGlyphCount && g <= kGlyphLast - kGlyph0; ++g) {
+    const Id id = static_cast<Id>(kGlyph0 + g);
+    start(id);
+    const uint32_t base = static_cast<uint32_t>(set.verts.size());
+    const GlyphMesh& gm = kGlyphs[g];
+    for (int i = 0; i < gm.verts; ++i) {
+      const float* v = gm.v + i * 7;
+      set.verts.push_back(Vertex{{v[0], v[1], v[2]}, {0.0f, 0.0f, 0.0f}, {v[3], v[4], v[5]}, v[6], v[6] > 0.5f ? 1.0f : 1.0f});
+      set.indices.push_back(base + static_cast<uint32_t>(i));
+    }
+    finish(id);
+  }
+  // r207: the siren light - a chrome base, a red lens dome with ribs, a chrome cap; a unit tall, standing on y = 0
+  start(kSiren);
+  {
+    const size_t v0 = set.verts.size();
+    b.lathe_poly(1, n(20, 10), 1.0f, {{0.0f, 0.0f}, {0.46f, 0.0f}, {0.48f, 0.05f}, {0.48f, 0.16f}, {0.42f, 0.2f}, {0.40f, 0.24f}, {0.0f, 0.24f}});
+    b.tag(v0, 1.0f);
+    const size_t v1 = set.verts.size();
+    b.lathe(1, n(24, 12), n(8, 5), 0.0f,
+            [](float u, float v) {
+              const float rib = 1.0f + 0.04f * std::cos(2.0f * kPi * u * 12.0f);  // (the lens's ribs)
+              const float t = v * 0.5f * kPi;
+              return RH{0.38f * std::cos(t) * rib * (v < 0.02f ? 1.0f : 1.0f), 0.24f + 0.62f * std::sin(t)};
+            },
+            none);
+    b.tag(v1, 3.0f);
+    const size_t v2 = set.verts.size();
+    b.lathe_poly(1, n(12, 8), 1.0f, {{0.0f, 0.84f}, {0.12f, 0.84f}, {0.13f, 0.9f}, {0.0f, 0.96f}});
+    b.tag(v2, 1.0f);
+  }
+  finish(kSiren);
+  // r207: the party's light coin - a unit across (as kCoin), its rim + face (mat 0) and the raised middle (mat 1), 10 round (6 far)
+  start(kCasCoin);
+  b.lathe_poly(2, n(10, 6), 0.0f, {{0.30f, -0.05f}, {0.5f, -0.05f}, {0.5f, 0.05f}, {0.30f, 0.05f}});
+  b.lathe_poly(2, n(10, 6), 1.0f, {{0.0f, -0.065f}, {0.30f, -0.05f}});
+  b.lathe_poly(2, n(10, 6), 1.0f, {{0.30f, 0.05f}, {0.0f, 0.065f}});
+  finish(kCasCoin);
 
   return set;
 }

@@ -10,6 +10,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace xrbig {
@@ -35,5 +36,13 @@ bool failed(const std::string& key, bool shiny, int size);
 // + 1 each time a picture is ready or has failed: a caller that drew without one (its portrait in
 // its place) draws again when this has moved on.
 unsigned generation();
+
+// r226 (Lance's JAM '96 BOWSER: his card was drawn before his big picture was done - 4 s wait, the
+// picture took 8.4 s behind other jobs - so it got the Charged menu icon, framed): these pictures
+// FIRST, in this order (a pack's cards as they'll be turned over: keys[0] next to be drawn); each
+// one queued or moved to the front of the queue. Nothing done for one ready / failed.
+void first(const std::vector<std::pair<std::string, bool>>& keys, int size);
+// r226: in memory now (no copy made, nothing asked or queued)
+bool ready(const std::string& key, bool shiny, int size);
 
 }  // namespace xrbig
