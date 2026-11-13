@@ -278,10 +278,14 @@ std::atomic<int> g_shopPick{0};
 std::atomic<bool> g_packsOnOpen{true};  // r236: CARDS > PACKS - the ring on the hero's OPEN (else on a product)
 std::atomic<int> g_openSet{0};  // r217: the pack being opened's set (the hub's OPENING A ... PACK)
 std::string g_shopSay;  // (the shop's last word: "NOT ENOUGH COINS" ...)
-constexpr int kPackPrice = 50, kBoxPrice = 200, kBoxPacks = 5;
+// r238 (SELL NOW 90% for every card - Lance 11-12): a LANCINI TIZM pack's 5 cards sold at once now pay a median 68 (r237's 20% bulk rate:
+// ~15) - at 50 a pack 95% of packs paid their price straight back (a buy-and-sell-at-once loop). 50 -> 90 a pack (1 pack in 5 pays back,
+// the median loses ~25%), the box of 5 200 -> 400 (80 a pack); the JAM '96 box 1,000 -> 1,200 (240 a pack: its median pack sells for
+// 209); the JAM '96 pack (250: median 209) and EXQUISITE (1,000 / 5,000: median 473) unchanged. logs\r238\proof_step12.txt
+constexpr int kPackPrice = 90, kBoxPrice = 400, kBoxPacks = 5;
 // r217: a JAM '96 pack / box of five (PACKS-AB.md: 5x - its cards price ~3-9x their LANCINI TIZM twins on the market; the median
 // pack still under its price sold at once, as the main pack's)
-constexpr int kJamPackPrice = 250, kJamBoxPrice = 1000;
+constexpr int kJamPackPrice = 250, kJamBoxPrice = 1200;
 constexpr unsigned kBought = 8;  // (a pack's flags: bought in the shop)
 // r141: the BLACK 1/1s whose life-size cameo you've seen (it plays the first time each is turned over, never again)
 std::unordered_set<std::string> g_cameoSeen;
@@ -314,15 +318,16 @@ constexpr int kLevelXp = 10, kLineXp = 15, kTypeXp = 10, kXpCap = 60, kLineShiny
 // the CARDS tab's pages (LT: the next, RT: back): the binder, the shop, r153: GOAL EXPLOSIONS (the shop's other shelf),
 // the trade-ins, the sets, the grading
 enum { kPageBinder = 0, kPageShop, kPageTrade, kPageSets, kPageGrading, kPageExplosions, kPageLooks, kPageMarket, kPageMuseum, kPageCollectors,
-       kPageTakeovers, kPageCovers };  // (r201: + MARKET, MUSEUM; r213: + COLLECTORS; r236: + TAKEOVERS, COVERS - LOCKER's; LOOKS = its BALLS)
+       kPageTakeovers, kPageCovers, kPageHot };  // (r201: + MARKET, MUSEUM; r213: + COLLECTORS; r236: + TAKEOVERS, COVERS - LOCKER's; LOOKS = its BALLS; r242: + HOT 20)
 // r157 (menu overhaul): the pages are a rail on the hub's CARDS section now (no LT / RT chain): its order and names
 // r160: + LOOKS after EXPLOSIONS (binder skins + card sleeves)
 // r213: + COLLECTORS under MARKET (COLLECTOR TRADES, xr_trade.cpp: not "TRADES" - the club's player trades - nor "TRADE-INS")
 // r236 (LOOK B, the sitemap): CARDS = PACKS (the shop + opening), BINDER (SETS inside it: Y), MARKET, COLLECTORS, GRADING, TRADE-INS,
 // MUSEUM; LOCKER = BALLS (LOOKS' ball shelf), GOAL FX (EXPLOSIONS without the takeovers), TAKEOVERS, BINDERS (LOOKS' binder covers)
-constexpr int kRailOrder[11] = {kPageShop, kPageBinder, kPageMarket, kPageCollectors, kPageGrading, kPageTrade, kPageMuseum,
+// r242: + HOT 20 after MARKET (xr_market hot_*: the TOP CARDS race's first 20, his chart, your copies of him, BUY / SELL / SALES / WATCH)
+constexpr int kRailOrder[12] = {kPageShop, kPageBinder, kPageMarket, kPageHot, kPageCollectors, kPageGrading, kPageTrade, kPageMuseum,
                                 kPageLooks, kPageExplosions, kPageTakeovers, kPageCovers};
-constexpr const char* kRailNames[11] = {"PACKS", "BINDER", "MARKET", "COLLECTORS", "GRADING", "TRADE-INS", "MUSEUM",
+constexpr const char* kRailNames[12] = {"PACKS", "BINDER", "MARKET", "HOT 20", "COLLECTORS", "GRADING", "TRADE-INS", "MUSEUM",
                                         "BALLS", "GOAL FX", "TAKEOVERS", "BINDERS"};
 static_assert(sizeof(kRailOrder) / sizeof(kRailOrder[0]) == kRailPages, "the rail's pages (xr_cards.h kRailPages)");
 // r157: where the hub draws the cards' pieces (x' = ox + x * k ...): its page area right of the rail
@@ -446,9 +451,14 @@ long long g_godWhen = 0;
 // as it's sent, kGradeOdds; seen when it's back) and its own cert number. A slab's copy stays yours (its card's level
 // counts it; never a trade-in's spare; trade-ready: card + finish + grade + cert in collection.txt). Up to kDisplaySlabs
 // stand on the display in your room (you pick them on the GRADING page; none picked: your best).
+// r242 (Lance 11-13: "there should NEVER be an instance where i see what my card got graded before its back"): the grade is NOT rolled when a
+// copy is sent any more - a slab at grading has grade 0 (nothing anywhere can show / price / sort by it: it doesn't exist yet); it's rolled the
+// moment the slab comes back (slab_back: deterministic from its cert + the binder's salt, kGradeOdds unchanged). A slab sent before r242 (its
+// grade rolled at send, in the save) drops that grade at load and is rolled at return the same way. Every slab is back after kGradeMatches of
+// your club's franchise matches - played or simmed (PortFranchiseTakeCardMatches); one sent before r242 waits min(its left, kGradeMatches).
 struct Slab {
   Ref ref;           // the copy sealed in it
-  int grade = 0;     // 1 - 10
+  int grade = 0;     // 1 - 10 (r242: 0 while at grading - not rolled yet)
   uint32_t cert = 0;
   int left = 0;      // franchise matches to play before it's back (0: back)
   bool seen = false; // its BACK FROM GRADING moment had
@@ -462,6 +472,9 @@ int g_gradeSent = 0;  // (slabs ever sent: each one's rolls)
 int g_gradeCursor = 0, g_gradeTop = 0, g_gradeLeft = 0, g_gradeArmed = -1;
 uint64_t g_gradeArmedNs = 0;
 std::string g_gradeSay;
+// r241: the GRADING page's two views - 0 SEND A CARD (xr_market's list: every copy you own, pick the exact one), 1 YOUR SLABS (r152's slab row:
+// look at one, the slab shelf). Y switches. (r152-r240: one page - the slabs over a grid of ONE tile a card, its "finest" copy)
+std::atomic<int> g_gradeView{0};
 constexpr int kGSlabCols = 7, kGCols = 7, kGRows = 2;  // r157 round 2: 7 a row in the narrower page (r152: 8)
 std::vector<int> grading_slab_order();  // (below: g_slabs' places, at grading first, then the best)
 std::vector<int> grading_tiles();       // (below: the cards with a copy to send, the finest first)
@@ -500,6 +513,31 @@ void slabs_sync() {
       }
     }
   }
+}
+// r242: a slab's grade, rolled as it comes BACK (never at send): its own cert's seed + the binder's salt -> r152's odds (kGradeOdds). The same
+// slab always gets the same grade (a save reloaded mid-return can't re-roll it). (g_mutex held)
+int roll_grade(uint64_t& rng);  // (below: r152's grade roll)
+std::string pull_text(const Ref& r);  // (below)
+int grade_at_return(uint32_t cert) {
+  uint64_t rng = g_salt ^ (static_cast<uint64_t>(cert) * 0xD1B54A32D192ED03ull) ^ 0x7242C0DEull;
+  return roll_grade(rng);
+}
+// r242: n of your franchise matches (played or simmed) - every slab at grading that much nearer, back at 0 = graded now. (g_mutex held)
+int slabs_tick(int n) {
+  int back = 0;
+  if (n <= 0) return 0;
+  for (Slab& s : g_slabs) {
+    if (s.left <= 0) continue;
+    s.left = std::max(0, s.left - n);
+    if (s.left == 0) {
+      s.grade = grade_at_return(s.cert);
+      s.seen = false;  // (its BACK FROM GRADING reveal: now)
+      ++back;
+      CLOG("TIZM GRADING r242: %s back - graded %d %s now (cert %u)", pull_text(s.ref).c_str(), s.grade, kGradeName[s.grade], s.cert);
+    }
+  }
+  slabs_sync();
+  return back;
 }
 struct Trade {
   long long when = 0;
@@ -807,8 +845,10 @@ void load_collection() {  // (g_mutex held, the set loaded)
       if (std::sscanf(line, "slab %127s %d %u %d %d %d %lld", b, &s.grade, &cert, &s.left, &seen, &show, &s.when) >= 4 &&
           parse_ref(b, &s.ref)) {
         s.cert = cert;
-        s.grade = std::max(1, std::min(10, s.grade));
-        s.left = std::max(0, s.left);
+        // r242: at grading = no grade yet (r152-r241 rolled it at send: that roll dropped - rolled at return, slab_back's way) and back
+        // after min(its left, kGradeMatches) more of your matches (Lance: only ever 2 games of a wait)
+        s.left = std::max(0, std::min(kGradeMatches, s.left));
+        s.grade = s.left > 0 ? 0 : std::max(1, std::min(10, s.grade));
         s.seen = seen != 0;
         s.show = show != 0;
         g_slabs.push_back(s);
@@ -2879,7 +2919,16 @@ void pocket_rect(int slot, float* x0, float* y0, float* x1, float* y1) {
 
 // The binder's state (game thread writes, the drawing thread reads; under g_mutex)
 int g_spread = 0, g_cursor = 0;
-std::atomic<int> g_sceneMode{0};  // 0 the binder, 1 a pack open, 2 a card out (what the hub's page shows)
+std::atomic<int> g_sceneMode{0};  // 0 the binder, 1 a pack open, 2 a card out (what the hub's page shows) - r238: 5 a listed copy held
+// r238: the listed copy in your hand as the hub's drawing thread reads it (the scene is the game thread's: a copy under its own leaf lock)
+struct InspectSnap {
+  xrmarket::Variant v;
+  long long ask = 0;
+  std::string who;
+  int src = 0;
+};
+std::mutex g_inspectM;
+InspectSnap g_inspectSnap;
 
 // The cards the binder shows: on this headset or owned, by number. (g_mutex held)
 std::vector<int> binder_list() {
@@ -3866,10 +3915,14 @@ void grading_page(Pc& P, const BinderView& b) {
   }
   if (b.gLeft > 0) P.text("<", x0 + 20, y0 + 282, 50, 40, kGold, 2);
   if (b.gLeft + kGSlabCols < nS) P.text(">", x1 - 20, y0 + 282, 50, 40, kGold, 2);
-  P.left("SEND ONE", x0 + 40, y0 + 424, 40, 400, 0xFFFFFF, 2);
+  // r241: cards go from SEND A CARD (Y) - the list of every copy you own, the exact one picked (r152-r240: "SEND ONE" over one tile a card)
   P.right(b.gSay.empty() ? xrcoin::fit(b.coins, 13) + " BIT COINS" : b.gSay,  // (r208: commas; past 13 characters short)
           x1 - 40, y0 + 424, 40, x1 - x0 - 360, b.gSay.empty() ? kGold : 0xFFE7A0, 2);
-  if (nT == 0) P.text("NO CARDS TO SEND YET", cx, y0 + 640, 40, x1 - x0 - 120, 0x8A94AA, 2);
+  if (nT == 0) {
+    P.box(x0 + 40, y0 + 500, x1 - 40, y0 + 760, 20, 0x121830);
+    P.text("Y: SEND A CARD", cx, y0 + 580, 56, x1 - x0 - 120, kGold, 3);
+    P.text("EVERY COPY YOU OWN - PICK THE EXACT ONE", cx, y0 + 670, 40, x1 - x0 - 120, 0xB8C2D6, 2);
+  }
   for (int k = 0; k < kGCols * kGRows; ++k) {
     const int i = b.gTop * kGCols + k;
     if (i >= nT) break;
@@ -4616,14 +4669,21 @@ void locker_page_b(Pc& P, const BinderView& b) {
 // r201: the MARKET and MUSEUM pages - their modules draw them into the page area (470, 222 .. 2120, 1180 = their 1650 x 958),
 // fitted as the rest; their hints and their confirm. Never with g_mutex held (they call into the binder).
 HubPage market_museum_page(int page) {
-  WdScope wd("drawing thread", page == kPageMarket ? "MARKET picture" : (page == kPageCollectors ? "COLLECTORS picture" : "MUSEUM picture"));  // r237
+  WdScope wd("drawing thread", page == kPageMarket ? "MARKET picture" : (page == kPageCollectors ? "COLLECTORS picture" : (page == kPageGrading ? "GRADING picture" : (page == kPageHot ? "HOT 20 picture" : "MUSEUM picture"))));  // r237 (r242: + HOT 20)
   HubPage out;
   auto keep = std::make_shared<std::vector<std::shared_ptr<void>>>();
   const float ox = g_fitOx.load(), oy = g_fitOy.load(), k = g_fitK.load();
   const float t = static_cast<float>(std::fmod(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), 3600.0));
   std::string aWord, xWord, yWord, q, line;
   bool aDim = false;
-  if (page == kPageMarket) {
+  if (page == kPageHot) {  // r242: HOT 20 (xr_market: the race's first 20, his chart, your copies, his actions)
+    xrmarket::hot_draw(out.pieces, *keep, ox + 470.0f * k, oy + 222.0f * k, k, t);
+    xrmarket::hot_hints(&aWord, &aDim, &xWord, &yWord);
+  } else if (page == kPageGrading) {  // r241: GRADING's SEND A CARD list (xr_market: every copy you own - the exact one)
+    xrmarket::grade_draw(out.pieces, *keep, ox + 470.0f * k, oy + 222.0f * k, k, t);
+    xrmarket::grade_hints(&aWord, &aDim, &xWord, &yWord);
+    if (xrmarket::grade_asking(&q, &line)) out.confirm = q, out.confirmLine = line;
+  } else if (page == kPageMarket) {
     xrmarket::draw(out.pieces, *keep, ox + 470.0f * k, oy + 222.0f * k, k, t);
     xrmarket::hints(&aWord, &aDim, &xWord, &yWord);
     if (xrmarket::asking(&q, &line)) out.confirm = q, out.confirmLine = line;
@@ -4652,8 +4712,9 @@ HubPage hub_page(float w, float h, float top, float bottom) {
   WdScope wd("drawing thread", "hub picture (CARDS / LOCKER page)");  // r237
   HubPage out;
   if (!g_loaded.load()) return out;
-  if ((g_page.load() == kPageMarket || g_page.load() == kPageMuseum || g_page.load() == kPageCollectors) && g_sceneMode.load() == 0)
-    return market_museum_page(g_page.load());  // (r213: + COLLECTORS)
+  if ((g_page.load() == kPageMarket || g_page.load() == kPageMuseum || g_page.load() == kPageCollectors || g_page.load() == kPageHot ||
+       (g_page.load() == kPageGrading && g_gradeView.load() == 0)) && g_sceneMode.load() == 0)
+    return market_museum_page(g_page.load());  // (r213: + COLLECTORS; r241: + GRADING's SEND A CARD; r242: + HOT 20)
   BinderView b;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -4756,14 +4817,8 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     }
     if (b.page == kPageGrading) {  // r152: TIZM GRADING - your slabs, the cards you can send
       for (int k : grading_slab_order()) b.gSlabs.push_back({g_set[g_slabs[static_cast<size_t>(k)].ref.card], g_slabs[static_cast<size_t>(k)]});
-      for (int ci : grading_tiles()) {
-        BinderView::GTile t;
-        t.c = g_set[ci];
-        t.o = g_owned[ci];
-        grade_pick(ci, &t.r);
-        t.cost = grade_cost(t.r);
-        b.gTiles.push_back(t);
-      }
+      // r241: no tiles - YOUR SLABS only; cards go from SEND A CARD (Y): xr_market's list of every copy (r152-r240: one tile a card here,
+      // grade_pick's "finest" copy, an EXQUISITE numbered one drawn as a card you don't have)
       const int n = static_cast<int>(b.gSlabs.size() + b.gTiles.size());
       g_gradeCursor = std::max(0, std::min(std::max(0, n - 1), g_gradeCursor));
       b.gCursor = g_gradeCursor;
@@ -4919,6 +4974,37 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     P.text(std::to_string(b.packs) + (b.packs == 1 ? " PACK WAITING" : " PACKS WAITING"), qcx, 880, 56, qroom, kGold, 3);
     P.text(kSetName, qcx, 1110, 40, qroom, 0x8A94B8, 2);
     out.hints = {{"A", "DONE", 0x2EA043}, {"B", "SKIP", 0xC0392B}};
+  } else if (b.mode == 5) {
+    // r238: a LISTED copy in your hand before you buy it (the MARKET's BUY / a collector's binder): what it is, who sells it, at what
+    InspectSnap is;
+    {
+      std::lock_guard<std::mutex> lk(g_inspectM);
+      is = g_inspectSnap;
+    }
+    const xrmarket::Variant iv = is.v;
+    const long long ask = is.ask, mkt = iv.card >= 0 ? xrmarket::price(iv) : 0;  // (the market's lock: no g_mutex here)
+    const std::string who = is.who;
+    const int src = is.src;
+    P.box(qx0, 222, qx1, 1180, 30, 0x151C36);
+    P.text("IN YOUR HAND", qcx, 330, 84, qroom, kGold, 5);
+    P.text(iv.card >= 0 ? upper(g_set[static_cast<size_t>(iv.card)].name) : std::string("?"), qcx, 450, 64, qroom, 0xFFFFFF, 4);
+    P.text(upper(xrmarket::variant_words(iv)), qcx, 530, 48, qroom, 0xB8C2D6, 3);
+    const long long sellNow = mkt > 0 ? xrmarket::bid(iv) : 0;  // r240: (your copy: what SELL NOW pays - the market's lock, no g_mutex here)
+    if (src == 1) {
+      P.text("ASKING " + xrcoin::text(ask) + (who.empty() ? std::string() : "  -  " + who), qcx, 690, 56, qroom, kGold, 4);
+      const int pct = static_cast<int>(std::lround(100.0 * static_cast<double>(ask) / static_cast<double>(std::max(1LL, mkt))));
+      if (mkt > 0) P.text("MARKET " + xrcoin::text(mkt) + "  (" + std::to_string(pct) + "%)", qcx, 780, 48, qroom, pct < 97 ? 0x39FF88 : (pct <= 106 ? kGold : 0xFF4D5E), 3);
+    } else if (src == 3 && mkt > 0) {  // r240: your copy off SELL
+      P.text("YOURS  -  MARKET " + xrcoin::text(mkt), qcx, 690, 56, qroom, kGold, 4);
+      P.text("SELL NOW " + xrcoin::text(sellNow), qcx, 780, 48, qroom, 0x39FF88, 3);
+    } else if (mkt > 0) {
+      P.text("MARKET " + xrcoin::text(mkt), qcx, 720, 56, qroom, kGold, 4);
+    }
+    P.text("TURN IT, TILT IT  -  LET GO: IT GOES BACK", qcx, 940, 44, qroom, 0xB8C2D6, 2);
+    out.hints = {{"GRIP", "HOLD IT", 0x3A4A70}, {"LT RT", "TURN IT OVER", 0x3A4A70}};
+    if (src == 1) out.hints.push_back({"A", "BUY " + xrcoin::text(ask), 0x2EA043});
+    if (src == 3) out.hints.push_back({"A", "SELL NOW " + xrcoin::text(sellNow), 0x2EA043});  // r240
+    out.hints.push_back({"B", "PUT IT BACK", 0xC0392B});
   } else {
    if (b.page == kPageTrade) {
     trade_page(P, b);  // r146
@@ -5253,8 +5339,9 @@ HubPage hub_page(float w, float h, float top, float bottom) {
     } else if (b.page == kPageSets) {  // r146 (r236: the BINDER's other view)
       out.hints = {{"A", "SELECT", 0x2EA043}, {"Y", "PAGES", 0xC9A227}};
       out.aDim = true;
-    } else if (b.page == kPageGrading) {  // r152
-      out.hints = {{"A", "SEND / LOOK", 0x2EA043}, {"X", "SLAB SHELF", 0x2E6FD0}};
+    } else if (b.page == kPageGrading) {  // r152 (r241: YOUR SLABS - A looks at one, X its shelf, Y SEND A CARD)
+      out.hints = {{"A", "LOOK", 0x2EA043}, {"X", "SLAB SHELF", 0x2E6FD0}, {"Y", "SEND A CARD", 0xC9A227}};
+      out.aDim = b.gSlabs.empty();
       if (b.gArmed >= 0 && b.gArmed < static_cast<int>(g_set.size())) {  // r157: A, then A again within 4 s -> one confirm
         const int nS = static_cast<int>(b.gSlabs.size());
         const int ti = b.gCursor - nS;
@@ -5314,7 +5401,7 @@ HubPage hub_page(float w, float h, float top, float bottom) {
       if (b.binderOut) out.hints.push_back({"TRIGGER", "ON A CARD IN IT: TAKE IT", 0x3A4A70});  // r163
     }
   }
-  if (b.mode == 1 || b.mode == 3 || b.mode == 4) out.popup = true;  // r157: the scenes keep their own bar
+  if (b.mode == 1 || b.mode == 3 || b.mode == 4 || b.mode == 5) out.popup = true;  // r157: the scenes keep their own bar (r238: + a listed copy held)
   {  // r157: into the hub's page area (right of its rail)
     const float ox = g_fitOx.load(), oy = g_fitOy.load(), k = g_fitK.load();
     if (k != 1.0f || ox != 0.0f || oy != 0.0f) {
@@ -5642,8 +5729,10 @@ void mk_holdings(std::vector<xrmarket::Holding>* out) {
       add(c, kGoldTizm, k >= gn, kHitNone, k < static_cast<int>(o.golds.size()) ? o.golds[static_cast<size_t>(k)] : 0, 0, 0, 1, false);
     for (const Ref& h : o.hits) add(c, h.parallel, h.shiny, h.hit, h.serial, 0, 0, 1, false);
   }
-  for (const Slab& s : g_slabs)
-    add(s.ref.card, s.ref.parallel, s.ref.shiny, s.ref.hit, s.ref.serial, s.grade, s.cert, 1, s.left > 0);
+  for (const Slab& s : g_slabs) {  // r242: a slab at grading goes out with NO grade (it has none yet) and its matches to go
+    add(s.ref.card, s.ref.parallel, s.ref.shiny, s.ref.hit, s.ref.serial, s.left > 0 ? 0 : s.grade, s.cert, 1, s.left > 0);
+    out->back().left = s.left;
+  }
 }
 Ref mk_ref(const xrmarket::Variant& v) {
   Ref r;
@@ -5712,6 +5801,112 @@ bool mk_take(const xrmarket::Variant& v) {
   mk_changed();
   CLOG("TIZM MARKET: sold %s (finish %d, hit %d)", g_set[static_cast<size_t>(v.card)].key.c_str(), v.parallel, v.hit);
   return true;
+}
+// r240: SELL ALL SHOWN - every copy out as mk_take does, the binder saved + its bonuses once at the end (not once a copy: 1,000 saves)
+int mk_take_many(const std::vector<xrmarket::Variant>& copies, std::vector<uint8_t>* took) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  took->assign(copies.size(), 0);
+  if (g_careerSeed == 0) return 0;
+  int n = 0;
+  bool slabs = false;
+  for (size_t i = 0; i < copies.size(); ++i) {
+    const xrmarket::Variant& v = copies[i];
+    if (v.card < 0 || v.card >= static_cast<int>(g_owned.size())) continue;
+    Owned& o = g_owned[static_cast<size_t>(v.card)];
+    if (v.grade > 0) {
+      for (auto it = g_slabs.begin(); it != g_slabs.end(); ++it)
+        if (it->ref.card == v.card && it->cert == v.cert && it->left == 0) {
+          g_slabs.erase(it);
+          slabs = true;
+          (*took)[i] = 1;
+          ++n;
+          break;
+        }
+      continue;
+    }
+    if (v.hit != kHitNone || g_set[static_cast<size_t>(v.card)].set == 2) {  // (r230: every EXQUISITE copy kept whole)
+      bool have = false;
+      for (const Ref& h : o.hits) have = have || (h.hit == v.hit && h.parallel == v.parallel && h.shiny == v.shiny && h.serial == v.serial);
+      if (!have) continue;
+    } else if (o.n[std::max(0, std::min(3, v.parallel))][v.shiny ? 1 : 0] <= 0) {
+      continue;
+    }
+    add_owned(mk_ref(v), -1);
+    (*took)[i] = 1;
+    ++n;
+  }
+  if (slabs) slabs_sync();
+  if (n > 0) mk_changed();
+  CLOG("TIZM MARKET r240: SELL ALL SHOWN - %d of %d copies out of the binder (saved once)", n, static_cast<int>(copies.size()));
+  return n;
+}
+// r241 (Lance 11-13: "i cant grade an emerald /25 iron man ... but i have them in my collection"): CARDS > GRADING sends THE EXACT COPY picked
+// on its list (xr_market grade_*: every kind of copy you own, one row each) - r152-r240 sent grade_pick's "finest" copy of a card, one tile a
+// card. This copy is yours and free - not listed, not in an open collector trade (g_listedV: both), not in your museum (g_museumV), not in a
+// slab (slabs aren't in g_owned) - matched exactly: card, finish, shiny, case hit, its number (a GOLD's, an EXQUISITE tier + number). Then as
+// r152's grade_send: its cost (grade_cost), sealed, its grade rolled, its cert, back after kGradeMatches. 0 sent (*cert), 1 coins, 2 not yours,
+// 3 locked. (The market's lock -> g_mutex -> g_listedM / g_museumM, as mk_take; nothing called back.)
+static_assert(kGradeMatches == xrmarket::kGradeBackMatches, "the GRADING list's words (xr_market.h kGradeBackMatches)");
+namespace {
+int roll_grade(uint64_t& rng);  // (below: r152's grade roll)
+}  // namespace
+bool same_copy(const xrmarket::Variant& a, const Ref& r) {
+  return a.card == r.card && a.parallel == r.parallel && a.shiny == r.shiny && a.hit == r.hit && a.serial == r.serial && a.grade == 0;
+}
+int mk_grade_send(const xrmarket::Variant& v, uint32_t* cert) {
+  Slab s;
+  int cost = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_careerSeed == 0 || v.grade > 0 || v.card < 0 || v.card >= static_cast<int>(g_owned.size())) return 2;
+    const Owned& o = g_owned[static_cast<size_t>(v.card)];
+    const Ref r = mk_ref(v);
+    int have = 0;
+    if (r.hit != kHitNone || g_set[static_cast<size_t>(r.card)].set == 2) {  // (a case hit / an EXQUISITE copy: each whole)
+      for (const Ref& h : o.hits) have += h.hit == r.hit && h.parallel == r.parallel && h.shiny == r.shiny && h.serial == r.serial ? 1 : 0;
+    } else if (r.parallel == kGoldTizm) {  // (a GOLD /10: its number)
+      bool num = false;
+      for (int g : o.golds) num = num || g == r.serial;
+      have = num && o.n[kGoldTizm][r.shiny ? 1 : 0] > 0 ? 1 : 0;
+    } else {
+      have = o.n[r.parallel][r.shiny ? 1 : 0];
+    }
+    if (have <= 0) return 2;
+    int locked = 0;
+    {
+      std::lock_guard<std::mutex> ll(g_listedM);
+      for (const xrmarket::Variant& x : g_listedV) locked += same_copy(x, r) ? 1 : 0;
+    }
+    {
+      std::lock_guard<std::mutex> ml(g_museumM);
+      for (const xrmarket::Variant& x : g_museumV) locked += same_copy(x, r) ? 1 : 0;
+    }
+    if (have - locked <= 0) return 3;
+    cost = grade_cost(r);
+    if (g_coins < cost) return 1;
+    coins_take(cost);
+    s.ref = r;
+    uint64_t rng = g_salt ^ (static_cast<uint64_t>(++g_gradeSent) * 0xC2B2AE3D27D4EB4Full);
+    s.grade = 0;  // r242: NOT rolled now - rolled when it's back (slabs_tick -> grade_at_return): nothing can show it before
+    for (int guard = 0; guard < 64; ++guard) {  // its cert: 8 digits, no other slab's
+      s.cert = 10000000u + static_cast<uint32_t>(mix64(rng) % 90000000ull);
+      bool used = false;
+      for (const Slab& x : g_slabs) used = used || x.cert == s.cert;
+      if (!used) break;
+    }
+    s.left = kGradeMatches;
+    s.when = static_cast<long long>(std::time(nullptr));
+    add_owned(r, -1);  // (out of its copies: sealed)
+    g_slabs.push_back(s);
+    slabs_sync();
+    save_collection();
+    bonuses_update();
+    CLOG("TIZM GRADING r241: %s sent for %d coins (cert %u), back after %d matches - picked on the GRADING list", pull_text(r).c_str(), cost, s.cert, kGradeMatches);
+  }
+  ++g_gen;
+  coin_sound(2);
+  if (cert != nullptr) *cert = s.cert;
+  return 0;
 }
 long long mk_balance() {
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -5853,6 +6048,9 @@ void mk_install() {  // (game thread, the set loaded: once)
   s.holdings = &mk_holdings;
   s.give = &mk_give;
   s.take = &mk_take;
+  s.take_many = &mk_take_many;  // r240: SELL ALL SHOWN (the binder saved once)
+  s.grade_cost = [](const xrmarket::Variant& v) { return grade_cost(mk_ref(v)); };  // r241: CARDS > GRADING's list (pure)
+  s.grade_send = &mk_grade_send;                                                     // r241: THAT copy sealed
   s.portrait = &mk_portrait;
   s.listed = [](const std::vector<xrmarket::Variant>& v) {  // r210: listed copies stay out of trade-ins + grading
     {
@@ -6265,6 +6463,7 @@ void poll() {
       if (mg != s_museumGen) {
         s_museumGen = mg;
         std::vector<xrmarket::Variant> v = xrmuseum::items();
+        xrmarket::set_museum(v);  // r240: the market's SELL keeps museum copies out of SELL ALL SHOWN (its own lock alone: no lock held here)
         std::lock_guard<std::mutex> lock(g_museumM);
         if (v.size() != g_museumV.size()) ++g_gen;
         g_museumV.swap(v);
@@ -6274,8 +6473,14 @@ void poll() {
       WdScope wdt("game thread", "COLLECTORS frame (the twenty's matchday, the index)");  // r237
       if (xrtrade::frame(now)) ++g_gen;  // r213: COLLECTOR TRADES (after the market: this career's prices first)
     }
-    if (g_page.load() == kPageMarket && xrmarket::redraw_due()) ++g_gen;  // r206: the flash / the last word, a few pictures only
-    if ((g_page.load() != kPageMarket || g_sceneMode.load() != 0) && xrmarket::search_open()) xrmarket::search_close();  // r235: (off the page: its letter grid down)
+    // r241: + GRADING's SEND A CARD (the market draws it: its flash / last word, its search panel's pointer)
+    const bool gradeList = g_page.load() == kPageGrading && g_gradeView.load() == 0;
+    if ((g_page.load() == kPageMarket || g_page.load() == kPageHot || gradeList) && xrmarket::redraw_due()) ++g_gen;  // r206: the flash / the last word, a few pictures only (r242: + HOT 20)
+    {  // r235: (off the page: its letter grid down) - r241: the panel is the page's own (the market's on MARKET, GRADING's on GRADING)
+      const int sm = xrmarket::search_mode();
+      if (sm != 0 && (g_sceneMode.load() != 0 || (sm == 1 && g_page.load() != kPageMarket) || (sm == 2 && !gradeList))) xrmarket::search_close();
+    }
+    if (!gradeList) xrmarket::grade_leave();  // r241: (a send asking dropped when the list isn't up - an atomic look otherwise)
     if (g_page.load() == kPageMuseum && xrmuseum::redraw_due()) ++g_gen;
     if (g_page.load() == kPageCollectors && xrtrade::redraw_due()) ++g_gen;
   }
@@ -6379,6 +6584,27 @@ void poll() {
     }
   }
   if (g_careerSeed == 0 || seed != g_careerSeed) return;  // r153: (a match's coins / packs: its own career's)
+  // r242: TIZM GRADING - your club's franchise matches with a result since the last frame (played OR simmed, each once): the slabs that much
+  // nearer, graded the moment they're back. (r152-r241: one tick when a played match's packs were taken - a simmed match never counted)
+  const int matches = PortFranchiseTakeCardMatches(seed);
+  if (matches > 0) {
+    int back = 0;
+    std::string first;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      back = slabs_tick(matches);
+      for (const Slab& s : g_slabs)
+        if (back > 0 && first.empty() && s.left == 0 && !s.seen && s.ref.card >= 0 && s.ref.card < static_cast<int>(g_set.size())) first = upper(g_set[static_cast<size_t>(s.ref.card)].name);
+      save_collection();
+      CLOG("TIZM GRADING r242: %d match%s of yours (played or simmed) - %d slab%s back", matches, matches == 1 ? "" : "es", back, back == 1 ? "" : "s");
+    }
+    ++g_gen;
+    // r242 (Lance 11-13: he often doesn't notice a slab came back): THE MAIL - the hub's pop-up (xr_quest: over everything, a buzz, the
+    // moment the hub is up again - never in a match). Its words never say the grade: that's the BACK FROM GRADING reveal's (CARDS)
+    if (back > 0)
+      xrmarket::post_notice("TIZM GRADING - MAIL", back == 1 ? "YOUR SLAB IS BACK!" : std::to_string(back) + " SLABS ARE BACK!",
+                            (back == 1 && !first.empty() ? first + " - " : std::string()) + "OPEN IT: CARDS > GRADING");
+  }
   // r140: TIZM COINS from a match just played (the moment it ends): kept, a coin's ring
   char why[512] = {};
   const int coins = PortFranchiseTakeCardCoins(why, static_cast<int>(sizeof(why)));
@@ -6406,10 +6632,7 @@ void poll() {
     std::lock_guard<std::mutex> lock(g_mutex);
     add_packs(n, flags, &prefetch);
     add_packs(nJam, flags | kJamPack, &prefetch);
-    // r152: a franchise match played (its packs: one a match): TIZM GRADING's slabs a match nearer coming back
-    for (Slab& s : g_slabs)
-      if (s.left > 0 && --s.left == 0) CLOG("TIZM GRADING: %s back - grade %d", pull_text(s.ref).c_str(), s.grade);
-    slabs_sync();
+    // (r152-r241 ticked TIZM GRADING's slabs here, one a pack take - r242: above, from PortFranchiseTakeCardMatches)
     save_collection();
     CLOG("%d pack%s + %d JAM '96 earned (%s%s%s), %d waiting", n, n == 1 ? "" : "s", nJam, (flags & 1) ? "a win" : "a match",
          (flags & 2) ? ", a playoff series won" : "", (flags & 4) ? ", a trophy" : "", static_cast<int>(g_packs.size()));
@@ -6551,7 +6774,7 @@ static int grade_send(int card, Slab* sent) {
     Slab s;
     s.ref = r;
     uint64_t rng = g_salt ^ (static_cast<uint64_t>(++g_gradeSent) * 0xC2B2AE3D27D4EB4Full);
-    s.grade = roll_grade(rng);
+    s.grade = 0;  // r242: rolled when it's back (slabs_tick)
     for (int guard = 0; guard < 64; ++guard) {  // its cert: 8 digits, no other slab's
       s.cert = 10000000u + static_cast<uint32_t>(mix64(rng) % 90000000ull);
       bool used = false;
@@ -6845,8 +7068,21 @@ struct Scene3 {
   uint64_t gradeNs = 0;
   XrVector3f revealAt{0.0f, 0.0f, 0.0f};
   bool gradeHit = false;  // (its grade's moment had)
+  // r238 (Lance 11-12: "viewing a card in binder, the moment you grab it, it goes back in binder" / "buying a card from someone, i wanna be able
+  // to hold it before i buy"): a card out that a hand has held (let go: back where it came from after kLetGoS - a re-grip or the other hand
+  // meanwhile keeps it), when it was let go (0 held / never); `inspect` a LISTED copy in your hand (1 the MARKET's BUY: A buys that copy, 2 a
+  // collector's binder on his desk), its copy + the asking price + who sells it; the MARKET / COLLECTORS page last up (its grip: inspect)
+  bool outHeld = false;
+  uint64_t letGoNs = 0;
+  int inspect = 0;
+  xrmarket::Variant inspectV;
+  long long inspectAsk = 0;
+  std::string inspectWho;
+  uint64_t mkUpNs = 0;
 };
 Scene3 S;
+constexpr float kLetGoS = 0.6f;          // r238
+constexpr int kInspectSlab = 1 << 20;    // r238: S.outSlab for a listed copy's slab (not one of yours: S.slab is it, never g_slabs)
 // r230: LANCINI EXQUISITE's opening (xr_cards_vault.inc, below): THE VAULT case, the private gallery's mood
 std::atomic<float> g_gallery{0.0f};
 uint64_t g_lastRevealNs = 0;  // (the last card's reveal: the gallery eases back a while after the last)
@@ -7392,6 +7628,7 @@ void end_scene(bool fxReady) {
   slab_end(fxReady);      // r152
   S.outSlab = -1;
   S.gradeNs = 0;
+  S.outHeld = false, S.letGoNs = 0, S.inspect = 0;  // r238
   specials_end(fxReady);  // r138
   for (bool& b : S.boomShown) b = false;  // r150
   for (int h = 0; h < 2; ++h) S.hold[h] = -1;
@@ -7556,6 +7793,7 @@ void look_card(int card, uint64_t now, const XrVector3f* from, int slab = -2) {
   S.n = 1;
   S.pack.on = false;
   S.outSlab = -1;
+  S.inspect = 0, S.outHeld = false, S.letGoNs = 0;  // r238
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     // your finest copy of it: its finest finish (a shiny one of that if you have it), a GOLD's lowest number
@@ -7603,6 +7841,53 @@ void look_card(int card, uint64_t now, const XrVector3f* from, int slab = -2) {
   drop_cards_model(true);
   ask_pictures(false);
   specials_plan(now, true);  // r138: a special card's 3D out of the binder too (r152: in a slab only a window's room)
+  special_focus(0, now, true);
+  ++g_gen;
+}
+// r238 (Lance 11-12: "buying a card from someone, i wanna be able to hold it before i buy"): a LISTED copy - the MARKET's BUY, a collector's
+// binder on his desk - out of the hub's picture into the hand that gripped it: THAT copy (its finish, its number, its case hit, its shiny,
+// its grade in its slab), not yours. `src` 1 the market (A in your hand: the BUY confirm for it), 2 a collector's desk. Its 3D, foil and
+// die-cut as any card out of the binder (the same scene: kOut); letting go sends it back (kLetGoS), B too.
+void look_copy(const xrmarket::Variant& v, long long ask, const std::string& who, int src, uint64_t now, const XrVector3f* from) {
+  if (v.card < 0 || v.card >= static_cast<int>(g_set.size())) return;
+  set_anchor();
+  S.mode = kOut;
+  S.phase = kStack;
+  S.t0 = S.phaseNs = now;
+  S.n = 1;
+  S.pack.on = false;
+  S.outSlab = -1;
+  S.inspect = src, S.inspectV = v, S.inspectAsk = ask, S.inspectWho = who, S.outHeld = false, S.letGoNs = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_inspectM);  // (the hub's picture reads this copy - a leaf lock)
+    g_inspectSnap.v = v, g_inspectSnap.ask = ask, g_inspectSnap.who = who, g_inspectSnap.src = src;
+  }
+  const Ref r = mk_ref(v);
+  if (v.grade > 0) {  // (its slab: a stranger's - its grade, its cert; never one of g_slabs)
+    S.outSlab = kInspectSlab;
+    S.slab = Slab();
+    S.slab.ref = r;
+    S.slab.grade = std::max(1, std::min(10, v.grade));
+    S.slab.cert = v.cert;
+    S.slab.seen = true;
+  }
+  S.refs[0] = r;
+  if (src == 3)  // r240: your own copy off SELL
+    CLOG("r240: holding your copy on SELL - %s%s, market %lld", pull_text(r).c_str(), v.grade > 0 ? (", graded " + std::to_string(v.grade)).c_str() : "", ask);
+  else
+    CLOG("r238: holding a listed copy before buying - %s%s from %s, asking %lld", pull_text(r).c_str(), v.grade > 0 ? (", graded " + std::to_string(v.grade)).c_str() : "",
+         who.c_str(), ask);
+  sheet_reset(S.card[0], kCardWm, kCardHm);
+  Sheet& s = S.card[0];
+  s.tPos = v_add(v_add(S.anchor, v_mul(S.fwd, 0.40f)), XrVector3f{0.0f, -0.04f, 0.0f});
+  s.pos = from != nullptr ? *from : v_add(s.tPos, XrVector3f{0.0f, -0.3f, 0.0f});
+  s.lastPos = s.pos;
+  s.scale = 0.3f;
+  s.tScale = S.outSlab >= 0 ? 1.15f : 1.45f;
+  g_sceneMode = 5;
+  drop_cards_model(true);
+  ask_pictures(false);
+  specials_plan(now, true);
   special_focus(0, now, true);
   ++g_gen;
 }
@@ -8387,6 +8672,24 @@ void hold_sheets(const bool grip[2], const bool have[2], const XrVector3f hand[2
       }
       s->pose = q_unit(q_mul(S.handQ[h], s->relQ[h]));
       s->pos = v_add(hand[h], q_rot(S.handQ[h], s->relP[h]));
+    }
+  }
+  // r238 (Lance 11-12: "viewing a card in binder, the moment you grab it, it goes back in binder" - his X is on the right grip, so the grab
+  // itself was an X = "back in the binder": xr_quest keeps a grip's own button out of a card scene now): a card out stays in your hand while
+  // you hold it - turn it, tilt it, pass it hand to hand; LET GO (no hand on it for kLetGoS) and it goes back where it came from
+  if (S.mode == kOut && S.n >= 1) {
+    if (S.card[0].hands != 0) {
+      S.outHeld = true;
+      S.letGoNs = 0;
+    } else if (S.outHeld) {
+      if (S.letGoNs == 0) {
+        S.letGoNs = now;
+      } else if (secs(now, S.letGoNs) >= kLetGoS) {
+        S.outHeld = false;
+        S.letGoNs = 0;
+        S.askAway = true;
+        CLOG("r238: the card let go - back %s", S.inspect == 3 ? "to your SELL list" : (S.inspect != 0 ? "to its seller's listing" : "in the binder"));  // (r240: + yours)
+      }
     }
   }
 }
@@ -14720,6 +15023,7 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   WdScope wd("game thread", "hub input");  // r237
   if (g_page.load() == kPageCollectors && g_sceneMode.load() == 0) {  // r213: COLLECTOR TRADES - as the market (r206's rule: redraw on change only)
     WdScope wdp("game thread", "COLLECTORS input");  // r237
+    S.mkUpNs = mono_ns();  // r238: (its page up: a grip on his binder holds that copy - hands())
     *stick = in.dir != 0;
     const int genBefore = xrtrade::generation();
     xrtrade::Input ti;
@@ -14736,8 +15040,58 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
     }
     return used || *stick;
   }
+  if (g_page.load() == kPageHot && g_sceneMode.load() == 0) {  // r242: HOT 20 (xr_market's page: redraw on change only, as the market)
+    WdScope wdp("game thread", "HOT 20 input");
+    *stick = in.dir != 0;
+    const int genBefore = xrmarket::generation();
+    xrmarket::Input mi;
+    mi.dir = in.dir;
+    mi.step = in.step;
+    mi.a = in.a;
+    mi.b = in.b && xrmarket::hot_busy();  // (B: back from his actions to the list - else the hub's: off the page)
+    mi.x = in.x;
+    mi.y = in.y;
+    const bool used = xrmarket::hot_input(mi);
+    if (xrmarket::hot_take_jump() != 0) set_rail_page(kRailMarket);  // (BUY / SELL / SALES: MARKET on that tab - the hub's rail follows)
+    if (xrmarket::generation() != genBefore) {
+      *redraw = true;
+      ++g_gen;
+    }
+    return used || *stick || mi.b;
+  }
+  if (g_page.load() == kPageGrading && g_gradeView.load() == 0 && g_sceneMode.load() == 0) {  // r241: GRADING's SEND A CARD (xr_market's list)
+    WdScope wdp("game thread", "GRADING input");
+    *stick = in.dir != 0;
+    const int genBefore = xrmarket::generation();
+    if (in.y && !xrmarket::grade_busy()) {  // Y: YOUR SLABS (r152's slab row)
+      xrmarket::grade_leave();
+      g_gradeView = 1;
+      {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_gradeSay.clear();
+        g_gradeArmed = -1;
+      }
+      ++g_gen;
+      *redraw = true;
+      return true;
+    }
+    xrmarket::Input mi;
+    mi.dir = in.dir;
+    mi.step = in.step;
+    mi.a = in.a;
+    mi.b = in.b;
+    mi.x = in.x;
+    mi.y = in.y;
+    const bool used = xrmarket::grade_input(mi);
+    if (xrmarket::generation() != genBefore) {  // (r206's rule: a picture only when the list changed)
+      *redraw = true;
+      ++g_gen;
+    }
+    return used || *stick || in.y;
+  }
   if ((g_page.load() == kPageMarket || g_page.load() == kPageMuseum) && g_sceneMode.load() == 0) {  // r201
     WdScope wdp("game thread", g_page.load() == kPageMarket ? "MARKET input" : "MUSEUM input");  // r237
+    if (g_page.load() == kPageMarket) S.mkUpNs = mono_ns();  // r238: (its page up: a grip on BUY's copy holds it - hands())
     *stick = in.dir != 0;
     bool used;
     const bool mk = g_page.load() == kPageMarket;
@@ -14807,6 +15161,18 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
     if (lt || rt) {
       Sheet& s = S.card[0];
       start_flip(s, s.flipTo > 1.0f ? 0.0f : 3.14159265f, 0.5f, now, false);
+    }
+    if (S.inspect != 0) {  // r238: a LISTED copy in your hand - A (the market's): BUY THIS COPY (its confirm on BUY), B / A (a desk's): back
+      if (in.a && S.inspect == 1) {
+        const bool ok = xrmarket::inspect_buy(S.inspectV, S.inspectAsk);  // (the market's lock: no g_mutex held here)
+        CLOG("r238: A on the copy in your hand - %s", ok ? "BUY asks for it" : "it isn't for sale any more");
+      }
+      if (in.a && S.inspect == 3) {  // r240: your copy off SELL - A: SELL NOW's confirm for that very copy
+        const bool ok = xrmarket::inspect_sell(S.inspectV);
+        CLOG("r240: A on your copy in your hand - %s", ok ? "SELL NOW asks for it" : "it can't sell now");
+      }
+      if (in.a || in.b) S.askAway = true;
+      return in.a || in.b || in.x || lt || rt;
     }
     if (in.a || in.b || in.x) S.askAway = true;
     return in.a || in.b || in.x || lt || rt;
@@ -15149,6 +15515,17 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
   // card arms its send, A again sends it (its coins); A on a slab back takes it out in front of you; X on a slab back puts
   // it on / off your room's slab shelf (kDisplaySlabs at most); RT back to SETS
   if (g_page.load() == kPageGrading) {
+    if (in.y) {  // r241: Y back to SEND A CARD (the list of every copy you own)
+      g_gradeView = 0;
+      {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_gradeArmed = -1;
+        g_gradeSay.clear();
+      }
+      ++g_gen;
+      *redraw = true;
+      return true;
+    }
     int look = -1, send = -1;
     {
       std::lock_guard<std::mutex> lock(g_mutex);
@@ -15166,7 +15543,8 @@ bool hub_input(const Input& in, bool* redraw, bool* stick) {
     }
     if (send < 0) {
       std::lock_guard<std::mutex> lock(g_mutex);
-      const std::vector<int> slabs = grading_slab_order(), tiles = grading_tiles();
+      // r241: YOUR SLABS only - cards are sent from SEND A CARD (Y), the exact copy (r152-r240: the grid of grading_tiles here)
+      const std::vector<int> slabs = grading_slab_order(), tiles;
       const int nS = static_cast<int>(slabs.size()), nT = static_cast<int>(tiles.size()), n = nS + nT;
       int c = std::max(0, std::min(std::max(0, n - 1), g_gradeCursor));
       if (in.step && n > 0) {
@@ -15416,9 +15794,165 @@ bool wants_y() {  // (r201: the market's COUNTER; r213: the collectors' SEND / C
 }
 #ifdef HARNESS_REAL_CARDS  // (tools/outside/menus_render157: the pop-up pages drawn without their 3D)
 void harness_scene(int mode) { g_sceneMode = mode; }
+// r238 (tools\outside\market238\render238 hold238.inc): the card-in-hand state - the scene (0 none, 2 out, 4 away ...), the hub page's mode,
+// the hands on the card out (1 left, 2 right), whether a hand once held it, a listed copy's source (0 yours, 1 the market, 2 a desk), its card
+void harness_hold(int* mode, int* page, int* hands, bool* held, int* inspect, int* card) {
+  *mode = static_cast<int>(S.mode);
+  *page = g_sceneMode.load();
+  *hands = S.n >= 1 ? S.card[0].hands : 0;
+  *held = S.outHeld;
+  *inspect = S.inspect;
+  *card = S.n >= 1 ? S.refs[0].card : -1;
+}
+void harness_card_at(float* pos, bool shown) {  // r238: the card out - where it is; `shown` as if its pictures were up (no GPU here)
+  if (S.n < 1) return;
+  if (shown) S.card[0].shown = true;
+  pos[0] = S.card[0].pos.x, pos[1] = S.card[0].pos.y, pos[2] = S.card[0].pos.z;
+}
+void harness_pocket(int slot, float* X, float* Y) {  // r238: a binder pocket's middle on the hub's picture (2160 x 1300)
+  float x0, y0, x1, y1;
+  pocket_rect(slot, &x0, &y0, &x1, &y1);
+  const float ox = g_fitOx.load(), oy = g_fitOy.load(), k = g_fitK.load();
+  *X = ox + 0.5f * (x0 + x1) * k;
+  *Y = oy + 0.5f * (y0 + y1) * k;
+}
 void harness_page(int railIndex, bool sets) {  // r236: a page by its rail index (sets: the BINDER's SETS view)
   set_rail_page(railIndex);
   if (sets) g_page = kPageSets;
+}
+// r241 (tools\outside\grade241): GRADING's view (0 SEND A CARD, 1 YOUR SLABS); n franchise matches played for the slabs (as take_packs' r152
+// loop: a match nearer, back at 0); a copy sent straight through the binder's own check (as the market's YES calls it); the binder's state
+int harness_grade_view(int v) {
+  if (v >= 0) g_gradeView = v;
+  return g_gradeView.load();
+}
+void harness_matches(int n) {  // (r242: the same slabs_tick poll runs on PortFranchiseTakeCardMatches)
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (int k = 0; k < n; ++k) slabs_tick(1);
+  ++g_gen;
+}
+int harness_grade_send(const xrmarket::Variant& v, uint32_t* cert) { return mk_grade_send(v, cert); }
+// r242 (tools\outside\grade242): the grade a cert gets when it's back (as slabs_tick rolls it), the odds over n certs (counts per grade),
+// a slab's seen flag (its BACK FROM GRADING reveal still to come)
+int harness_grade_at_return(uint32_t cert) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return grade_at_return(cert);
+}
+void harness_grade_odds(int n, long long counts[11]) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (int g = 0; g < 11; ++g) counts[g] = 0;
+  for (int i = 0; i < n; ++i) counts[grade_at_return(10000000u + static_cast<uint32_t>((static_cast<uint64_t>(i) * 2654435761ull) % 90000000ull))] += 1;
+}
+bool harness_slab_seen(int i) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return i >= 0 && i < static_cast<int>(g_slabs.size()) && g_slabs[static_cast<size_t>(i)].seen;
+}
+bool harness_give(const xrmarket::Variant& v) { return mk_give(v); }  // (a copy into the binder, as a market buy)
+// r241 EXQUISITE over EVERY character: `packs` packs rolled by the shipping roller (roll_exq_pack - the loaded binder's numbers taken, nothing
+// kept), its counts: per slot's tier, per character, wrong (a non-rookie RPA, the same character twice in a pack, a bad number, out of order),
+// THE VAULT's repeats (5 packs in a row: a character a 2nd time in the case); the binder's own Exquisite copies (its counts by card id)
+void harness_exq_sim(int packs, uint64_t seed, std::string* out) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  uint64_t rng = seed;
+  long long num[xrexq::kTiers] = {}, hit[xrexq::kTiers] = {};
+  std::unordered_map<int, long long> perChar;
+  long long wrongRpa = 0, twice = 0, badNum = 0, order = 0, empty = 0, vaultRepeats = 0, vaults = 0, vaultWithRepeat = 0;
+  std::unordered_map<int, int> inVault;
+  int pool = 0, rookies = 0;
+  for (const Card& c : g_set)
+    if (c.here && c.set == 2) ++pool, rookies += exq_rookie(c) ? 1 : 0;
+  for (int i = 0; i < packs; ++i) {
+    const Pack p = roll_exq_pack(rng, {});
+    if (i % 5 == 0) inVault.clear();
+    for (int s = 0; s < xrexq::kPackCards; ++s) {
+      const Ref& r = p.cards[s];
+      if (r.card < 0) {
+        ++empty;
+        continue;
+      }
+      const int t = xrexq::tier_of(r.serial);
+      if (!xrexq::valid(r.serial)) ++badNum;
+      (s == xrexq::kPackCards - 1 ? hit : num)[t] += 1;  // (the hit slot's / a numbered slot's)
+      if (t == xrexq::kRpa && !exq_rookie(g_set[static_cast<size_t>(r.card)])) ++wrongRpa;
+      ++perChar[r.card];
+      if (++inVault[r.card] == 2) ++vaultRepeats;
+      for (int k = 0; k < s; ++k) twice += p.cards[k].card == r.card ? 1 : 0;
+      if (s > 0 && exq_score(p.cards[s - 1]) > exq_score(r)) ++order;
+    }
+    if (i % 5 == 4) {
+      ++vaults;
+      bool rep = false;
+      for (const auto& kv : inVault) rep = rep || kv.second >= 2;
+      vaultWithRepeat += rep ? 1 : 0;
+    }
+  }
+  long long mn = -1, mx = 0;
+  for (size_t i = 0; i < g_set.size(); ++i)
+    if (g_set[i].here && g_set[i].set == 2) {
+      const long long n = perChar.count(static_cast<int>(i)) ? perChar[static_cast<int>(i)] : 0;
+      mn = mn < 0 ? n : std::min(mn, n);
+      mx = std::max(mx, n);
+    }
+  char b[512];
+  std::snprintf(b, sizeof(b), "EXQSIM packs %d | checklist %d (on this headset %d, rookies %d) | characters seen %d | per character min %lld max %lld\n", packs, g_exqN, pool, rookies,
+                static_cast<int>(perChar.size()), mn, mx);
+  *out += b;
+  for (int t = 1; t < xrexq::kTiers; ++t) {
+    std::snprintf(b, sizeof(b), "EXQSIM tier %d %s: numbered slots %lld (%.4f%% of them), hit slot %lld (%.4f%%)\n", t, xrexq::name(t), num[t],
+                  100.0 * num[t] / std::max(1, packs * (xrexq::kPackCards - 1)), hit[t], 100.0 * hit[t] / std::max(1, packs));
+    *out += b;
+  }
+  std::snprintf(b, sizeof(b), "EXQSIM wrong: non-rookie RPAs %lld, a character twice in a pack %lld, bad numbers %lld, out of order %lld, empty places %lld\n", wrongRpa, twice, badNum,
+                order, empty);
+  *out += b;
+  std::snprintf(b, sizeof(b), "EXQSIM vaults %lld: repeats (a character a 2nd+ time in the case) %lld = %.4f a vault; vaults with a repeat %lld = %.2f%%\n", vaults, vaultRepeats,
+                vaults > 0 ? static_cast<double>(vaultRepeats) / vaults : 0.0, vaultWithRepeat, vaults > 0 ? 100.0 * vaultWithRepeat / vaults : 0.0);
+  *out += b;
+  // the binder's own Exquisite copies (his save: intact whatever the checklist's length)
+  int copies = 0;
+  std::string ids;
+  for (size_t i = 0; i < g_owned.size(); ++i) {
+    if (g_set[i].set != 2) continue;
+    for (const Ref& h : g_owned[i].hits) ++copies, ids += g_set[i].id + ":" + std::to_string(h.serial) + " ";
+    for (const Ref& h : g_owned[i].sealed) ++copies, ids += g_set[i].id + ":" + std::to_string(h.serial) + ":slab ";
+  }
+  *out += "EXQSIM binder's Exquisite copies " + std::to_string(copies) + ": " + ids + "\n";
+}
+int harness_card(const char* id) {  // (a card's index by its id: "pk_charizard_exq")
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto it = g_byKey.find(id);
+  return it == g_byKey.end() ? -1 : it->second;
+}
+void harness_set_museum(const std::vector<xrmarket::Variant>& v) {  // (as poll does from xrmuseum::items())
+  xrmarket::set_museum(v);
+  std::lock_guard<std::mutex> lock(g_museumM);
+  g_museumV = v;
+}
+void harness_grade_state(std::vector<std::string>* slabs, long long* coins, int* copies) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  *coins = g_coins;
+  int n = 0;
+  for (const Owned& o : g_owned) n += o.free_total();
+  *copies = n;
+  slabs->clear();
+  for (const Slab& s : g_slabs)
+    slabs->push_back(g_set[static_cast<size_t>(s.ref.card)].id + "|" + pull_text(s.ref) + "|grade " + std::to_string(s.grade) + "|cert " + std::to_string(s.cert) +
+                     "|left " + std::to_string(s.left) + "|set " + std::to_string(g_set[static_cast<size_t>(s.ref.card)].set));
+}
+// the slab label (its own picture as the slab model / museum draw it: slab_label) of g_slabs[i], w x h
+bool harness_slab_label(int i, int w, int h, std::vector<uint8_t>* px) {
+  Card c;
+  Slab s;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (i < 0 || i >= static_cast<int>(g_slabs.size())) return false;
+    s = g_slabs[static_cast<size_t>(i)];
+    c = g_set[static_cast<size_t>(s.ref.card)];
+  }
+  Pc P;
+  slab_label(P, c, s.ref, s.left > 0 ? 0 : s.grade, s.cert, static_cast<float>(w), static_cast<float>(h));
+  *px = board_px(w, h, P);
+  return true;
 }
 void harness_wear(int skin, int sleeve) {  // r160 round 2: a skin on (the binder page's renders; r163: no sleeves)
   (void)sleeve;
@@ -15951,8 +16485,13 @@ void slab_prepare(int k) {
   Slab s;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (k < 0 || k >= static_cast<int>(g_slabs.size())) return;
-    s = g_slabs[static_cast<size_t>(k)];
+    if (k == kInspectSlab) {  // r238: a listed copy's slab (not yours: the scene's own)
+      if (S.slab.ref.card < 0 || S.slab.ref.card >= static_cast<int>(g_set.size())) return;
+      s = S.slab;
+    } else {
+      if (k < 0 || k >= static_cast<int>(g_slabs.size())) return;
+      s = g_slabs[static_cast<size_t>(k)];
+    }
     c = g_set[s.ref.card];
   }
   auto p = std::make_shared<SlabPics>();
@@ -17812,6 +18351,46 @@ void hands(const bool grip[2], const bool have[2], const XrVector3f hand[2], con
       }
     }
   }
+  // r238 (Lance 11-12: "buying a card from someone, i wanna be able to hold it before i buy"): HOLD BEFORE YOU BUY - a grip with its pointer
+  // on the MARKET's BUY (a copy's row, or the focused copy's panel) or on a collector's binder on his desk: THAT copy into the hand
+  const bool mkUp = S.mkUpNs != 0 && mono_ns() - S.mkUpNs < 200000000ull;
+  if (S.mode == kNone && mkUp && S.hubValid && S.hubW > 0.0f && S.hubH > 0.0f && g_loaded.load() &&
+      (g_page.load() == kPageMarket || g_page.load() == kPageCollectors) && g_sceneMode.load() == 0) {
+    for (int h = 0; h < 2 && S.mode == kNone; ++h) {
+      if (!(grip[h] && !S.prevGrip[h] && have[h] && aim[h] != nullptr)) continue;
+      const XrQuaternionf qi = q_conj(S.hubPose.orientation);
+      const XrVector3f o = q_rot(qi, v_sub(aim[h]->position, S.hubPose.position));
+      const XrVector3f d = q_rot(qi, q_rot(aim[h]->orientation, XrVector3f{0.0f, 0.0f, -1.0f}));
+      if (std::fabs(d.z) < 1e-3f) continue;
+      const float t = -o.z / d.z;
+      if (t <= 0.0f || t > 8.0f) continue;
+      const float X = ((o.x + d.x * t) / S.hubW + 0.5f) * 2160.0f, Y = (0.5f - (o.y + d.y * t) / S.hubH) * 1300.0f;
+      const float ox = g_fitOx.load(), oy = g_fitOy.load(), k = std::max(0.01f, g_fitK.load());
+      const float px = (X - ox) / k - 470.0f, py = (Y - oy) / k - 222.0f;  // (the page's own units: market_museum_page draws it at 470, 222)
+      xrmarket::Variant v;
+      long long ask = 0;
+      std::string who;
+      int src = 0;
+      if (g_page.load() == kPageMarket && xrmarket::inspect_at(px, py, &v, &ask, &who)) src = 1;
+      else if (g_page.load() == kPageMarket && xrmarket::inspect_mine_at(px, py, &v, &ask)) src = 3, who.clear();  // r240: SELL - your copy
+      else if (g_page.load() == kPageCollectors && xrtrade::inspect_at(px, py, &v)) src = 2, ask = xrmarket::price(v);
+      if (src == 0) continue;
+      const XrVector3f at = v_add(S.hubPose.position, q_rot(S.hubPose.orientation, XrVector3f{(X / 2160.0f - 0.5f) * S.hubW, (0.5f - Y / 1300.0f) * S.hubH, 0.03f}));
+      look_copy(v, ask, who, src, now, &at);
+      if (S.mode != kOut) continue;
+      Sheet& s = S.card[0];
+      const XrVector3f tip = v_add(aim[h]->position, q_rot(aim[h]->orientation, XrVector3f{0.0f, 0.03f, -0.11f}));
+      s.free = true;
+      s.hands = 1 << h;
+      S.hold[h] = 1;
+      S.spent[h] = true;
+      sheet_take(s, h, hand[h]);
+      s.relPTo = q_rot(q_conj(S.handQ[h]), v_sub(tip, hand[h]));
+      s.offFade = 0.4f;
+      S.prevGrip[h] = true;
+      buzz(0.3f, 0.05f);
+    }
+  }
   vault_hands(grip, have, hand, now);  // r230: THE VAULT's latches (before the pack can be taken)
   hold_sheets(grip, have, hand, aim, now);
 }
@@ -17886,6 +18465,7 @@ void close(bool fxReady) {
 }
 
 bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, const XrCompositionLayerQuad* hub, uint64_t now) {
+  xrmarket::set_live(live);  // r238: the hub open with a career - the market's real-time ticks run (an atomic: no lock)
   poll();
   exq_clubs_refresh(now);  // r230: the GRAND THREADS patches' clubs
   gallery_frame(now, S.lastNs != 0 ? std::min(0.05f, secs(now, S.lastNs)) : 0.0f);  // r230: the EXQUISITE gallery's mood + music
@@ -18302,6 +18882,10 @@ bool frame(xrfx::Scene& scene, const XrPosef& head, bool live, bool fxReady, con
   // r138: the special cards' 3D (a card drawn by its special is left out of the cards' model) and the cards' light
   bool hide[kSheets];
   slab_frame(scene, dt, now, fxReady);  // r152: a TIZM GRADING slab round its card (its reveal)
+  // r242 (Lance 11-13: the mail "must show IN FRONT of the game menu"): a slab out - its BACK FROM GRADING envelope / the slab - counts as
+  // shown, so the hub's menu goes UNDER the effects layer (xr_quest frUnder) while it's up. r152-r241: only the card sheets counted, and the
+  // card is hidden for the envelope's first 0.6 s + until its pictures are up - the menu (over everything then) covered the envelope.
+  if (S.mode == kOut && S.outSlab >= 0 && g_sv.up) shown = true;
   specials_frame(scene, dt, now, fxReady, hide);
   if (S.cardModel >= 0 && xrfx::model_up(kCardSlot) &&
       S.cardVerts.size() == static_cast<size_t>(S.n) * (kCardVerts + kTagVerts + kPunchVerts) * 6) {

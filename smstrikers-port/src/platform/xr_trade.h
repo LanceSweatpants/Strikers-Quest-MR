@@ -176,6 +176,9 @@ bool spotlight(int which, Spotlight* out);
 // his portrait card (the COLLECTORS page's) as pieces in the box - any thread, no lock (his look is fixed)
 void draw_portrait(std::vector<xrtext::BoardPiece>& out, std::vector<std::shared_ptr<void>>& keep, int collector, float x0, float y0, float x1, float y1);
 void reset_for_test();                         // forget the loaded career's trades (the proof's fresh career)
+// r238 (HOLD BEFORE YOU BUY): a pointer on a collector's desk with HIS BINDER up (page units) - the copy under it (else the cursor's), focused
+// (xr_cards: a grip there brings it into your hand). False: not on a desk's binder
+bool inspect_at(float x, float y, xrmarket::Variant* v);
 // the proof's pictures: tab, the collector + his desk open + its pane + the cursor, an offer in the desk (-1 keep), a counter shown
 void debug_view(int tab, int collector, bool desk, int pane, int cursor, const Offer* draft, bool counterShown, int padFor);
 void debug_say(int collector, const std::string& line, int kind);

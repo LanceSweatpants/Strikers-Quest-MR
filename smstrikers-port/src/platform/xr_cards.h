@@ -113,10 +113,11 @@ HubPage hub_page(float w, float h, float top, float bottom);
 // r236 (LOOK B, the sitemap - Lance 11-12: "the card tab should ONLY have card shit"): one rail of 11 pages shown as two hub sections -
 // CARDS 0-6 (PACKS = the old SHOP + opening, BINDER (its SETS inside: Y), MARKET, COLLECTORS, GRADING, TRADE-INS, MUSEUM) and LOCKER
 // 7-10 (BALLS and BINDERS = the old LOOKS' two shelves, GOAL FX and TAKEOVERS = the old EXPLOSIONS grid split)
-constexpr int kRailPages = 11;  // (r213: + COLLECTORS, the 3rd; r236: 11)
-constexpr int kCardsRail = 7;   // r236: CARDS' pages (then LOCKER's)
-constexpr int kRailPacks = 0, kRailBinder = 1, kRailMarket = 2, kRailCollectors = 3, kRailGrading = 4, kRailTrade = 5, kRailMuseum = 6,
-              kRailBalls = 7, kRailGoalFx = 8, kRailTakeovers = 9, kRailCovers = 10;
+// r242: + HOT 20 after MARKET (Lance 11-13: "see the hottest 20, like a power rankings type vibe") - CARDS 0-7, LOCKER 8-11
+constexpr int kRailPages = 12;  // (r213: + COLLECTORS, the 3rd; r236: 11; r242: 12)
+constexpr int kCardsRail = 8;   // r236: CARDS' pages (then LOCKER's) - r242: 8
+constexpr int kRailPacks = 0, kRailBinder = 1, kRailMarket = 2, kRailHot = 3, kRailCollectors = 4, kRailGrading = 5, kRailTrade = 6, kRailMuseum = 7,
+              kRailBalls = 8, kRailGoalFx = 9, kRailTakeovers = 10, kRailCovers = 11;
 int rail_page();
 void set_rail_page(int i);
 const char* rail_name(int i);

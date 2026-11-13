@@ -21,7 +21,13 @@ APK.*
 > **NO FILE FROM A GAME = NO GUESTS FROM THAT GAME.** Super Mario Strikers itself still plays as
 > always. See [Guest characters](#guest-characters-alpha-114).
 
-**NEW in alpha 1.19 - THE STRIKERZ SPORTSBOOK:** a real arcade machine in your room (Franchise) - money lines,
+**NEW in alpha 1.20 - A FLIPPER'S CARD MARKET:** SELL NOW pays 90% of a card's value, the market ticks live while you're
+in the hub (sales, offers, pop-ups), a SALES history per player and finish, SELL and GRADING with search + filters + bulk
+sell, hold any card before you buy or sell it, earlier evolution forms priced as ROOKIE CARDS, a HOT 20 power-rankings
+page, LANCINI EXQUISITE with all 502 characters, and grading that always takes 2 matches with the grade sealed until it's
+back. See the [release notes](https://github.com/LanceSweatpants/Strikers-Quest-MR/releases/latest).
+
+**Alpha 1.19 - THE STRIKERZ SPORTSBOOK:** a real arcade machine in your room (Franchise) - money lines,
 spreads, futures, parlays up to 25 legs, printed slips - plus slots and roulette with a win party in your room. Every
 card redesigned, the new **LANCINI TIZM JAM '96** die-cut pack, a card market, nine collectors to trade with, a Card
 Museum, thunderstorms and blizzards that snow up your room, and room-scan support. All on **BIT COINS**, the game's own

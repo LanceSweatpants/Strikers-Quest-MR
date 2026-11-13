@@ -5554,7 +5554,8 @@ void view_matrix(const XrPosef& pose, float out[16]) {
 }
 
 // The stand-ins: the Tabletop field as a box up to the fence top, and the screen.
-uint32_t write_occluders(const Scene& sc, float* out) {
+// r242: *panelsAt = where the panels (sc.panels: the hub's menu under this layer, the cup suite's boards) start - render draws those FIRST
+uint32_t write_occluders(const Scene& sc, float* out, uint32_t* panelsAt) {
   uint32_t n = 0;
   auto tri = [&](const XrVector3f& a, const XrVector3f& b, const XrVector3f& c) {
     if (n + 3 > kMaxOccluderVerts) return;
@@ -5607,6 +5608,7 @@ uint32_t write_occluders(const Scene& sc, float* out) {
     tri(w[0], w[2], w[3]);
   }
   // r61: the cup suite's boards and name plaque.
+  *panelsAt = n;
   for (int p = 0; p < sc.panelCount && p < 4; ++p) {
     const Scene::Panel& pn = sc.panels[p];
     const float hw = 0.5f * pn.width, hh = 0.5f * pn.height;
@@ -9626,7 +9628,8 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
   s.statPeakIndices = std::max(s.statPeakIndices, indices + gfxIndices);
   s.lastParts = count;  // r130: the budget's
   s.lastMeshIndices = indices + gfxIndices;
-  const uint32_t occluderVerts = write_occluders(sc, static_cast<float*>(slot.occluderMapped));
+  uint32_t panelVertsAt = 0;
+  const uint32_t occluderVerts = write_occluders(sc, static_cast<float*>(slot.occluderMapped), &panelVertsAt);
 
   uint32_t index[2] = {0, 0};
   for (int e = 0; e < 2; ++e) {
@@ -9690,6 +9693,17 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
       vkCmdBindIndexBuffer(slot.cmd, slot.bodyIdx, 0, VK_INDEX_TYPE_UINT32);
       vkCmdDrawIndexed(slot.cmd, bodyIndices, 1, 0, 0, 0);
     }
+    // r242 (Lance 11-13: the SPORTSBOOK machine "still shows when the game menu is in front of it"): the panels (sc.panels - the hub's
+    // menu when it's under this layer, the cup suite's boards) as depth BEFORE the characters / models: a model behind the menu (the
+    // machine, its screen hole) is hidden by it pixel by pixel and the menu's own quad under this layer shows there; what's in front of
+    // it (the cards, a slab's envelope, the hub's figures - stood out of it by their depth, r131) still draws. r61-r241 drew them after
+    // the models: they could only hide what came later (pieces, mesh pieces), never a model behind them.
+    if (occluderVerts > panelVertsAt) {
+      vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.occluderPipeline);
+      vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+      vkCmdBindVertexBuffers(slot.cmd, 0, 1, &slot.occluders, &zero);
+      vkCmdDraw(slot.cmd, occluderVerts - panelVertsAt, 1, panelVertsAt, 0);
+    }
     // r96: the characters standing in your room, first: what falls round them is drawn against them
     if (chars) draw_chars(sc, slot.cmd, slotIndex, pc.viewProj, sc.views[e].pose.position);
     // r53: the controllers first, so the stand-in solids (the table's box, the banner) never hide a
@@ -9711,11 +9725,11 @@ bool render(const Scene& sc, XrCompositionLayerProjection* layer) {
         vkCmdDrawIndexed(slot.cmd, part.indexCount, 1, part.firstIndex, 0, handAt + i);
       }
     }
-    if (occluderVerts > 0) {
+    if (panelVertsAt > 0) {  // (the table's box, the big screen, the banner - after the hands and the models, as before; r242: the panels went first)
       vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.occluderPipeline);
       vkCmdPushConstants(slot.cmd, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
       vkCmdBindVertexBuffers(slot.cmd, 0, 1, &slot.occluders, &zero);
-      vkCmdDraw(slot.cmd, occluderVerts, 1, 0, 0);
+      vkCmdDraw(slot.cmd, panelVertsAt, 1, 0, 0);
     }
     // r61: the cup suite's room (its own layer, under this one) as depth, so its walls and things
     // hide what is behind them.

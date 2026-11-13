@@ -2001,6 +2001,28 @@ void apply_result(Career& c, Game& g)
 
 double nemesis_edge(const Career& c, const Game& g, int side);  // r72 (below)
 
+// r242 (Lance 11-13: "no matter what card, it should only ever be 2 games of a wait to get your card back from grading"): your club's
+// matches with a result, per career, for TIZM GRADING (PortFranchiseTakeCardMatches) - PLAYED and SIMMED alike, each game once (its career,
+// season, index: an online league's actions replayed on a newer copy don't count it twice). r152-r241 ticked the slabs only when a PLAYED
+// match's packs were taken: every simmed match of yours left them waiting, so a card could be gone for far more than 2 of your games.
+std::unordered_map<unsigned, int> s_cardMatches;
+std::unordered_map<unsigned long long, bool> s_cardMatchSeen;
+void card_match_done(const Career& c, int game)
+{
+    if (game < 0 || game >= (int)c.games.size() || c.seed == 0)
+        return;
+    const Game& g = c.games[game];
+    if (g.home != c.myClub && g.away != c.myClub)
+        return;
+    const unsigned long long key = ((unsigned long long)c.seed << 32) ^ ((unsigned long long)(c.season & 0xFFFF) << 16) ^ (unsigned long long)(game & 0xFFFF);
+    if (s_cardMatchSeen[key])
+        return;
+    s_cardMatchSeen[key] = true;
+    s_cardMatches[c.seed] += 1;
+    fprintf(stderr, "[franchise] cards: your match %d (season %d, week %d) counted for TIZM GRADING\n", game, c.season, g.week);
+    fflush(stderr);
+}
+
 void sim_game(Career& c, Game& g)
 {
     double sh = strength(c.clubs[g.home]) + nemesis_edge(c, g, 0), sa = strength(c.clubs[g.away]) + nemesis_edge(c, g, 1);
@@ -2025,6 +2047,8 @@ void sim_game(Career& c, Game& g)
             g.awayGoals++;
     }
     apply_result(c, g);
+    if (!c.games.empty() && &g >= &c.games[0] && &g < &c.games[0] + c.games.size())  // r242: a SIMMED match of yours counts for TIZM GRADING
+        card_match_done(c, (int)(&g - &c.games[0]));
 }
 
 std::string upper(const std::string& s)
@@ -7768,6 +7792,15 @@ int PortFranchiseTakeJamPacks(void)
     s_jamPacks = 0;
     return n;
 }
+int PortFranchiseTakeCardMatches(unsigned seed)  // r242
+{
+    auto it = s_cardMatches.find(seed);
+    if (seed == 0 || it == s_cardMatches.end())
+        return 0;
+    const int n = it->second;
+    s_cardMatches.erase(it);
+    return n;
+}
 
 // r140: TIZM COINS (Lance: "you should earn coins from goals, assists, tackles, etc. and those coins will be used to buy
 // packs. the shit shouldnt be expensive seeing as we're STILL getting our 1 free pack per game and 2 per win!!"): a
@@ -7923,6 +7956,7 @@ void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
         const int mine = g.home == c.myClub ? scoreHome : scoreAway, theirs = g.home == c.myClub ? scoreAway : scoreHome;
         const bool won = mine > theirs;
         card_packs_earned(won, false, false);  // r137
+        card_match_done(c, s_matchGame);  // r242: a PLAYED match of yours counts for TIZM GRADING
         card_coins_earned(g.home == c.myClub ? 0 : 1, mine, theirs);  // r140
         const std::string opp = s_clubs[g.home == c.myClub ? g.away : g.home].place;
         league_do("result", [r]() {
@@ -8008,6 +8042,7 @@ void PortFranchiseMatchEnd(int scoreHome, int scoreAway, bool overtime)
         snprintf(buf, sizeof buf, "Week %d: %s %s %d - %d%s", c.week, won ? "WIN vs" : "LOSS vs", opp, mine, theirs,
                  overtime ? " (OT)" : "");
     card_packs_earned(won, cardSeries, cardTrophy);  // r137
+    card_match_done(c, s_matchGame);  // r242: a PLAYED match of yours counts for TIZM GRADING
     {  // r146: the card bonuses this match's XP and coins got, logged
         const std::string bl = card_bonus_line(c, true);
         if (card_bonus_on(c) && (!bl.empty() || s_cardCoinPct > 0))

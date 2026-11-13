@@ -218,7 +218,7 @@ const Persona kP[kCollectors] = {
       {"THAT ONE COULD BE A 10. I WANT IT.", "SEND IT MY WAY - I'LL SLAB IT."},
       {"RAW TODAY, SLABBED TOMORROW.", "SOFT CORNERS? NO THANKS."}}},
     {"JADE WINTERS", "@RCJADE", "ROOKIE SPECULATOR",
-     "BETS ON THE ORIGINALS BEFORE ANYONE KNOWS THEIR NAMES. ROOKIE CARDS, RPAS, AND A LOT OF HOPE.",
+     "BETS ON THE ORIGINALS BEFORE ANYONE KNOWS THEIR NAMES - AND CHASES EVERY EVOLVED STAR'S FIRST FORM: HIS ROOKIE CARD.",
      0x2A103A, 0xB0FF5A, 17, 12000000LL, 3, 0.65, 1.00, 0.9, 1.0, 18, 0,
      {{"ROOKIE SEASON! DEAL!", "GETTING IN EARLY. DEAL."},
       {"A BIT MORE AND HE'S MINE.", "ALMOST - HERE?"},
@@ -291,7 +291,7 @@ const Hobby kHob[kCollectors] = {
     {0.5, 0.5, 0.8, 1, 1.10, 1.60, 0.10, 0.15, true},    // MILO
     {1.0, 2.0, 4.0, 3, 1.20, 2.50, 0.05, 0.10, true},    // AUGUSTUS: rips EXQUISITE like bubblegum
 };
-constexpr long long kPackCost[3] = {50, 250, 1000};  // the shop's (xr_cards kPackPrice / kJamPackPrice / xrexq::kPackPrice)
+constexpr long long kPackCost[3] = {90, 250, 1000};  // the shop's (xr_cards kPackPrice / kJamPackPrice / xrexq::kPackPrice) - r238: 50 -> 90
 
 uint64_t mix64(uint64_t z) {
   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
@@ -385,6 +385,7 @@ std::vector<int> g_tier;           // demand tier per card (xr_market's)
 std::vector<float> g_chg;          // this matchday's move per card (its BASE copy, %): the HYPE CHASER, the LOWBALLER's "hot"
 std::vector<int> g_club;           // r235: each card's club in this career (xrmarket::club_of, refreshed with the moves): the TEAM LOYALIST
 std::vector<int> g_rank;           // r235: each card's family's place in the TOP CARDS race (the STATS NERD, the listings' search)
+std::vector<int> g_gap;            // r239: how many forms below the one its family plays as now (xrmarket::form_gap): an evolved star's earlier forms
 bool g_indexDirty = true;          // r235: the listings changed - the market's search index pushed again (push_index)
 std::unordered_map<uint32_t, long long> g_px;  // a binder item's market price (refreshed every matchday / when it comes in)
 double g_cycle = 0.0;              // the market's mood (xr_market cycle_now) as of the last read
@@ -460,8 +461,18 @@ void load_set() {
   g_chg.assign(g_set.size(), 0.0f);
   g_club.assign(g_set.size(), -1);  // r235
   g_rank.assign(g_set.size(), 0);
+  g_gap.assign(g_set.size(), 0);  // r239
 }
 bool card_ok(int c) { return c >= 0 && c < static_cast<int>(g_set.size()); }
+// r239 (Lance 11-13: an evolved star's earlier forms are ONE player with him - his first form = his ROOKIE CARD): an earlier form of a family
+// that has evolved past it (gap > 0) / its first form (a JAM '96 / EXQUISITE card: its twin's place)
+int gap(int c) { return card_ok(c) && static_cast<size_t>(c) < g_gap.size() ? g_gap[static_cast<size_t>(c)] : 0; }
+bool first_form(int c) {
+  if (!card_ok(c)) return false;
+  const xrmarket::CardInfo& k = g_set[static_cast<size_t>(c)];
+  const xrmarket::CardInfo& b = k.set >= 1 && k.base >= 0 && k.base < static_cast<int>(g_set.size()) ? g_set[static_cast<size_t>(k.base)] : k;
+  return b.stages > 1 && b.stage == 0;
+}
 int tier(int c) { return card_ok(c) ? g_tier[static_cast<size_t>(c)] : 2; }
 int series(int c) { return card_ok(c) ? g_set[static_cast<size_t>(c)].series : 0; }
 // r217: a LANCINI TIZM JAM '96 card (the premium set: the hobby's most coveted - see taste_base / hold_base, PACKS-AB.md)
@@ -600,17 +611,19 @@ double taste_base0(int c, const Variant& v) {
     case kFlipper: return g_cycle < -0.06 ? 0.95 : 0.88;
     case kNostalgia: return s == kSerStrikers || s == kSerCharged ? 1.10 : (s == kSerMelee ? 0.95 : 0.80);
     case kGradeSnob: return v.grade >= 10 ? 1.10 : (v.grade == 9 ? 1.05 : (v.grade == 8 ? 0.95 : (v.grade > 0 ? 0.80 : 0.78)));
-    case kHypeChaser: return clampd(0.86 + 0.012 * chg(v.card), 0.75, 1.10);
+    // (r239: + an evolved TOP 20 star's earlier form - the hype is the player's, his rookie card rides it)
+    case kHypeChaser: return clampd(0.86 + 0.012 * chg(v.card) + (gap(v.card) > 0 && t >= 4 ? 0.04 : 0.0), 0.75, 1.10);
     // r235: the eleven (TASTE never over 1.10: the r213 invariant)
     case kSetChaser: return !jam(v.card) && !exq(v.card) ? (has_card(c, v.card) ? 0.85 : 1.06) : 0.80;
     case kJamFan: return 0.80;  // (a JAM '96 card: taste_base)
     case kExqFan: return 0.75;  // (an EXQUISITE card: taste_base)
     case kMeleeFan: return s == kSerMelee ? 1.10 : 0.80;
     case kLoyalist: return club(v.card) >= 0 && club(v.card) == sal_club() ? 1.10 : 0.80;
-    case kStatsNerd: return t == 5 ? 1.10 : (t == 4 ? 1.03 : (t == 3 ? 0.95 : 0.78));
+    case kStatsNerd: return t == 5 ? 1.10 : (t == 4 ? (gap(v.card) > 0 ? 1.06 : 1.03) : (t == 3 ? 0.95 : 0.78));  // (r239: a #6-20 star's earlier form 1.06)
     case kBargain: return 0.80;  // (he only buys under the market: hobby_buy)
     case kGrader: return v.grade > 0 ? 0.95 : (px_of(v) >= 1000 ? 1.00 : 0.85);
-    case kRookieSpec: return s == kSerOriginals ? 1.10 : 0.75;
+    // (r239: + an evolved TOP 60 player's earlier forms - his first form, the rookie card, the most)
+    case kRookieSpec: return s == kSerOriginals ? 1.10 : (gap(v.card) > 0 && t >= 3 ? (first_form(v.card) ? 1.08 : 1.03) : 0.75);
     case kSerialHunter: return special_serial(v) ? 1.10 : (numbered(v) ? 1.00 : 0.75);
     case kWhale: {
       const long long p = px_of(v);
@@ -653,7 +666,7 @@ double hold_base(int c, const Variant& v) {
     case kLoyalist: return club(v.card) >= 0 && club(v.card) == sal_club() ? 1.30 : 1.12;
     case kStatsNerd: return tier(v.card) >= 4 ? 1.25 : 1.12;
     case kGrader: return v.grade > 0 ? 1.20 : 1.12;
-    case kRookieSpec: return s == kSerOriginals ? 1.30 : 1.12;
+    case kRookieSpec: return s == kSerOriginals ? 1.30 : (gap(v.card) > 0 && tier(v.card) >= 3 && first_form(v.card) ? 1.25 : 1.12);  // (r239)
     case kSerialHunter: return special_serial(v) ? 1.35 : 1.12;
     case kWhale: return px_of(v) >= 1000000 ? 1.30 : 1.15;
   }
@@ -867,7 +880,7 @@ bool pool_has(int c, int card, uint64_t h) {
     case kMeleeFan: return s == kSerMelee;
     case kLoyalist: return (club(card) >= 0 && club(card) == sal_club()) || u01(h ^ 0x36) < 0.05;
     case kStatsNerd: return t >= 3;
-    case kRookieSpec: return s == kSerOriginals;
+    case kRookieSpec: return s == kSerOriginals || (gap(card) > 0 && t >= 3);  // (r239: + an evolved star's earlier forms)
     case kWhale: return t >= 3;
   }
   return true;  // (GUS, ELLIS, MILO: anything)
@@ -1844,6 +1857,7 @@ void refresh_moves() {
     if (i < g_tier.size()) g_tier[i] = xrmarket::hype_tier(static_cast<int>(i));
     if (i < g_club.size()) g_club[i] = g_set[i].here ? xrmarket::club_of(static_cast<int>(i)) : -1;  // r235: SAL's club
     if (i < g_rank.size()) g_rank[i] = g_set[i].here ? xrmarket::demand_rank(static_cast<int>(i)) : 0;
+    if (i < g_gap.size()) g_gap[i] = g_set[i].here ? xrmarket::form_gap(static_cast<int>(i)) : 0;  // r239
   }
 }
 
@@ -1977,18 +1991,18 @@ void hobby_trim(int c) {  // past 72 copies: his cheapest unlisted, unwanted cop
         break;
       }
 }
-void hobby_list(int c, int day) {
+void hobby_list(int c, int day, bool tick = false) {  // (r238: tick - a real-time tick's: no cuts / take-downs, those are a matchday's)
   Col& k = g_st.col[c];
   const Hobby& hb = kHob[c];
   int listed = 0;
   for (Item& it : k.items) {  // the ones up: re-floored at today's market, an unsold one cut a little, a stale one taken down
     if (it.ask <= 0) continue;
     const long long px = item_px(it);
-    if (day - it.listed >= 10) {
+    if (!tick && day - it.listed >= 10) {
       it.ask = 0, it.listed = -1;
       continue;
     }
-    if (!hb.stubborn && day - it.listed >= 2) it.ask = static_cast<long long>(static_cast<double>(it.ask) * 0.96);
+    if (!tick && !hb.stubborn && day - it.listed >= 2) it.ask = static_cast<long long>(static_cast<double>(it.ask) * 0.96);
     if (static_cast<double>(it.ask) > static_cast<double>(px) * hb.hi * 1.3) it.ask = nice_up(static_cast<double>(px) * hb.hi);  // (the market fell away)
     it.ask = std::max(it.ask, list_floor(it, px));
     ++listed;
@@ -2023,7 +2037,8 @@ void hobby_list(int c, int day) {
     Item& it = k.items[cd.second];
     const long long px = item_px(it);
     const uint64_t h = mix64(static_cast<uint64_t>(it.id) * 0xA5ull ^ static_cast<uint64_t>(day) * 0x9E3779B97F4A7C15ull);
-    const double u = u01(h), m = u01(h ^ 1) < hb.motivated ? 0.90 + 0.08 * u : hb.lo + (hb.hi - hb.lo) * u;
+    // (r238: a motivated seller 93 - 98% of the market - r235: 90 - 98%: over r238's SELL NOW 90%, the floor kListFloor 0.93)
+    const double u = u01(h), m = u01(h ^ 1) < hb.motivated ? 0.93 + 0.05 * u : hb.lo + (hb.hi - hb.lo) * u;
     it.ask = std::max(nice_up(m * static_cast<double>(px)), list_floor(it, px));
     it.listed = day;
     ++listed;
@@ -2053,6 +2068,8 @@ void hobby_transfer(int seller, uint32_t id, int buyer, int day) {
     item_px(got);
     ++g_st.hob.buys;
     g_st.hob.buyCoins = xrcoin::add(g_st.hob.buyCoins, it.ask);
+    // r238: its SALES history (the market's - this module's lock -> the market's, never back)
+    xrmarket::record_sale(it.v, it.ask, seller == kDealer ? "THE DEALER" : kP[seller].handle, kP[buyer].handle, seller == kDealer ? 3 : 0);
     const std::string from_who = seller == kDealer ? std::string("THE DEALER") : std::string(kP[seller].handle) + "'S";
     if (it.v.parallel == kBlack || it.ask >= 100000)
       wire(std::string(kP[buyer].handle) + " BOUGHT " + from_who + " " + pull_words(it.v) + " FOR " + T(it.ask) + " COINS", it.v.parallel == kBlack ? 0xFFD23F : 0x2EF2FF,
@@ -2073,7 +2090,8 @@ void hobby_transfer(int seller, uint32_t id, int buyer, int day) {
     return;
   }
 }
-void hobby_buys(int day) {
+// (r238: salt != 0 - a real-time tick's buys: each collector's taste a little different this tick (+-4%), at most maxEach singles each)
+void hobby_buys(int day, uint64_t salt = 0, int maxEach = 99) {
   struct Lst {
     int seller;
     uint32_t id;
@@ -2088,12 +2106,12 @@ void hobby_buys(int day) {
   for (const Item& it : g_st.deal)
     if (it.ask > 0) L.push_back({kDealer, it.id, it.ask, item_px(it), it.v, false});
   if (L.empty()) return;
-  const uint64_t h0 = mix64(static_cast<uint64_t>(g_st.career) * 0xB5297A4Dull ^ static_cast<uint64_t>(day) * 0x68E31DA4ull);
+  const uint64_t h0 = mix64(static_cast<uint64_t>(g_st.career) * 0xB5297A4Dull ^ static_cast<uint64_t>(day) * 0x68E31DA4ull ^ salt);
   const int start = static_cast<int>(h0 % kCollectors);
   for (int n = 0; n < kCollectors; ++n) {
     const int c = (start + n * 7) % kCollectors;  // (a different collector first each matchday)
     Col& k = g_st.col[c];
-    for (int bought = 0; bought < kHob[c].buys; ++bought) {
+    for (int bought = 0; bought < std::min(kHob[c].buys, maxEach); ++bought) {
       int best = -1;
       double bs = 0.0;
       for (size_t i = 0; i < L.size(); ++i) {
@@ -2101,9 +2119,10 @@ void hobby_buys(int day) {
         if (l.gone || l.seller == c || l.px <= 0) continue;
         if (l.ask > (c == kWhale ? k.wallet : k.wallet / 3)) continue;  // (never a third of his wallet on one card - the whale: anything)
         const double r = static_cast<double>(l.ask) / static_cast<double>(l.px);
-        const double tb = taste_base(c, l.v) * (1.0 + 0.03 * mood_of(c));
+        double tb = taste_base(c, l.v) * (1.0 + 0.03 * mood_of(c));
+        if (salt != 0) tb *= 0.96 + 0.09 * u01(h0 ^ static_cast<uint64_t>(l.id) * 0x9E3779B97F4A7C15ull ^ static_cast<uint64_t>(c + 1) * 0xC2B2AE3Dull);
         bool want;
-        if (c == kBargain) want = r <= 0.93 && l.px >= 100;
+        if (c == kBargain) want = r <= 0.95 && l.px >= 100;  // (r238: 0.95 - r235: 0.93, the old floor; the floor is 0.93 now)
         else if (c == kFlipper) want = r <= 0.96 && chg(l.v.card) > 0.0f;
         else if (c == kWhale) want = l.px >= 200000 && r <= 1.15;
         else want = tb >= 1.0 && tb >= r * kP[c].need;
@@ -2117,8 +2136,7 @@ void hobby_buys(int day) {
       hobby_transfer(L[static_cast<size_t>(best)].seller, L[static_cast<size_t>(best)].id, c, day);
     }
   }
-}
-void hobby_day(int day) {
+}void hobby_day(int day) {
   const std::vector<Holding> hold = fresh_holdings();
   g_worldMoved = false;
   for (int c = 0; c < kCollectors; ++c) {
@@ -2134,6 +2152,32 @@ void hobby_day(int day) {
   dealer_prices(day);
   for (int c = 0; c < kCollectors; ++c) hobby_list(c, day);
   hobby_buys(day);
+  for (int c = 0; c < kCollectors; ++c) sort_items(g_st.col[c]);
+  if (g_worldMoved) tell_world();
+  g_indexDirty = true;
+}
+// r238 (Lance 11-12: "this aint ebay this is fast flipping activity!"): a real-time TICK (the market's: every 90 s of hub time) - the
+// collectors between matchdays: a pack now and then (about a tenth of a matchday's each), their listings topped up (what sold comes off,
+// the next goes up - no price cuts: a matchday's), one single each at most (their taste a little different each tick), the index pushed.
+// Deterministic per career / matchday / tick. Light (the proof times it).
+int g_lastTick = -1;
+unsigned g_tickCareer = 0;
+void hobby_tick(int day, int tick) {
+  const std::vector<Holding> hold = fresh_holdings();
+  g_worldMoved = false;
+  const uint64_t salt = mix64(static_cast<uint64_t>(tick) * 0xD1B54A32D192ED03ull + 0x7777ull);
+  for (int c = 0; c < kCollectors; ++c) {
+    const uint64_t h = mix64(static_cast<uint64_t>(g_st.career) * 0x9E3779B97F4A7C15ull ^ (static_cast<uint64_t>(c + 1) << 33) ^
+                             static_cast<uint64_t>(day + 5000) * 0xC2B2AE3D27D4EB4Full ^ salt);
+    const double all = kHob[c].a + kHob[c].j + kHob[c].e;
+    if (all > 0.0 && u01(h ^ 0x51) < all / 10.0) {
+      const double u = u01(h ^ 0x52) * all;
+      hobby_rip(c, u < kHob[c].a ? 0 : (u < kHob[c].a + kHob[c].j ? 1 : 2), mix64(h ^ 0x53), hold);
+    }
+    hobby_trim(c);
+  }
+  for (int c = 0; c < kCollectors; ++c) hobby_list(c, day, true);
+  hobby_buys(day, salt, 1);
   for (int c = 0; c < kCollectors; ++c) sort_items(g_st.col[c]);
   if (g_worldMoved) tell_world();
   g_indexDirty = true;
@@ -2554,6 +2598,15 @@ bool frame(double now) {
     advance(days, ms.season);
     if (g_desk && g_pane == kPaneMine) build_mine_rows();
     changed = true;
+  }
+  // r238: the market's real-time ticks (the hub open: every 90 s) - the collectors' hobby between matchdays (this session's: no catch-up)
+  if (g_tickCareer != career) g_tickCareer = career, g_lastTick = ms.tick;
+  if (ms.tick > g_lastTick) {
+    g_lastTick = ms.tick;
+    if (g_st.loaded && ms.day == g_st.lastDay) {
+      hobby_tick(g_st.lastDay, ms.tick);
+      changed = true;
+    }
   }
   if ((g_desk && g_pane == kPaneMine) || !g_st.inc.empty()) {  // (your binder changed - a pack, a sale: at most twice a second)
     std::vector<Holding> h = fresh_holdings();
@@ -4317,8 +4370,30 @@ void reset_for_test() {
   g_ask = 0;
   g_mineRows.clear();
   for (Offer& d : g_draft) d = Offer();
+  g_tickCareer = 0, g_lastTick = -1;  // r238
   std::lock_guard<std::mutex> q(g_qm);
   g_queue.clear();
+}
+// r238 (Lance 11-12: "i wanna be able to hold it before i buy"): HIS BINDER on a collector's desk - the copy under a pointer (the grid, as
+// draw_desk lays it in the hub: 110 up), else the cursor's (a pointer anywhere on the desk's left); focused. True: v is it
+bool inspect_at(float x, float y, Variant* v) {
+  std::lock_guard<std::mutex> lk(g_m);
+  if (g_st.career == 0 || !g_st.loaded || g_tab != kTabCols || !g_desk || g_pane != kPaneHis || g_pad || g_ask != 0 || g_showCounter) return false;
+  const std::vector<Item>& items = g_st.col[g_colCur].items;
+  const int n = static_cast<int>(items.size());
+  if (n == 0 || x < 0.0f || x > 1000.0f || y < 104.0f || y > 898.0f) return false;
+  int& cur = g_paneCur[kPaneHis];
+  cur = std::max(0, std::min(n - 1, cur));
+  int top = (cur / kGridCols - 1) * kGridCols;
+  top = std::max(0, std::min(top, std::max(0, ((n + kGridCols - 1) / kGridCols - kGridRows) * kGridCols)));
+  const float gy = y + 110.0f;  // (r236: the desk drawn 110 up under the sub-tabs)
+  const int col = static_cast<int>(x / 200.0f), row = static_cast<int>((gy - 326.0f) / 172.0f);
+  if (gy >= 326.0f && row >= 0 && row < kGridRows && col >= 0 && col < kGridCols && std::fmod(x, 200.0f) <= 192.0f) {
+    const int at = top + row * kGridCols + col;
+    if (at < n && at != cur) cur = at, ++g_gen;
+  }
+  *v = items[static_cast<size_t>(cur)].v;
+  return true;
 }
 void debug_view(int tab, int collector, bool desk, int pane, int cursor, const Offer* draft, bool counterShown, int padFor) {
   std::lock_guard<std::mutex> lk(g_m);

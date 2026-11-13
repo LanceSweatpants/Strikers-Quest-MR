@@ -56,6 +56,7 @@
 #include "xr_museum.h"   // r201: the CARD MUSEUM (its pieces in your room)
 #include "xr_trade.h"    // r213: COLLECTOR TRADES (CARDS > COLLECTORS: its badge, HOME's WAITING FOR YOU, its number pad's pointer)
 #include "xr_menu.h"     // r157: the menus' kit (the franchise hub, the pause panel)
+#include "xr_layer_order.h"  // r242: the menu / the SPORTSBOOK machine's screen under the effects layer - the nearer one on top
 #include <cctype>
 #include <ctime>
 // r61: stb_image (public domain / MIT), JPEG only, its functions private to this file: the cup suite's
@@ -869,6 +870,12 @@ struct State {
   int npGen = 0, npShownGen = -1;     // the track it is for / the picture on show
   bool npPlaced = false;
   XrVector3f npPos{0.0f, 0.0f, 0.0f};
+  Panel mkToast;                      // r238: the CARD MARKET's pop-up in the hub ("SOLD! YOUR GOLD /10 ... TO @FLIPFRANKIE FOR 1,300")
+  int mkToastGen = 0, mkToastShownGen = 0;
+  uint64_t mkToastShownNs = 0;        // when it came up (0: not on show)
+  uint64_t mkToastAskNs = 0;          // when its picture was asked for
+  bool mkToastPlaced = false;
+  XrVector3f mkToastPos{0.0f, 0.0f, 0.0f};
   float charScale = 1.5f;             // Tabletop: players drawn this much bigger (xr_tune "charscale")
   int msaaTable = 4;                  // eye-pass multisampling, table only / with the stadium layer
   int msaaStadium = 4;                // (1 or 4; xr_tune "msaa <table> <stadium>")
@@ -1238,6 +1245,7 @@ std::vector<LvPop> g_lvPops;
 int g_lvSerial = 0;
 AsyncPanel g_frEvo;                    // r70c: the evolution scene (redrawn ~15 times a second)
 AsyncPanel g_nowPlayingP;              // r147: the menu music's "NOW PLAYING" card (xrtext::now_playing_toast)
+AsyncPanel g_mkToastP;                 // r238: the CARD MARKET's pop-up (xrtext::achievement_toast's look), drawn on its own thread
 AsyncPanel g_pauseP;                   // r157: the pause panel (draw_pause)
 constexpr uint32_t kNowPlayingW = 1024, kNowPlayingH = 220;
 AsyncPanel g_frTickerP, g_frTvP;       // r73: the news wire and the TV in your room
@@ -11560,13 +11568,20 @@ void sync_input() {
               // the rail as well (on BINDER)
               const bool scene = xrcards::busy();
               const bool in = scene || !g.frOnRail;
+              // r238 (Lance: "viewing a card in binder, the moment you grab it, it goes back in binder"; his log: "controls: ... X=rg" - his X is
+              // on the RIGHT GRIP): the grip that takes a card / holds it / holds the 3D binder pressed X too, and X on a card out = back in
+              // the binder (on the rail: the binder away). A button whose source is that grip never reaches a card scene, nor anything while
+              // a card / the binder is in that hand - the grip is the hand's there.
+              const bool gripOwn = scene || xrcards::hand_busy(1);
+              const bool aIn = aPress && !(gripOwn && g.controls[kActA] == kSrcGripR), bIn = bPress && !(gripOwn && g.controls[kActB] == kSrcGripR);
+              const bool xIn = xPress && !(gripOwn && g.controls[kActX] == kSrcGripR), yIn = yPress && !(gripOwn && g.controls[kActY] == kSrcGripR);
               xrcards::Input ci;
               ci.dir = in ? dir : 0;
               ci.step = in && step;
-              ci.a = in && aPress;
-              ci.b = in && bPress;
-              ci.x = in && xPress;
-              ci.y = yPress && (in || xrcards::rail_page() == xrcards::kRailPacks);  // (r236: PACKS - was BINDER)
+              ci.a = in && aIn;
+              ci.b = in && bIn;
+              ci.x = in && xIn;
+              ci.y = yIn && (in || xrcards::rail_page() == xrcards::kRailPacks);  // (r236: PACKS - was BINDER)
               ci.lt = ltDown;
               ci.rt = rtDown;
               ci.turn = scene ? 0 : turn;  // r171: the right stick turns the binder's page (on the rail too)
@@ -11575,7 +11590,7 @@ void sync_input() {
               const bool got = xrcards::hub_input(ci, &redraw, &cardsStick);
               if (xrmarket::pad_open() || xrmarket::search_open()) used = true;  // r210: the market's number pad up - LT / RT (its pointer's trigger) never switch sections (r235: + the search's letter grid)
               if (xrtrade::pad_open()) used = true;   // r213: the collectors' coin pad the same
-              if (!scene && g.frOnRail && xPress && g.frSec == kFrSecCards) {  // r163: X on the CARDS rail (any of its pages): your 3D binder out / away (r236: not LOCKER's)
+              if (!scene && g.frOnRail && xIn && g.frSec == kFrSecCards) {  // r163: X on the CARDS rail (any of its pages): your 3D binder out / away (r236: not LOCKER's; r238: not the grip holding it)
                 xrcards::binder_toggle();
                 changed = true;
               }
@@ -21261,6 +21276,7 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
   XrCompositionLayerQuad sliderQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r42
   XrCompositionLayerQuad raQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r46
   XrCompositionLayerQuad npQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r147: NOW PLAYING
+  XrCompositionLayerQuad mkQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};      // r238: the CARD MARKET's pop-up
   XrCompositionLayerColorScaleBiasKHR npFade{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};  // r147: its fade
   XrCompositionLayerQuad achQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};     // r51
   XrCompositionLayerQuad achHeadQuad{XR_TYPE_COMPOSITION_LAYER_QUAD}; // r51b: its title bar
@@ -22859,8 +22875,10 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
     const bool frUnder = showFrQuad && ((g.frMode == 3 && g_evoShow.live) || frFigsUp ||
                                         (g.magMeshShown && g.paperOpen) ||  // r131: the magazine's paper in front of it
                                         cardsShown);                        // r137: the trading cards in front of it
+    // r242: under the effects layer the hub's quad goes in with the SPORTSBOOK machine's screen (below), the farther one first - r131-r241
+    // put the menu here, BEFORE the machine's screen quad, so the machine's screen painted over a menu in front of it
+    const bool frUnderPush = frUnder;
     if (frUnder) {
-      layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
       showFrQuad = false;
       // r134 (Lance's clip: "i kept seeing the lights behind the magazine, through the magazine"): under the effects
       // layer the hub's panel must be a solid there too, or the suite's LED lights behind it shine through it - the
@@ -22883,16 +22901,31 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
         w.music = &xrcards::play_music;  // r202: its win / lose music (SOUND > EFFECTS volume)
         xrbook::set_wallet(w);
         xrbook::set_logo_source(&book_logo);
+        xrmarket::set_logo_source(&book_logo);  // r242: CARDS > HOT 20's club logos (the same pictures)
         xrcasino::set_picture_source(&casino_picture);  // r202
       }
       xrbook::frame(static_cast<double>(nowNs) * 1e-9);
       static XrCompositionLayerQuad s_bookQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
       static XrCompositionLayerQuad s_bookCurQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // r205: its cursor overlay, over the screen
       bool bookCur = false;
-      if (book_cabinet_frame(scene, g.fxReady && sceneViews, nowNs, s_bookQuad, s_bookCurQuad, bookCur) && layerCount < 30) {
+      const bool bookUp = book_cabinet_frame(scene, g.fxReady && sceneViews, nowNs, s_bookQuad, s_bookCurQuad, bookCur) && layerCount < (frUnderPush ? 29u : 30u);
+      // r242 (Lance 11-13: "the sportsbook arcade machine still shows when the game menu is in front of it"): the menu (when it's under the
+      // effects layer) and the machine's screen are both quads under it with no depth - the compositor paints them in list order. The farther
+      // one first, the nearer last (from your head), so whichever is nearer covers the other; the effects layer over both draws the menu's
+      // solid before the machine's body (xr_fx: the panels first), so the body behind a nearer menu is hidden too.
+      const bool menuNearer = frUnderPush && bookUp && g.headValid && quad_order::nearer(g.headPose.position, frQuad.pose.position, s_bookQuad.pose.position);
+      const int order = quad_order::code(frUnderPush, bookUp, menuNearer);
+      static int s_lastOrder = -1;
+      if (order != s_lastOrder) {
+        s_lastOrder = order;
+        if (order >= 0) XLOG("r242 layers under the effects layer: %s", quad_order::words(order));
+      }
+      if (frUnderPush && !menuNearer) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
+      if (bookUp) {
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&s_bookQuad);  // (under the effects layer)
         if (bookCur) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&s_bookCurQuad);
       }
+      if (frUnderPush && menuNearer) layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&frQuad);
     }
     gp_mark(gp::kBook);  // r221
     {  // r221: the same calls as before, update and draw timed apart
@@ -23025,6 +23058,59 @@ extern "C" void PortXrEndFrame(int ranGameFrame) {
       if (pop > 0.02f) {
         place_panel(raQuad, g.raToast, g.raToastPos, 0.62f * pop);
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&raQuad);
+      }
+    }
+    // r238 (Lance 11-12: "this aint ebay this is fast flipping activity!"): the CARD MARKET's pop-ups while the franchise hub is open - a
+    // listing of yours sold ("SOLD! YOUR GOLD TIZM 07/10 X - TO @FLIPFRANKIE FOR 1,300 COINS"), an offer: one at a time, 5 s, a little
+    // below your eyes as the RetroAchievements pop-up; its picture drawn on its own thread when one comes (never per frame)
+    {
+      const bool hubUp = g.frOpen && PortMenuMusicInMatch() == 0;
+      if (hubUp && g.mkToastShownNs == 0 && g.mkToastGen == g.mkToastShownGen) {
+        std::string hd, ti, ln;
+        if (xrmarket::take_notice(&hd, &ti, &ln)) {
+          g.mkToastAskNs = nowNs;
+          g_mkToastP.swizzleInWorker = true;  // (its byte order on its drawing thread, not this one)
+          request_panel(g_mkToastP, ++g.mkToastGen, xrra::kToastW, xrra::kToastH, [hd, ti, ln](uint8_t* px, int w, int h) {
+            xrtext::achievement_toast(px, w, h, hd.c_str(), ti.c_str(), ln.c_str(), 0);
+          });
+          XLOG("CARD MARKET pop-up: %s - %s - %s", hd.c_str(), ti.c_str(), ln.c_str());
+        }
+      }
+      show_panel(g_mkToastP, g.mkToast);
+      if (g.mkToastGen != g.mkToastShownGen) {
+        if (g_mkToastP.shown >= g_mkToastP.requested && g.mkToast.hasImage) {
+          g.mkToastShownGen = g.mkToastGen;
+          g.mkToastShownNs = nowNs;
+          g.mkToastPlaced = false;
+          g.rumble.amplitude = 0.35f;
+          g.rumble.seconds = 0.12f;
+          g.rumble.startPending = true;
+          g.rumble.stopPending = false;
+        } else if (nowNs - g.mkToastAskNs > 3000000000ull) {
+          g.mkToastShownGen = g.mkToastGen;  // (its picture never came: skipped - the next one may come)
+        }
+      }
+      if (g.mkToastShownNs != 0 && (nowNs - g.mkToastShownNs > 5000000000ull || !hubUp)) g.mkToastShownNs = 0;
+      if (g.mkToastShownNs != 0 && g.mkToast.hasImage && g.headValid && layerCount < 32) {
+        float fx = 0.0f, fz = -1.0f;
+        floor_forward(g.headPose, &fx, &fz);
+        const XrVector3f want{g.headPose.position.x + fx * 0.9f, g.headPose.position.y - 0.32f, g.headPose.position.z + fz * 0.9f};
+        if (!g.mkToastPlaced) {
+          g.mkToastPos = want;
+          g.mkToastPlaced = true;
+        } else {
+          const float dt = scene.dt > 0.0f ? std::min(scene.dt, 0.1f) : 1.0f / 72.0f;
+          const float k = std::min(1.0f, dt * 3.0f);
+          g.mkToastPos.x += (want.x - g.mkToastPos.x) * k;
+          g.mkToastPos.y += (want.y - g.mkToastPos.y) * k;
+          g.mkToastPos.z += (want.z - g.mkToastPos.z) * k;
+        }
+        const float t = static_cast<float>(nowNs - g.mkToastShownNs) / 1e9f, left = 5.0f - t;
+        const float pop = std::min({1.0f, t / 0.2f, left / 0.25f});
+        if (pop > 0.02f) {
+          place_panel(mkQuad, g.mkToast, g.mkToastPos, 0.52f * pop);
+          layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&mkQuad);
+        }
       }
     }
     // r147: the menu music's NOW PLAYING card (port/menu_music.h) as a track starts: 4 s in the big screen's top right

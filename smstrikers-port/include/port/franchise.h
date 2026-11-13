@@ -478,6 +478,11 @@ int PortFranchiseTakeCardPacks(unsigned* flags);
 // r217 (Lance 11-11): the LANCINI TIZM JAM '96 packs earned since the last call - 1 a franchise WIN (PortFranchiseTakeCardPacks then
 // gives that win's LANCINI TIZM pack: a win = 1 + 1 JAM '96, a loss = 1; +1 LANCINI TIZM a series won / a trophy, as before).
 int PortFranchiseTakeJamPacks(void);
+// r242 (Lance 11-13: "it should only ever be 2 games of a wait to get your card back from grading"): your club's franchise matches
+// that got a result since the last call for career `seed` - PLAYED (offline or an online league's) or SIMMED (SIM YOUR MATCH, sim to the
+// playoffs, a league owner's sim-the-rest) alike, each game once (a league's replayed actions don't count it again). TIZM GRADING's
+// slabs come back after 2 of them (xr_cards.cpp). r152-r241 counted only played matches, through the packs they earned.
+int PortFranchiseTakeCardMatches(unsigned seed);
 // r140: TIZM COINS your played franchise matches earned since the last call (your side's goals, Super Strikes, assists,
 // tackles, steals, item hits, a win, a shutout; simmed games none), and the last match's breakdown into why ("3 goals 18,
 // 2 assists 8, 14 tackles 7, win 10"). The headset takes them every frame (xr_cards.cpp keeps them, for its shop).
